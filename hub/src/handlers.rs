@@ -220,6 +220,16 @@ pub struct TaskDto {
     /// Free-form capability tags, already normalized. Empty means
     /// unrestricted -- see `GET /tasks?capability=`.
     pub capabilities: BTreeSet<String>,
+    /// When the task was posted. Already the ordering key `list_tasks`
+    /// sorts by; exposed so clients can bucket tasks into a time series
+    /// (the dashboard's sparklines derive entirely from this field)
+    /// without the hub having to serve pre-aggregated stats.
+    ///
+    /// Note this is strictly a *creation* time. Nothing records when a
+    /// task was claimed, verified, or paid, so a client can chart when
+    /// work was posted but cannot honestly chart when it settled -- see
+    /// `docs/web-v1-log.md`.
+    pub created_at: DateTime<Utc>,
     #[serde(flatten)]
     pub kind: TaskKindDto,
 }
@@ -251,6 +261,7 @@ impl From<&Task> for TaskDto {
             min_reputation: task.min_reputation,
             close_reason: task.close_reason,
             capabilities: task.capabilities.clone(),
+            created_at: task.created_at,
             kind,
         }
     }
@@ -379,6 +390,56 @@ pub struct ListTasksQuery {
     /// either. Multi-tag AND/OR filtering isn't built -- nothing needs it
     /// yet, and it'd be a pure handler-side change if that changes.
     pub capability: Option<String>,
+    /// Which task statuses to list. **Absent means `Open` only** -- the
+    /// long-standing behaviour of this endpoint, deliberately unchanged
+    /// so existing agents and SDK callers that treat "listed" as
+    /// "claimable" keep working exactly as before.
+    ///
+    /// Accepts any single `TaskStatus` name (`Open`, `Claimed`,
+    /// `AwaitingDispute`, `Disputed`, `Verified`, `Paid`, `Closed`) or
+    /// the literal `all` for every status regardless. Matched
+    /// case-insensitively, the same forgiving treatment `capability`
+    /// already gets, so `?status=paid` and `?status=Paid` are the same
+    /// query.
+    ///
+    /// This exists because a public marketplace has to be able to show
+    /// *completed* work -- an economy that only ever displays unclaimed
+    /// tasks looks dead no matter how much has actually settled.
+    pub status: Option<String>,
+}
+
+/// What a `?status=` query resolves to.
+enum StatusFilter {
+    /// Every task, whatever its status (`?status=all`).
+    Any,
+    /// Exactly one status -- including `Open`, which reproduces the
+    /// endpoint's default behaviour.
+    Only(TaskStatus),
+}
+
+/// Parses `?status=` case-insensitively. Kept as a hand-written match
+/// rather than a serde derive on `TaskStatus` for two reasons: `all`
+/// isn't a `TaskStatus` at all, and an unrecognized value should produce
+/// a legible 400 naming the valid options rather than serde's opaque
+/// query-deserialization failure.
+fn parse_status_filter(raw: &str) -> Result<StatusFilter, ApiError> {
+    let normalized = raw.trim().to_lowercase();
+    Ok(match normalized.as_str() {
+        "all" => StatusFilter::Any,
+        "open" => StatusFilter::Only(TaskStatus::Open),
+        "claimed" => StatusFilter::Only(TaskStatus::Claimed),
+        "awaitingdispute" => StatusFilter::Only(TaskStatus::AwaitingDispute),
+        "disputed" => StatusFilter::Only(TaskStatus::Disputed),
+        "verified" => StatusFilter::Only(TaskStatus::Verified),
+        "paid" => StatusFilter::Only(TaskStatus::Paid),
+        "closed" => StatusFilter::Only(TaskStatus::Closed),
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "unknown status {other:?} -- expected one of: all, Open, Claimed, \
+                 AwaitingDispute, Disputed, Verified, Paid, Closed"
+            )))
+        }
+    })
 }
 
 #[derive(Deserialize, Serialize)]
@@ -490,28 +551,53 @@ impl From<&PendingDeposit> for EscrowReservationDto {
 pub async fn list_tasks(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListTasksQuery>,
-) -> Json<Vec<TaskDto>> {
+) -> Result<Response, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_TASKS_PAGE_SIZE).min(MAX_TASKS_PAGE_SIZE);
     // Normalized the same way stored tags already are (see
     // validate_capabilities) -- a task with no capability tags at all
     // always matches an unfiltered query (no filter -> no exclusion), but
     // never matches a *specific* capability filter (nothing to match).
     let capability_filter = query.capability.map(|c| c.trim().to_lowercase());
+    let status_filter = query.status.as_deref().map(parse_status_filter).transpose()?;
     let board = state.board.read().await;
-    let mut tasks = board.list_open_tasks();
+    // No `?status=` keeps the original code path verbatim, down to the
+    // same `list_open_tasks` call -- the default response is byte-for-byte
+    // what it has always been, apart from each task's new `created_at`.
+    let mut tasks: Vec<&Task> = match status_filter {
+        None | Some(StatusFilter::Only(TaskStatus::Open)) => board.list_open_tasks(),
+        Some(StatusFilter::Any) => board.all_tasks().collect(),
+        Some(StatusFilter::Only(status)) => {
+            board.all_tasks().filter(|t| t.status == status).collect()
+        }
+    };
     tasks.sort_by_key(|t| t.created_at);
-    Json(
-        tasks
-            .into_iter()
-            .filter(|t| match &capability_filter {
-                Some(tag) => t.capabilities.contains(tag),
-                None => true,
-            })
-            .skip(query.offset)
-            .take(limit)
-            .map(TaskDto::from)
-            .collect(),
-    )
+
+    let matched: Vec<&Task> = tasks
+        .into_iter()
+        .filter(|t| match &capability_filter {
+            Some(tag) => t.capabilities.contains(tag),
+            None => true,
+        })
+        .collect();
+    // Counted after filtering but before paging -- that's what makes it
+    // useful for "showing 50 of 312" and for sizing a pager.
+    let total = matched.len();
+
+    let page: Vec<TaskDto> = matched
+        .into_iter()
+        .skip(query.offset)
+        .take(limit)
+        .map(TaskDto::from)
+        .collect();
+
+    // The total rides in a header rather than wrapping the body in an
+    // object, because changing the response shape from `[...]` to
+    // `{ tasks: [...], total: n }` would break every existing consumer at
+    // once -- the dashboard, both SDKs, and any running agent. A header
+    // is additive: clients that don't look for it never notice.
+    // Cross-origin readers also need it named in `Access-Control-Expose-
+    // Headers`, which `build_router`'s CORS layer does.
+    Ok(([("x-total-count", total.to_string())], Json(page)).into_response())
 }
 
 pub async fn get_task(

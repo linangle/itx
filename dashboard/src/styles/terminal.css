@@ -1,0 +1,573 @@
+/* ITX terminal theme.
+ *
+ * Every rule here is scoped under `.itx` (or `body.itx-body[data-theme]`,
+ * applied only while a terminal page is mounted -- see `Shell.tsx`). The
+ * three original dashboard pages render outside that scope and keep
+ * their original bare appearance, so this file cannot change them.
+ *
+ * ## Palette
+ *
+ * Five named colors, everything else derived as tints/shades of them:
+ *
+ *   Shadow Grey      #221D23  dark surfaces / light-mode text
+ *   Lime Moss        #87A330  brand, links, "up", primary actions
+ *   Burnt Tangerine  #EA2B1F  "down", errors, disputes
+ *   Mint Cream       #EBF5EE  light surfaces / dark-mode text
+ *   Lavender Grey    #8D99AE  secondary text, borders, "flat"
+ *
+ * Green and red carry meaning (direction, verdicts), so they are never
+ * used decoratively. Derived tones exist for contrast: raw Lime Moss on
+ * Mint Cream is ~2.9:1, unreadable as text, so light mode uses a darkened
+ * lime (`--accent-text`) for link/text duty and keeps the raw hue for
+ * fills and chart strokes, where big shapes need less contrast than
+ * glyphs do.
+ *
+ * ## Typography
+ *
+ * Instrument Sans (variable) for UI text and headings; Geist Mono for
+ * anything numeric or key-like -- its tabular figures keep columns of
+ * bounties and percentages aligned digit-for-digit, which is most of
+ * what makes a dense table read as a terminal. Both self-hosted via
+ * fontsource (imported in Shell.tsx); no network fonts.
+ *
+ * ## Theming
+ *
+ * Dark is the default token set on `.itx`; `[data-theme="light"]`
+ * overrides it. Shell resolves the initial theme from localStorage,
+ * falling back to `prefers-color-scheme`, and re-stamps the attribute on
+ * toggle. Only tokens change per theme -- component rules below the
+ * token blocks are theme-blind.
+ */
+
+.itx {
+  /* Shadow Grey ladder: base, then progressively lifted panels. */
+  --bg: #17131a;
+  --panel: #221d23;
+  --panel-hover: #2b252d;
+  --border: #383039;
+  --border-strong: #4a414c;
+
+  /* Mint Cream at full strength for primary text, Lavender Grey for
+     secondary. */
+  --text: #ebf5ee;
+  --text-dim: #a8b2c2;
+  --text-faint: #8d99ae;
+
+  /* Lime Moss reads brighter on dark, Burnt Tangerine needs a lift to
+     hold contrast against Shadow Grey. */
+  --up: #9dbc45;
+  --down: #f2564c;
+  --accent: #9dbc45;
+  --accent-text: #b3cd62;
+  --brand: #87a330;
+  --brand-contrast: #221d23;
+  --warn: #f2564c;
+
+  /* Stat cards: filled Lime Moss blocks, per the reference design. */
+  --card-fill: #87a330;
+  --card-fill-text: #221d23;
+  --card-fill-dim: rgba(34, 29, 35, 0.72);
+
+  --radius: 14px;
+  --radius-small: 8px;
+  --row-height: 34px;
+
+  --font: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif,
+    -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  min-height: 100vh;
+}
+
+.itx[data-theme="light"] {
+  --bg: #ebf5ee;
+  --panel: #ffffff;
+  --panel-hover: #f2f8f4;
+  --border: #d3dfd6;
+  --border-strong: #b9c8bd;
+
+  --text: #221d23;
+  --text-dim: #5c6472;
+  --text-faint: #8d99ae;
+
+  /* Darkened Lime Moss / deepened Tangerine for glyph-sized contrast on
+     light surfaces; raw hues stay in charts and fills. */
+  --up: #64791f;
+  --down: #c31e14;
+  --accent: #87a330;
+  --accent-text: #5c7220;
+  --brand: #87a330;
+  --brand-contrast: #221d23;
+  --warn: #c31e14;
+
+  --card-fill: #87a330;
+  --card-fill-text: #221d23;
+  --card-fill-dim: rgba(34, 29, 35, 0.66);
+}
+
+/* Applied to <body> only while a terminal page is mounted, so the
+   full-bleed background reaches the edges without the legacy pages
+   inheriting it. Shell keeps the attribute in sync with the .itx one. */
+body.itx-body {
+  margin: 0;
+  background: #17131a;
+}
+
+body.itx-body[data-theme="light"] {
+  background: #ebf5ee;
+}
+
+.itx *,
+.itx *::before,
+.itx *::after {
+  box-sizing: border-box;
+}
+
+.itx a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+.itx a:hover {
+  text-decoration: underline;
+}
+
+.itx .num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.93em;
+}
+
+.itx .up {
+  color: var(--up);
+}
+
+.itx .down {
+  color: var(--down);
+}
+
+.itx .flat {
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.itx-topbar {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  height: 58px;
+  padding: 0 20px;
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.itx-wordmark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.itx-wordmark span {
+  color: var(--brand);
+}
+
+/* Pill nav, after the reference design: one rounded capsule, the active
+   item a filled pill inside it. */
+.itx-topnav {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+}
+
+.itx-topnav a {
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 13.5px;
+}
+
+.itx-topnav a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.itx-topnav a.active {
+  background: var(--brand);
+  color: var(--brand-contrast);
+  font-weight: 600;
+}
+
+.itx-theme-toggle {
+  margin-left: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+
+.itx-theme-toggle:hover {
+  color: var(--text);
+  background: var(--panel-hover);
+}
+
+.itx-body-grid {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) 300px;
+  gap: 24px;
+  padding: 22px 20px 60px;
+  max-width: 1600px;
+}
+
+@media (max-width: 1200px) {
+  .itx-body-grid {
+    grid-template-columns: 170px minmax(0, 1fr);
+  }
+  .itx-rail {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .itx-body-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .itx-sidebar {
+    display: none;
+  }
+}
+
+.itx-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: start;
+  position: sticky;
+  top: 80px;
+}
+
+.itx-sidebar a {
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13.5px;
+}
+
+.itx-sidebar a:hover {
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.itx-sidebar a.active {
+  background: var(--brand);
+  color: var(--brand-contrast);
+  font-weight: 600;
+}
+
+.itx h1 {
+  font-size: 30px;
+  font-weight: 650;
+  margin: 0 0 20px;
+  letter-spacing: -0.5px;
+}
+
+.itx h2 {
+  font-size: 19px;
+  margin: 0 0 12px;
+  letter-spacing: -0.2px;
+}
+
+.itx h3 {
+  font-size: 13px;
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+.itx-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.itx-panel-head {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.itx-panel-body {
+  padding: 12px;
+}
+
+/* Headline stat strip: filled Lime Moss blocks with big numerals, the
+   boldest element on the page -- everything below it stays quiet so the
+   fill reads as hierarchy, not wallpaper. */
+.itx-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-bottom: 26px;
+}
+
+.itx-stat {
+  background: var(--card-fill);
+  color: var(--card-fill-text);
+  border-radius: var(--radius);
+  padding: 16px 16px 14px;
+}
+
+.itx-stat-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--card-fill-dim);
+  margin-bottom: 8px;
+}
+
+.itx-stat-value {
+  font-size: 26px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+}
+
+.itx-stat-sub {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--card-fill-dim);
+  margin-top: 4px;
+}
+
+/* Sparkline + delta inside a filled card sit on lime, so they use the
+   card's ink rather than the semantic up/down colors -- direction is
+   already carried by the delta's sign. */
+.itx-stat .up,
+.itx-stat .down,
+.itx-stat .flat {
+  color: var(--card-fill-dim);
+}
+
+/* --------------------------------------------------------------- columns */
+
+.itx-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  margin-bottom: 26px;
+  /* Panels size to their own content instead of stretching to match the
+     tallest sibling. */
+  align-items: start;
+}
+
+/* ---------------------------------------------------------------- tables */
+
+.itx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+/* `background`/`border` are set explicitly (not just the bottom edge)
+   because the legacy `index.css` is still imported globally for the
+   `/legacy` pages and styles bare `th`/`td` with `#eee` fills and `#999`
+   borders -- without these overrides its rules bleed into the terminal
+   tables as white header strips and stray column separators. */
+.itx-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  background: transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 10px 8px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.itx-table td {
+  padding: 0 10px;
+  height: var(--row-height);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.itx-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.itx-table tbody tr:hover {
+  background: var(--panel-hover);
+}
+
+.itx-table .right {
+  text-align: right;
+}
+
+/* Descriptions are the one column allowed to be long, so it gets the
+   leftover width and an ellipsis rather than wrapping the row to two
+   lines and breaking the scan-down rhythm. */
+.itx-table .grow {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.itx-empty {
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- badges */
+
+.itx-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border: 1px solid transparent;
+}
+
+/* Badge fills are transparent washes of the semantic colors, derived
+   with color-mix so they track both themes from the same five-color
+   palette. */
+.itx-badge-open {
+  color: var(--up);
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+  border-color: color-mix(in srgb, var(--brand) 38%, transparent);
+}
+
+.itx-badge-active {
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--text-faint) 16%, transparent);
+  border-color: color-mix(in srgb, var(--text-faint) 42%, transparent);
+}
+
+.itx-badge-warn {
+  color: var(--down);
+  background: color-mix(in srgb, var(--down) 13%, transparent);
+  border-color: color-mix(in srgb, var(--down) 36%, transparent);
+}
+
+.itx-badge-done {
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+  border-color: color-mix(in srgb, var(--text-faint) 28%, transparent);
+}
+
+.itx-kind {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+.itx-pubkey {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-text);
+}
+
+/* ------------------------------------------------------------- sparkline */
+
+.itx-spark {
+  display: block;
+  overflow: visible;
+}
+
+.itx-spark-baseline {
+  stroke: var(--border-strong);
+  stroke-dasharray: 2 3;
+  stroke-width: 1;
+}
+
+/* ------------------------------------------------- controls (v2 headroom) */
+
+.itx-input,
+.itx-select {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+}
+
+.itx-input:focus,
+.itx-select:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.itx-button {
+  background: var(--brand);
+  border: none;
+  border-radius: 999px;
+  color: var(--brand-contrast);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  cursor: pointer;
+}
+
+.itx-button:hover {
+  filter: brightness(1.08);
+}
+
+.itx-button-ghost {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+
+.itx-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}

@@ -8,7 +8,7 @@ mod store;
 
 use anyhow::Result;
 use argh::FromArgs;
-use axum::http::Method;
+use axum::http::{HeaderName, Method};
 use axum::routing::{get, post};
 use axum::Router;
 use board::{PendingDeposit, Reputation, Task, TaskBoard, TaskStatus};
@@ -295,7 +295,16 @@ fn build_router(state: Arc<AppState>) -> Router {
     // page-borrowed browser session could forge anyway. Added for the
     // dashboard (`dashboard/`), which talks to the hub from a different
     // origin (its own dev server / static host) via plain `fetch()`.
-    let cors = CorsLayer::new().allow_origin(Any).allow_methods([Method::GET]);
+    // `expose_headers` is what lets a cross-origin `fetch()` actually read
+    // `X-Total-Count` off a `/tasks` response. Without it the header is
+    // still sent and still visible in devtools, but the browser hides it
+    // from JavaScript -- a silent failure that looks like the hub never
+    // set it. Response headers are not exposed cross-origin by default;
+    // only a short safelist is.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET])
+        .expose_headers([HeaderName::from_static("x-total-count")]);
 
     Router::new()
         .route("/tasks", get(handlers::list_tasks).post(handlers::create_task))
@@ -1484,6 +1493,184 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(default_page.len(), 5, "well under the default page size");
+    }
+
+    /// Seeds one task per status the dashboard cares about, driving the
+    /// board directly so each one lands in a known terminal state without
+    /// going through a full HTTP lifecycle for every single status.
+    async fn seed_one_task_per_status(state: &AppState) {
+        let mut board = state.board.write().await;
+        // Open: created and left alone.
+        board.create_task(state.operator_public_key.clone(), "open".into(), 10, Hash::hash_bytes(b"a"));
+        // Claimed: claimed but never submitted.
+        let claimed = board.create_task(state.operator_public_key.clone(), "claimed".into(), 10, Hash::hash_bytes(b"b"));
+        board
+            .claim_task(claimed.id, PrivateKey::new_key().public_key(), Utc::now() + chrono::Duration::minutes(5))
+            .unwrap();
+        // Paid: claimed, correct answer, payout recorded.
+        let expected = Hash::hash_bytes(b"c");
+        let agent = PrivateKey::new_key().public_key();
+        let paid = board.create_task(state.operator_public_key.clone(), "paid".into(), 10, expected);
+        board
+            .claim_task(paid.id, agent.clone(), Utc::now() + chrono::Duration::minutes(5))
+            .unwrap();
+        board.submit(paid.id, agent.clone(), expected).unwrap();
+        board.mark_recipient_paid(paid.id, &agent, 10).unwrap();
+    }
+
+    /// The default (no `?status=`) must keep meaning exactly what it has
+    /// always meant -- `Open` tasks only. Agents and both SDKs treat a
+    /// listed task as a claimable one, so widening this by default would
+    /// hand them work that's already finished.
+    #[tokio::test]
+    async fn listing_without_a_status_filter_still_returns_only_open_tasks() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        seed_one_task_per_status(&hub.state).await;
+
+        let listed: Vec<Value> = hub
+            .client
+            .get(format!("{}/tasks", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1, "three tasks exist but only one is Open");
+        assert_eq!(listed[0]["status"], "Open");
+    }
+
+    #[tokio::test]
+    async fn status_filter_selects_a_single_status_and_all_returns_everything() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        seed_one_task_per_status(&hub.state).await;
+
+        let paid: Vec<Value> = hub
+            .client
+            .get(format!("{}/tasks?status=Paid", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(paid.len(), 1);
+        assert_eq!(paid[0]["status"], "Paid");
+
+        // Case-insensitive, the same forgiving treatment `?capability=`
+        // already gets.
+        let lowercase: Vec<Value> = hub
+            .client
+            .get(format!("{}/tasks?status=paid", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(lowercase.len(), 1, "?status=paid and ?status=Paid are the same query");
+
+        let all: Vec<Value> = hub
+            .client
+            .get(format!("{}/tasks?status=all", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3, "every status, which is what the public board shows");
+    }
+
+    #[tokio::test]
+    async fn unknown_status_is_a_legible_400_rather_than_a_serde_failure() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        let resp = hub
+            .client
+            .get(format!("{}/tasks?status=banana", hub.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: Value = resp.json().await.unwrap();
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains("banana"), "the error should name what was rejected: {error}");
+        assert!(error.contains("Paid"), "and list the valid options: {error}");
+    }
+
+    /// The total counts everything matching the filters *before* paging --
+    /// that's what makes it usable for "showing 2 of 3" and for sizing a
+    /// pager.
+    #[tokio::test]
+    async fn total_count_header_reports_matches_before_pagination() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        seed_one_task_per_status(&hub.state).await;
+
+        let resp = hub
+            .client
+            .get(format!("{}/tasks?status=all&limit=2", hub.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.headers().get("x-total-count").unwrap(), "3");
+        let page: Vec<Value> = resp.json().await.unwrap();
+        assert_eq!(page.len(), 2, "the page itself is still capped by limit");
+
+        // And it tracks the filter, not the whole board.
+        let resp = hub
+            .client
+            .get(format!("{}/tasks?status=Paid", hub.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.headers().get("x-total-count").unwrap(), "1");
+    }
+
+    /// `created_at` is the only timestamp the hub exposes for a task, and
+    /// every time series in the dashboard is derived from it -- if it ever
+    /// stops being serialized, the sparklines silently flatline rather
+    /// than erroring, so this asserts on its presence directly.
+    #[tokio::test]
+    async fn tasks_expose_created_at_for_charting() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        let created_at = Utc::now() - chrono::Duration::hours(3);
+        let task_id = {
+            let mut board = hub.state.board.write().await;
+            let mut task = board.create_task(
+                hub.state.operator_public_key.clone(),
+                "dated".into(),
+                10,
+                Hash::hash_bytes(b"x"),
+            );
+            task.created_at = created_at;
+            let id = task.id;
+            board.restore_task(task);
+            id
+        };
+
+        let task: Value = hub
+            .client
+            .get(format!("{}/tasks/{task_id}", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let reported: DateTime<Utc> = task["created_at"].as_str().unwrap().parse().unwrap();
+        assert_eq!(reported, created_at);
     }
 
     #[tokio::test]
