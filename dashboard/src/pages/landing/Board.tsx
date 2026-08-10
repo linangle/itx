@@ -1,9 +1,5 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-// The board section is set in Kalam, the marker-style handwriting of the
-// user's sketch -- self-hosted via fontsource like every other font here.
-import "@fontsource/kalam/400.css";
-import "@fontsource/kalam/700.css";
 import Sparkline from "../../components/Sparkline";
 import { useAsync } from "../../hooks/useAsync";
 import { getLeaderboard, listAllTasks } from "../../lib/hub";
