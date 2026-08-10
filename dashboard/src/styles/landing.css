@@ -26,8 +26,11 @@ body.itx-landing-body {
    * Declared on the landing root because both sides need it: the hero
    * grows by it, and the board pulls the strip and its grid layer up by
    * it. Custom properties only inherit downward, so a common ancestor
-   * is the only place both can read it. */
-  --bd-overlap: 58px;
+   * is the only place both can read it.
+   *
+   * Half the strip's 72px height, so the line crosses the upper half of
+   * the box and the lower half stays clear. */
+  --bd-overlap: 36px;
 
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   background: var(--ld-dark);
