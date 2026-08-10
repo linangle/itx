@@ -450,13 +450,16 @@ body.itx-landing-body {
   background: var(--ld-red);
 }
 
-/* Every box on the board is this: hairline outline, near-black fill,
- * gently rounded. The mockup has no filled panels at all. */
+/* Every box on the board is this: hairline outline, and a fill that is
+   the page colour rather than a darker slab. What sets a panel apart
+   from the background is that it is opaque and so hides the grid behind
+   it -- not a change in tone. A darker fill reads as a second surface,
+   which the mockup does not have. */
 .itx-board-panel {
   box-sizing: border-box;
   border: 1px solid var(--bd-line);
   border-radius: 14px;
-  background: rgba(10, 9, 12, 0.72);
+  background: var(--ld-dark);
 }
 
 .itx-board a {
@@ -519,7 +522,7 @@ body.itx-landing-body {
   overflow-x: auto;
   padding: 11px 22px;
   border-radius: 14px;
-  background: #131117;
+  background: var(--ld-dark);
   scrollbar-width: none;
 }
 
