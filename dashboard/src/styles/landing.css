@@ -314,41 +314,90 @@ body.itx-landing-body {
   }
 }
 
+
 /* ---- board (the section below the hero) ------------------------- */
-/* Layout follows the user's sketch, but the type is Helvetica Neue --
- * one typeface across the whole landing surface, hero and board alike.
- * The uneven border-radii are kept: four mismatched corner pairs read
- * as hand-drawn without needing a handwriting face to carry it. */
+/* Follows the user's mockup: a quote strip in a green-to-grey gradient
+ * outline, then outline-only panels whose *labels sit above them*
+ * rather than inside, all over the supplied grid at 30% opacity. */
 
 .itx-board {
-  --bd-panel: #1d1b22;
-  --bd-line: rgba(233, 242, 237, 0.3);
-  display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) 260px;
-  grid-template-areas:
-    "strip strip strip"
-    "nav   main  rail";
-  gap: 34px 36px;
-  padding: 36px 46px 84px;
+  position: relative;
+  isolation: isolate;
+  padding: 30px 0 70px;
   color: var(--ld-light);
   background: var(--ld-dark);
 }
 
-/* Sizes step down from the handwriting face they replaced: Helvetica
- * sets on a larger visual body at the same point size, so holding the
- * old numbers would have made the whole board a size too loud. */
-.itx-board h2 {
-  margin: 0;
-  font-size: 26px;
+/* The grid is a separate layer rather than a background on .itx-board
+ * itself, because it needs its own opacity without fading the content
+ * on top of it. `public/grid.svg` is the supplied asset with its
+ * viewBox cropped to exactly one grid period so the repeat is
+ * seamless -- the artboard padding around the original would have shown
+ * as a wider gutter at every tile seam. */
+.itx-board::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.3;
+  background-image: url("/grid.svg");
+  background-repeat: repeat;
+  background-size: 1160px 1160px;
+  pointer-events: none;
+}
+
+.itx-board-inner {
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 0 46px;
+}
+
+.itx-board-title {
+  margin: 34px 0 20px;
+  font-size: 25px;
   font-weight: 700;
   letter-spacing: -0.012em;
 }
 
-.itx-board h3 {
-  margin: 0 0 12px;
-  font-size: 18px;
+/* Labels live outside their panels, above the outline. */
+.itx-board-labels {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 9px;
+}
+
+.itx-board-label {
+  display: block;
+  margin-bottom: 9px;
+  font-size: 16px;
   font-weight: 700;
-  letter-spacing: -0.008em;
+  letter-spacing: -0.004em;
+  color: var(--ld-light);
+}
+
+.itx-board-labels .itx-board-label {
+  margin-bottom: 0;
+}
+
+.itx-board-labels-latest {
+  margin-top: 34px;
+}
+
+.itx-board-live-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ld-red);
+}
+
+/* Every box on the board is this: hairline outline, near-black fill,
+ * gently rounded. The mockup has no filled panels at all. */
+.itx-board-panel {
+  box-sizing: border-box;
+  border: 1px solid rgba(233, 242, 237, 0.28);
+  border-radius: 14px;
+  background: rgba(10, 9, 12, 0.72);
 }
 
 .itx-board a {
@@ -373,132 +422,195 @@ body.itx-landing-body {
 }
 
 .itx-board .itx-spark-baseline {
-  stroke: rgba(233, 242, 237, 0.14);
+  stroke: rgba(233, 242, 237, 0.12);
   stroke-dasharray: 3 3;
 }
 
 .itx-board-note {
-  margin: 4px 0;
+  margin: 2px 0;
   color: var(--ld-sub);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
-/* strip */
+/* quote strip */
 
-.itx-board-strip {
-  grid-area: strip;
-  display: flex;
-  justify-content: space-between;
-  gap: 22px;
-  background: var(--bd-panel);
-  border: 1.8px solid var(--bd-line);
-  border-radius: 24px 20px 26px 19px / 19px 25px 20px 26px;
-  padding: 14px 34px;
+/* The gradient outline is a 1px padding box: the gradient paints the
+ * wrapper, the inner element covers all but its edge. `border-image`
+ * would be the other route, but it cannot follow a border-radius. */
+.itx-board-quotes {
+  padding: 1px;
+  border-radius: 15px;
+  background: linear-gradient(168deg, var(--ld-green) 0%, #4a5160 46%, #3e4352 100%);
 }
 
-.itx-board-strip-cell {
-  flex: 1;
+.itx-board-quotes-inner {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 11px 22px;
+  border-radius: 14px;
+  background: #131117;
+  scrollbar-width: none;
+}
+
+.itx-board-quotes-inner::-webkit-scrollbar {
+  display: none;
+}
+
+.itx-board-quote {
+  flex: 1 0 auto;
+  min-width: 152px;
+  padding-right: 10px;
+}
+
+.itx-board-quote-name {
+  margin-bottom: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ld-light);
+}
+
+.itx-board-quote-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 20px;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.itx-board-strip-label {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--ld-blue);
-}
-
-.itx-board-strip-count {
-  color: var(--ld-light);
-}
-
-.itx-board-strip-delta {
-  margin-top: 2px;
-  font-size: 13px;
-}
-
-/* left nav */
-
-.itx-board-nav {
-  grid-area: nav;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding-top: 58px;
-}
-
-.itx-board-nav a {
-  width: fit-content;
-  color: var(--ld-sub);
+.itx-board-quote-value {
   font-size: 14px;
-}
-
-.itx-board-nav a:hover {
   color: var(--ld-light);
-  text-decoration: none;
 }
 
-/* main column */
+.itx-board-quote-change {
+  font-size: 11px;
+}
 
-.itx-board-main {
-  grid-area: main;
+/* markets + rail */
+
+.itx-board-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 232px;
+  gap: 26px;
+  align-items: start;
+}
+
+.itx-board-markets {
   min-width: 0;
 }
 
-.itx-board-head {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin: 4px 0 20px;
-}
-
-.itx-board-head-updates {
-  margin-top: 40px;
+/* Scoped to the markets row: there the labels share the width so each
+ * sits over its panel. In the "latest" row the label must stay its own
+ * width, or it grows and shoves the live dot to the far right. */
+.itx-board-markets .itx-board-labels .itx-board-label {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .itx-board-pager {
-  margin-left: auto;
+  flex: none;
   display: flex;
-  gap: 12px;
+  gap: 9px;
+  color: var(--ld-sub);
 }
 
 .itx-board-pager button {
-  padding: 3px;
+  padding: 2px;
   border: 0;
   background: none;
-  color: var(--ld-light);
+  color: inherit;
   cursor: pointer;
-  transition: transform 130ms ease;
+  transition: transform 130ms ease, color 130ms ease;
 }
 
 .itx-board-pager button:hover {
-  transform: scale(1.3);
+  color: var(--ld-light);
+  transform: scale(1.25);
 }
 
-.itx-board-panels {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
+/* The third panel is deliberately half past the clip: the peek is what
+ * tells you the pager has somewhere to go. */
+.itx-board-carousel {
+  display: flex;
+  gap: 20px;
+  overflow: hidden;
 }
 
-.itx-board-panel {
-  background: var(--bd-panel);
-  border: 1.6px solid var(--bd-line);
-  border-radius: 18px 15px 20px 14px / 14px 19px 15px 20px;
-  padding: 16px 18px 18px;
+.itx-board-panel-market {
+  flex: 0 0 calc(44% - 4px);
+  min-height: 430px;
+  padding: 14px 16px;
 }
 
-/* The bare `table`/`th`/`td` rules in index.css exist for the legacy
- * pages and are global, so they reach in here too -- light header
- * backgrounds and full cell borders that have no place in a hand-drawn
- * board. Reset them within this scope and draw only a faint row rule. */
+.itx-board-rail {
+  min-width: 0;
+}
+
+.itx-board-panel-leaders {
+  min-height: 300px;
+  padding: 12px 13px;
+}
+
+.itx-board-panel-trends {
+  min-height: 244px;
+  margin-bottom: 0;
+  padding: 12px 13px;
+}
+
+.itx-board-rail .itx-board-label:nth-of-type(2) {
+  margin-top: 20px;
+}
+
+/* search */
+
+.itx-board-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 11px;
+  border: 1px solid rgba(233, 242, 237, 0.28);
+  border-radius: 9px;
+}
+
+.itx-board-search:focus-within {
+  border-color: var(--ld-blue);
+}
+
+/* Inlined rather than an <img> so it can take currentColor -- see
+ * SearchIcon in Board.tsx for why the shipped file needed reworking. */
+.itx-board-search svg {
+  flex: none;
+  color: var(--ld-sub);
+}
+
+.itx-board-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--ld-light);
+  font: inherit;
+  font-size: 13px;
+}
+
+.itx-board-search input:focus {
+  outline: none;
+}
+
+.itx-board-search input::placeholder {
+  color: var(--ld-sub);
+}
+
+/* tables */
+
+/* index.css styles bare `table`/`th`/`td` globally for the legacy pages
+ * -- light header bands and full cell borders. Reset inside the board. */
 .itx-board-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .itx-board-table th,
@@ -508,17 +620,17 @@ body.itx-landing-body {
 }
 
 .itx-board-table th {
-  padding: 3px 6px 5px;
+  padding: 2px 5px 6px;
   text-align: left;
   color: var(--ld-sub);
   font-weight: 400;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.02em;
 }
 
 .itx-board-table td {
-  padding: 7px 6px;
-  border-bottom: 1px solid rgba(233, 242, 237, 0.1);
+  padding: 6px 5px;
+  border-bottom: 1px solid rgba(233, 242, 237, 0.08);
 }
 
 .itx-board-table tr:last-child td {
@@ -530,53 +642,44 @@ body.itx-landing-body {
 }
 
 .itx-board-cell-spark {
-  width: 76px;
+  width: 68px;
 }
 
-/* latest updates */
+/* latest + footer */
 
-.itx-board-live {
-  padding: 1px 15px 3px;
-  border-radius: 999px;
-  background: var(--ld-red);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  transform: rotate(-3deg);
+.itx-board-panel-latest {
+  padding: 6px 20px;
+  min-height: 128px;
 }
 
 .itx-board-updates {
   list-style: none;
   margin: 0;
-  padding: 12px 20px;
-  background: var(--bd-panel);
-  border: 1.6px solid var(--bd-line);
-  border-radius: 20px 16px 22px 15px / 15px 21px 16px 22px;
+  padding: 0;
 }
 
 .itx-board-updates li {
   display: flex;
   align-items: baseline;
-  gap: 15px;
-  padding: 8px 2px;
+  gap: 14px;
+  padding: 7px 0;
+  font-size: 13px;
 }
 
 .itx-board-dot {
   flex: none;
   align-self: center;
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--ld-red);
 }
 
 .itx-board-when {
   flex: none;
-  width: 82px;
+  width: 76px;
   color: var(--ld-sub);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .itx-board-updates li > a {
@@ -591,79 +694,42 @@ body.itx-landing-body {
 .itx-board-amt {
   flex: none;
   color: var(--ld-sub);
-  font-size: 13px;
+  font-size: 12px;
 }
 
-/* rail */
-
-.itx-board-rail {
-  grid-area: rail;
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-  min-width: 0;
-}
-
-.itx-board-search {
-  width: 100%;
-  box-sizing: border-box;
-  margin-bottom: 12px;
-  padding: 6px 13px;
-  background: #24212a;
-  border: 1.4px solid var(--bd-line);
-  border-radius: 13px 10px 14px 10px / 10px 13px 10px 14px;
-  color: var(--ld-light);
-  font: inherit;
-  font-size: 13px;
-}
-
-.itx-board-search::placeholder {
-  color: var(--ld-sub);
-  opacity: 0.85;
-}
-
-.itx-board-search:focus {
-  outline: 1.6px solid var(--ld-blue);
-  outline-offset: 1px;
+.itx-board-footer {
+  min-height: 96px;
+  margin-top: 30px;
 }
 
 /* responsive */
 
 @media (max-width: 1080px) {
-  .itx-board {
+  .itx-board-inner {
+    padding: 0 22px;
+  }
+
+  .itx-board-cols {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "strip"
-      "nav"
-      "main"
-      "rail";
-    gap: 26px;
-    padding: 26px 22px 60px;
+    gap: 20px;
   }
 
-  .itx-board-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 10px 22px;
-    padding-top: 0;
-  }
-
-  .itx-board-strip {
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .itx-board-strip-cell {
-    justify-content: space-between;
+  .itx-board-panel-market {
+    flex-basis: calc(78% - 4px);
+    min-height: 340px;
   }
 }
 
-@media (max-width: 760px) {
-  .itx-board-panels {
-    grid-template-columns: 1fr;
+@media (max-width: 640px) {
+  .itx-board-panel-market {
+    flex-basis: 92%;
   }
 
   .itx-board-when {
-    width: 70px;
+    width: 62px;
+  }
+
+  .itx-board-title {
+    font-size: 21px;
   }
 }
