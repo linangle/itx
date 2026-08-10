@@ -1,12 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
-// Self-hosted via fontsource -- no network font requests. The variable
-// build of Instrument Sans covers every weight in one file; Geist Mono
-// only ships the two weights the tables actually use.
-import "@fontsource-variable/instrument-sans";
-import "@fontsource/geist-mono/400.css";
-import "@fontsource/geist-mono/600.css";
+// No font imports: these pages are set in Helvetica Neue like the
+// landing surface, which is a system face. The Instrument Sans and
+// Geist Mono packages the first iteration self-hosted are gone with it.
 import "../styles/terminal.css";
 
 const SIDEBAR = [

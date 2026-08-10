@@ -1,80 +1,78 @@
-/* ITX terminal theme.
+/* ITX inner-page theme.
  *
  * Every rule here is scoped under `.itx` (or `body.itx-body[data-theme]`,
- * applied only while a terminal page is mounted -- see `Shell.tsx`). The
- * three original dashboard pages render outside that scope and keep
+ * applied only while one of these pages is mounted -- see `Shell.tsx`).
+ * The three original dashboard pages render outside that scope and keep
  * their original bare appearance, so this file cannot change them.
  *
  * ## Palette
  *
- * Five named colors, everything else derived as tints/shades of them:
+ * The landing surface's palette, so the board and the pages below it are
+ * one design rather than two. Same values declared in landing.css:
  *
- *   Shadow Grey      #221D23  dark surfaces / light-mode text
- *   Lime Moss        #87A330  brand, links, "up", primary actions
- *   Burnt Tangerine  #EA2B1F  "down", errors, disputes
- *   Mint Cream       #EBF5EE  light surfaces / dark-mode text
- *   Lavender Grey    #8D99AE  secondary text, borders, "flat"
+ *   Dark   #161418  page ground
+ *   Light  #e9f2ed  primary text
+ *   Sub    #b3b4bf  secondary text
+ *   Blue   #91c4f2  links and interactive text
+ *   Green  #63ba6c  "up", positive verdicts
+ *   Red    #d8402d  "down", errors, disputes
+ *   Line   #3f4351  every outline
  *
  * Green and red carry meaning (direction, verdicts), so they are never
- * used decoratively. Derived tones exist for contrast: raw Lime Moss on
- * Mint Cream is ~2.9:1, unreadable as text, so light mode uses a darkened
- * lime (`--accent-text`) for link/text duty and keeps the raw hue for
- * fills and chart strokes, where big shapes need less contrast than
- * glyphs do.
+ * used decoratively. Blue is the link colour and never signals state,
+ * which keeps "interactive" and "good/bad" from colliding.
  *
  * ## Typography
  *
- * Instrument Sans (variable) for UI text and headings; Geist Mono for
- * anything numeric or key-like -- its tabular figures keep columns of
- * bounties and percentages aligned digit-for-digit, which is most of
- * what makes a dense table read as a terminal. Both self-hosted via
- * fontsource (imported in Shell.tsx); no network fonts.
+ * Helvetica Neue throughout, matching the landing surface. The first
+ * iteration paired Instrument Sans with Geist Mono for tabular figures;
+ * one family is the point of this pass, so numeric cells keep
+ * `font-variant-numeric: tabular-nums` and let the face supply figures
+ * where it can.
  *
  * ## Theming
  *
- * Dark is the default token set on `.itx`; `[data-theme="light"]`
- * overrides it. Shell resolves the initial theme from localStorage,
- * falling back to `prefers-color-scheme`, and re-stamps the attribute on
- * toggle. Only tokens change per theme -- component rules below the
+ * Dark is the design; `[data-theme="light"]` is a light counterpart from
+ * the same hues, kept because `Shell`'s toggle predates this pass and
+ * still works. Only tokens change per theme -- component rules below the
  * token blocks are theme-blind.
  */
 
 .itx {
-  /* Shadow Grey ladder: base, then progressively lifted panels. */
-  --bg: #17131a;
-  --panel: #221d23;
-  --panel-hover: #2b252d;
-  --border: #383039;
-  --border-strong: #4a414c;
+  /* Page ground, then progressively lifted surfaces. Panels sit a hair
+     above the ground rather than as a distinct slab, matching the
+     board. */
+  --bg: #161418;
+  --panel: #1b191f;
+  --panel-hover: #221f26;
+  --border: #3f4351;
+  --border-strong: #4d5265;
 
-  /* Mint Cream at full strength for primary text, Lavender Grey for
-     secondary. */
-  --text: #ebf5ee;
-  --text-dim: #a8b2c2;
-  --text-faint: #8d99ae;
+  --text: #e9f2ed;
+  --text-dim: #b3b4bf;
+  --text-faint: #8b8d99;
 
-  /* Lime Moss reads brighter on dark, Burnt Tangerine needs a lift to
-     hold contrast against Shadow Grey. */
-  --up: #9dbc45;
-  --down: #f2564c;
-  --accent: #9dbc45;
-  --accent-text: #b3cd62;
-  --brand: #87a330;
-  --brand-contrast: #221d23;
-  --warn: #f2564c;
+  --up: #63ba6c;
+  --down: #d8402d;
+  --accent: #91c4f2;
+  --accent-text: #91c4f2;
+  --brand: #63ba6c;
+  --brand-contrast: #161418;
+  --warn: #d8402d;
 
-  /* Stat cards: filled Lime Moss blocks, per the reference design. */
-  --card-fill: #87a330;
-  --card-fill-text: #221d23;
-  --card-fill-dim: rgba(34, 29, 35, 0.72);
+  /* Stat cards are outlined here, not filled. The landing board has no
+     filled panels, and a row of solid lime blocks was the loudest thing
+     carrying over from the first iteration. */
+  --card-fill: transparent;
+  --card-fill-text: #e9f2ed;
+  --card-fill-dim: #b3b4bf;
 
   --radius: 14px;
-  --radius-small: 8px;
+  --radius-small: 9px;
   --row-height: 34px;
 
-  --font: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif,
-    -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
 
   background: var(--bg);
   color: var(--text);
@@ -85,29 +83,29 @@
 }
 
 .itx[data-theme="light"] {
-  --bg: #ebf5ee;
+  --bg: #e9f2ed;
   --panel: #ffffff;
-  --panel-hover: #f2f8f4;
-  --border: #d3dfd6;
-  --border-strong: #b9c8bd;
+  --panel-hover: #f4f8f6;
+  --border: #c7ccd8;
+  --border-strong: #a9b0c0;
 
-  --text: #221d23;
-  --text-dim: #5c6472;
-  --text-faint: #8d99ae;
+  --text: #161418;
+  --text-dim: #5c6070;
+  --text-faint: #8b8d99;
 
-  /* Darkened Lime Moss / deepened Tangerine for glyph-sized contrast on
-     light surfaces; raw hues stay in charts and fills. */
-  --up: #64791f;
-  --down: #c31e14;
-  --accent: #87a330;
-  --accent-text: #5c7220;
-  --brand: #87a330;
-  --brand-contrast: #221d23;
-  --warn: #c31e14;
+  /* The dark-surface hues are too pale to read as glyphs here, so text
+     duty goes to deepened versions; raw hues stay in charts. */
+  --up: #3f8f49;
+  --down: #b8331f;
+  --accent: #2f6fa8;
+  --accent-text: #2f6fa8;
+  --brand: #3f8f49;
+  --brand-contrast: #ffffff;
+  --warn: #b8331f;
 
-  --card-fill: #87a330;
-  --card-fill-text: #221d23;
-  --card-fill-dim: rgba(34, 29, 35, 0.66);
+  --card-fill: transparent;
+  --card-fill-text: #161418;
+  --card-fill-dim: #5c6070;
 }
 
 /* Applied to <body> only while a terminal page is mounted, so the
@@ -115,11 +113,11 @@
    inheriting it. Shell keeps the attribute in sync with the .itx one. */
 body.itx-body {
   margin: 0;
-  background: #17131a;
+  background: #161418;
 }
 
 body.itx-body[data-theme="light"] {
-  background: #ebf5ee;
+  background: #e9f2ed;
 }
 
 .itx *,
@@ -170,11 +168,10 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-wordmark {
-  font-family: var(--font-mono);
   font-weight: 700;
-  letter-spacing: 0.5px;
+  letter-spacing: -0.01em;
   color: var(--text);
-  font-size: 15px;
+  font-size: 17px;
 }
 
 .itx-wordmark span {
@@ -207,8 +204,8 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-topnav a.active {
-  background: var(--brand);
-  color: var(--brand-contrast);
+  background: var(--panel-hover);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -278,8 +275,8 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-sidebar a.active {
-  background: var(--brand);
-  color: var(--brand-contrast);
+  background: var(--panel-hover);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -340,14 +337,14 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-stat {
-  background: var(--card-fill);
+  background: var(--panel);
   color: var(--card-fill-text);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 16px 14px;
 }
 
 .itx-stat-label {
-  font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.7px;
@@ -357,24 +354,19 @@ body.itx-body[data-theme="light"] {
 
 .itx-stat-value {
   font-size: 26px;
-  font-weight: 600;
-  font-family: var(--font-mono);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.5px;
 }
 
 .itx-stat-sub {
-  font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--card-fill-dim);
   margin-top: 4px;
 }
 
-/* Sparkline + delta inside a filled card sit on lime, so they use the
-   card's ink rather than the semantic up/down colors -- direction is
-   already carried by the delta's sign. */
-.itx-stat .up,
-.itx-stat .down,
+/* Cards are outlined rather than filled now, so up/down inside them can
+   carry their normal semantic colour again; only "flat" stays muted. */
 .itx-stat .flat {
   color: var(--card-fill-dim);
 }
