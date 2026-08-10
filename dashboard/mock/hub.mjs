@@ -97,7 +97,13 @@ function makeTask(index) {
 
   if (kind === "disputable") {
     const answered = status !== "Open";
-    const disputed = answered && random() < 0.3;
+    // Deterministic rather than probabilistic: a fixture exists to make
+    // every UI state reachable, and with a random gate the seed happened
+    // to produce zero disputes across all eight disputable tasks --
+    // leaving the dispute callout, bond display, and resolution states
+    // permanently unrendered. Every third answered task is challenged,
+    // and every other one of those is still awaiting the operator.
+    const disputed = answered && index % 3 === 0;
     return {
       ...base,
       answer: answered ? "See attached working; total is 41,208." : null,
@@ -108,7 +114,7 @@ function makeTask(index) {
             reason: "Figures don't reconcile with the source data.",
             bond_amount: Math.round(0.2 * UNITS),
             filed_at: new Date(NOW - ageDays * DAY + 0.5 * DAY).toISOString(),
-            resolution: random() < 0.5 ? null : pick(["challenger_wins", "assignee_wins"]),
+            resolution: index % 6 === 0 ? null : pick(["challenger_wins", "assignee_wins"]),
           }
         : null,
     };

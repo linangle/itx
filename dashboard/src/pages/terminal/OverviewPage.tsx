@@ -16,9 +16,11 @@ import {
 import {
   agentEarningsSeries,
   boardTotals,
+  chooseWindow,
   summarizeByCapability,
   summarizeByKind,
 } from "../../lib/series";
+import type { SeriesWindow } from "../../lib/series";
 
 const LATEST_ROWS = 12;
 
@@ -36,8 +38,13 @@ export default function OverviewPage() {
   const tasks = useAsync(() => listAllTasks({ status: "all" }), []);
   const leaders = useAsync(() => getLeaderboard(), []);
 
+  const items = tasks.data?.items ?? [];
+  // Computed here as well as in `Board` so the rail's agent curves share
+  // the page's window; on an empty board this falls back to the 7D default.
+  const window = chooseWindow(items);
+
   return (
-    <Shell rail={<Rail leaders={leaders.data} tasks={tasks.data?.items ?? []} />}>
+    <Shell rail={<Rail leaders={leaders.data} tasks={items} window={window} />}>
       <h1>Board Overview</h1>
 
       {tasks.loading && <Loading what="the board" />}
@@ -48,9 +55,15 @@ export default function OverviewPage() {
 }
 
 function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
-  const totals = boardTotals(tasks);
-  const byKind = summarizeByKind(tasks);
-  const byCapability = summarizeByCapability(tasks);
+  // One window for the whole page, sized to the board's real age -- so a
+  // board seeded an hour ago charts over an hour instead of squashing
+  // every task into the last 1/168th of a seven-day axis. Every panel
+  // header shows the resulting label rather than claiming "7D".
+  const window = chooseWindow(tasks);
+  const options = { windowMs: window.windowMs };
+  const totals = boardTotals(tasks, options);
+  const byKind = summarizeByKind(tasks, options);
+  const byCapability = summarizeByCapability(tasks, 8, options);
   const latest = [...tasks]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .slice(0, LATEST_ROWS);
@@ -79,9 +92,10 @@ function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
         <Stat
           label="Tasks posted"
           value={formatCount(tasks.length)}
-          sub="last 7 days shown"
+          sub={`last ${window.label} shown`}
           series={totals.postedSeries}
           changePct={totals.postedChangePct}
+          windowLabel={window.label}
         />
         <Stat
           label="Capabilities"
@@ -102,7 +116,7 @@ function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
           <div className="itx-panel-head">
             <span>By kind</span>
             <span className="flat" style={{ fontWeight: 400 }}>
-              7d
+              {window.label}
             </span>
           </div>
           <table className="itx-table">
@@ -124,7 +138,7 @@ function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
                     <Sparkline
                       values={row.series}
                       direction={directionOf(row.changePct)}
-                      label={`${formatKind(row.kind)} tasks posted over the last 7 days`}
+                      label={`${formatKind(row.kind)} tasks posted over the last ${window.label}`}
                     />
                   </td>
                   <td className="right num">{formatCount(row.open)}</td>
@@ -141,7 +155,7 @@ function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
           <div className="itx-panel-head">
             <span>By capability</span>
             <span className="flat" style={{ fontWeight: 400 }}>
-              7d
+              {window.label}
             </span>
           </div>
           {byCapability.length === 0 ? (
@@ -168,7 +182,7 @@ function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
                       <Sparkline
                         values={row.series}
                         direction={directionOf(row.changePct)}
-                        label={`${row.capability} tasks posted over the last 7 days`}
+                        label={`${row.capability} tasks posted over the last ${window.label}`}
                       />
                     </td>
                     <td className="right num">{formatCount(row.open)}</td>
@@ -227,12 +241,14 @@ function Stat({
   sub,
   series,
   changePct,
+  windowLabel = "7D",
 }: {
   label: string;
   value: string;
   sub?: string;
   series?: number[];
   changePct?: number | null;
+  windowLabel?: string;
 }) {
   return (
     <div className="itx-stat">
@@ -244,7 +260,7 @@ function Stat({
             values={series}
             direction={directionOf(changePct ?? null)}
             width={72}
-            label={`${label} over the last 7 days`}
+            label={`${label} over the last ${windowLabel}`}
           />
           <Delta pct={changePct ?? null} />
         </div>
@@ -263,7 +279,15 @@ function Stat({
  * never exposed by the hub, so their earnings can't be curved at all and
  * those agents simply show a flat line. `total_earned` beside it is the
  * authoritative figure and comes straight from the hub. */
-function Rail({ leaders, tasks }: { leaders: LeaderboardEntryDto[] | null; tasks: TaskDto[] }) {
+function Rail({
+  leaders,
+  tasks,
+  window,
+}: {
+  leaders: LeaderboardEntryDto[] | null;
+  tasks: TaskDto[];
+  window: SeriesWindow;
+}) {
   return (
     <section className="itx-panel">
       <div className="itx-panel-head">
@@ -280,7 +304,9 @@ function Rail({ leaders, tasks }: { leaders: LeaderboardEntryDto[] | null; tasks
         <table className="itx-table">
           <tbody>
             {leaders.slice(0, 6).map((agent) => {
-              const series = agentEarningsSeries(tasks, agent.pubkey);
+              const series = agentEarningsSeries(tasks, agent.pubkey, {
+                windowMs: window.windowMs,
+              });
               return (
                 <tr key={agent.pubkey}>
                   <td>

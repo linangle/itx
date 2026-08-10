@@ -4,11 +4,13 @@ import { PubkeyLink } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getLeaderboard, listAllTasks } from "../../lib/hub";
 import { formatCount, formatItx } from "../../lib/format";
-import { agentEarningsSeries } from "../../lib/series";
+import { agentEarningsSeries, chooseWindow } from "../../lib/series";
 
 export default function LeaderboardPage() {
   const leaders = useAsync(() => getLeaderboard(), []);
   const tasks = useAsync(() => listAllTasks({ status: "all" }), []);
+  const items = tasks.data?.items ?? [];
+  const window = chooseWindow(items);
 
   return (
     <Shell>
@@ -44,7 +46,9 @@ export default function LeaderboardPage() {
                   </td>
                   <td style={{ width: 70 }}>
                     <Sparkline
-                      values={agentEarningsSeries(tasks.data?.items ?? [], agent.pubkey)}
+                      values={agentEarningsSeries(items, agent.pubkey, {
+                        windowMs: window.windowMs,
+                      })}
                       direction="up"
                       label={`cumulative earnings for agent ${agent.pubkey}`}
                     />

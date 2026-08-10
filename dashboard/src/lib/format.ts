@@ -116,6 +116,27 @@ export function formatRelative(iso: string, now: number = Date.now()): string {
   return `${Math.floor(delta / DAY)}d`;
 }
 
+/** A deadline rendered as time remaining, or as how long ago it lapsed.
+ *
+ * Separate from `formatRelative` because a deadline's *direction* is the
+ * whole point -- "in 2h" and "2h ago" mean opposite things for a task
+ * you're deciding whether to claim, and a bare "2h" hides which one it
+ * is. `expired` is returned rather than baked into the string so callers
+ * can colour it without re-parsing. */
+export function formatCountdown(
+  iso: string,
+  now: number = Date.now(),
+): { text: string; expired: boolean } {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return { text: "—", expired: false };
+  const expired = then <= now;
+  const delta = formatRelative(iso, now);
+  if (delta === "just now") {
+    return { text: expired ? "just expired" : "any moment", expired };
+  }
+  return { text: expired ? `${delta} ago` : `in ${delta}`, expired };
+}
+
 /** Absolute timestamp for tooltips and detail views, where the exact
  * moment matters more than brevity. */
 export function formatTimestamp(iso: string): string {

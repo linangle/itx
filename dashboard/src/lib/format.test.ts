@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   directionOf,
   formatCompactItx,
+  formatCountdown,
   formatItx,
   formatItxExact,
   formatPct,
@@ -87,6 +88,32 @@ describe("truncatePubkey", () => {
 
   it("leaves a short string alone rather than making it longer", () => {
     expect(truncatePubkey("abc")).toBe("abc");
+  });
+});
+
+describe("formatCountdown", () => {
+  const now = Date.parse("2026-08-09T12:00:00Z");
+
+  it("distinguishes time remaining from time elapsed", () => {
+    // The whole point of this helper over formatRelative: "in 4h" and
+    // "4h ago" mean opposite things for a deadline.
+    expect(formatCountdown("2026-08-09T16:00:00Z", now)).toEqual({
+      text: "in 4h",
+      expired: false,
+    });
+    expect(formatCountdown("2026-08-09T08:00:00Z", now)).toEqual({
+      text: "4h ago",
+      expired: true,
+    });
+  });
+
+  it("reads naturally at the boundary instead of saying 'in just now'", () => {
+    expect(formatCountdown("2026-08-09T12:00:30Z", now).text).toBe("any moment");
+    expect(formatCountdown("2026-08-09T11:59:30Z", now).text).toBe("just expired");
+  });
+
+  it("degrades to a dash on an unparseable value", () => {
+    expect(formatCountdown("nonsense", now)).toEqual({ text: "—", expired: false });
   });
 });
 

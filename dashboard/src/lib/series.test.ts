@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentEarningsSeries,
   boardTotals,
+  chooseWindow,
   countByCreatedAt,
   cumulative,
   periodChangePct,
@@ -147,6 +148,47 @@ describe("summarizeByCapability", () => {
     const summary = summarizeByCapability(tasks, 8, opts);
     expect(summary.map((s) => s.capability)).toEqual(["python", "ocr"]);
     expect(summary[0].open).toBe(2);
+  });
+});
+
+describe("chooseWindow", () => {
+  function agedHours(hours: number[]) {
+    return hours.map((h) => task({ created_at: new Date(NOW - h * HOUR).toISOString() }));
+  }
+
+  it("picks the smallest preset that covers the board's age", () => {
+    // A board seeded minutes ago charts over an hour, not seven days --
+    // otherwise every task lands in the final bucket of a flat line.
+    expect(chooseWindow(agedHours([0.2, 0.5]), NOW).label).toBe("1H");
+    expect(chooseWindow(agedHours([3, 0.5]), NOW).label).toBe("6H");
+    expect(chooseWindow(agedHours([20]), NOW).label).toBe("24H");
+    expect(chooseWindow(agedHours([100]), NOW).label).toBe("7D");
+    expect(chooseWindow(agedHours([24 * 20]), NOW).label).toBe("30D");
+  });
+
+  it("is driven by the oldest task, not the newest", () => {
+    expect(chooseWindow(agedHours([0.1, 0.2, 100]), NOW).label).toBe("7D");
+  });
+
+  it("falls back to 7D on an empty board", () => {
+    expect(chooseWindow([], NOW).label).toBe("7D");
+  });
+
+  it("ignores unparseable timestamps rather than collapsing the window", () => {
+    expect(chooseWindow([task({ created_at: "nonsense" })], NOW).label).toBe("7D");
+  });
+
+  it("clamps a future-dated task instead of picking a negative span", () => {
+    // Clock skew between hub and browser must not silently narrow the axis.
+    const future = task({ created_at: new Date(NOW + 5 * HOUR).toISOString() });
+    expect(chooseWindow([future], NOW).label).toBe("1H");
+  });
+
+  it("caps at the widest preset for a very old board, rather than the default", () => {
+    // A board older than every preset should show as much history as we
+    // have -- falling back to the 7D default would show *less* history
+    // for an older board, which is the wrong direction.
+    expect(chooseWindow(agedHours([24 * 4000]), NOW).label).toBe("90D");
   });
 });
 

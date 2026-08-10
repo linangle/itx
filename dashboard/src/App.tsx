@@ -2,7 +2,7 @@ import { Route, Routes, Link } from "react-router-dom";
 import TaskListPage from "./pages/TaskListPage";
 import TaskDetailPage from "./pages/TaskDetailPage";
 import LeaderboardPage from "./pages/LeaderboardPage";
-import OverviewPage from "./pages/terminal/OverviewPage";
+import LandingPage from "./pages/landing/LandingPage";
 import TasksPage from "./pages/terminal/TasksPage";
 import TerminalTaskDetailPage from "./pages/terminal/TaskDetailPage";
 import TerminalLeaderboardPage from "./pages/terminal/LeaderboardPage";
@@ -14,11 +14,15 @@ import AgentPage from "./pages/terminal/AgentPage";
  * a matter of deleting the terminal routes and moving three paths back.
  *
  * The new terminal UI owns the top-level paths because that's the only
- * way to actually review it as the site it's meant to be. */
+ * way to actually review it as the site it's meant to be.
+ *
+ * `/` now serves the landing hero, which renders the untouched
+ * `OverviewPage` below the fold -- so "Board" links still land on the
+ * board, just with the hero above it. */
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<OverviewPage />} />
+      <Route path="/" element={<LandingPage />} />
       <Route path="/tasks" element={<TasksPage />} />
       <Route path="/tasks/:id" element={<TerminalTaskDetailPage />} />
       <Route path="/leaderboard" element={<TerminalLeaderboardPage />} />

@@ -31,9 +31,68 @@ export interface BucketOptions {
 }
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 const DEFAULT_BUCKETS = 24;
 const DEFAULT_WINDOW_MS = 7 * DAY_MS;
+
+/** A charting window and the label a panel header shows for it. */
+export interface SeriesWindow {
+  windowMs: number;
+  /** Short header label: `1H`, `24H`, `7D`. */
+  label: string;
+}
+
+/** Smallest first -- `chooseWindow` takes the first one wide enough. */
+const WINDOW_PRESETS: SeriesWindow[] = [
+  { windowMs: HOUR_MS, label: "1H" },
+  { windowMs: 6 * HOUR_MS, label: "6H" },
+  { windowMs: DAY_MS, label: "24H" },
+  { windowMs: 7 * DAY_MS, label: "7D" },
+  { windowMs: 30 * DAY_MS, label: "30D" },
+  { windowMs: 90 * DAY_MS, label: "90D" },
+];
+
+const DEFAULT_WINDOW: SeriesWindow = { windowMs: DEFAULT_WINDOW_MS, label: "7D" };
+
+/** Picks a charting window that actually fits the board's age.
+ *
+ * A fixed 7-day window is wrong at both ends of a board's life. On a
+ * board seeded an hour ago every task lands in the final bucket and each
+ * sparkline is a flat line with one spike at the right edge -- the chart
+ * is technically correct and tells you nothing. On a board a year old,
+ * seven days hides almost all of its history.
+ *
+ * So: measure how far back the oldest task actually goes and take the
+ * smallest preset that covers it. This never invents data -- it only
+ * stops stretching a short history across a long axis. The label travels
+ * with the window so a panel header can say `1H` rather than claiming
+ * `7D` for something that spans an hour.
+ *
+ * Note the floor: a board whose tasks were all created within the same
+ * minute still charts as a single spike, because that is genuinely all
+ * that happened. No window can fix an instantaneous history.
+ */
+export function chooseWindow(tasks: TaskDto[], now: number = Date.now()): SeriesWindow {
+  let oldest = Number.POSITIVE_INFINITY;
+  for (const task of tasks) {
+    const at = new Date(task.created_at).getTime();
+    if (Number.isFinite(at) && at < oldest) oldest = at;
+  }
+  if (!Number.isFinite(oldest)) return DEFAULT_WINDOW;
+
+  // Clamp: a task timestamped in the future (clock skew between hub and
+  // browser) must not produce a negative span and collapse to the
+  // narrowest window.
+  const span = Math.max(0, now - oldest);
+  // Nothing wide enough means the board is older than every preset, so
+  // cap at the widest rather than falling back to the 7D default -- an
+  // ancient board should show *more* history than a young one, not less.
+  return (
+    WINDOW_PRESETS.find((preset) => preset.windowMs >= span) ??
+    WINDOW_PRESETS[WINDOW_PRESETS.length - 1]
+  );
+}
 
 /** Bucketed counts of tasks by creation time, oldest bucket first.
  *
