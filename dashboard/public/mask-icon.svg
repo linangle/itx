@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Safari mask-icon (rel="mask-icon"): a single-color silhouette Safari
+     recolors at render time via the link's color attribute, used for
+     pinned tabs and the Touch Bar. Same outlines as favicon.svg, one
+     shape, fill value ignored by the consumer. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="422.88 1027.84 1944.30 1944.30">
+  <path d="M542.8808 1642.9944V2356.9944H699.8808V1642.9944ZM995.8808 1774.9944V2356.9944H1152.8808V1774.9944H1366.8808V1642.9944H781.8808V1774.9944ZM1623.8808 1982.9944 1374.8808 2356.9944H1550.8808L1709.8808 2109.9944L1865.8808 2356.9944H2052.8808L1803.8808 1983.9944L2032.8808 1642.9944H1860.8808L1715.8808 1870.9944L1575.8808 1642.9944H1393.8808Z"/>
+  <rect x="2107" y="2216.81" width="140.18" height="140.18"/>
+</svg>
