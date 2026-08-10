@@ -963,3 +963,48 @@ holds in all three states: tape shown (bar 96px), tape dismissed (56px),
 mobile (84px) — strip on the fold and chart at full height in each.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 11 — the .ai to .svg swap turned out to matter
+
+The user swapped `assets/globe_texture.ai` for a native `.svg` export
+of the same artwork and asked whether it changes anything. It does,
+and for the better: the old pipeline (`pdftoppm` rasterize -> pixel-diff
+crop against white -> manual 10px inset to kill an anti-aliased seam)
+was working around information a raster export had already thrown
+away. The SVG still has it. Its first path -- the ocean rectangle --
+has `getBBox()` of exactly (62.46, 1206.02, 3797.9 x 1898.95), a
+precise 2:1 ratio, and every continent path sits fully inside those
+bounds. The crop is no longer estimated from pixels; it's read off the
+geometry.
+
+Rasterized by loading the SVG (viewBox rewritten to that exact box,
+explicit 2048x1024 output size) into an `Image`, drawing it to a
+canvas, and reading back `toDataURL()` -- all inside the running page
+via the browser tool, no system SVG rasterizer needed (none was
+installed: no `rsvg-convert`, `cairosvg`, `inkscape`, `resvg`). All
+four corners of the result came out pure ocean blue at full alpha --
+no seam, no inset hack required this time, because there was never any
+anti-aliased margin to begin with. Verified live on the globe: clean
+wrap.
+
+  One environment note worth remembering: `document.createElement`
+  only yields a real `HTMLCanvasElement` when `document` is HTML-typed.
+  Navigating straight to the raw `.svg` file put the tab in an XML
+  document context, where `canvas.getContext` doesn't exist
+  (`constructor.name` came back `Element`, not `HTMLCanvasElement`).
+  Fixed by running the fetch+draw from the actual app page instead of
+  the raw file.
+
+**The user also added `assets/favicon.ico`, and it was not used.**
+Rendered at 32x32, it turned out to be the light `#eaf3ee` glyph on a
+transparent ground -- the exact defect round 10 diagnosed and fixed
+for `favicon.svg`, just recurring in a format that can't take the
+`prefers-color-scheme` fix (a flat .ico can't be conditional). Using
+it as-is would have reintroduced "invisible on light tab bars," which
+is plausibly related to what prompted adding it in the first place.
+Kept the existing multi-size (16/32/48/64) dark-glyph `.ico` in
+`dashboard/public/`; committed the user's file to `assets/` as a
+tracked source, unused, with the reasoning left for them rather than
+silently overridden or silently left in place.
+
+Gates: 55 tests, tsc, lint, build clean.
