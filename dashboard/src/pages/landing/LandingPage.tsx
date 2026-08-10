@@ -34,21 +34,28 @@ export default function LandingPage() {
 
   return (
     <div className="itx-landing">
-      {/* Ticker and hero share one full-viewport column, and the hero
-       * takes whatever height is left. That way dismissing the ticker
-       * gives its 40px back to the hero instead of leaving a gap --
-       * no JS coordination between the two components. */}
-      <div className="itx-landing-top">
+      {/* Tape and wordmark ride together in one sticky bar so both stay
+       * pinned for the whole page, not just the hero. It has to be a
+       * direct child of the full-height landing root: a sticky element
+       * only sticks within its own parent, so leaving these inside the
+       * hero is what made them scroll away at the board.
+       *
+       * Dismissing the tape still needs no JS coordination -- the bar
+       * simply gets shorter, and the CSS reads its own height back off
+       * whether .itx-news is present. */}
+      <div className="itx-landing-bar">
         <NewsTicker />
 
-        <section className="itx-hero">
-          <header className="itx-hero-brand">
-            <span className="itx-hero-mark">
-              ITX<span className="itx-hero-dot">.</span>
-            </span>
-            <span className="itx-hero-tag">internet traffic exchange</span>
-          </header>
+        <header className="itx-hero-brand">
+          <span className="itx-hero-mark">
+            ITX<span className="itx-hero-dot">.</span>
+          </span>
+          <span className="itx-hero-tag">internet traffic exchange</span>
+        </header>
+      </div>
 
+      <div className="itx-landing-top">
+        <section className="itx-hero">
           <div className="itx-hero-grid">
             <div className="itx-hero-globe">
               <Suspense fallback={null}>

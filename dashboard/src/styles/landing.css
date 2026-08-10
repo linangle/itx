@@ -32,12 +32,33 @@ body.itx-landing-body {
    * the box and the lower half stays clear. */
   --bd-overlap: 36px;
 
+  /* Heights of the two sticky bar rows. Declared rather than measured
+   * because the hero subtracts them to work out its own height. */
+  --ld-news-h: 40px;
+  --ld-brand-h: 56px;
+  --ld-bar-h: calc(var(--ld-news-h) + var(--ld-brand-h));
+
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   background: var(--ld-dark);
 }
 
 /* Ticker + hero as one viewport-tall column: the hero absorbs the
  * tape's height when the tape is dismissed, with no JS between them. */
+.itx-landing:not(:has(.itx-news)) {
+  --ld-bar-h: var(--ld-brand-h);
+}
+
+/* Sticky against the landing root, which spans the whole document, so
+ * the tape and wordmark stay pinned all the way down past the board.
+ * z-index clears the board (position relative, z-index auto) and the
+ * hero, which isolates its own children. */
+.itx-landing-bar {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  background: var(--ld-dark);
+}
+
 .itx-landing-top {
   display: flex;
   flex-direction: column;
@@ -45,18 +66,18 @@ body.itx-landing-body {
    * that same amount, so its top edge lands exactly on the fold: the
    * chart still fills the first screen and no part of the board shows
    * on the landing view. */
-  min-height: calc(100vh + var(--bd-overlap));
-  min-height: calc(100svh + var(--bd-overlap));
+  min-height: calc(100vh + var(--bd-overlap) - var(--ld-bar-h));
+  min-height: calc(100svh + var(--bd-overlap) - var(--ld-bar-h));
 }
 
 /* ---- news tape ------------------------------------------------- */
 
+/* Relative, not sticky: the bar above does the sticking now. It still
+ * needs to be a containing block for the fade mask and close button. */
 .itx-news {
-  position: sticky;
-  top: 0;
-  z-index: 120;
+  position: relative;
   flex: none;
-  height: 40px;
+  height: var(--ld-news-h);
   display: flex;
   align-items: center;
   overflow: hidden;
@@ -180,11 +201,10 @@ body.itx-landing-body {
 
 .itx-hero-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
-  padding: 26px 40px 0;
-  position: relative;
-  z-index: 2;
+  height: var(--ld-brand-h);
+  padding: 0 40px;
 }
 
 .itx-hero-mark {
@@ -311,7 +331,7 @@ body.itx-landing-body {
   }
 
   .itx-hero-brand {
-    padding: 20px 26px 0;
+    padding: 0 26px;
   }
 
   .itx-hero-mark,
@@ -324,8 +344,9 @@ body.itx-landing-body {
     padding: 0 16px;
   }
 
-  .itx-news {
-    height: 36px;
+  .itx-landing {
+    --ld-news-h: 36px;
+    --ld-brand-h: 48px;
   }
 
   .itx-news-mask {
