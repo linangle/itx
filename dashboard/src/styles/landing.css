@@ -22,6 +22,13 @@ body.itx-landing-body {
   --ld-light: #e9f2ed;
   --ld-sub: #b3b4bf;
 
+  /* How far the quote strip rides up over the hero's market line.
+   * Declared on the landing root because both sides need it: the hero
+   * grows by it, and the board pulls the strip and its grid layer up by
+   * it. Custom properties only inherit downward, so a common ancestor
+   * is the only place both can read it. */
+  --bd-overlap: 58px;
+
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   background: var(--ld-dark);
 }
@@ -31,8 +38,12 @@ body.itx-landing-body {
 .itx-landing-top {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100svh;
+  /* Taller than the viewport by the overlap. The strip is pulled up by
+   * that same amount, so its top edge lands exactly on the fold: the
+   * chart still fills the first screen and no part of the board shows
+   * on the landing view. */
+  min-height: calc(100vh + var(--bd-overlap));
+  min-height: calc(100svh + var(--bd-overlap));
 }
 
 /* ---- news tape ------------------------------------------------- */
@@ -267,7 +278,10 @@ body.itx-landing-body {
   left: 0;
   right: 0;
   bottom: 0;
-  height: min(17vh, 160px);
+  /* Grows by the overlap too, so the portion above the fold stays the
+   * height it was before the strip started covering its lower edge --
+   * peaks read on the landing screen, troughs pass behind the strip. */
+  height: calc(min(17vh, 160px) + var(--bd-overlap));
   z-index: 1;
   pointer-events: none;
 }
@@ -329,10 +343,6 @@ body.itx-landing-body {
  * rather than inside, all over the supplied grid at 30% opacity. */
 
 .itx-board {
-  /* How far the quote strip rides up over the hero's market line.
-   * Declared here, not on .itx-board-inner, so the ::before grid layer
-   * can read it too -- custom properties only inherit downward. */
-  --bd-overlap: 58px;
   position: relative;
   isolation: isolate;
   padding: 0 0 70px;
@@ -359,6 +369,13 @@ body.itx-landing-body {
 }
 
 .itx-board-inner {
+  /* Establishes a block formatting context so the quote strip's
+   * negative top margin cannot collapse out through here and drag the
+   * whole board box up with it -- which pulled the grid layer 58px
+   * above the fold, where it showed as grid lines over the hero's
+   * chart. The strip still renders 58px above this box; only the box
+   * itself stays put. */
+  display: flow-root;
   max-width: 1560px;
   margin: 0 auto;
   padding: 0 46px;
