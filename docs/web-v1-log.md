@@ -1008,3 +1008,56 @@ tracked source, unused, with the reasoning left for them rather than
 silently overridden or silently left in place.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 12 — one design across the whole site
+
+Two asks: the board's boxes were the wrong grey, and the inner pages
+still wore the first iteration's styling.
+
+**Board outlines** (`733d907`). They were
+`rgba(233, 242, 237, 0.28)` -- a translucent near-white that reads
+paler and bluer than the quote strip directly above, so the strip
+looked like a different set. Now a `--bd-line: #3f4351` token on
+`.itx-board`, which is the grey the strip's gradient already ends on,
+driving the panel outlines, the search field and the row rules. The
+strip's gradient stop reads the token instead of repeating the
+literal, so the two cannot drift.
+
+**Inner pages** (`625a321`). Tasks / detail / agents / leaderboard
+still had filled lime stat cards, a lime pill nav, Instrument Sans over
+Geist Mono and a warmer near-black.
+
+The retheme was mostly cheap because `terminal.css` was written with
+all colour in the token blocks and the component rules below them
+theme-blind -- the file's own header says so, and it held up. Swapping
+the tokens to the landing palette did most of the work. Blue takes link
+duty and never signals state, so "interactive" stays separate from
+"good/bad" now that green and red are direction colours.
+
+Three things needed real edits rather than tokens: stat cards outlined
+rather than filled (the board has no filled panels, and a row of solid
+lime blocks was the loudest carry-over); the active nav and sidebar
+pills losing their solid brand fill; and the font dropping to Helvetica
+Neue throughout, which let the Instrument Sans and Geist Mono packages
+be uninstalled outright -- CSS bundle 62kB to 19kB. Green fills that
+*mean* something stayed: lifecycle stepper, consensus meter, primary
+button.
+
+Light mode was kept rather than dropped -- `Shell`'s toggle predates
+this pass and works -- rebuilt from the same hues with deepened text
+colours, since the dark-surface green/blue are too pale to read as
+glyphs on a light ground.
+
+  Process note: the first attempt at the token rewrite corrupted the
+  file. The script rebuilt the string as `new_block + s[end:]` for each
+  of three blocks in sequence, which drops everything *before* each
+  match -- so the header and the dark tokens vanished and the file
+  opened with the light-theme block. Caught it immediately because the
+  post-edit `head` showed the wrong first line. Restored with `git
+  checkout` and redone with an explicit `splice(text, start, end, new)`
+  that keeps both sides. Verified by line count (813 to 811, as
+  expected) and by asserting all three block headers were still
+  present.
+
+Verified all four pages plus both themes. Gates: 55 tests, tsc, lint,
+build clean.
