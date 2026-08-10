@@ -367,6 +367,12 @@ body.itx-landing-body {
  * rather than inside, all over the supplied grid at 30% opacity. */
 
 .itx-board {
+  /* Outline grey for every box on the board. Same value the quote
+     strip's gradient lands on, so the strip and the panels below it
+     read as one family rather than the strip sitting on a paler,
+     bluer-white set of outlines. */
+  --bd-line: #3f4351;
+
   position: relative;
   isolation: isolate;
   padding: 0 0 70px;
@@ -448,7 +454,7 @@ body.itx-landing-body {
  * gently rounded. The mockup has no filled panels at all. */
 .itx-board-panel {
   box-sizing: border-box;
-  border: 1px solid rgba(233, 242, 237, 0.28);
+  border: 1px solid var(--bd-line);
   border-radius: 14px;
   background: rgba(10, 9, 12, 0.72);
 }
@@ -504,7 +510,7 @@ body.itx-landing-body {
   margin-top: calc(-1 * var(--bd-overlap));
   padding: 1px;
   border-radius: 15px;
-  background: linear-gradient(180deg, var(--ld-green) 0%, #4a5160 55%, #3e4352 100%);
+  background: linear-gradient(180deg, var(--ld-green) 0%, #4a5160 55%, var(--bd-line) 100%);
 }
 
 .itx-board-quotes-inner {
@@ -633,7 +639,7 @@ body.itx-landing-body {
   gap: 8px;
   margin-bottom: 10px;
   padding: 6px 11px;
-  border: 1px solid rgba(233, 242, 237, 0.28);
+  border: 1px solid var(--bd-line);
   border-radius: 9px;
 }
 
@@ -693,7 +699,7 @@ body.itx-landing-body {
 
 .itx-board-table td {
   padding: 6px 5px;
-  border-bottom: 1px solid rgba(233, 242, 237, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
 
 .itx-board-table tr:last-child td {
