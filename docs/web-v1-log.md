@@ -917,3 +917,49 @@ the collapse, and every layer positioned relative to that ancestor
 moves with it.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 10 — favicon, and a header that survives the scroll
+
+**Favicon** (`6f62224`). Derived from `assets/favicon.svg` rather than
+shipped verbatim, for two reasons found by reading the file.
+
+It is live `<text>` in Helvetica Neue Bold, and the green dot is a
+`<rect>` hand placed at x=2107 — i.e. positioned against that font's
+exact advance widths. On a machine without Helvetica Neue the
+substituted face would set "ITX" to a different width and leave the dot
+floating off the end or overlapping the X. `fontTools` (already present)
+outlined the three glyphs from the system font, so the mark renders
+identically everywhere with no font dependency.
+
+The artwork also occupied a small patch of a 4000×4000 artboard, which
+scales to a speck in a tab; the viewBox is now the mark's own bounds
+plus padding. And a dark ground was added, not in the source: the type
+is `#eaf3ee`, invisible against a light browser tab strip.
+
+Linked as a *new* file with `public/favicon.svg` left in place, so the
+owner's original icon returns if this branch is rejected.
+
+  Caught by verifying rather than assuming: the first generated file
+  was invalid XML — the explanatory comment contained `--`, which is
+  illegal inside an XML comment, and the browser refused the whole
+  document. Opening the SVG directly showed the parse error.
+
+**Sticky bar** (`8540fe3`). The tape and wordmark disappeared at the
+board because **a sticky element only sticks within its own parent**,
+and both lived inside `.itx-landing-top` / `.itx-hero`, which end at
+the first screen. They now share one sticky bar that is a direct child
+of `.itx-landing`, which spans the document.
+
+The fold arithmetic from round 9 had to absorb this: the first screen
+is now bar + hero, and it still has to total `100svh + overlap` for the
+quote strip to land exactly on the fold, so the hero subtracts
+`--ld-bar-h`. Declared heights rather than measured ones, plus a
+`:has(.itx-news)` rule that drops the tape's row when dismissed — which
+preserves the property the old flex column had, that dismissing the
+tape gives its height back to the hero with no JS coordination.
+
+Verified pinned at `top: 0` deep in the board, and the fold arithmetic
+holds in all three states: tape shown (bar 96px), tape dismissed (56px),
+mobile (84px) — strip on the fold and chart at full height in each.
+
+Gates: 55 tests, tsc, lint, build clean.
