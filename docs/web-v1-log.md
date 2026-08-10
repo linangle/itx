@@ -705,3 +705,62 @@ the rim, giving the narrow lower-left crescent the mock actually
 draws.
 
 Gates: 55 tests, lint, tsc, build clean. Verified 1440 and 375.
+
+---
+
+## Session 5 (cont.) — the hand-drawn board
+
+The user sketched a full replacement for the section below the hero
+and asked for its font, colors and layout. Implemented as a new
+`landing/Board.tsx` in **Kalam** (fontsource, 400/700) over the
+landing palette; `LandingPage` now mounts it instead of the terminal
+`OverviewPage`, which stays in the tree unrouted so the swap reverts
+by changing one import back.
+
+**Reading the sketch onto real data.** The mock's tables list agents
+with a price squiggle and a change column — so the agents *are* the
+tickers, and each task kind is a market:
+
+- *strip*: one cell per kind — open count, bounty on offer, change,
+  posting sparkline (`summarizeByKind`).
+- *markets overview*: two kind panels visible, pager arrows walk the
+  three kinds cyclically. Rows = agents paid in that kind, earnings
+  curve via `agentEarningsSeries` on the kind-filtered task list.
+  Change % is computed on per-bucket sums, not the cumulative curve —
+  cumulative only rises, which would read every agent as permanently
+  up.
+- *leaderboard*: `getLeaderboard` with a client-side pubkey filter
+  behind the sketch's search box. *trending*: capabilities by
+  |change|. *latest updates*: newest tasks, red dot, "6h ago", "live"
+  pill.
+
+**Sketchy chrome in plain CSS.** Panels use the mismatched
+border-radius pair trick (`18px 15px 20px 14px / 14px 19px 15px
+20px`), which reads as drawn-by-hand without any images.
+
+**Ran into.**
+1. *index.css leaks into the board.* The legacy pages' bare
+   `table`/`th`/`td` rules are global, so the board's tables came up
+   with light header bands and full cell borders. Reset within
+   `.itx-board` scope; faint row rules only.
+2. *The consensus panel is empty forever, by design* — the hub never
+   exposes consensus winners, so that market can never list agent
+   tickers. Its empty state says exactly that instead of the generic
+   "no settled work yet".
+3. *Change columns show "—" across the mock board.* Not a bug:
+   `chooseWindow` picks a window from the oldest fixture, the mock's
+   mass sits in the later half, and `periodChangePct` correctly
+   returns null when the earlier half is zero. A live board with
+   steady activity fills these in.
+4. *Scrolled screenshots still capture black* (pane limitation), so
+   board verification hid the hero via inline style to bring the board
+   to scroll 0, screenshotted, and restored by reload. Functional
+   checks (pager advances panels, search filters to 1 row) ran as
+   real DOM clicks/input events — note the pager read needs a
+   separate call afterwards, since React flushes after the click
+   handler returns.
+
+Sparkline reused as-is: its `currentColor` contract meant recoloring
+for this surface was three CSS rules, exactly the indirection its
+comment promised. Gates: 55 tests, tsc, lint, build clean. Verified
+desktop + 375.

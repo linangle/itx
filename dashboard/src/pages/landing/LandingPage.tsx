@@ -8,7 +8,7 @@ import MarketLine from "./MarketLine";
  * globe is decoration: while the chunk loads, the hero simply shows its
  * copy and chart, which is also the no-WebGL rendering. */
 const Globe = lazy(() => import("./Globe"));
-import OverviewPage from "../terminal/OverviewPage";
+import Board from "./Board";
 import "../../styles/landing.css";
 
 /** The site's front door, per the reference mocks: a sticky news tape,
@@ -17,9 +17,9 @@ import "../../styles/landing.css";
  * to the bottom -- and the untouched terminal board below the fold.
  *
  * The tape is `position: sticky` on the page root, so it rides along
- * as the visitor scrolls down into the board. The board itself is the
- * existing `OverviewPage`, mounted verbatim; the landing surface adds
- * nothing to it and takes nothing from it. */
+ * as the visitor scrolls down into the board. The board below is the
+ * hand-drawn `Board` (per the user's sketch); the previous terminal
+ * `OverviewPage` remains in the tree, unrouted, for clean rollback. */
 export default function LandingPage() {
   return (
     <div className="itx-landing">
@@ -62,7 +62,7 @@ export default function LandingPage() {
         </section>
       </div>
 
-      <OverviewPage />
+      <Board />
     </div>
   );
 }
