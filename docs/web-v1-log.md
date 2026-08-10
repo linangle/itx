@@ -797,3 +797,58 @@ it across the middle of the disc (half the globe dark, read as gloom),
 great circle, giving the broad lower-left crescent the mock draws.
 
 Gates after each: 55 tests, tsc, lint, build clean.
+
+### Round 7 — board restyled to the new mockup
+
+A three-page mockup (`itx.ai`, PDF-compatible again) replaced the board
+below the hero, with two assets: `gridfull.svg` for the background and
+`search_icon.svg` for the agent search.
+
+**Layout.** Quote strip in a green-to-grey gradient outline → "market
+overview" → clipped carousel of category panels (two and a half
+visible) beside a leaderboard/trends rail → latest feed → empty footer.
+The left nav column is gone. The structural change worth noting is that
+**panel labels sit above their outlines**, not inside them, and every
+box is an outline over near-black — the mockup has no filled panels.
+
+**Both assets needed rework to be usable, for opposite reasons.**
+
+*Grid.* 70×70 lines at 80.73 spacing inside a 5933-unit artboard, so
+the drawing carries ~113 units of padding on the left and ~89 on the
+right. Tiled as-is that padding lands at every seam as a gutter ~2.5
+cells wide — visibly irregular. `public/grid.svg` is therefore the
+asset with its viewBox cropped to exactly one grid period (218.84 →
+5788.78, 69 cells) and the bounding `<rect>` dropped; tile edges then
+coincide with their neighbours' and the repeat is seamless. Source in
+`assets/` is untouched, so re-exporting and re-cropping stays the
+update path. Rendered at 1160px, 30% opacity, as a `::before` layer so
+its opacity doesn't fade the content above it.
+
+*Search icon.* Ships as a **white plate with a dark magnifier** — an
+icon drawn for a light surface, which on these panels renders as a
+light blob. Inlined into the component instead of linked: plate
+dropped, glyph filled with `currentColor` so CSS colours it. The lens
+turned out to already be a second subpath of the same path (the export
+punched it by laying a white circle on top), so `fill-rule: evenodd`
+makes it a real hole — better than painting the centre with a
+background colour that would need keeping in sync with the panel.
+
+**Ran into.**
+1. *Carousel showed no peek.* At `flex-basis: 50%` two panels filled the
+   clip exactly and the third sat precisely on the boundary. 44% gives
+   the half-panel that tells you the pager has somewhere to go.
+2. *Live dot flew to the right margin.* The `flex: 1 1 0` that makes
+   market labels share the row width was matching the "latest" label
+   too, growing it and pushing the dot to the far edge. Scoped to
+   `.itx-board-markets`.
+3. *Two dev servers.* `preview_start` found 5173 taken (the user's own
+   server), started a second Vite on 5174, and the harness proxy port
+   didn't track it — the browser could reach neither. Stopped the
+   duplicate and used the user's server, which serves the same working
+   tree. Worth remembering: when a server is already running on the
+   project, verify against *it* rather than starting a rival.
+
+Quote-strip figures are placeholders; the user deferred data formatting
+to a later pass, as with the footer, which is deliberately empty.
+
+Gates: 55 tests, tsc, lint, build clean.
