@@ -764,3 +764,36 @@ Sparkline reused as-is: its `currentColor` contract meant recoloring
 for this surface was three CSS rules, exactly the indirection its
 comment promised. Gates: 55 tests, tsc, lint, build clean. Verified
 desktop + 375.
+
+### Round 6 — one typeface, no frame, a visible crescent
+
+From here on each change is committed separately, authored as the repo
+owner (no assistant attribution in the trailer).
+
+**Helvetica everywhere** (`4cc206a`). Kalam is gone and the package
+uninstalled; the board now uses the same Helvetica Neue stack as the
+hero. Type sizes stepped down with the swap — Helvetica sets on a
+larger visual body than Kalam at equal point size, so the old numbers
+would have left the board a size too loud. The mismatched border-radii
+stay: the hand-drawn feel lives in the panel shapes, not the lettering.
+
+**The white frame** (`d9c4445`). `index.css` sets `body { margin: 16px }`
+for the legacy pages. The landing page had been getting that cancelled
+*for free*, because the terminal `Shell` it rendered below the fold
+applies `body.itx-body { margin: 0 }`. Replacing that section with the
+new `Board` removed the only thing zeroing it, and a 16px white frame
+appeared on all four sides — a change of the section below the fold
+manifesting as a defect around the whole viewport.
+
+Fixed the same way `Shell` does rather than by touching the global
+rule, which the legacy pages still want: flag `<body>` on mount, clear
+it on unmount. The body also carries the page background, so overscroll
+bounces against dark instead of white.
+
+**Crescent size** (`7abf125`). Round 5 overcorrected. The threshold
+governs *where* the terminator falls, not how hard it is: +0.3 pushed
+it across the middle of the disc (half the globe dark, read as gloom),
+-0.35 squeezed it to a rim sliver. -0.05 puts the cut near the light's
+great circle, giving the broad lower-left crescent the mock draws.
+
+Gates after each: 55 tests, tsc, lint, build clean.
