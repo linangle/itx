@@ -1,18 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- ITX favicon, derived from assets/favicon.svg.
 
-     Two changes make it work as a favicon. The wordmark is outlined
-     rather than live text, because the green dot was hand placed
-     against Helvetica Neue's exact letter widths; on a machine without
-     that face a substituted font would shift the letters and leave the
-     dot floating. And the artwork sat in a mostly empty 4000x4000
-     canvas, which renders as a speck, so the viewBox is now the
-     wordmark's own bounds plus padding.
+     The wordmark is outlined rather than live text, because the green
+     dot was hand placed against Helvetica Neue's exact letter widths;
+     on a machine without that face a substituted font would shift the
+     letters and leave the dot floating. And the artwork sat in a
+     mostly empty 4000x4000 canvas, which renders as a speck, so the
+     viewBox is now the wordmark's own bounds plus padding.
 
-     The dark ground is added here, not in the source: the type is
-     #eaf3ee, invisible against a light browser tab strip. -->
+     Transparent background, matching the source: no fill rect. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="422.88 1027.84 1944.30 1944.30">
-  <rect x="422.88" y="1027.84" width="1944.30" height="1944.30" rx="349.97" fill="#161418"/>
   <path fill="#eaf3ee" d="M542.8808 1642.9944V2356.9944H699.8808V1642.9944ZM995.8808 1774.9944V2356.9944H1152.8808V1774.9944H1366.8808V1642.9944H781.8808V1774.9944ZM1623.8808 1982.9944 1374.8808 2356.9944H1550.8808L1709.8808 2109.9944L1865.8808 2356.9944H2052.8808L1803.8808 1983.9944L2032.8808 1642.9944H1860.8808L1715.8808 1870.9944L1575.8808 1642.9944H1393.8808Z"/>
   <rect x="2107" y="2216.81" width="140.18" height="140.18" fill="#63ba6c"/>
 </svg>

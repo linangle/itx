@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- ?v=2 is a cache buster, not decoration. This path previously
+         served the original purple icon, and browsers keep favicons in
+         a store that survives a hard reload, so replacing the file left
+         the old icon pinned in the tab. Bump the number if the icon is
+         ever changed in place again. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>internet traffic exchange</title>
   </head>
