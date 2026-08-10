@@ -149,6 +149,14 @@ body.itx-landing-body {
 
 .itx-hero {
   position: relative;
+  /* Contains the chart's z-index. Without this the hero is position
+   * relative at z-index auto, so it creates no stacking context and
+   * .itx-hero-chart's z-index: 1 escapes into the root -- where it
+   * outranks the whole board and paints its market line *over* the
+   * quote strip that is supposed to overlap it. The z-indexes in here
+   * were only ever meant to order the chart against the hero's own
+   * copy, so keeping them local is the fix. */
+  isolation: isolate;
   overflow: hidden;
   flex: 1;
   display: flex;
@@ -321,9 +329,13 @@ body.itx-landing-body {
  * rather than inside, all over the supplied grid at 30% opacity. */
 
 .itx-board {
+  /* How far the quote strip rides up over the hero's market line.
+   * Declared here, not on .itx-board-inner, so the ::before grid layer
+   * can read it too -- custom properties only inherit downward. */
+  --bd-overlap: 58px;
   position: relative;
   isolation: isolate;
-  padding: 30px 0 70px;
+  padding: 0 0 70px;
   color: var(--ld-light);
   background: var(--ld-dark);
 }
@@ -337,7 +349,7 @@ body.itx-landing-body {
 .itx-board::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: calc(-1 * var(--bd-overlap)) 0 0 0;
   z-index: -1;
   opacity: 0.3;
   background-image: url("/grid.svg");
@@ -438,10 +450,20 @@ body.itx-landing-body {
 /* The gradient outline is a 1px padding box: the gradient paints the
  * wrapper, the inner element covers all but its edge. `border-image`
  * would be the other route, but it cannot follow a border-radius. */
+/* Pulled up so the hero's market line runs behind it: peaks show above
+ * the strip, troughs disappear behind it, as in the mockup. The board
+ * paints after the hero, so a relative position is all it takes for the
+ * strip to sit on top -- no z-index race with the hero's canvas.
+ *
+ * The outline is a 1px gradient padding box (`border-image` cannot
+ * follow a border-radius). Straight down at 180deg: green along the top
+ * edge, grey by the bottom. */
 .itx-board-quotes {
+  position: relative;
+  margin-top: calc(-1 * var(--bd-overlap));
   padding: 1px;
   border-radius: 15px;
-  background: linear-gradient(168deg, var(--ld-green) 0%, #4a5160 46%, #3e4352 100%);
+  background: linear-gradient(180deg, var(--ld-green) 0%, #4a5160 55%, #3e4352 100%);
 }
 
 .itx-board-quotes-inner {
