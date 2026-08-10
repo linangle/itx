@@ -2,12 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- ?v=2 is a cache buster, not decoration. This path previously
+    <!-- ?v=3 is a cache buster, not decoration. This path previously
          served the original purple icon, and browsers keep favicons in
-         a store that survives a hard reload, so replacing the file left
-         the old icon pinned in the tab. Bump the number if the icon is
-         ever changed in place again. -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
+         a store keyed by URL that survives a hard reload, so replacing
+         the file left the old icon pinned. Bump the number if the icon
+         is ever changed in place again.
+
+         The PNG is a fallback for anything that will not take an SVG
+         icon; browsers that do prefer the SVG above it. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon-180.png?v=3" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>internet traffic exchange</title>
   </head>
