@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import NewsTicker from "./NewsTicker";
 import MarketLine from "./MarketLine";
 
@@ -21,6 +21,17 @@ import "../../styles/landing.css";
  * hand-drawn `Board` (per the user's sketch); the previous terminal
  * `OverviewPage` remains in the tree, unrouted, for clean rollback. */
 export default function LandingPage() {
+  // `index.css` gives `body` a 16px margin for the three legacy pages,
+  // which on a full-bleed dark page shows as a white frame around the
+  // whole viewport. Rather than change that global rule -- the legacy
+  // pages still want it -- flag the body while this page is mounted and
+  // remove the flag on unmount, the same approach `Shell` takes for the
+  // terminal screens.
+  useEffect(() => {
+    document.body.classList.add("itx-landing-body");
+    return () => document.body.classList.remove("itx-landing-body");
+  }, []);
+
   return (
     <div className="itx-landing">
       {/* Ticker and hero share one full-viewport column, and the hero

@@ -4,6 +4,16 @@
  * this surface: Helvetica Neue on near-black, red / green / blue
  * accents -- deliberately *not* the terminal's tokens. */
 
+/* Applied to <body> only while the landing page is mounted (see
+ * LandingPage.tsx). The legacy pages keep index.css's 16px body margin;
+ * here it would draw a white frame around a full-bleed dark page. The
+ * background is repeated on the body so overscroll at either end of the
+ * page bounces against the page's own color rather than white. */
+body.itx-landing-body {
+  margin: 0;
+  background: #161418;
+}
+
 .itx-landing {
   --ld-red: #d8402d;
   --ld-green: #63ba6c;
