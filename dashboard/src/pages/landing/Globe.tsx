@@ -80,12 +80,13 @@ function makeGlobeMaterial(texture: THREE.Texture): THREE.ShaderMaterial {
       map: { value: texture },
       lightDir: { value: LIGHT_DIR },
       shadowTint: { value: new THREE.Color(0.34, 0.38, 0.68) },
-      /* Negative, so the cut falls out near the rim and the shade is a
-       * narrow crescent as in the mock. At a positive threshold the
-       * terminator crossed the middle of the disc, putting half the
-       * globe in shade -- a large dark area reads as gloom even when
-       * its edge is perfectly hard. */
-      threshold: { value: -0.35 },
+      /* Sets how much of the disc falls in shade. Positive values push
+       * the terminator across the middle of the globe (+0.3 put half of
+       * it in shade, which read as gloom); far-negative ones squeeze it
+       * out to the rim as a sliver (-0.35 was barely visible). Just
+       * under zero puts the cut near the light's great circle, giving
+       * the broad lower-left crescent the mock draws. */
+      threshold: { value: -0.05 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
