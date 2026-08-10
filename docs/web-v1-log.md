@@ -852,3 +852,34 @@ Quote-strip figures are placeholders; the user deferred data formatting
 to a later pass, as with the footer, which is deliberately empty.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 8 — strip overlaps the market line
+
+Two changes from a zoomed crop of the mockup: the quote strip rides up
+over the hero's chart animation (58px), and its outline gradient runs
+straight down — green along the top edge, grey by the bottom — rather
+than the slight diagonal it had.
+
+**A latent stacking bug surfaced.** With the strip pulled up, the
+chart painted its line *and its gradient fill* over the strip, washing
+the text out. Cause: `.itx-hero` is `position: relative` at `z-index:
+auto`, which creates **no** stacking context, so `.itx-hero-chart`'s
+`z-index: 1` was competing in the *root* context — where it outranked
+`.itx-board` (position relative, z-index auto ≈ 0) no matter what
+z-index the strip itself carried. The board's own `isolation: isolate`
+could not help: it bounds its children, not its own level.
+
+The fix is at the leak, not the symptom: `.itx-hero` now isolates, so
+the chart's z-index stays local (it was only ever ordering the chart
+against the hero's copy) and the later-in-DOM board paints above it.
+Bumping the board's z-index instead would have worked too, but would
+have left a z-index that silently depends on a number set inside
+another component.
+
+The overlap distance lives on `.itx-board` as `--bd-overlap` because
+the `::before` grid layer extends up by the same amount — and a
+property declared on `.itx-board-inner` would have been invisible to
+`::before`, which is that element's *parent*. Caught it by grepping
+the declaration and use sites rather than after a confusing render.
+
+Gates: 55 tests, tsc, lint, build clean.
