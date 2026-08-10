@@ -883,3 +883,37 @@ property declared on `.itx-board-inner` would have been invisible to
 the declaration and use sites rather than after a confusing render.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 9 — the overlap paid for out of the wrong budget
+
+Round 8's overlap was implemented by pulling the strip up into a
+fixed-height hero, which meant the 58px came out of the *landing
+screen*: the strip's top edge showed above the fold, and the chart
+pixels it covered were the ones that had been visible, so the line read
+as shorter and as belonging to the board rather than the hero.
+
+Fix: the hero and the chart each grow by the overlap instead. The strip
+lands exactly on the fold and the chart still shows `min(17vh, 160px)`
+above it — identical to before the overlap existed — with only its
+lower edge passing behind the strip. Measured: viewport 900, strip top
+900, chart visible above fold 153px, overlap 58px.
+
+**Margin collapsing was doing a second, invisible thing.** The strip's
+`margin-top: -58px` had no padding or border between it and
+`.itx-board`, so it collapsed straight out and moved the *board's own
+border box* up 58px — which is why the board measured at 900 when the
+hero was 958 tall, and why the grid layer (offset a further -58px from
+the board) ended up 58px above the fold, drawing grid lines across the
+hero's chart. Both symptoms, one cause.
+
+`display: flow-root` on `.itx-board-inner` establishes a block
+formatting context, so the margin is contained: the strip still renders
+58px above the box, but the box stays where layout put it. Grid layer
+now starts exactly at the fold.
+
+Worth remembering as a pattern: a negative margin used for visual
+overlap will silently move the *ancestor's* box unless something stops
+the collapse, and every layer positioned relative to that ancestor
+moves with it.
+
+Gates: 55 tests, tsc, lint, build clean.
