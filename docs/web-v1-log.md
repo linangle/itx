@@ -1793,3 +1793,27 @@ underneath it. That is the kind of cost that does not show up in a
 still and reads as "not smooth" in motion.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 31 — same card, less of it
+
+The card swap stays; it was the size of it that read as bulky. The
+amplitudes were 52px up and a 26px bulge, and at that scale the eye
+tracks the block rather than reading the news -- a slab being flown
+into position rather than a row arriving. Halved and more: **30px up,
+14px across**, over 400ms rather than 600, with the glow gone by 900ms.
+Same gesture, at a size that registers without asking to be watched.
+
+  A detour worth recording, because it was the wrong answer to the
+  right complaint. "Seamless, shouldn't register the bulky movement"
+  first read as *remove the flight*: the list opening a slot for the
+  row by animating its height from zero, with the rows below pushed
+  down by that alone and nothing ever overlapping. That is genuinely
+  seamless and genuinely duller -- the user wanted the card kept and
+  the weight taken out of it, which is a question of amplitude, not of
+  mechanism. Reverted.
+
+Measured: out to 8.3px by 120ms, apex 13.9px at 200ms halfway up, back
+through 4.7px at 320ms, landed at 420ms. The eleven sample points and
+the apex point stay -- at 400ms the facets matter more, not less.
+
+Gates: 55 tests, tsc, lint, build clean.

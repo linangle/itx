@@ -1035,34 +1035,38 @@ body.itx-landing-body {
   padding: 0 var(--sp-5);
 }
 
-/* A row that landed on the last poll: it rises into the top slot and
-   the whole line glows red, which fades as it settles.
+/* A row that landed on the last poll: it is carried up into the top
+   slot on a small arc and the whole line glows red, fading as it
+   settles.
 
    The wash and the halo are painted on the row rather than on the
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
 
-   The path is a card being swapped to the top of a deck: it appears
-   low in the stack, swings out and up in one arc, and comes back in at
-   the top slot.
+   The gesture is a card being swapped onto the top of a deck: out of
+   the stack, up and over, in. The arc is sampled rather than drawn --
+   eleven points along `x = 14·sin(πs)`, `y = 30·(1-s)`, with
+   `s = (1-cos(πp))/2` so the swing eases in and out, and straight
+   lines between them. Bulging right at the halfway point and returning
+   to zero at the top is what makes it a swing rather than a slide; an
+   earlier version did the same three moves as *separate* legs --
+   right, then up, then left -- and the right angles between them read
+   as a machine indexing a part rather than a hand moving a card.
 
-   The arc is sampled rather than drawn -- eleven points along
-   `x = 26·sin(πs)`, `y = 52·(1-s)`, with `s = (1-cos(πp))/2` so the
-   swing eases in and out, and straight lines between them. Bulging
-   right at the halfway point and returning to zero at the top is what
-   makes it a swing; an earlier version did the same three moves as
-   *separate* legs -- right, then up, then left -- and the right angles
-   between them read as a machine indexing a part rather than a hand
-   moving a card.
+   Eleven points rather than five because the whole path takes under
+   half a second. A sampled curve is only as smooth as its facets are
+   short, and at this speed five points put a visible corner every
+   100ms; the extra ones cost nothing. One of them sits *on* the apex,
+   because sampling symmetrically about it left the two neighbours at
+   the same x, which held the card against an invisible wall at the
+   widest part of the swing -- exactly where the eye is.
 
-   Eleven rather than five because the whole path now takes 600ms. A
-   sampled curve is only as smooth as its facets are short, and at this
-   speed five points put a visible corner every 150ms; the extra ones
-   cost nothing and quarter the facet.
-
-   The sideways reach is small on purpose. It only has to be enough to
-   show the card leaving the stack; past about 30px it stops being a
-   swing and starts being a detour.
+   **The amplitudes are the whole design.** Earlier versions moved the
+   row 52px up and 68px across, which is a slab being flown into
+   position: at that size the eye tracks the block rather than reading
+   the news. Half a row up and fourteen pixels across is the same
+   gesture at a scale that registers without being watched -- it is
+   over before you would think to follow it.
 
    It bulges out to the *right*. Going left, the row's own content is
    what the clip eats -- the bullet and the timestamp vanish and the
@@ -1072,27 +1076,23 @@ body.itx-landing-body {
    a deck actually looks like.
 
    While it travels it is opaque and lifted above its siblings, because
-   a card passing over the rows below has to hide them. A translucent
-   wash over live text underneath reads as a rendering fault. It ends
-   on the panel's own colour, which is indistinguishable from the
-   transparent it started life with. */
+   a card passing over the row below has to hide it. A translucent wash
+   over live text underneath reads as a rendering fault. It ends on the
+   panel's own colour, which is indistinguishable from the transparent
+   it started life with. */
 .itx-board-updates li.is-new {
   /* Lifted out of the flow for the duration. Rows are static, so later
      siblings paint over earlier ones -- without this the card would
-     pass *under* the rows it is supposed to be moving over. */
+     pass *under* the row it is supposed to be moving over. */
   position: relative;
   z-index: 1;
-  /* Swing in 600ms, glow gone by 1.2s. Slower than this and the card
-     looks like it is being carried carefully rather than dealt -- the
-     arc reads at speed because the shape is doing the work, which a
-     straight line could not.
-
-     Promoted to its own layer for the duration. The card is opaque and
-     moves across live text, so without this every frame repaints the
-     rows underneath it, which is exactly the kind of jitter that reads
-     as "not smooth" at this speed. */
-  will-change: transform, opacity;
-  animation: itx-arrive 1200ms linear both;
+  /* Promoted for the duration: the card is opaque and moves across
+     live text, so without this every frame repaints the row
+     underneath it, which is the kind of cost that never shows in a
+     still and reads as "not smooth" in motion. */
+  will-change: transform;
+  /* Swing lands at 400ms, glow gone by 900. */
+  animation: itx-arrive 900ms linear both;
 }
 
 /* Straight lines between the sampled points, which is what keeps the
@@ -1100,64 +1100,61 @@ body.itx-landing-body {
    and put a hitch at every point. The one eased segment is the fade,
    which is a value rather than a path. */
 @keyframes itx-arrive {
-  /* In the deck: low in the stack, not yet drawn. */
+  /* In the deck: half a row down, not yet drawn. */
   0% {
     opacity: 0;
-    transform: translate(0, 52px);
-    background: color-mix(in srgb, var(--ld-red) 34%, var(--ld-dark));
-    box-shadow: 0 0 28px color-mix(in srgb, var(--ld-red) 26%, transparent);
+    transform: translate(0, 30px);
+    background: color-mix(in srgb, var(--ld-red) 32%, var(--ld-dark));
+    box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 24%, transparent);
   }
 
   /* Swinging out and up. */
-  5.5% {
+  5% {
     opacity: 1;
-    transform: translate(2.5px, 50.4px);
+    transform: translate(1.3px, 29.1px);
   }
 
-  11% {
-    transform: translate(9.3px, 45.9px);
+  10% {
+    transform: translate(5px, 26.5px);
   }
 
-  17% {
-    transform: translate(18.4px, 39px);
+  15% {
+    transform: translate(9.9px, 22.5px);
   }
 
-  22% {
-    transform: translate(25px, 30.5px);
+  20% {
+    transform: translate(13.5px, 17.6px);
   }
 
-  /* Widest point of the arc, halfway up. Sampling symmetrically about
-     the apex left the two neighbours at the same x, which held the
-     card against an invisible wall for 80ms; this is the extra point
-     that rounds the turn. */
+  /* Widest point of the arc, halfway up. */
+  22.5% {
+    transform: translate(14px, 15px);
+    background: color-mix(in srgb, var(--ld-red) 30%, var(--ld-dark));
+  }
+
   25% {
-    transform: translate(26px, 26px);
+    transform: translate(13.5px, 12.4px);
   }
 
-  28% {
-    transform: translate(25px, 21.5px);
-    background: color-mix(in srgb, var(--ld-red) 33%, var(--ld-dark));
+  30% {
+    transform: translate(9.9px, 7.5px);
   }
 
-  33% {
-    transform: translate(18.4px, 13px);
-  }
-
-  39% {
-    transform: translate(9.4px, 6.1px);
+  35% {
+    transform: translate(5.1px, 3.5px);
   }
 
   /* Coming back in over the top slot. */
-  44% {
-    transform: translate(2.5px, 1.6px);
+  40% {
+    transform: translate(1.3px, 0.9px);
   }
 
   /* Down, still lit. */
-  50% {
+  45% {
     opacity: 1;
     transform: translate(0, 0);
     background: color-mix(in srgb, var(--ld-red) 28%, var(--ld-dark));
-    box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 20%, transparent);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--ld-red) 18%, transparent);
     /* Holds the colour for a beat before it goes, and lands on zero
        gently -- the eye follows a fade far better than it follows a
        drop-off. */
@@ -1176,14 +1173,14 @@ body.itx-landing-body {
    just doesn't travel to say so. */
 @media (prefers-reduced-motion: reduce) {
   .itx-board-updates li.is-new {
-    animation: itx-arrive-still 1600ms ease-out both;
+    animation: itx-arrive-still 900ms ease-out both;
   }
 
   /* Held, then faded, on the same clock as the moving version -- a
      quick flash is the thing that was hard to read. */
   @keyframes itx-arrive-still {
     0%,
-    58% {
+    45% {
       background: color-mix(in srgb, var(--ld-red) 28%, transparent);
     }
 

@@ -3,6 +3,7 @@ use tracing::*;
 mod auth;
 mod board;
 mod handlers;
+mod names;
 mod node_client;
 mod store;
 
@@ -14,6 +15,7 @@ use axum::Router;
 use board::{PendingDeposit, Reputation, Task, TaskBoard, TaskStatus};
 use btclib::crypto::{PrivateKey, PublicKey};
 use btclib::util::Saveable;
+use names::NameRegistry;
 use node_client::NodeClient;
 use std::sync::Arc;
 use store::HubStore;
@@ -53,6 +55,61 @@ pub struct AppState {
     /// and would go on to call `mark_recipient_paid`/`save_faucet_grant`
     /// anyway.
     pub payout_lock: Mutex<()>,
+    /// Display names for agents (see `names`). Its own lock rather than
+    /// a field on `board`: the registry is presentation, the board is
+    /// the economy, and a read of the leaderboard should not have to
+    /// take a write lock on the board just to mint a name for an agent
+    /// that turned up since the last request.
+    pub names: RwLock<NameRegistry>,
+}
+
+impl AppState {
+    /// Names every agent in `pubkeys` that doesn't already have one, and
+    /// persists whatever is new.
+    ///
+    /// The write lock is held only for the assignment itself and dropped
+    /// before the store is touched, so a slow fsync never blocks a
+    /// concurrent reader. That ordering means a crash between the two
+    /// can lose a just-minted name -- which costs nothing, because the
+    /// agent is simply renamed on the next request. That is the opposite
+    /// of `PendingDeposit`'s persist-before-you-hand-it-out rule, and
+    /// for the opposite reason: nothing is irrecoverable here.
+    ///
+    /// Returns the resolved names. A pubkey missing from the map means
+    /// the pool is exhausted; callers render the pubkey alone rather
+    /// than failing the request.
+    async fn ensure_named(
+        &self,
+        pubkeys: impl IntoIterator<Item = PublicKey>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut resolved = std::collections::HashMap::new();
+        let mut fresh: Vec<(PublicKey, String)> = Vec::new();
+        {
+            let mut names = self.names.write().await;
+            for pubkey in pubkeys {
+                let Some((name, is_new)) = names.assign(&pubkey) else {
+                    warn!("agent name pool is exhausted; {pubkey} stays unnamed");
+                    continue;
+                };
+                if is_new {
+                    fresh.push((pubkey.clone(), name.clone()));
+                }
+                resolved.insert(pubkey.to_string(), name);
+            }
+        }
+        if !fresh.is_empty() {
+            if let Err(e) = self.store.save_agent_name_batch(&fresh) {
+                // Non-fatal on purpose: the names are already live in
+                // memory and correct for this response. The cost of a
+                // failed write is that they're re-minted after a
+                // restart, which is a cosmetic regression, not a lost
+                // record -- so it should not turn a read request into an
+                // error page.
+                error!("failed to persist {} new agent name(s): {e}", fresh.len());
+            }
+        }
+        resolved
+    }
 }
 
 #[derive(FromArgs)]
@@ -259,6 +316,33 @@ async fn main() -> Result<()> {
         board.all_pending_deposits().count()
     );
 
+    let mut names = NameRegistry::new();
+    for (pubkey, name) in store.load_all_agent_names()? {
+        names.restore(pubkey, name);
+    }
+    // Backfill: every agent the board already knows about but that
+    // predates this registry gets named now, in one transaction, rather
+    // than trickling in as each one happens to be requested. Idempotent,
+    // so a hub that has already been through this does no writes here.
+    let unnamed: Vec<PublicKey> = board
+        .all_reputation()
+        .map(|(pubkey, _)| pubkey.clone())
+        .filter(|pubkey| names.get(pubkey).is_none())
+        .collect();
+    let backfilled: Vec<(PublicKey, String)> = unnamed
+        .into_iter()
+        .filter_map(|pubkey| names.assign(&pubkey).map(|(name, _)| (pubkey, name)))
+        .collect();
+    if !backfilled.is_empty() {
+        store.save_agent_name_batch(&backfilled)?;
+    }
+    println!(
+        "{} agent name(s) known ({} newly assigned), {} still available",
+        names.len(),
+        backfilled.len(),
+        names.remaining()
+    );
+
     let state = Arc::new(AppState {
         board: RwLock::new(board),
         store,
@@ -266,6 +350,7 @@ async fn main() -> Result<()> {
         operator_private_key,
         operator_public_key,
         payout_lock: Mutex::new(()),
+        names: RwLock::new(names),
     });
 
     tokio::spawn(sweep_loop(state.clone()));

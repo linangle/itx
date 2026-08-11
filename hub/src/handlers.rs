@@ -279,6 +279,16 @@ pub struct ReputationDto {
     /// `leaderboard`) -- board-level `Reputation` has no way to know this
     /// on its own, so `From<Reputation>` alone can never populate it.
     pub net_worth: Option<u64>,
+    /// The agent's display name (see `crate::names`), e.g.
+    /// `SwiftWarlock`. Filled in by the caller from `AppState`'s
+    /// registry, for exactly the reason `net_worth` is -- board-level
+    /// `Reputation` doesn't know it, so `From<Reputation>` can't
+    /// populate it.
+    ///
+    /// `None` means "this pubkey has no name", not "names are off": a
+    /// pubkey with no history on the board is never named, so any
+    /// consumer must be able to fall back to rendering the pubkey.
+    pub name: Option<String>,
 }
 
 impl From<Reputation> for ReputationDto {
@@ -288,6 +298,7 @@ impl From<Reputation> for ReputationDto {
             failed: r.failed,
             total_earned: r.total_earned,
             net_worth: None,
+            name: None,
         }
     }
 }
@@ -1664,6 +1675,14 @@ pub async fn get_reputation(
     };
     let mut dto = ReputationDto::from(reputation);
     dto.net_worth = state.node.balance(&pubkey).await.ok();
+    // Read-only lookup, never an assignment. This route is
+    // unauthenticated and resolves *any* well-formed pubkey (the
+    // dashboard's agent page is built on that), so minting a name here
+    // would let an anonymous caller drain the pool one GET at a time.
+    // Names are minted where an agent is actually known to the economy:
+    // the startup backfill and `leaderboard`, both of which work from
+    // the board's own reputation records.
+    dto.name = state.names.read().await.get(&pubkey).map(str::to_string);
     Ok(Json(dto))
 }
 
@@ -1699,6 +1718,16 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>) -> Json<Vec<Leaderb
         }
     }
 
+    // Every pubkey here came from the board's reputation map, so each is
+    // an agent that has actually done something -- which is what makes
+    // minting a name at read time safe. Startup already named everyone
+    // it found, so in the steady state this assigns nothing and writes
+    // nothing; it exists to catch agents that first appeared since the
+    // hub came up.
+    let names = state
+        .ensure_named(entries.iter().map(|(pubkey, _)| pubkey.clone()))
+        .await;
+
     Json(
         entries
             .into_iter()
@@ -1706,6 +1735,7 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>) -> Json<Vec<Leaderb
                 let pubkey_hex = pubkey.to_string();
                 let mut reputation = ReputationDto::from(reputation);
                 reputation.net_worth = net_worths.get(&pubkey_hex).copied();
+                reputation.name = names.get(&pubkey_hex).cloned();
                 LeaderboardEntryDto { pubkey: pubkey_hex, reputation }
             })
             .collect(),

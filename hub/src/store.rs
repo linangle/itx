@@ -19,6 +19,15 @@ const FAUCET_GRANTS_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("f
 // `open_or_create` creates on demand -- no version bump needed for a
 // purely-additive table.
 const PENDING_DEPOSITS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("pending_deposits");
+// pubkey sec1 bytes -> the agent's display name (see `hub::names`).
+// Additive in exactly the same way `pending_deposits` above is, and for
+// the same reason no version bump is needed: an existing store gains the
+// table empty on the first open by a build that knows about it, and a
+// build that doesn't know about it never looks. The name is stored as a
+// plain string rather than as the (descriptor, subject) pair it was
+// built from, so a name already handed out keeps working even if the
+// word it came from is later edited out of `wordlist/`.
+const AGENT_NAMES_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("agent_names");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -70,6 +79,7 @@ impl HubStore {
             write_txn.open_table(REPUTATION_TABLE)?;
             write_txn.open_table(FAUCET_GRANTS_TABLE)?;
             write_txn.open_table(PENDING_DEPOSITS_TABLE)?;
+            write_txn.open_table(AGENT_NAMES_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
             let stored_version = match meta.get(SCHEMA_VERSION_KEY)? {
@@ -206,6 +216,55 @@ impl HubStore {
                 let reputation = ciborium::from_reader(value.value())
                     .map_err(|e: ciborium::de::Error<_>| HubStoreError::Serialization(e.to_string()))?;
                 Ok((pubkey, reputation))
+            })
+            .collect()
+    }
+
+    /// Persists one agent's display name.
+    ///
+    /// Names must be durable to be worth having: an agent that came back
+    /// as a different name after a hub restart would be actively
+    /// misleading, since the leaderboard is the one place a human tracks
+    /// an agent over time. Callers write this immediately after
+    /// `NameRegistry::assign` reports a freshly-minted name.
+    pub fn save_agent_name(&self, pubkey: &PublicKey, name: &str) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(AGENT_NAMES_TABLE)?;
+            table.insert(pubkey.to_sec1_bytes().as_slice(), name)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Same as `save_agent_name` for several agents in one transaction
+    /// (one fsync total), mirroring `save_reputation_batch`. Used by the
+    /// startup backfill, which names every pre-existing agent at once.
+    pub fn save_agent_name_batch(&self, entries: &[(PublicKey, String)]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(AGENT_NAMES_TABLE)?;
+            for (pubkey, name) in entries {
+                table.insert(pubkey.to_sec1_bytes().as_slice(), name.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn load_all_agent_names(&self) -> Result<Vec<(PublicKey, String)>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(AGENT_NAMES_TABLE)?;
+        table
+            .iter()?
+            .map(|entry| {
+                let (key, value) = entry?;
+                let pubkey = PublicKey::from_sec1_bytes(key.value())
+                    .map_err(|e| HubStoreError::BadPublicKey(e.to_string()))?;
+                Ok((pubkey, value.value().to_string()))
             })
             .collect()
     }
@@ -377,6 +436,42 @@ mod tests {
         let store = HubStore::open_or_create(&path).unwrap();
         store.save_reputation_batch(&[]).unwrap();
         assert!(store.load_all_reputation().unwrap().is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn round_trips_agent_names_singly_and_in_a_batch() {
+        let path = temp_db_path("agent_names");
+        let store = HubStore::open_or_create(&path).unwrap();
+        assert!(store.load_all_agent_names().unwrap().is_empty());
+
+        let solo = PrivateKey::new_key().public_key();
+        store.save_agent_name(&solo, "SwiftWarlock").unwrap();
+
+        let batch: Vec<(PublicKey, String)> = ["AmberOtter", "CrimsonHydra"]
+            .iter()
+            .map(|name| (PrivateKey::new_key().public_key(), name.to_string()))
+            .collect();
+        store.save_agent_name_batch(&batch).unwrap();
+
+        let loaded = store.load_all_agent_names().unwrap();
+        assert_eq!(loaded.len(), 3);
+        let find = |key: &PublicKey| {
+            loaded.iter().find(|(k, _)| k == key).map(|(_, n)| n.clone()).unwrap()
+        };
+        assert_eq!(find(&solo), "SwiftWarlock");
+        for (pubkey, name) in &batch {
+            assert_eq!(&find(pubkey), name);
+        }
+
+        // re-saving the same pubkey replaces rather than duplicates, so a
+        // restart never sees two names for one agent
+        store.save_agent_name(&solo, "SwiftWarlock").unwrap();
+        assert_eq!(store.load_all_agent_names().unwrap().len(), 3);
+
+        store.save_agent_name_batch(&[]).unwrap();
+        assert_eq!(store.load_all_agent_names().unwrap().len(), 3);
+
         std::fs::remove_file(&path).ok();
     }
 
