@@ -1146,3 +1146,30 @@ declaration now carries a comment saying why it cannot move.
 
 Gates: 55 tests, tsc, lint, build clean. Verified the board, the hero
 and the inner pages.
+
+### Round 15 — the labels were never aligned, one just looked it
+
+The user reported the second market label sitting off its panel while
+the first looked fine. Measured: label 1 drift 0, label 2 drift **29px**.
+
+The first was aligned by coincidence. Labels were their own flex row
+(`flex: 1 1 0`, sharing the width left over after the pager); panels
+were a separate flex row (`flex: 0 0 calc(44% - 4px)`, gap 20px). Two
+independent layouts over the same span, so the only item that could
+agree was the one starting at the container's left edge. Any fix that
+nudged the label row's numbers would have had to be repeated in every
+media query and would have drifted again the next time a basis changed.
+
+So the structure changed instead: each label is now a child of its
+carousel item, sharing one `--market-basis` with the panel beneath it.
+Alignment is no longer two numbers kept in agreement -- it is the same
+box. It holds at 1440, 900 and 375 with drift 0 across all three items,
+and the peeking third item gained the label it never had.
+
+The pager was the actual root cause and moved out of the flow. As a row
+item it consumed width the panels did not, which is precisely why the
+two rows resolved their percentages against different widths. It now
+sits absolutely over the right end of the label line, with a background
+so the clipped third label passes underneath rather than colliding.
+
+Gates: 55 tests, tsc, lint, build clean.
