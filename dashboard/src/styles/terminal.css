@@ -71,13 +71,28 @@
   --radius-small: 9px;
   --row-height: 34px;
 
+  /* One type scale, shared in spirit with the board's: display sizes for
+     page and detail headings, then label / lead / body / meta / micro.
+     The first iteration had fourteen distinct sizes here including
+     half-pixel steps (12.5, 11.5, 10.5), which is what "no standard"
+     looks like in practice -- adjacent sizes that differ by half a pixel
+     read as identical but have to be maintained separately. */
+  --fs-display: 30px;
+  --fs-display-sm: 26px;
+  --fs-h2: 19px;
+  --fs-label: 16px;
+  --fs-lead: 14px;
+  --fs-body: 13px;
+  --fs-meta: 12px;
+  --fs-micro: 11px;
+
   --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
 
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 14px;
+  font-size: var(--fs-lead);
   line-height: 1.45;
   min-height: 100vh;
 }
@@ -171,7 +186,7 @@ body.itx-body[data-theme="light"] {
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--text);
-  font-size: 17px;
+  font-size: var(--fs-label);
 }
 
 .itx-wordmark span {
@@ -195,7 +210,7 @@ body.itx-body[data-theme="light"] {
   font-weight: 500;
   padding: 5px 14px;
   border-radius: 999px;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
 }
 
 .itx-topnav a:hover {
@@ -216,7 +231,7 @@ body.itx-body[data-theme="light"] {
   border-radius: 999px;
   color: var(--text-dim);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-body);
   padding: 5px 14px;
   cursor: pointer;
 }
@@ -265,7 +280,7 @@ body.itx-body[data-theme="light"] {
   color: var(--text-dim);
   padding: 6px 12px;
   border-radius: 999px;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
 }
 
 .itx-sidebar a:hover {
@@ -281,20 +296,20 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx h1 {
-  font-size: 30px;
+  font-size: var(--fs-display);
   font-weight: 650;
   margin: 0 0 20px;
   letter-spacing: -0.5px;
 }
 
 .itx h2 {
-  font-size: 19px;
+  font-size: var(--fs-h2);
   margin: 0 0 12px;
   letter-spacing: -0.2px;
 }
 
 .itx h3 {
-  font-size: 13px;
+  font-size: var(--fs-body);
   margin: 0 0 8px;
   color: var(--text-dim);
   font-weight: 600;
@@ -312,7 +327,7 @@ body.itx-body[data-theme="light"] {
 .itx-panel-head {
   padding: 11px 14px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
   color: var(--text-dim);
   text-transform: uppercase;
@@ -345,7 +360,7 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-stat-label {
-  font-size: 11px;
+  font-size: var(--fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.7px;
   color: var(--card-fill-dim);
@@ -353,14 +368,14 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-stat-value {
-  font-size: 26px;
+  font-size: var(--fs-display-sm);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.5px;
 }
 
 .itx-stat-sub {
-  font-size: 11.5px;
+  font-size: var(--fs-micro);
   color: var(--card-fill-dim);
   margin-top: 4px;
 }
@@ -388,7 +403,7 @@ body.itx-body[data-theme="light"] {
 .itx-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 /* `background`/`border` are set explicitly (not just the bottom edge)
@@ -400,7 +415,7 @@ body.itx-body[data-theme="light"] {
   text-align: left;
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
   background: transparent;
   text-transform: uppercase;
@@ -446,7 +461,7 @@ body.itx-body[data-theme="light"] {
   padding: 26px 12px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 /* ---------------------------------------------------------------- badges */
@@ -456,7 +471,7 @@ body.itx-body[data-theme="light"] {
   padding: 1px 8px;
   border-radius: 999px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -491,14 +506,14 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-kind {
-  font-size: 11px;
+  font-size: var(--fs-micro);
   color: var(--text-dim);
   font-family: var(--font-mono);
 }
 
 .itx-pubkey {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--accent-text);
 }
 
@@ -524,7 +539,7 @@ body.itx-body[data-theme="light"] {
   border-radius: 999px;
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-body);
   padding: 6px 14px;
 }
 
@@ -540,7 +555,7 @@ body.itx-body[data-theme="light"] {
   border-radius: 999px;
   color: var(--brand-contrast);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
   padding: 7px 16px;
   cursor: pointer;
@@ -575,7 +590,7 @@ body.itx-body[data-theme="light"] {
   border: 1px solid color-mix(in srgb, var(--text-faint) 26%, transparent);
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-micro);
 }
 
 a.itx-chip:hover {
@@ -592,7 +607,7 @@ a.itx-chip:hover {
   gap: 10px;
   padding: 10px 14px;
   border-top: 1px solid var(--border);
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
 }
 
@@ -606,7 +621,7 @@ a.itx-chip:hover {
   border-radius: 999px;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   padding: 4px 14px;
   cursor: pointer;
 }
@@ -635,7 +650,7 @@ a.itx-chip:hover {
 }
 
 .itx-detail-title {
-  font-size: 27px;
+  font-size: var(--fs-display-sm);
   font-weight: 650;
   letter-spacing: -0.5px;
   margin: 0 0 14px;
@@ -645,13 +660,13 @@ a.itx-chip:hover {
 .itx-detail-bounty {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 30px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: -1px;
 }
 
 .itx-detail-bounty small {
-  font-size: 14px;
+  font-size: var(--fs-lead);
   font-weight: 500;
   color: var(--text-dim);
   margin-left: 5px;
@@ -661,7 +676,7 @@ a.itx-chip:hover {
 .itx-back {
   display: inline-block;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
   margin-bottom: 16px;
 }
@@ -705,7 +720,7 @@ a.itx-chip:hover {
 
 .itx-step-label {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--text-faint);
@@ -743,7 +758,7 @@ a.itx-chip:hover {
    rather than being forced onto one line like a table cell. */
 .itx-answer {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -765,7 +780,7 @@ a.itx-chip:hover {
 
 .itx-callout-head {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--down);
@@ -780,12 +795,12 @@ a.itx-chip:hover {
   gap: 9px 16px;
   padding: 14px;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .itx-facts dt {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--text-faint);
@@ -799,7 +814,7 @@ a.itx-chip:hover {
 
 .itx-key {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   overflow-wrap: anywhere;
   color: var(--text-dim);
 }
