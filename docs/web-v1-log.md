@@ -1563,3 +1563,43 @@ home, still gone.
   browsing, and a fresh visit starts with the tape again.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 25 — arrivals land with a glow
+
+A task that shows up on the tape now drops into the top slot and the
+whole row glows red, fading as it settles. The wash and the halo are
+painted on the *row*, not the panel: what is new is one headline, and
+lighting the whole panel for it would say the section changed rather
+than that a task arrived. Timing is lopsided on purpose -- the movement
+is done in the first fifth of a second, and the rest is the glow
+burning off. A slow slide with a quick flash reads as a sluggish list
+rather than as news landing.
+
+**"New" is decided by comparing ids with the previous poll**, not by
+reading `created_at`. That field says when the hub made the task, not
+when this page first saw it; a board left open for a minute would
+otherwise flash rows that are merely recent. The first population is
+deliberately silent -- on a fresh load every row is new, and animating
+all six at once reads as a glitch.
+
+  The comparison runs in an effect rather than inline during render,
+  and that is not a style preference. Writing to the ref while
+  rendering would work exactly once: React calls a render twice in
+  development, and the second pass would compare the new ids against
+  themselves, find nothing, and the animation would only ever appear in
+  production builds. The cost -- the class lands a frame after the row
+  -- is exactly when a CSS animation wants it.
+
+Reduced motion keeps the glow and drops the travel: the row still says
+it is new, it just doesn't move to say so.
+
+  Verifying this against a hidden preview pane took a detour worth
+  recording. A background tab throttles `setInterval` to roughly once a
+  minute, so a 500ms sampler is really a 60s sampler and the obvious
+  "watch for the class" loop reports nothing. It did catch one real
+  arrival -- a new task at the top carrying `is-new` with its animation
+  `running` -- and the rest was pinned down by driving the animation
+  directly: seeking it to 100ms reads the row at 25% red, and to 980ms
+  reads it at zero.
+
+Gates: 55 tests, tsc, lint, build clean.

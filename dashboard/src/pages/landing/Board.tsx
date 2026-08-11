@@ -67,6 +67,48 @@ function ago(iso: string): string {
   return rel === "just now" ? rel : `${rel} ago`;
 }
 
+/** Which of the tape's rows landed on this poll, so they can be marked
+ * as arrivals and animated in.
+ *
+ * The comparison is against the *previous* set of ids rather than a
+ * timestamp: a task's `created_at` says when the hub made it, not when
+ * this page first saw it, and a board that has been open for a minute
+ * would otherwise flash rows that are merely recent.
+ *
+ * Done in an effect rather than during render. Working it out inline
+ * would mean writing to the ref while rendering, and React calls a
+ * render twice in development -- the second pass would compare the new
+ * ids against themselves and find nothing new, so the animation would
+ * only ever appear in production. The cost is that the class lands a
+ * frame after the row does, which is exactly when a CSS animation
+ * wants it anyway.
+ *
+ * The first population is deliberately silent: on a fresh load every
+ * row is new, and animating all six at once reads as a glitch rather
+ * than as news arriving. */
+function useArrivals(latest: TaskDto[]): Set<string> {
+  const seen = useRef<Set<string> | null>(null);
+  const [arrivals, setArrivals] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    const ids = latest.map((t) => t.id);
+    const previous = seen.current;
+    seen.current = new Set(ids);
+    if (!previous) return;
+
+    const fresh = ids.filter((id) => !previous.has(id));
+    // Replaces rather than adds: last poll's arrivals have finished
+    // animating and should drop the class, or a row that stays at the
+    // top would glow again every time the list is rebuilt.
+    if (fresh.length > 0 || arrivals.size > 0) setArrivals(new Set(fresh));
+    // `arrivals` is read to decide whether clearing is needed; adding it
+    // to the deps would re-run this on its own state change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latest]);
+
+  return arrivals;
+}
+
 interface AgentRow {
   pubkey: string;
   earned: number;
@@ -215,6 +257,8 @@ export default function Board({
     [items],
   );
 
+  const arrivals = useArrivals(latest);
+
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
   const [leaderFit, leaderRows] = useFitRows();
@@ -240,37 +284,41 @@ export default function Board({
       <div className="itx-board-inner">
         <QuoteStrip kinds={kinds} windowLabel={window.label} />
 
-        <h2 className="itx-board-title">market overview</h2>
+        {/* Laid out on the same three columns as the board below, with the
+         * heading and the pager both in the middle one: the title starts
+         * where the first market panel starts, and the pager sits over the
+         * carousel's right end. Keeping the pager up here rather than on
+         * the label line is what stops it colliding with the category
+         * names it used to sit among. */}
+        <div className="itx-board-head">
+          <h2 className="itx-board-title">market overview</h2>
+
+          <div className="itx-board-pager">
+            <button
+              type="button"
+              aria-label="Previous category"
+              onClick={() => setPage((p) => (p + markets.length - 1) % Math.max(1, markets.length))}
+            >
+              <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
+                <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              aria-label="Next category"
+              onClick={() => setPage((p) => (p + 1) % Math.max(1, markets.length))}
+            >
+              <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
+                <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
+              </svg>
+            </button>
+          </div>
+        </div>
 
         <div className="itx-board-cols">
           <BoardNav markets={markets} page={page} onSelect={setPage} />
 
           <div className="itx-board-markets" id="itx-board-markets">
-            {/* Floated over the track's right end rather than being a row
-             * item: it must not take part in the width the panels divide
-             * up, or the labels and the panels resolve their percentages
-             * against different widths and stop lining up. */}
-            <div className="itx-board-pager">
-                <button
-                  type="button"
-                  aria-label="Previous category"
-                  onClick={() => setPage((p) => (p + markets.length - 1) % Math.max(1, markets.length))}
-                >
-                  <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
-                    <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Next category"
-                  onClick={() => setPage((p) => (p + 1) % Math.max(1, markets.length))}
-                >
-                  <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
-                    <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
-                  </svg>
-                </button>
-            </div>
-
             <div className="itx-board-carousel">
               {ordered.map((m) => (
                 // Label and panel are one item, so the label cannot drift
@@ -294,7 +342,17 @@ export default function Board({
           </div>
 
           <div className="itx-board-rail">
-            <span className="itx-board-label">leaderboard</span>
+            {/* Two lines, like a market's label: the count is worth having
+             * on its own, and it is also what keeps this label the same
+             * height as the ones beside it -- so the leaderboard panel
+             * starts level with the market panels. A non-breaking space
+             * holds the second line open until the hub answers. */}
+            <span className="itx-board-label">
+              leaderboard
+              <span className="itx-board-label-sub">
+                {leaders.data ? `${formatCount(leaders.data.length)} agents` : "\u00a0"}
+              </span>
+            </span>
             <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">
               <div className="itx-board-search">
                 <SearchIcon />
@@ -378,7 +436,7 @@ export default function Board({
                 <li className="itx-board-note">nothing on the tape yet.</li>
               )}
               {latest.slice(0, latestRows).map((t) => (
-                <li key={t.id}>
+                <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
                   <span className="itx-board-dot" aria-hidden="true" />
                   <span className="itx-board-when">{ago(t.created_at)}</span>
                   <Link to={`/tasks/${t.id}`}>{t.description}</Link>
@@ -559,7 +617,14 @@ function BoardNav({
 
   return (
     <nav className="itx-board-nav" aria-label="Board sections">
-      <span className="itx-board-label">navigate</span>
+      {/* Where the other columns have a label. A list of section names
+       * needs no heading -- but it does need the height one takes, or
+       * this panel would start above the panels it sits beside. Two
+       * lines, matching a market's name-and-size label. */}
+      <span className="itx-board-label itx-board-label-spacer" aria-hidden="true">
+        {"\u00a0"}
+        <span className="itx-board-label-sub">{"\u00a0"}</span>
+      </span>
       <div className="itx-board-panel itx-board-panel-nav">
         <ul className="itx-board-navlist">
           <li>

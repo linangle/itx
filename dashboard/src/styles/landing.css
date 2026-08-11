@@ -442,6 +442,13 @@ body.itx-landing-body {
 }
 
 .itx-board-inner {
+  /* The board's fixed side columns, named here because two rows resolve
+     against them: the columns themselves, and the heading line above,
+     whose title and pager have to start and end where the market
+     carousel does. */
+  --col-nav: 172px;
+  --col-rail: 232px;
+
   /* Establishes a block formatting context so the quote strip's
    * negative top margin cannot collapse out through here and drag the
    * whole board box up with it -- which pulled the grid layer 58px
@@ -454,8 +461,29 @@ body.itx-landing-body {
   padding: 0 var(--sp-11);
 }
 
-.itx-board-title {
+/* The heading line: the title over the carousel's first panel, the pager
+   over its last, both centred on the same line so the arrows sit clear of
+   the category names below. */
+.itx-board-head {
+  display: grid;
+  grid-template-columns: var(--col-nav) minmax(0, 1fr) var(--col-rail);
+  gap: var(--sp-8);
+  align-items: center;
   margin: var(--gap-section) 0 var(--gap-heading);
+}
+
+.itx-board-head .itx-board-title,
+.itx-board-head .itx-board-pager {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.itx-board-head .itx-board-pager {
+  justify-self: end;
+}
+
+.itx-board-title {
+  margin: 0;
   font-size: var(--fs-title);
   font-weight: 700;
   letter-spacing: -0.012em;
@@ -652,7 +680,7 @@ body.itx-landing-body {
 
 .itx-board-cols {
   display: grid;
-  grid-template-columns: 172px minmax(0, 1fr) 232px;
+  grid-template-columns: var(--col-nav) minmax(0, 1fr) var(--col-rail);
   gap: var(--sp-8);
   /* Deliberately not `align-items: start`: both columns take the row's
      height so they finish on the same line, as the mockup has them.
@@ -686,21 +714,15 @@ body.itx-landing-body {
   min-width: 0;
 }
 
-/* Sits over the right end of the label line rather than in the flow.
-   As a row item it would have consumed width the panels do not, which
-   is what made the labels and the panels disagree. The background is
-   there to occlude the clipped third label passing underneath. */
+/* Lives on the heading line now, not over the labels. Down there it had
+   to be floated out of the flow -- as a row item it would have consumed
+   width the panels do not, and the labels and panels stopped lining up --
+   and even then it crowded whichever category name was clipped beneath
+   it. Up here it is simply a grid item. */
 .itx-board-pager {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 1;
-  height: calc(var(--fs-label) * 1.25);
   display: flex;
   align-items: center;
   gap: var(--sp-4);
-  padding-left: var(--sp-4);
-  background: var(--ld-dark);
   color: var(--ld-sub);
 }
 
@@ -992,6 +1014,63 @@ body.itx-landing-body {
   gap: var(--sp-6);
   height: var(--row-h);
   font-size: var(--fs-body);
+  /* Only visible while a row is glowing -- it gives the wash a shape
+     instead of a full-bleed band with square corners. */
+  border-radius: var(--r-field);
+}
+
+/* A row that landed on the last poll: it drops into the top slot and
+   the whole line glows red, which fades as it settles.
+
+   The wash and the halo are painted on the row rather than on the
+   panel. What is new is one headline, and lighting the whole panel for
+   it would say the section changed rather than that a task arrived.
+
+   Timing is deliberately lopsided: the movement is over in the first
+   fifth, and the rest of the second is the glow burning off. Reversing
+   that -- a slow slide with a quick flash -- reads as the list being
+   sluggish rather than as news landing. */
+.itx-board-updates li.is-new {
+  animation: itx-arrive 1000ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@keyframes itx-arrive {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+    background: color-mix(in srgb, var(--ld-red) 38%, transparent);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--ld-red) 34%, transparent);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    background: transparent;
+    box-shadow: 0 0 0 transparent;
+  }
+}
+
+/* Same news, no movement: the glow still marks which row is new, it
+   just doesn't travel to say so. */
+@media (prefers-reduced-motion: reduce) {
+  .itx-board-updates li.is-new {
+    animation: itx-arrive-still 1000ms ease-out both;
+  }
+
+  @keyframes itx-arrive-still {
+    0% {
+      background: color-mix(in srgb, var(--ld-red) 38%, transparent);
+    }
+
+    100% {
+      background: transparent;
+    }
+  }
 }
 
 .itx-board-dot {
@@ -1040,6 +1119,22 @@ body.itx-landing-body {
   .itx-board-cols {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--sp-7);
+  }
+
+  /* Stacked, there is no nav column to clear, so the title goes back to
+     the page's left edge and the pager to its right. */
+  .itx-board-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .itx-board-head .itx-board-title,
+  .itx-board-head .itx-board-pager {
+    grid-column: 1;
+  }
+
+  /* Nothing left to line up with once the columns stack. */
+  .itx-board-label-spacer {
+    display: none;
   }
 
   /* Stacked, the nav is no longer sized by a row it shares with the
