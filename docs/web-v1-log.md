@@ -3221,3 +3221,94 @@ new stops (0.68 / 0.38 / 0.14) hold **0.40x**, with the tail carrying
 Gates: 128 tests, lint and tsc clean on the touched files. Checked in
 both themes; the covered fraction is 24/75 of the strip on the live
 board, and 24/62 in the harness, which has one quote rather than six.
+
+### Round 42 — the rails stay put, and the sectors get a map
+
+**The trends change was being painted outside its panel.** Reported as
+"can't see the change", and the cause was two steps back: the rail is
+232px, nothing capped the tag column, so a long hyphenated tag wrapped
+to a second line -- which broke the fixed `--row-h` *and* pushed the
+percentage past the panel's edge, where it was clipped mid-number. The
+first fix (nowrap and an ellipsis, as the market panels already had) got
+the rows back to 34px but still left the table 8px wider than its panel:
+a `max-width` in ch is a *preferred* width to automatic table layout, so
+the table kept sizing itself to the longest tag. That table is
+`table-layout: fixed` now, with the sparkline and percentage columns
+declared and the name column taking what is left. Measured after: table
+right edge 1375 against a panel edge of 1392, and full percentages
+(`+300.00%`) on every row.
+
+**Trends links are grey.** Every row in that panel is a link, so the
+blue had stopped reading as "these are links" and started reading as a
+colour the panel happened to be painted in. The sparkline and the change
+carry the colour there now, which are the two things in the row that
+mean something by being coloured.
+
+**The nav and the rail are pinned.** Both are `position: sticky` under
+the masthead and exactly as tall as what is left of the viewport, and
+`.itx-board-cols` gained `align-items: start` -- stretching was right
+while the three columns were the same height, but the middle one is
+taller than the screen now and stretching the pinned pair to *that*
+would leave them taller than the viewport with nothing to pin against.
+A definite height is also what the panels inside need, since the trends
+panel takes the rail's slack with `flex: 1` and `useFitRows` divides a
+real height.
+
+  The tape moved into the middle column to match, where it now shares
+  the markets' bounds exactly (measured: both at x=244, 892 wide). It
+  had been spanning the full board width below the three columns, which
+  with two of them pinned would have left it running underneath them.
+
+  Verified by scrolling: over 400px of scroll the pinned columns travel
+  153 and stop, while the tape moves the full 400. They release exactly
+  when the columns end, finishing level with the middle column rather
+  than leaving it hanging.
+
+**A position indicator under the carousel.** The row's real scrollbar is
+hidden -- the peek and its dissolve are what say "there is more this
+way" -- so this is the same information drawn to match the board: a
+hairline track with a thumb as wide a fraction of it as the row is of
+its scroll width. Both numbers are custom properties `useCarousel`
+writes on the parent each scroll frame, off React's render path, the
+same arrangement the edge fade already used and for the same reason: a
+free-scrolling row moves on frames that change nothing React renders.
+Measured across the travel: progress 0 to 1 moves the thumb 0 to 565px
+on an 892px track with a 327px thumb -- exactly the track less the
+thumb, linear throughout.
+
+**And a sector breakdown under the tape**, after the reference: a table
+of sectors by weight on the left, a treemap on the right. The layout is
+a squarified treemap (`lib/treemap.ts`) rather than slice-and-dice,
+which on this data would render the smallest sector as a 16px hairline
+400px tall -- a box that shape cannot carry a label. It is pure
+geometry, so the awkward parts are properties rather than fixtures:
+areas proportional, no overlap, exact coverage, every box inside its
+bounds, and an aspect ratio under 4 for all of them. Confirmed against
+the live board at 100.2% coverage, the 0.2% being the 1px gutters.
+
+  Size and colour deliberately carry *different* facts, which is the one
+  thing worth being careful about here: a tile's area is its share of
+  the value on offer, and its tint is its change -- how much is there
+  against which way it is going. The tint is stepped rather than
+  continuous so sectors of similar standing read as one colour, and the
+  ladder is in a legend because a colour scale whose thresholds nobody
+  can read is decoration. The reference's own ±3% ladder is useless
+  here, where a sector routinely doubles over the window, so the steps
+  are 25/50/100%.
+
+  Selection is by click and by nothing else. It was briefly on hover
+  too, which looked free and was a bug the test caught: moving onto a
+  row selected it, so the click that followed found it already selected
+  and toggled it straight off -- two mechanisms owning one state, the
+  more discoverable silently cancelling the other.
+
+Verified in a real browser this time, the first round that has been.
+Two things it could not show: this browser dispatches no scroll event
+for a programmatic scroll (already known from Round 37), so the
+indicator was driven by dispatching the event and reading the geometry;
+and it does not advance CSS transitions, so the dim was confirmed by
+disabling the transition and watching the value land at 0.35. Its
+screenshots come back blank at any scroll position, so everything above
+is measured off the DOM rather than looked at.
+
+Gates: 144 dashboard tests (16 new), tsc, lint, build.
