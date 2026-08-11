@@ -158,8 +158,15 @@ export default function MarketLine() {
     /** Canvas y of the dotted baseline: the floor the price walks on and
      * the top of the bloom. */
     let baseY = 0;
-    /** Canvas y the bloom has faded to nothing by -- the quote strip's
-     * top edge, not the canvas bottom. */
+    /** Canvas y the bloom has faded to nothing by: the canvas bottom,
+     * which sits `--bd-overlap` *below* the quote strip's top edge. So
+     * the bloom is still alight where the strip starts and the strip
+     * covers its last stretch -- that overlap is the point, and it is
+     * what puts the strip on the chart rather than under it. It reads
+     * as depth rather than as clipping because the strip is inset from
+     * the page: in the gutters either side there is nothing to cover
+     * the glow, and it carries on down past the strip's top edge in
+     * plain view. */
     let glowY = 0;
     /** Smoothed vertical bounds of the visible window. A real chart
      * rescales to the data it is showing, which is also what keeps the
@@ -196,7 +203,7 @@ export default function MarketLine() {
       // The floor is for short, wide windows, where 17vh is small enough
       // that a fixed band would leave the price nowhere to move.
       baseY = Math.max(height * 0.45, height - overlap - band);
-      glowY = Math.max(baseY + 1, height - overlap);
+      glowY = Math.max(baseY + 1, height);
       const need = Math.ceil(width / spacing) + 3;
       // Keep the visible shape across a resize; extend or trim only.
       while (prices.length < need) prices.push(nextPrice(walk));
@@ -381,14 +388,21 @@ export default function MarketLine() {
       // does not, so how deep it *looks* is wherever strength x ramp
       // falls under seeing. A linear ramp crosses that threshold at
       // nearly the same depth however bright the column is -- an even
-      // stripe that merely brightens. A fast drop with a long faint tail
-      // puts the crossing somewhere different for each: the tail is
-      // under the floor at `GLOW_MIN` and just above it at `GLOW_MAX`,
-      // so crests reach and troughs don't.
+      // stripe that merely brightens. A curve puts the crossing
+      // somewhere different for each, so crests reach and troughs don't.
+      //
+      // Gentler than the curve this started as, because the strip's top
+      // edge cuts the band at its midpoint and the glow has to still be
+      // burning there -- the whole point of the overlap. The first
+      // version was down to 15% by that edge, which is lit, but barely
+      // enough to tell from having faded out; this holds ~38%, so the
+      // strip plainly covers live chart. The tail below the edge is
+      // hidden anyway except in the gutters, where it wants to look like
+      // it is running out rather than being sliced.
       const band = glowY / height - base;
-      fade.addColorStop(base + 0.2 * band, "rgba(0, 0, 0, 0.55)");
-      fade.addColorStop(base + 0.45 * band, "rgba(0, 0, 0, 0.22)");
-      fade.addColorStop(base + 0.72 * band, "rgba(0, 0, 0, 0.07)");
+      fade.addColorStop(base + 0.22 * band, "rgba(0, 0, 0, 0.68)");
+      fade.addColorStop(base + 0.5 * band, "rgba(0, 0, 0, 0.38)");
+      fade.addColorStop(base + 0.78 * band, "rgba(0, 0, 0, 0.14)");
       fade.addColorStop(glowY / height, "rgba(0, 0, 0, 0)");
       fade.addColorStop(1, "rgba(0, 0, 0, 0)");
       bctx.fillStyle = fade;

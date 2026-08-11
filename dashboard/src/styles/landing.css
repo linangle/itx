@@ -49,18 +49,23 @@ body.itx-landing-body[data-theme="light"] {
    * from its own bottom edge, so the two have to agree, and a token is
    * the only way for them to agree without one of them guessing.
    *
-   * The bloom fades out by the strip's top edge rather than the canvas
-   * bottom -- an opaque strip cutting off a live glow reads as a
-   * clipping bug -- so this is also how much of the glow is actually on
-   * screen, and -- because the strip's own pull-up is a fixed
-   * `--bd-overlap` off the box's bottom, independent of this band --
-   * it is also exactly the gap between the rule and the strip's top
-   * edge. 24px, not the 56 an earlier round widened it to for the
-   * bloom's falloff: that put the rule a whole strip-height above the
-   * box, floating clear of it, where the reference has the dotted line
-   * landing inside the box's top third. The falloff stops below are
-   * fractions of this band, so they compress with it and the glow
-   * still reads as a wave, just a tighter one. */
+   * The strip's own pull-up is a fixed `--bd-overlap` off the box's
+   * bottom, independent of this band, so this is exactly how far the
+   * rule clears the strip's top edge -- and the bloom under it runs the
+   * whole way to the canvas bottom, `--bd-overlap` past that edge and
+   * behind the strip. The chart and the strip are meant to *overlap*:
+   * the reference has the strip's top third sitting on live chart, not
+   * starting where the chart has already faded out. An earlier round
+   * had the bloom stop at the strip's edge for fear a cut-off glow
+   * would read as a clipping bug; it instead read as a gap, which is
+   * the worse of the two, and the gutters either side of the strip
+   * settle it -- there the glow carries on down in plain view, so the
+   * covered stretch reads as depth.
+   *
+   * 24px, not the 56 an earlier round widened it to for the bloom's
+   * falloff: that floated the rule a whole strip-height clear of the
+   * box. The falloff stops are fractions of the band, so they follow it
+   * and the glow still reads as a wave, just over a shorter run. */
   --ld-chart-base: 24px;
 
   /* Heights of the two sticky bar rows. Declared rather than measured

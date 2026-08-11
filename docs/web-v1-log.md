@@ -3187,3 +3187,37 @@ passes a pubkey and lets the hash decide.
 
 Gates: 128 dashboard tests (5 new, pinning the shared-placement rule),
 tsc, lint, build clean.
+
+### Round 42 — the overlap was the point, not the clearance
+
+Round 41 read "overlap the top third of the bar" as *clearance* and put
+a 24px gap between the dotted rule and the quote strip's top edge. The
+opposite was wanted: the strip is meant to sit **on** live chart, its
+top third covering the bloom, the way the reference has it.
+
+The gap was not the 24px of geometry -- that part was right, and stays.
+It was the bloom's falloff, which Round 37 made reach zero exactly at
+the strip's top edge, out of a worry that an opaque strip cutting off a
+live glow would read as a clipping bug. It read as a gap instead, which
+is the worse of the two, and the worry was misplaced anyway: the strip
+is inset 48px from the page, so in the gutters either side there is
+nothing to cover the glow and it carries on down in plain view. The
+covered stretch reads as depth, not as a slice.
+
+Two changes, both in the bloom:
+
+**It now runs to the canvas bottom** (`glowY = height`) rather than to
+the strip's top edge, so its last `--bd-overlap` of travel is behind
+the strip.
+
+**And its falloff is gentler**, because the strip's edge cuts the band
+at its midpoint and the glow has to still be burning there. Measured as
+a ratio down a column -- the wave's strength is constant vertically, so
+this isolates the ramp -- the first curve was at 0.19x its under-rule
+strength by that edge: lit, but hard to tell from having faded out. The
+new stops (0.68 / 0.38 / 0.14) hold **0.40x**, with the tail carrying
+0.28 -> 0.16 -> 0.07 below it for the gutters.
+
+Gates: 128 tests, lint and tsc clean on the touched files. Checked in
+both themes; the covered fraction is 24/75 of the strip on the live
+board, and 24/62 in the harness, which has one quote rather than six.
