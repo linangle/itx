@@ -17,7 +17,7 @@
 // explicitly rather than read from the clock, so tests are deterministic.
 // That mirrors how the Rust side threads `now` through `TaskBoard`.
 
-import type { TaskDto } from "./hub";
+import type { BoardSummaryDto, TaskDto } from "./hub";
 import { sectorOf } from "./sectors";
 
 export interface BucketOptions {
@@ -413,4 +413,114 @@ export function boardTotals(tasks: TaskDto[], options: BucketOptions = {}): Boar
     postedSeries,
     postedChangePct: periodChangePct(postedSeries),
   };
+}
+
+// ---------------------------------------------------------------------
+// From the hub's board summary
+// ---------------------------------------------------------------------
+//
+// Everything above derives the board's aggregates from the task list,
+// which means downloading it. The hub can compute the same buckets once
+// (`/board/summary`, `handlers::board_summary`) and send a few kilobytes
+// instead, and these turn that response into the same shapes the board
+// already renders.
+//
+// The split of responsibilities is deliberate. The hub does the part
+// that is O(tasks) and identical for every viewer: counting, summing,
+// bucketing. The client does the part that is a product decision --
+// what counts as a trend, how tags group into sectors -- which is O(24)
+// per row and would otherwise be frozen into the protocol.
+//
+// One honest difference from `summarizeBySector`. Working from the task
+// list, a task tagged into two markets of the *same* sector is counted
+// once for that sector. Working from the summary there are no task
+// identities to deduplicate against, only per-tag totals, so it counts
+// once per market. Nothing on the board carries two tags of one sector
+// today, and the fixture never emits multi-tag tasks at all; if that
+// changes and the difference starts to matter, the fix is a sector
+// grouping the hub can compute, not a bigger download here.
+
+/** The label for a window the hub picked, matched back to the ladder
+ * both sides share. An unrecognised width is labelled by its own size
+ * rather than guessed at -- a hub that adds a preset should show it, not
+ * be rounded into the nearest one this build happens to know. */
+export function windowFromSummary(summary: BoardSummaryDto): SeriesWindow {
+  const known = WINDOW_PRESETS.find((preset) => preset.windowMs === summary.window_ms);
+  if (known) return known;
+  const hours = Math.round(summary.window_ms / HOUR_MS);
+  return {
+    windowMs: summary.window_ms,
+    label: hours >= 24 ? `${Math.round(hours / 24)}D` : `${hours}H`,
+  };
+}
+
+/** The trends rail's rows, from the summary rather than the task list.
+ * Ranked and truncated exactly as `summarizeByCapability` does, so the
+ * two paths are interchangeable. */
+export function capabilitiesFromSummary(
+  summary: BoardSummaryDto,
+  limit = 8,
+): CapabilitySummary[] {
+  return summary.capabilities
+    .map((c) => ({
+      capability: c.capability,
+      open: c.open,
+      openBounty: c.open_bounty,
+      series: c.posted_series,
+      changePct: periodChangePct(c.posted_series),
+    }))
+    .sort((a, b) => b.open - a.open || b.openBounty - a.openBounty)
+    .slice(0, limit);
+}
+
+/** The board's sectors and their markets, from the summary.
+ *
+ * The change guard travels with it: below two active buckets there is
+ * nothing to compare and the column shows a dash rather than turning a
+ * single posting into a confident-looking +100%. */
+export function sectorsFromSummary(summary: BoardSummaryDto): SectorSummary[] {
+  const bySector = new Map<string, SectorSummary>();
+
+  for (const c of summary.capabilities) {
+    const active = c.bounty_series.filter((v) => v > 0).length;
+    const market: MarketSummary = {
+      capability: c.capability,
+      open: c.open,
+      openBounty: c.open_bounty,
+      // Cumulative for shape, change from the per-bucket sums -- a
+      // cumulative series only rises and would read as permanently up.
+      series: cumulative(c.bounty_series),
+      changePct: active >= 2 ? periodChangePct(c.bounty_series) : null,
+    };
+
+    const name = sectorOf(c.capability);
+    let sector = bySector.get(name);
+    if (!sector) {
+      sector = {
+        name,
+        open: 0,
+        openBounty: 0,
+        posted: 0,
+        markets: [],
+        series: new Array<number>(summary.buckets).fill(0),
+        changePct: null,
+      };
+      bySector.set(name, sector);
+    }
+    sector.open += c.open;
+    sector.openBounty += c.open_bounty;
+    sector.posted += c.posted;
+    sector.markets.push(market);
+    for (let i = 0; i < sector.series.length && i < c.posted_series.length; i++) {
+      sector.series[i] += c.posted_series[i];
+    }
+  }
+
+  return [...bySector.values()]
+    .map((sector) => ({
+      ...sector,
+      markets: sector.markets.sort((a, b) => b.openBounty - a.openBounty || b.open - a.open),
+      changePct: periodChangePct(sector.series),
+    }))
+    .sort((a, b) => b.openBounty - a.openBounty || b.open - a.open);
 }

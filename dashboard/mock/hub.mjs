@@ -703,6 +703,120 @@ function leaderboard() {
     .sort((a, b) => b.total_earned - a.total_earned);
 }
 
+// ------------------------------------------------------- board summary
+//
+// Mirrors `handlers::board_summary` field for field, including the
+// window ladder and the 24 buckets, so the dashboard's summary client
+// can be developed against this and then meet the real hub unchanged.
+// Recomputed per request rather than cached: the live ticker below moves
+// tasks under it, and a fixture that served a stale summary while
+// `/tasks` moved would be worse than one that is merely slow.
+
+const SUMMARY_BUCKETS = 24;
+const SUMMARY_WINDOWS_MS = [3_600_000, 21_600_000, 86_400_000, 604_800_000, 2_592_000_000, 7_776_000_000];
+const SUMMARY_DEFAULT_WINDOW_MS = 604_800_000;
+
+function boardSummary() {
+  const now = Date.now();
+  const zeros = () => new Array(SUMMARY_BUCKETS).fill(0);
+
+  let oldest = Infinity;
+  for (const t of TASKS) {
+    const at = Date.parse(t.created_at);
+    if (Number.isFinite(at) && at < oldest) oldest = at;
+  }
+  const window_ms = !Number.isFinite(oldest)
+    ? SUMMARY_DEFAULT_WINDOW_MS
+    : (SUMMARY_WINDOWS_MS.find((w) => w >= Math.max(0, now - oldest)) ??
+       SUMMARY_WINDOWS_MS[SUMMARY_WINDOWS_MS.length - 1]);
+
+  const start = now - window_ms;
+  const bucketMs = window_ms / SUMMARY_BUCKETS;
+  const bucketOf = (t) => {
+    const at = Date.parse(t.created_at);
+    if (!Number.isFinite(at) || at < start || at > now) return null;
+    return Math.min(SUMMARY_BUCKETS - 1, Math.floor((at - start) / bucketMs));
+  };
+
+  const totals = {
+    open_tasks: 0,
+    open_bounty: 0,
+    paid_tasks: 0,
+    paid_bounty: 0,
+    posted_series: zeros(),
+  };
+  const kinds = ["hash_match", "consensus", "disputable"].map((kind) => ({
+    kind,
+    open: 0,
+    open_bounty: 0,
+    posted: 0,
+    posted_series: zeros(),
+  }));
+  const capabilities = new Map();
+
+  for (const t of TASKS) {
+    const b = bucketOf(t);
+    const isOpen = t.status === "Open";
+    if (isOpen) {
+      totals.open_tasks += 1;
+      totals.open_bounty += t.bounty;
+    }
+    if (t.status === "Paid") {
+      totals.paid_tasks += 1;
+      totals.paid_bounty += t.bounty;
+    }
+    if (b !== null) totals.posted_series[b] += 1;
+
+    const kind = kinds.find((k) => k.kind === t.kind);
+    if (kind) {
+      kind.posted += 1;
+      if (isOpen) {
+        kind.open += 1;
+        kind.open_bounty += t.bounty;
+      }
+      if (b !== null) kind.posted_series[b] += 1;
+    }
+
+    for (const capability of new Set(t.capabilities)) {
+      let entry = capabilities.get(capability);
+      if (!entry) {
+        entry = {
+          capability,
+          open: 0,
+          open_bounty: 0,
+          posted: 0,
+          posted_series: zeros(),
+          bounty_series: zeros(),
+        };
+        capabilities.set(capability, entry);
+      }
+      entry.posted += 1;
+      if (isOpen) {
+        entry.open += 1;
+        entry.open_bounty += t.bounty;
+      }
+      if (b !== null) {
+        entry.posted_series[b] += 1;
+        entry.bounty_series[b] += t.bounty;
+      }
+    }
+  }
+
+  return {
+    window_ms,
+    buckets: SUMMARY_BUCKETS,
+    total_tasks: TASKS.length,
+    totals,
+    kinds,
+    capabilities: [...capabilities.values()].sort(
+      (a, b) =>
+        b.open_bounty - a.open_bounty ||
+        b.open - a.open ||
+        a.capability.localeCompare(b.capability),
+    ),
+  };
+}
+
 // ---------------------------------------------------------------- live
 //
 // The backfill above is a snapshot; this is what makes it a market. On
@@ -886,6 +1000,8 @@ createServer((req, res) => {
   }
 
   if (path === "/leaderboard") return send(res, 200, leaderboard());
+
+  if (path === "/board/summary") return send(res, 200, boardSummary());
 
   const repMatch = path.match(/^\/reputation\/([^/]+)$/);
   if (repMatch) {

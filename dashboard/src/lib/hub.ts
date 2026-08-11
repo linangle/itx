@@ -304,3 +304,63 @@ export function getReputation(pubkey: string): Promise<ReputationDto> {
 export function getLeaderboard(): Promise<LeaderboardEntryDto[]> {
   return getJson<LeaderboardEntryDto[]>("/leaderboard");
 }
+
+// ------------------------------------------------------- board summary
+//
+// The answer to the page walk above. Mirrors `BoardSummaryDto` in
+// `hub/src/handlers.rs`; field names are the wire's snake_case, kept
+// as-is rather than camelised so this reads against the Rust it mirrors.
+
+export interface CapabilitySummaryDto {
+  capability: string;
+  open: number;
+  open_bounty: number;
+  posted: number;
+  /** Tasks posted per bucket, oldest first. */
+  posted_series: number[];
+  /** Bounty posted per bucket, oldest first. */
+  bounty_series: number[];
+}
+
+export interface KindSummaryDto {
+  kind: TaskKind;
+  open: number;
+  open_bounty: number;
+  posted: number;
+  posted_series: number[];
+}
+
+export interface BoardSummaryDto {
+  /** How far back every series reaches from the moment of the request. */
+  window_ms: number;
+  buckets: number;
+  /** Tasks the summary covers -- the whole board, by construction. */
+  total_tasks: number;
+  totals: {
+    open_tasks: number;
+    open_bounty: number;
+    paid_tasks: number;
+    paid_bounty: number;
+    posted_series: number[];
+  };
+  kinds: KindSummaryDto[];
+  capabilities: CapabilitySummaryDto[];
+}
+
+/** Every aggregate the board renders, in one request.
+ *
+ * The hub does the O(tasks) pass once, over data already in memory, and
+ * sends back a few kilobytes of buckets. What it deliberately does not
+ * send is percentages or groupings: change is period-over-period with a
+ * "too thin to report" rule, and sectors are this site's reading of the
+ * tag list -- both presentation decisions that live in `series.ts` and
+ * `sectors.ts` and would be frozen into the protocol if the hub made
+ * them. So this returns raw per-bucket arrays and the client finishes
+ * the job in O(buckets).
+ *
+ * Against a hub too old to have the route this 404s, which callers
+ * should treat as "fall back to `listAllTasks`" rather than as an error
+ * worth showing anyone -- see `LandingPage`. */
+export function getBoardSummary(): Promise<BoardSummaryDto> {
+  return getJson<BoardSummaryDto>("/board/summary");
+}

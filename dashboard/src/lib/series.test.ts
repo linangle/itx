@@ -9,8 +9,11 @@ import {
   summarizeByCapability,
   summarizeByKind,
   summarizeBySector,
+  windowFromSummary,
+  sectorsFromSummary,
+  capabilitiesFromSummary,
 } from "./series";
-import type { TaskDto } from "./hub";
+import type { CapabilitySummaryDto, TaskDto } from "./hub";
 
 const NOW = Date.parse("2026-08-09T12:00:00Z");
 const HOUR = 3_600_000;
@@ -318,5 +321,105 @@ describe("boardTotals", () => {
     expect(totals.openBounty).toBe(100);
     expect(totals.paidTasks).toBe(1);
     expect(totals.paidBounty).toBe(700);
+  });
+});
+
+describe("from the hub's board summary", () => {
+  const BUCKETS = 24;
+
+  function capability(
+    name: string,
+    openBounty: number,
+    overrides: Partial<CapabilitySummaryDto> = {},
+  ): CapabilitySummaryDto {
+    const posted = new Array(BUCKETS).fill(0);
+    const bounty = new Array(BUCKETS).fill(0);
+    posted[2] = 1;
+    posted[BUCKETS - 2] = 3;
+    bounty[2] = 100;
+    bounty[BUCKETS - 2] = 300;
+    return {
+      capability: name,
+      open: 2,
+      open_bounty: openBounty,
+      posted: 4,
+      posted_series: posted,
+      bounty_series: bounty,
+      ...overrides,
+    };
+  }
+
+  function summary(capabilities: CapabilitySummaryDto[], windowMs = 7 * 24 * 3_600_000) {
+    return {
+      window_ms: windowMs,
+      buckets: BUCKETS,
+      total_tasks: 10,
+      totals: {
+        open_tasks: 0,
+        open_bounty: 0,
+        paid_tasks: 0,
+        paid_bounty: 0,
+        posted_series: new Array(BUCKETS).fill(0),
+      },
+      kinds: [],
+      capabilities,
+    };
+  }
+
+  it("labels a window the hub picked from the ladder both sides share", () => {
+    expect(windowFromSummary(summary([], 3_600_000)).label).toBe("1H");
+    expect(windowFromSummary(summary([], 7 * 24 * 3_600_000)).label).toBe("7D");
+  });
+
+  it("labels a window this build doesn't know by its own size, rather than rounding it", () => {
+    // A hub that adds a preset should show it, not be squashed into the
+    // nearest one this build happens to carry.
+    const odd = windowFromSummary(summary([], 12 * 3_600_000));
+    expect(odd.windowMs).toBe(12 * 3_600_000);
+    expect(odd.label).toBe("12H");
+  });
+
+  it("groups the hub's per-tag rows into sectors, biggest first at both levels", () => {
+    const sectors = sectorsFromSummary(
+      summary([capability("python", 100), capability("ocr", 5000), capability("rust", 900)]),
+    );
+    expect(sectors.map((s) => s.name)).toEqual(["data", "coding"]);
+    expect(sectors[1].markets.map((m) => m.capability)).toEqual(["rust", "python"]);
+    expect(sectors[1].openBounty).toBe(1000);
+  });
+
+  it("draws a market's curve cumulatively but reads its change per bucket", () => {
+    // A cumulative series only ever rises, so taking the change off it
+    // would read every market as permanently up.
+    const [sector] = sectorsFromSummary(summary([capability("python", 100)]));
+    const market = sector.markets[0];
+    expect(market.series[market.series.length - 1]).toBe(400);
+    expect(market.changePct).toBe(200);
+  });
+
+  it("withholds a market's change when only one bucket has activity", () => {
+    const thin = new Array(BUCKETS).fill(0);
+    thin[5] = 500;
+    const [sector] = sectorsFromSummary(
+      summary([capability("python", 100, { bounty_series: thin })]),
+    );
+    expect(sector.markets[0].changePct).toBeNull();
+  });
+
+  it("files a tag the taxonomy doesn't know under other", () => {
+    const sectors = sectorsFromSummary(summary([capability("haruspicy", 100)]));
+    expect(sectors.map((s) => s.name)).toEqual(["other"]);
+  });
+
+  it("ranks and truncates trend rows the same way the task-list path does", () => {
+    const rows = capabilitiesFromSummary(
+      summary([
+        capability("python", 100, { open: 1 }),
+        capability("ocr", 100, { open: 9 }),
+        capability("rust", 100, { open: 5 }),
+      ]),
+      2,
+    );
+    expect(rows.map((r) => r.capability)).toEqual(["ocr", "rust"]);
   });
 });
