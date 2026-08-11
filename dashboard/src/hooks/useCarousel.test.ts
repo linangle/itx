@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { snapTarget } from "./useCarousel";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { snapTarget, useCarousel } from "./useCarousel";
 
 /** A market column at the desktop breakpoint: a 440px panel and the
  * 20px gap after it. */
@@ -44,5 +45,105 @@ describe("snapTarget", () => {
     // The first render, or a board whose markets have not arrived: no
     // items means no stride, and no scroll position worth asking for.
     expect(snapTarget(0, 0, 1, 0)).toBe(0);
+  });
+});
+
+/** Builds a row of `items` panels with real geometry, mounts the hook on
+ * it, and reports how many times the caller re-rendered.
+ *
+ * jsdom lays nothing out -- every box measures zero -- so the widths the
+ * hook reads back are stubbed onto the element. `getBoundingClientRect`
+ * is what `stride` uses; `scrollLeft` is writable on a jsdom element, but
+ * setting it fires no scroll event (nor does a real browser fire one for
+ * every programmatic scroll), so the test dispatches its own. */
+function mountRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}) {
+  const stride = panel + gap;
+  const el = document.createElement("div");
+  for (let i = 0; i < items; i++) el.appendChild(document.createElement("div"));
+
+  // The fade ceiling lives in the stylesheet (`--leading-fade-max`), and
+  // jsdom loads no CSS -- without this the hook reads a ceiling of zero
+  // and every fade clamps to 0px. Inline so `getComputedStyle` sees it.
+  el.style.setProperty("--leading-fade-max", "96px");
+  Object.defineProperty(el, "clientWidth", { value: viewport, configurable: true });
+  Object.defineProperty(el, "scrollWidth", { value: stride * items - gap, configurable: true });
+  el.getBoundingClientRect = () => ({ left: 0, width: viewport }) as DOMRect;
+  for (let i = 0; i < items; i++) {
+    (el.children[i] as HTMLElement).getBoundingClientRect = () =>
+      ({ left: i * stride - el.scrollLeft, width: panel }) as DOMRect;
+  }
+  document.body.appendChild(el);
+
+  let renders = 0;
+  const { result } = renderHook(() => {
+    renders++;
+    const [ref, carousel] = useCarousel<HTMLDivElement>(items);
+    // The row is a plain element rather than something React rendered, so
+    // the ref is attached by hand -- during render, before the hook's
+    // effects run and go looking for it.
+    ref.current = el as HTMLDivElement;
+    return carousel;
+  });
+
+  const scrollTo = (left: number) => {
+    act(() => {
+      el.scrollLeft = left;
+      el.dispatchEvent(new Event("scroll"));
+    });
+  };
+
+  return { el, stride, result, scrollTo, renders: () => renders };
+}
+
+describe("useCarousel scroll handling", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("tracks the front market and both ends as the row scrolls", () => {
+    const row = mountRow(12);
+    expect(row.result.current.index).toBe(0);
+    expect(row.result.current.atStart).toBe(true);
+    expect(row.result.current.atEnd).toBe(false);
+
+    row.scrollTo(row.stride * 3);
+    expect(row.result.current.index).toBe(3);
+    expect(row.result.current.atStart).toBe(false);
+    expect(row.result.current.atEnd).toBe(false);
+
+    row.scrollTo(row.el.scrollWidth - row.el.clientWidth);
+    expect(row.result.current.atEnd).toBe(true);
+  });
+
+  it("does not re-render for scroll frames that leave the front market and the ends alone", () => {
+    const row = mountRow(12);
+    row.scrollTo(row.stride * 3);
+    const settled = row.renders();
+
+    // Three frames of a drag well inside one panel: the row moves, the
+    // fade moves with it, but the index and both ends are unchanged.
+    // This is the common case while a finger is down, and it used to
+    // re-render the whole board -- twelve market panels and every
+    // sparkline in them -- for each frame.
+    row.scrollTo(row.stride * 3 + 4);
+    row.scrollTo(row.stride * 3 + 9);
+    row.scrollTo(row.stride * 3 + 15);
+    expect(row.renders()).toBe(settled);
+
+    // Crossing into the next panel is a real change and must still land.
+    row.scrollTo(row.stride * 4);
+    expect(row.renders()).toBeGreaterThan(settled);
+    expect(row.result.current.index).toBe(4);
+  });
+
+  it("still narrows the near edge's fade on the frames it skips", () => {
+    const row = mountRow(12);
+    row.scrollTo(row.stride * 3 + 6);
+    // Bailing out of the state update must not bail out of the fade --
+    // that is written straight to the element, not through React, which
+    // is what lets it keep up with a scroll it does not re-render for.
+    expect(row.el.style.getPropertyValue("--leading-fade")).toBe("6px");
+    row.scrollTo(row.stride * 3 + 12);
+    expect(row.el.style.getPropertyValue("--leading-fade")).toBe("12px");
   });
 });
