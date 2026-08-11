@@ -2918,3 +2918,68 @@ were still held by other sessions. Structure is covered by tests (101
 now, 8 on the board itself); appearance is not.
 
 Gates: 101 dashboard tests (4 new), tsc, lint, build.
+
+### Round 40 — the aggregate endpoint, finally
+
+**`GET /board/summary`.** The landing page no longer walks the board.
+Round 39 measured what it cost at twenty thousand tasks -- a hundred
+requests, 1.9MB gzipped (10.4MB decoded), and ~100ms of main-thread
+derivation, on first paint and again every five seconds, to render a few
+kilobytes of numbers. The hub already has every task in memory; it sums
+them once now and answers in **7.1KB gzipped, one request, ~30ms**.
+Roughly 270x less data and 12x less latency, and the client's derivation
+drops from O(tasks) to O(buckets).
+
+**What the endpoint deliberately does not decide.** It returns one row
+per capability tag with raw per-bucket arrays -- posted counts and
+bounty sums -- plus per-kind rows and board totals. It does *not* return
+sectors, and it does not return percentages. Grouping tags into
+"coding" and "creative" is this site's reading of the board, would
+differ between clients, and would freeze a taxonomy into the protocol;
+how a change is computed (period over period, withheld below two active
+buckets) is equally a presentation decision. Both stay in `sectors.ts`
+and `series.ts`, which now finish the job from the summary in O(24) per
+row. The hub does the part that is identical for every viewer and
+expensive; the client does the part that is cheap and opinionated.
+
+**Verified by making the two paths agree.** `sectorsFromSummary` and
+`summarizeBySector` were run against the same live 20000-task fixture
+and asserted equal: same window, same sector order, same open counts,
+open bounty and posted totals per sector, same market ordering, same
+cumulative series arrays, same change percentages, and the same 24 trend
+rows. That is the claim worth testing -- not that the endpoint returns
+something, but that it returns the same board.
+
+  One honest difference, documented at both call sites. From the task
+  list, a task tagged into two markets of the *same* sector counts once
+  for that sector; from the summary there are no task identities to
+  deduplicate against, only per-tag totals, so it counts once per
+  market. Nothing on the board carries two tags of one sector today and
+  the fixture never emits multi-tag tasks at all. If that changes, the
+  fix is a grouping the hub can compute, not a bigger download.
+
+**The truncation notice added in Round 39 is gone from this board**,
+which is the right kind of churn: with no walk there is nothing to
+truncate, and the hub either aggregates the whole board or does not
+answer. It still earns its place on the terminal overview, which still
+walks -- and where its copy was inverted anyway. That page told anyone
+hitting the limit it was "showing the most recent" tasks when the hub
+sorts oldest-first and the walk slices from the front, so what it
+actually showed was the oldest and what it dropped was the newest.
+
+**What the landing page fetches now:** the summary, the leaderboard, and
+the newest 24 tasks. That last one is the only thing on the page that
+genuinely wants tasks rather than totals, and `listLatestTasks` gets it
+in two small requests by reading the total and taking the tail.
+
+Verification: 11 new hub tests on the aggregation (windows, bucketing,
+the drop-outside-the-window rule, ranking, duplicate tags, empty kinds)
+for 128 hub tests total, and 107 dashboard tests. The real `Board`
+component was also rendered against the live fixture through the real
+client -- six sectors in the rail, each panel holding only its own
+sector's markets, the strip quoting sectors, the tape carrying real task
+descriptions. Still not a browser: `preview_start` needs a
+`.claude/launch.json`, which is not something to leave in this repo.
+
+Gates: 107 dashboard tests (7 new), 128 hub tests (11 new), tsc, lint,
+cargo build, build.
