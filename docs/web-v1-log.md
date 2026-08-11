@@ -1098,3 +1098,51 @@ smaller vertical padding on purpose and says so in a comment: its rows
 carry their own, and doubling them left a visible gap.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 14 — spacing on a scale, and a load-bearing padding
+
+Round 13 tokenised radii, type and panel padding but deliberately left
+spacing alone, flagging it as something to do on purpose rather than
+fold into that change. This is that pass.
+
+Between the two stylesheets there were **23 and 19 distinct spacing
+values**, including 5 / 7 / 9 / 11 / 13 -- steps that differ from their
+neighbours by a pixel, read as identical, and still have to be
+maintained separately. Both files now share one 14-step scale declared
+on `.itx-landing` (not `.itx-board`: the hero and tape are *siblings*
+of the board and would not resolve a token declared inside it). No
+spacing literal survives outside the scale.
+
+Two deliberate choices. **6px stays a step** rather than rounding to 8,
+because the dense table rows need a tighter rhythm than an 8px grid
+gives. And **values that are not rhythm keep their literals**: 1px
+hairlines and the gradient ring, fixed widths, min-heights, and
+anything inside `calc()` or `vh`. The conversion was written to skip
+those categories rather than trusting a blanket regex.
+
+**One value was load-bearing and the snap broke it.** The hero grid's
+`56px` right padding sets the copy column's width, which sets the globe
+column's width, which sets the globe's *height* because it is square --
+and the hero's height feeds the fold arithmetic from round 9. Rounding
+it to 48 widened the globe, pushed the hero 6px past its `min-height`,
+and moved the quote strip off the fold (strip top 906 instead of 900,
+chart 147 instead of 153).
+
+Caught it by re-measuring the recorded hero invariants rather than by
+looking, which is the only reason it was caught at all -- 6px is
+invisible and the strip stayed below the fold, so the page still looked
+right. 56 is a legitimate 4px step the scale had simply skipped, so it
+went back in its ordinal slot (shifting 64 and 72 up) and the
+declaration now carries a comment saying why it cannot move.
+
+  A measurement trap worth recording: the first re-measure looked like a
+  catastrophe (chart 101px, sphere 25.9%) because the pane had resized
+  to ~594px tall and the chart is `17vh`. Comparing viewport-relative
+  numbers across different viewports is meaningless; the second read at
+  a pinned 1440x900 showed the real, much smaller regression. A stale
+  sphere-percentage formula in the probe (using the pre-round-5 frustum
+  constant) also understated that figure -- the probe was wrong, not the
+  page.
+
+Gates: 55 tests, tsc, lint, build clean. Verified the board, the hero
+and the inner pages.
