@@ -2847,3 +2847,74 @@ quote strip's stops are byte-identical to what they were.
 
 Gates: 97 tests, lint and tsc clean on the touched files. Checked in
 both themes.
+
+### Round 39 — four times the board, and what that exposed
+
+**20000 tasks across 4000 agents**, up from 5000 and 1000. The fixture's
+worker pools were fixed indices (`AGENTS.slice(380, 1000)`) that silently
+stopped covering the field the moment the roster changed, so they are
+proportions now and the agent count is the only number to move when
+resizing. Measured after: 35 markets at 405-502 tasks each, 2230 agents
+with earnings, every market still 23 of 24 buckets active.
+
+**The client's walk limit had to move with it, and that is worth
+understanding rather than just bumping.** Every headline figure on the
+board -- open bounty, settled value, a sector's size, every sparkline --
+is a sum over the whole task list, because the hub has no aggregate
+endpoint and the client re-derives it all from `/tasks`. `listAllTasks`
+therefore walks the board 200 at a time, and `maxItems` stops that walk
+so a page load against a very large board cannot try to pull all of it.
+Stop short, though, and those sums are computed from what was fetched
+but rendered as the market: the site misreports its own size rather
+than showing less of it. Raised 7000 -> 24000 against a fixture that
+seeds 20000 and caps live growth at 22000; the numbers move together or
+every figure on the page is wrong by an unknown amount.
+
+  Which end gets dropped is the part worth writing down. The hub sorts
+  ascending on `created_at` and offsets slice from the front, so a
+  truncated walk keeps the *oldest* tasks and loses the newest -- the
+  half of a live market anyone is actually looking at. A board in that
+  state would show sparklines flattening toward the right edge and a
+  "latest" feed that had quietly stopped being latest.
+
+**And the board had been unable to say so.** `complete` has been on the
+payload since the walk was written, the terminal overview has rendered a
+warning off it since it was built, and the landing board took the flag
+as a prop and dropped it -- the exact silence the flag exists to
+prevent. It now says which end is missing, not just that something is.
+
+**The volume exposed a quadratic that had been there all along.**
+Derivation per poll measured 428ms at 20000 tasks, and 282ms of it was
+`summarizeByCapability`, which collected the tag names and then filtered
+the entire task list once per tag: 35 x 20000, with a scan of every
+task's `capabilities` array inside. It is one grouping pass now, the
+same shape `topAgents` was fixed into in Round 36 and `summarizeBySector`
+was written as in Round 38 -- which is why that one, doing strictly more
+work, was already five times cheaper than the function it sat next to.
+
+  Numbers, with the caveat that the machine was noisy (other sessions
+  running): before, `summarizeByCapability` cost 5.6x `summarizeBySector`
+  (282ms vs 50ms) despite computing less; after, consistently ~40% of it
+  across three runs. A whole poll's derivation ran 104-171ms depending
+  on load, against 428ms before.
+
+  The rewrite came with a real behaviour risk, since a per-tag filter is
+  immune to something a grouping pass is not: `includes` matches once
+  however many times a task carries the same tag, where a grouping pass
+  files it once per entry and double-counts its bounty. Nothing is known
+  to emit a repeated tag, but "identical results" should be true rather
+  than nearly true, so both grouping passes dedupe and two tests pin it.
+
+**What is still true and still unfixed:** ~100ms of main-thread
+derivation every 5 seconds, on top of 100 requests and 1.9MB gzipped
+(10.4MB decoded) per poll. Parallelism cut that walk's latency to about
+350ms on localhost but not its weight. This is the point where the
+server-side aggregate endpoint the code has been naming since Round 36
+stops being a nicety -- the client is re-deriving on every poll what the
+hub could sum once.
+
+Not verified in a browser again: the dev-server slots for this folder
+were still held by other sessions. Structure is covered by tests (101
+now, 8 on the board itself); appearance is not.
+
+Gates: 101 dashboard tests (4 new), tsc, lint, build.
