@@ -1017,6 +1017,22 @@ body.itx-landing-body {
   /* Only visible while a row is glowing -- it gives the wash a shape
      instead of a full-bleed band with square corners. */
   border-radius: var(--r-field);
+  /* Padding out, margin back: the row's contents stay on the same
+     lines they were on, and the glow gets somewhere to go. Without it
+     the wash started exactly at the bullet, so its rounded corner cut
+     across the dot instead of enclosing it. */
+  padding: 0 var(--sp-5);
+  margin: 0 calc(-1 * var(--sp-5));
+}
+
+/* The box that measures the tape also clips it, and the rows now hang
+   12px past it on each side. Widened by exactly that much -- and
+   pulled back by the same, so the content stays where it was -- or the
+   clip would shear the glow's rounded corners straight off again.
+   There is room: the panel's own padding is twice this. */
+.itx-board-panel-latest .itx-board-fit {
+  margin: 0 calc(-1 * var(--sp-5));
+  padding: 0 var(--sp-5);
 }
 
 /* A row that landed on the last poll: it rises into the top slot and
@@ -1026,46 +1042,60 @@ body.itx-landing-body {
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
 
-   It travels *upward*, from a row's height below its resting place.
-   The row is at the top of a list, so it reads as having come up from
-   the tape below rather than as having been dropped in from off-screen.
+   It comes in from the left and rises at the same time, per the
+   sketch: out from behind the panel's edge, up, and into the top slot.
+   The diagonal is what gives it energy -- a straight vertical nudge
+   was legible but flat, because a row moving 22px in a list of 34px
+   rows barely leaves its own lane. Sixty-odd pixels of travel across
+   the panel's edge is a path the eye follows rather than notices.
 
-   Timing is the part that took tuning. The first pass ran the whole
-   thing in a second with the movement over in the first fifth, which
-   was quick enough that the eye registered a flash but not a
-   direction -- the row simply appeared, already lit. It now takes 2.4
-   seconds: a full second of eased travel that can actually be
-   followed, then the glow held briefly at the top of the slot before
-   it burns off over the second half. The peak wash is lighter than it
-   was, since it is now on screen long enough to be looked at rather
-   than glimpsed. */
+   The fit box's `overflow: hidden` is doing real work here: the row
+   starts outside the panel's content box, so it is genuinely hidden
+   until it crosses the edge.
+
+   Timing, twice revised. A second flat was too quick to read as
+   movement at all; 2.4 seconds of pure rise read as careful rather
+   than urgent, which is the wrong note for breaking news. Two seconds,
+   with the travel in the first half and a small overshoot at the end
+   of it, is the compromise: quick enough to have some snap, long
+   enough to watch. */
 /* The two halves want different curves, so each keyframe carries its
    own and the animation itself is linear -- a single curve across both
    would either rush the travel or clip the fade. */
 .itx-board-updates li.is-new {
-  animation: itx-arrive 2400ms linear both;
+  animation: itx-arrive 2000ms linear both;
 }
 
 @keyframes itx-arrive {
   0% {
     opacity: 0;
-    transform: translateY(22px);
-    background: color-mix(in srgb, var(--ld-red) 30%, transparent);
-    box-shadow: 0 0 26px color-mix(in srgb, var(--ld-red) 22%, transparent);
-    /* Eases in and out of the move, rather than covering most of the
-       distance immediately and creeping the rest. A hard decelerating
-       curve was the reason a full second of travel still read as an
-       instant jump: three quarters of it was over in the first 400ms,
-       and what remained was too slow to see. */
+    transform: translate(-64px, 26px);
+    background: color-mix(in srgb, var(--ld-red) 34%, transparent);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--ld-red) 26%, transparent);
+    /* Eases in and out of the move rather than covering most of the
+       distance immediately and creeping the rest -- a hard
+       decelerating curve is what made an earlier, slower version still
+       read as an instant jump. */
     animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  /* Landed, still lit. */
-  45% {
+  /* Up and across, a few pixels past where it belongs. The overshoot
+     is small enough to be felt rather than seen: it is the difference
+     between a row arriving and a row being placed. */
+  40% {
     opacity: 1;
-    transform: translateY(0);
-    background: color-mix(in srgb, var(--ld-red) 26%, transparent);
-    box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 18%, transparent);
+    transform: translate(5px, 0);
+    background: color-mix(in srgb, var(--ld-red) 30%, transparent);
+    box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 22%, transparent);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.2, 1);
+  }
+
+  /* Settled, still lit. */
+  52% {
+    opacity: 1;
+    transform: translate(0, 0);
+    background: color-mix(in srgb, var(--ld-red) 28%, transparent);
+    box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 20%, transparent);
     /* Holds the colour for a beat before it goes, and lands on zero
        gently -- the eye follows a fade far better than it follows a
        drop-off. */
@@ -1074,7 +1104,7 @@ body.itx-landing-body {
 
   100% {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate(0, 0);
     background: transparent;
     box-shadow: 0 0 0 transparent;
   }
@@ -1084,15 +1114,15 @@ body.itx-landing-body {
    just doesn't travel to say so. */
 @media (prefers-reduced-motion: reduce) {
   .itx-board-updates li.is-new {
-    animation: itx-arrive-still 2400ms ease-out both;
+    animation: itx-arrive-still 2000ms ease-out both;
   }
 
   /* Held, then faded, on the same clock as the moving version -- a
      quick flash is the thing that was hard to read. */
   @keyframes itx-arrive-still {
     0%,
-    45% {
-      background: color-mix(in srgb, var(--ld-red) 26%, transparent);
+    52% {
+      background: color-mix(in srgb, var(--ld-red) 28%, transparent);
     }
 
     100% {

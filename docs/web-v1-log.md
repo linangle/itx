@@ -1671,3 +1671,41 @@ glimpsed.
   "I don't register the motion" feels like.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 27 — in from the side, and a wash that clears the bullet
+
+The user sketched the motion they wanted over a screenshot: the row
+comes out from behind the panel's left edge and travels up and across
+into the top slot. The straight vertical rise was legible but flat --
+22px in a list of 34px rows barely leaves its own lane, so there was
+nothing to follow.
+
+It now enters from `translate(-64px, 26px)`: sixty-odd pixels across
+the panel's edge, which is a path rather than a nudge. The fit box's
+`overflow: hidden` earns its keep -- the row starts outside the panel's
+content box, so it is genuinely hidden until it crosses the edge. There
+is a five-pixel overshoot at the end of the travel, small enough to be
+felt rather than seen; it is the difference between a row arriving and
+a row being placed.
+
+Two seconds rather than 2.4: a second flat was too quick to read as
+movement, and 2.4 of pure rise read as careful rather than urgent,
+which is the wrong note for breaking news. Travel occupies the first
+half, settling by ~1s, and the glow holds at 28% until 1.3s before
+fading out by 1.9.
+
+**The wash now encloses the bullet instead of cutting it.** The row
+started exactly at the dot, so the 10px corner radius sliced across it.
+The row takes 12px of horizontal padding and gives it back as negative
+margin, so its contents stay on the lines they were on and the glow has
+somewhere to go.
+
+  That alone would not have worked: the fit box that measures the tape
+  also clips it, and the rows now hang 12px past it on each side, so
+  the corners would have been sheared off again. The fit box is widened
+  by exactly that much and pulled back by the same. Measured after:
+  panel 48-1392, fit box 53-1387, row 53-1387 -- flush, nothing
+  clipped -- with the bullet inset 12px from the wash and the columns
+  still starting at 65 and 88 as before.
+
+Gates: 55 tests, tsc, lint, build clean.
