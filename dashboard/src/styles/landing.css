@@ -852,11 +852,16 @@ body.itx-landing-body[data-theme="light"] {
   /* Where the peeking panel starts: the whole panels before it, each
      with the gap that follows it. */
   --peek-edge: calc(var(--markets-shown) * (var(--market-basis) + var(--sp-7)));
-  /* The near edge's ramp, once the row has been scrolled and there is a
-     panel passing under it. Zeroed at the start below. Roughly the
-     width the peek's own dissolve covers at the far edge, so a row
-     stopped mid-scroll is bounded the same way at both ends. */
-  --leading-fade: 96px;
+  /* The near edge's ramp. Unlike the far one it cannot be a constant:
+     the far edge always has a panel crossing it, while this one only
+     does between boundaries -- and the arrows leave the row *on* a
+     boundary, panel flush against the edge, nothing sliced. So the
+     width is written from useCarousel on every scroll frame, as much of
+     this ceiling as there is outgoing panel to cover, and 0 at rest.
+     The ceiling is roughly what the peek's own dissolve spans at the
+     far edge, so a row stopped mid-scroll is bounded alike at both. */
+  --leading-fade-max: 96px;
+  --leading-fade: 0px;
   /* How far the far edge's dissolve runs: from where the peek starts to
      the end of the row. */
   --peek-span: calc(100% - var(--peek-edge));
@@ -917,15 +922,14 @@ body.itx-landing-body[data-theme="light"] {
   display: none;
 }
 
-/* Against an end, that edge has nothing behind it and its fade goes to
-   nothing: the panel there starts or finishes exactly on the edge, and
-   dimming it would be a promise of more that isn't there. Both collapse
-   by moving a stop rather than by removing one, so the gradient keeps
-   its shape and no transition is needed to hide a change of syntax. */
-.itx-board-carousel[data-at-start] {
-  --leading-fade: 0px;
-}
+/* At the far end there is nothing behind that edge, and its fade goes
+   to nothing: the last panel finishes on the edge, and dimming it would
+   be a promise of more that isn't there. Collapsed by moving a stop
+   rather than by dropping one, so the gradient keeps its shape.
 
+   The near edge needs no rule of its own -- being at the start is just
+   the case where the row sits on a boundary, which the width written
+   from useCarousel already answers with zero. */
 .itx-board-carousel[data-at-end] {
   --peek-edge: 100%;
 }

@@ -85,6 +85,13 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     return items[1].getBoundingClientRect().left - first.left;
   };
 
+  /** The stylesheet's ceiling for the near edge's fade, cached because
+   * this is read on every scroll frame and dropped whenever the row is
+   * resized, since the breakpoints may have changed it. Kept in CSS
+   * rather than here so the stylesheet stays the one place a length on
+   * this row is decided -- the same arrangement as `--row-h`. */
+  const cap = useRef<number | null>(null);
+
   const read = useCallback(() => {
     const el = ref.current;
     if (!el) return;
@@ -93,6 +100,27 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     if (pending.current !== null && Math.abs(el.scrollLeft - pending.current) <= 1) {
       pending.current = null;
     }
+
+    // How wide the near edge's fade should be right now.
+    //
+    // Only ever as wide as what is actually cut off, which is what the
+    // arrows exposed: they leave the row on a boundary, where the panel
+    // starts flush against the edge and nothing is sliced -- and a fade
+    // there dimmed the first inch of the market you had just asked for.
+    //
+    // `into` is how far the row sits past the last boundary. Just past
+    // one, only that sliver of the outgoing panel is hidden and a fade
+    // that wide covers it; just short of the next, the outgoing panel is
+    // down to its last few pixels and the fade shrinks to match rather
+    // than reaching across the panel arriving behind it. In the middle,
+    // both are wide and the stylesheet's ceiling applies.
+    if (cap.current === null) {
+      cap.current = parseFloat(getComputedStyle(el).getPropertyValue("--leading-fade-max")) || 0;
+    }
+    const into = step > 0 ? el.scrollLeft % step : 0;
+    const fade = Math.max(0, Math.min(into, step - into, cap.current));
+    el.style.setProperty("--leading-fade", `${Math.round(fade)}px`);
+
     setState({
       index: step > 0 ? Math.round(el.scrollLeft / step) : 0,
       // A pixel of slack at each end: a scroll that has arrived can sit
@@ -134,7 +162,10 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     // The stride and the far end both change with the column's width,
     // and neither fires a scroll event when they do.
     if (typeof ResizeObserver === "undefined") return release;
-    const observer = new ResizeObserver(read);
+    const observer = new ResizeObserver(() => {
+      cap.current = null;
+      read();
+    });
     observer.observe(el);
     return () => {
       release();

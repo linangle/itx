@@ -2403,3 +2403,42 @@ user's to grant. The reason to expect it to work now is that there is
 no gesture code left to be wrong — only `overflow-x`, which is as old
 as the web. Gates: 68 dashboard tests (five for the snap arithmetic,
 which is where the edge cases live), tsc, lint, build clean.
+
+### Round 35 — the near fade only covers what is cut
+
+The arrows leave the row on a boundary, which is precisely where a
+panel starts flush against the near edge with nothing sliced off it --
+and the fixed 96px fade sat right on top of it, dimming the first inch
+of the market you had just asked to see. The fade at that edge cannot
+be a constant, because unlike the far edge it does not always have a
+panel crossing it.
+
+`useCarousel` now writes `--leading-fade` on every scroll frame as
+`min(into, stride - into, ceiling)`, where `into` is how far the row
+sits past the last boundary. On a boundary it is zero and the panel is
+crisp. Twelve pixels past one, only that sliver of the outgoing panel
+is hidden and a twelve-pixel fade covers it exactly. Just short of the
+next, the outgoing panel is down to its last few pixels and the fade
+shrinks with it rather than reaching across the panel arriving behind.
+In between, both terms are wide and the stylesheet's ceiling applies.
+
+Written straight onto the node rather than through state: this runs on
+every frame of a scroll, and re-rendering the whole board to move a
+gradient would be the one thing that made the scroll stutter. The
+ceiling is read from `--leading-fade-max` and cached until the row is
+resized, so the stylesheet stays the place lengths are decided -- the
+same arrangement `useFitRows` has with `--row-h`. The `[data-at-start]`
+rule is gone: being at the start is just the case where the row sits on
+a boundary, which the formula already answers with zero.
+
+Measured over CDP: 0px at rest, 12px at twelve past, 96px at the
+midpoint, 14px at fourteen short of the next boundary, 0px again on the
+boundary and after an arrow lands.
+
+A note on verifying this, since it cost an hour: CDP's
+`captureBeyondViewport` re-lays out the page to take the shot, so a
+percentage-width row like this one comes back with panels at different
+positions than the DOM reported a moment earlier. Two rounds of
+"the numbers say flush, the screenshot says sliced" were that and not
+the code. Screenshots of this row have to be plain viewport captures,
+cropped afterwards.
