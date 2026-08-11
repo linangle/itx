@@ -1295,3 +1295,71 @@ page, and headlines do not need five-second freshness.
 
 Gates: 55 tests, tsc, lint, build clean. Verified live -- 12 seconds,
 no reload, feed turned over and quote figures moved.
+
+### Round 19 — 1000 agents, and markets become task types
+
+Three asks that collapsed into one problem: scale to 1000 agents,
+"unlock" consensus, and make the market overview show the task types
+that currently exist, biggest first, reordering as things move.
+
+**Markets are now capability tags rather than task kinds**, ranked by
+open bounty. That single change answers two of the three. The order
+moves as work is posted and settled, and *consensus stops being a dead
+panel* -- it previously had a column of its own that could never show a
+row, because the hub hides who joined a consensus task by design.
+Consensus work now counts toward whichever tag it carries: no agent
+row, but its bounty counts, and leaving it out understated exactly the
+markets where the biggest pooled work sits.
+
+**The scale-up exposed a data problem the design was hiding.** With
+1000 agents over 2000 tasks, 81% of agent-tag pairs had exactly one
+paid task -- measured, not guessed. The change column is
+period-over-period, so one payout is not a trend; it is either -100%
+(it landed early) or null (it landed late). The first screenshot after
+scaling was a wall of confident red.
+
+Two fixes, and the split between them matters. The *display* fix is
+that a trend needs two active buckets, otherwise "—": that is a real
+correctness bug and would apply against the live hub too. The *fixture*
+fix is volume, so agents actually accumulate history.
+
+  Getting there involved a wrong turn worth recording. The first
+  instinct was to concentrate work into ~16 specialists per tag, which
+  fixes density by shrinking the field -- directly against the point of
+  asking for 1000 agents. The user stopped it and asked why, which was
+  the right call; the choice between "few busy specialists" and "many
+  agents, more tasks" is theirs, not a detail to bury in a fixture.
+  They chose volume. Specialisation stays at a wide 55 per tag because
+  it is true of real marketplaces, but it now shapes who recurs rather
+  than who is allowed in.
+
+**Three pieces of supporting work**, none of which was optional at this
+size:
+
+- The task list is fetched **once** in `LandingPage` and shared with
+  the tape and the board. The double walk was flagged as an acceptable
+  trade-off when the board was 47 tasks; at 5000 it was the most
+  expensive thing on the page.
+- The board's aggregation is one grouping pass plus work proportional
+  to the rows *rendered*. The previous version filtered the whole task
+  list once per agent -- fine against dozens, quadratic against a
+  thousand, and running on every poll.
+- The globe and the market line **stop rendering when scrolled past**
+  and resume where they left off (accumulated deltas for the globe, a
+  clock reset for the tape, so neither jumps). A WebGL scene redrawing
+  for nobody was competing with polling for the main thread.
+
+Measured after: 5000 tasks fetch and parse in ~60ms, grouping ~3ms, so
+the 5s poll stays comfortable; the walk is 2.4MB across 25 requests,
+which is fine on localhost and is exactly the cost the client-side
+aggregate design has always implied. `listAllTasks` now carries a note
+saying the next bump of its limit is not the answer -- a server-side
+aggregate endpoint is.
+
+  One verification snag: a probe reported the markets were no longer
+  sorted, but it was parsing the *formatted* label ("1K itx") back into
+  a number and reading 1. The sort is on raw open bounty and was fine.
+  Measuring rendered text is convenient right up until the renderer is
+  lossy.
+
+Gates: 55 tests, tsc, lint, build clean.
