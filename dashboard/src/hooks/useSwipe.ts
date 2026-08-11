@@ -20,6 +20,20 @@ const COMMIT = 48;
 const PULL = 0.35;
 const MAX_PULL = 56;
 
+/** A trackpad reports a swipe as a stream of small horizontal wheel
+ * deltas rather than as a pointer, so it is paged on accumulated travel
+ * instead. Larger than the touch commit: a two-finger swipe puts out far
+ * more delta than a thumb covers in pixels, and at 48 the row paged
+ * before the gesture felt finished. */
+const WHEEL_COMMIT = 64;
+
+/** How long the deltas must stop for before the gesture counts as over.
+ * There is no "wheel end" event, and a flick on a Mac trackpad keeps
+ * sending momentum for the better part of a second after the fingers
+ * have lifted -- which, without this, pages once per frame of coasting.
+ * Only a deliberate second swipe restarts it. */
+const WHEEL_IDLE = 220;
+
 /** Direction a swipe asks for: 1 is the next item, -1 the previous.
  *
  * Content-relative, not finger-relative. Dragging *left* pulls the next
@@ -27,12 +41,13 @@ const MAX_PULL = 56;
  * arrow. */
 export type SwipeDirection = 1 | -1;
 
-/** Turns horizontal touch drags on an element into paging.
+/** Turns horizontal swipes on an element into paging: a finger dragging
+ * the row, or two fingers on a trackpad.
  *
- * Touch and pen only. A mouse drag across these panels is a text
- * selection or the start of a click on an agent link, and a carousel
- * that swallows either would cost more than the swipe gains -- pointers
- * that have a cursor keep the arrows.
+ * Drags are touch and pen only. A mouse *drag* across these panels is a
+ * text selection or the start of a click on an agent link, and a
+ * carousel that swallows either would cost more than the swipe gains --
+ * a cursor's way in is the arrows, or the trackpad it is attached to.
  *
  * Returns the ref to attach, how far the row should currently be pulled,
  * and whether a drag is in progress. The caller applies the offset (and
@@ -65,9 +80,19 @@ export function useSwipe<T extends HTMLElement = HTMLDivElement>(
     let startY = 0;
     let axis: "x" | "y" | null = null;
 
+    // Trackpad travel since the gesture began, whether a page has been
+    // turned already, and the timer that decides the gesture is over.
+    let travel = 0;
+    let turned = false;
+    let idle: ReturnType<typeof setTimeout> | undefined;
+
+    // Back to rest, whichever kind of gesture was in progress. Both
+    // inputs share it so neither can leave the row held off centre.
     const reset = () => {
       pointer = null;
       axis = null;
+      travel = 0;
+      turned = false;
       setDragging(false);
       setOffset(0);
     };
@@ -116,15 +141,59 @@ export function useSwipe<T extends HTMLElement = HTMLDivElement>(
       if (e.pointerId === pointer) reset();
     };
 
+    const wheel = (e: WheelEvent) => {
+      // The page's, not ours. Left alone rather than merely ignored: not
+      // calling preventDefault is what lets the scroll happen.
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+
+      // A horizontal wheel over a page with nothing to scroll sideways
+      // is what triggers the browser's back-swipe. Taking the event is
+      // what stops a flick through the markets from leaving the site --
+      // and it is why this listener has to be non-passive.
+      e.preventDefault();
+
+      clearTimeout(idle);
+      idle = setTimeout(reset, WHEEL_IDLE);
+
+      // Momentum after a page has already turned. Still swallowed
+      // above, so the coast cannot navigate away, but it pages no
+      // further; a second swipe means a second market.
+      if (turned) return;
+
+      // A reversal is a new gesture, not a smaller old one.
+      if (Math.sign(e.deltaX) !== Math.sign(travel)) travel = 0;
+      travel += e.deltaX;
+
+      if (Math.abs(travel) < WHEEL_COMMIT) {
+        setDragging(true);
+        // Scrolling right asks for what is to the right, so the row
+        // pulls the way a finger going left would pull it.
+        setOffset(-Math.sign(travel) * Math.min(MAX_PULL, Math.abs(travel) * PULL));
+        return;
+      }
+
+      const direction: SwipeDirection = travel > 0 ? 1 : -1;
+      turned = true;
+      travel = 0;
+      // Dropped back to rest here rather than at the end of the coast,
+      // so the row springs back as the new market lands under it.
+      setDragging(false);
+      setOffset(0);
+      latest.current(direction);
+    };
+
     el.addEventListener("pointerdown", down);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", cancel);
+    el.addEventListener("wheel", wheel, { passive: false });
     return () => {
+      clearTimeout(idle);
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", cancel);
+      el.removeEventListener("wheel", wheel);
     };
   }, []);
 

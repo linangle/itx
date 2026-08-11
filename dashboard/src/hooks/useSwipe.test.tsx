@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { useSwipe } from "./useSwipe";
 import type { SwipeDirection } from "./useSwipe";
@@ -30,6 +30,19 @@ function drag(
   });
 }
 
+/** A trackpad's version of the same gesture: a burst of small deltas
+ * rather than one move. Returns the events so a test can ask whether the
+ * browser's own handling was taken away. */
+function scroll(el: HTMLElement, deltas: Array<[number, number]>) {
+  const events = deltas.map(
+    ([deltaX, deltaY]) => new WheelEvent("wheel", { deltaX, deltaY, bubbles: true, cancelable: true }),
+  );
+  act(() => {
+    for (const e of events) el.dispatchEvent(e);
+  });
+  return events;
+}
+
 function Harness({ onSwipe }: { onSwipe: (direction: SwipeDirection) => void }) {
   const [ref, offset, dragging] = useSwipe<HTMLDivElement>(onSwipe);
   return (
@@ -40,6 +53,15 @@ function Harness({ onSwipe }: { onSwipe: (direction: SwipeDirection) => void }) 
 }
 
 describe("useSwipe", () => {
+  // The trackpad path decides a gesture is over by a quiet timer, so
+  // the clock is the tests' to move. Faked for the whole suite rather
+  // than per test: real timers here would mean sleeping through the
+  // idle window in the middle of an assertion.
+  vi.useFakeTimers();
+  afterEach(() => {
+    vi.clearAllTimers();
+  });
+
   it("asks for the next item when the drag goes left, and the previous when it goes right", () => {
     const onSwipe = vi.fn();
     render(<Harness onSwipe={onSwipe} />);
@@ -150,6 +172,97 @@ describe("useSwipe", () => {
     });
     expect(row).toHaveTextContent("0");
     expect(row).not.toHaveAttribute("data-dragging");
+  });
+
+  it("pages on a trackpad's horizontal scroll, in the direction of the scroll", () => {
+    const onSwipe = vi.fn();
+    render(<Harness onSwipe={onSwipe} />);
+    const row = screen.getByTestId("row");
+
+    // Scrolling right asks for the market to the right.
+    scroll(row, [
+      [12, 1],
+      [20, 0],
+      [24, -1],
+      [20, 0],
+    ]);
+    expect(onSwipe).toHaveBeenCalledWith(1);
+    // Back at rest as the new market lands, not held off centre.
+    expect(row).toHaveTextContent("0");
+    expect(row).not.toHaveAttribute("data-dragging");
+
+    act(() => vi.advanceTimersByTime(300));
+    scroll(row, [
+      [-30, 0],
+      [-40, 2],
+    ]);
+    expect(onSwipe).toHaveBeenLastCalledWith(-1);
+  });
+
+  it("pulls the row while the scroll is still short of the commit", () => {
+    render(<Harness onSwipe={() => {}} />);
+    const row = screen.getByTestId("row");
+
+    scroll(row, [
+      [20, 0],
+      [20, 0],
+    ]);
+
+    expect(row).toHaveTextContent("-14");
+    expect(row).toHaveAttribute("data-dragging");
+  });
+
+  it("turns one market per swipe, however long the momentum coasts", () => {
+    const onSwipe = vi.fn();
+    render(<Harness onSwipe={onSwipe} />);
+    const row = screen.getByTestId("row");
+
+    // One flick: past the threshold, then a long tail of decaying
+    // deltas of the kind a Mac trackpad keeps sending.
+    scroll(row, [
+      [30, 0],
+      [40, 0],
+      ...Array.from({ length: 20 }, (_, i) => [30 - i, 0] as [number, number]),
+    ]);
+    expect(onSwipe).toHaveBeenCalledTimes(1);
+
+    // Only a deliberate second swipe, after the deltas stop, pages again.
+    act(() => vi.advanceTimersByTime(300));
+    scroll(row, [
+      [40, 0],
+      [40, 0],
+    ]);
+    expect(onSwipe).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a vertical scroll to the page, untouched", () => {
+    const onSwipe = vi.fn();
+    render(<Harness onSwipe={onSwipe} />);
+
+    const events = scroll(screen.getByTestId("row"), [
+      [0, 40],
+      [6, 90],
+    ]);
+
+    expect(onSwipe).not.toHaveBeenCalled();
+    // Not merely ignored: the page still gets to scroll.
+    expect(events.every((e) => !e.defaultPrevented)).toBe(true);
+  });
+
+  it("keeps a horizontal scroll from reaching the browser's back gesture", () => {
+    render(<Harness onSwipe={() => {}} />);
+    const row = screen.getByTestId("row");
+
+    // Including the momentum after the page has turned, which is the
+    // part that would otherwise navigate away mid-coast.
+    const events = scroll(row, [
+      [40, 0],
+      [40, 0],
+      [30, 0],
+      [10, 0],
+    ]);
+
+    expect(events.every((e) => e.defaultPrevented)).toBe(true);
   });
 
   it("drops the gesture when the pointer is cancelled", () => {

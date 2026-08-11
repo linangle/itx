@@ -2111,3 +2111,35 @@ the ground is not visibly "loading".
   everything on it faded.
 
 Gates: 64 tests, tsc, lint, build clean.
+
+### Round 29 — the cross-fade was late, not just slow
+
+**260ms `ease` down to 170ms `ease-out`.** The duration was part of it,
+but the easing was the bigger half. `ease` spends its first third barely
+moving, and on a change with nothing travelling -- colours simply arrive
+-- that ramp does not read as anticipation, it reads as the page
+hesitating before it answers. `ease-out` puts most of the change in the
+first sixty milliseconds and lets the tail settle, which is the fade
+that was asked for rather than the slide that was there.
+
+  The class is held 230ms against it, keeping the same 60ms of slack
+  over the transition it has to outlive.
+
+**Some of the lateness was real, and measured.** The switch cannot start
+until the style recalc it triggers has finished, and applying the
+transition to every element roughly doubles that: a theme flip on its
+own costs ~9ms on the board's 1288 nodes, and ~20ms with the rule --
+between one and two frames of nothing, before any easing curve gets a
+say.
+
+  Worth knowing what that cost is *not*: the property list. Six
+  properties and one measure the same, ~19ms against ~21ms. It is the
+  universal selector -- the same rule aimed at the roots and panels
+  alone runs in 0.1ms. What stops it being narrowed today is that 759
+  of those 1288 nodes genuinely change colour, most of them table cells
+  and links carrying their own declarations, so a hand-written list
+  would be most of the board and would rot the first time a rule moved.
+  Left at one frame, with the numbers written down for whoever revisits
+  it.
+
+Gates: 69 tests, tsc, lint, build clean.

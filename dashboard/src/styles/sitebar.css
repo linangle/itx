@@ -44,14 +44,22 @@
  * `body *` does not match the body itself, so it was the one surface
  * still snapping while everything on it faded.
  *
- * 260ms is enough to read as a shift rather than a fade -- the ground is
- * doing most of the work, and a slow ground looks like a page loading. */
+ * 170ms and `ease-out`, which between them are what stop the switch
+ * feeling late. `ease` spends its first third barely moving, so on a
+ * change with no motion to anticipate -- nothing travels, colours just
+ * arrive -- the eye reads that ramp as the page hesitating. `ease-out`
+ * puts most of the change in the first 60ms and lets the tail settle,
+ * which is the fade rather than the slide. The switch also costs about
+ * a frame of style recalc before it can start (this rule doubles the
+ * flip's ~9ms, measured), so every millisecond of easing ramp is spent
+ * on top of a delay that is already there. */
 body.itx-theme-shift,
 body.itx-theme-shift *,
 body.itx-theme-shift *::before,
 body.itx-theme-shift *::after {
-  transition: background-color 260ms ease, color 260ms ease, border-color 260ms ease,
-    fill 260ms ease, stroke 260ms ease, opacity 260ms ease;
+  transition: background-color 170ms ease-out, color 170ms ease-out,
+    border-color 170ms ease-out, fill 170ms ease-out, stroke 170ms ease-out,
+    opacity 170ms ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {

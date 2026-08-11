@@ -40,14 +40,14 @@ export function getTheme(): Theme {
 /** The class that lets the ground, the ink and the outlines cross over,
  * and how long it stays on.
  *
- * Deliberately longer than the 260ms transition in sitebar.css. Taking
+ * Deliberately longer than the 170ms transition in sitebar.css. Taking
  * the class off is what ends the transition, so if the two were equal a
  * timer that fired a frame early would cancel the cross-fade at 95% and
  * snap the last of it -- the exact thing this is here to remove. The
  * slack costs nothing: with no transition left to run, the class is
  * inert for its last 60ms. */
 const SHIFT_CLASS = "itx-theme-shift";
-const SHIFT_MS = 320;
+const SHIFT_MS = 230;
 let shiftTimer: number | undefined;
 
 /** Colour transitions are worth having only on the switch itself.
