@@ -18,6 +18,7 @@
 // That mirrors how the Rust side threads `now` through `TaskBoard`.
 
 import type { TaskDto } from "./hub";
+import { sectorOf } from "./sectors";
 
 export interface BucketOptions {
   /** How many buckets to divide the window into. Each becomes one point
@@ -247,6 +248,112 @@ export function summarizeByCapability(
     })
     .sort((a, b) => b.open - a.open || b.openBounty - a.openBounty)
     .slice(0, limit);
+}
+
+export interface MarketSummary {
+  /** The capability tag this market trades in. */
+  capability: string;
+  open: number;
+  openBounty: number;
+  /** Cumulative bounty posted over the window -- the shape that reads
+   * as a price line. Same honesty caveat as every series here: keyed on
+   * `created_at`, because that is the only timestamp there is. */
+  series: number[];
+  changePct: number | null;
+}
+
+export interface SectorSummary {
+  /** Sector name from `sectors.ts`, or `OTHER_SECTOR`. */
+  name: string;
+  open: number;
+  openBounty: number;
+  /** All tasks filed under this sector in the window. */
+  posted: number;
+  /** The sector's individual markets, biggest open bounty first. */
+  markets: MarketSummary[];
+  /** Tasks posted per bucket across the whole sector -- the quote
+   * strip's sparkline. */
+  series: number[];
+  changePct: number | null;
+}
+
+/** The board grouped as sectors of individual markets: one entry per
+ * sector with tagged work on it, each carrying one market per capability
+ * tag, biggest first at both levels.
+ *
+ * Ranked by open bounty rather than task count, same as the market
+ * carousel always was: a sector is "big" when there is real money on
+ * offer in it, and the order is recomputed from whatever the hub last
+ * returned, so sectors genuinely move around as work is posted and
+ * settled.
+ *
+ * A market's change column carries the same guard the agent tickers
+ * had: below two active buckets there is no trend to report, only a
+ * single payout landing in one half of the window and masquerading as
+ * +100% or -100%, so it reports `null` and the UI shows a dash.
+ *
+ * Untagged tasks are unrestricted rather than belonging to a sector, so
+ * they are absent here -- consistent with `summarizeByCapability`. A
+ * task tagged into two sectors counts once in each; one tagged twice
+ * into the *same* sector counts once, which is why the grouping walks a
+ * per-task set of sector names rather than pushing per tag. */
+export function summarizeBySector(
+  tasks: TaskDto[],
+  options: BucketOptions = {},
+): SectorSummary[] {
+  const bySector = new Map<string, TaskDto[]>();
+  const byCapability = new Map<string, TaskDto[]>();
+  for (const task of tasks) {
+    if (task.capabilities.length === 0) continue;
+    const sectors = new Set<string>();
+    for (const capability of task.capabilities) {
+      const list = byCapability.get(capability);
+      if (list) list.push(task);
+      else byCapability.set(capability, [task]);
+      sectors.add(sectorOf(capability));
+    }
+    for (const name of sectors) {
+      const list = bySector.get(name);
+      if (list) list.push(task);
+      else bySector.set(name, [task]);
+    }
+  }
+
+  const markets = new Map<string, MarketSummary[]>();
+  for (const [capability, tagged] of byCapability) {
+    const open = tagged.filter((t) => t.status === "Open");
+    const perBucket = sumByCreatedAt(tagged, (t) => t.bounty, options);
+    const active = perBucket.filter((v) => v > 0).length;
+    const market: MarketSummary = {
+      capability,
+      open: open.length,
+      openBounty: open.reduce((sum, t) => sum + t.bounty, 0),
+      series: cumulative(perBucket),
+      changePct: active >= 2 ? periodChangePct(perBucket) : null,
+    };
+    const name = sectorOf(capability);
+    const list = markets.get(name);
+    if (list) list.push(market);
+    else markets.set(name, [market]);
+  }
+
+  return [...bySector.entries()]
+    .map(([name, ofSector]) => {
+      const open = ofSector.filter((t) => t.status === "Open");
+      const series = countByCreatedAt(ofSector, options);
+      return {
+        name,
+        open: open.length,
+        openBounty: open.reduce((sum, t) => sum + t.bounty, 0),
+        posted: ofSector.length,
+        markets: (markets.get(name) ?? []).sort(
+          (a, b) => b.openBounty - a.openBounty || b.open - a.open,
+        ),
+        series,
+        changePct: periodChangePct(series),
+      };
+    })
+    .sort((a, b) => b.openBounty - a.openBounty || b.open - a.open);
 }
 
 export interface BoardTotals {

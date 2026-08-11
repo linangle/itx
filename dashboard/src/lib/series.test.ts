@@ -8,6 +8,7 @@ import {
   periodChangePct,
   summarizeByCapability,
   summarizeByKind,
+  summarizeBySector,
 } from "./series";
 import type { TaskDto } from "./hub";
 
@@ -148,6 +149,80 @@ describe("summarizeByCapability", () => {
     const summary = summarizeByCapability(tasks, 8, opts);
     expect(summary.map((s) => s.capability)).toEqual(["python", "ocr"]);
     expect(summary[0].open).toBe(2);
+  });
+});
+
+describe("summarizeBySector", () => {
+  const at = (hoursAgo: number) => new Date(NOW - hoursAgo * HOUR).toISOString();
+
+  it("groups markets under their sectors, biggest open bounty first at both levels", () => {
+    const summary = summarizeBySector(
+      [
+        task({ created_at: at(1), capabilities: ["python"], bounty: 100, status: "Open" }),
+        task({ created_at: at(1), capabilities: ["rust"], bounty: 900, status: "Open" }),
+        task({ created_at: at(1), capabilities: ["ocr"], bounty: 5000, status: "Open" }),
+      ],
+      opts,
+    );
+    expect(summary.map((s) => s.name)).toEqual(["data", "coding"]);
+    expect(summary[1].markets.map((m) => m.capability)).toEqual(["rust", "python"]);
+    expect(summary[1].open).toBe(2);
+    expect(summary[1].openBounty).toBe(1000);
+  });
+
+  it("files an unknown tag under the other sector", () => {
+    const summary = summarizeBySector(
+      [task({ created_at: at(1), capabilities: ["haruspicy"] })],
+      opts,
+    );
+    expect(summary.map((s) => s.name)).toEqual(["other"]);
+    expect(summary[0].markets.map((m) => m.capability)).toEqual(["haruspicy"]);
+  });
+
+  it("leaves untagged tasks out, as summarizeByCapability does", () => {
+    expect(summarizeBySector([task({ created_at: at(1) })], opts)).toEqual([]);
+  });
+
+  it("counts a task once per sector, not once per tag", () => {
+    // Two tags in the same sector: one task, one count. A third tag in
+    // another sector counts it there too -- the task genuinely trades in
+    // both.
+    const twice = task({
+      created_at: at(1),
+      capabilities: ["python", "rust", "ocr"],
+      status: "Open",
+      bounty: 100,
+    });
+    const summary = summarizeBySector([twice], opts);
+    const coding = summary.find((s) => s.name === "coding");
+    const data = summary.find((s) => s.name === "data");
+    expect(coding?.posted).toBe(1);
+    expect(coding?.openBounty).toBe(100);
+    expect(data?.posted).toBe(1);
+  });
+
+  it("withholds a market's change below two active buckets", () => {
+    // One payout in one half of the window is not a trend -- the agent
+    // tickers had this guard and the markets keep it.
+    const summary = summarizeBySector(
+      [task({ created_at: at(0.5), capabilities: ["python"], bounty: 100 })],
+      opts,
+    );
+    const python = summary[0].markets[0];
+    expect(python.changePct).toBeNull();
+    // The cumulative curve still has a shape to draw.
+    expect(python.series).toEqual([0, 0, 0, 100]);
+  });
+
+  it("reports a market's change once both halves have activity", () => {
+    const summary = summarizeBySector(
+      [
+        task({ created_at: at(3.5), capabilities: ["python"], bounty: 100 }),
+        task({ created_at: at(0.5), capabilities: ["python"], bounty: 300 }),
+      ],
+      opts,
+    );
+    expect(summary[0].markets[0].changePct).toBe(200);
   });
 });
 
