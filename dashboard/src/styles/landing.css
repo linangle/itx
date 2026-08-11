@@ -410,6 +410,12 @@ body.itx-landing-body {
   --r-field: 10px;
   --r-panel: 14px;
 
+  /* One row height for every list on the board, and the only place it is
+     decided: `useFitRows` reads this property off the box it measures
+     rather than carrying its own copy, so changing it here changes both
+     how tall a row draws and how many of them a panel asks for. */
+  --row-h: 34px;
+
   --fs-title: 25px;
   --fs-label: 16px;
   --fs-lead: 14px;
@@ -652,9 +658,24 @@ body.itx-landing-body {
 
 /* markets + rail */
 
+/* The box a panel hands to `useFitRows`: it takes whatever height the
+   panel has left and reports it back, and the rows are drawn into it.
+
+   `flex-basis: 0` is what makes that safe. With `auto` the box would
+   contribute its rows to the panel's content height, so more rows would
+   make the panel taller, which would fit more rows -- the measurement
+   would chase itself. At 0 the panel's height is settled by its own
+   min-height first and the box is handed the remainder. `overflow`
+   catches the sub-row remainder that `floor` leaves behind. */
+.itx-board-fit {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .itx-board-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 232px;
+  grid-template-columns: 172px minmax(0, 1fr) 232px;
   gap: var(--sp-8);
   /* Deliberately not `align-items: start`: both columns take the row's
      height so they finish on the same line, as the mockup has them.
@@ -735,6 +756,8 @@ body.itx-landing-body {
   flex: 1;
   min-height: 430px;
   padding: var(--pad-panel-y) var(--pad-panel-x);
+  display: flex;
+  flex-direction: column;
 }
 
 .itx-board-rail {
@@ -746,6 +769,8 @@ body.itx-landing-body {
 .itx-board-panel-leaders {
   min-height: 300px;
   padding: var(--pad-panel-y) var(--pad-panel-x);
+  display: flex;
+  flex-direction: column;
 }
 
 .itx-board-panel-trends {
@@ -755,6 +780,94 @@ body.itx-landing-body {
   min-height: 244px;
   margin-bottom: 0;
   padding: var(--pad-panel-y) var(--pad-panel-x);
+  display: flex;
+  flex-direction: column;
+}
+
+/* left nav */
+
+.itx-board-nav {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.itx-board-panel-nav {
+  flex: 1;
+  padding: var(--pad-panel-y) var(--pad-panel-x);
+  display: flex;
+  flex-direction: column;
+}
+
+.itx-board-navlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-body);
+}
+
+/* Same row height as every table on the board, so the nav's entries sit
+   on the same rhythm as the rows in the panels beside it. */
+.itx-board-navlist li {
+  display: flex;
+  align-items: center;
+  height: var(--row-h);
+}
+
+.itx-board-navlist a,
+.itx-board-navlist button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ld-light);
+  font: inherit;
+  font-size: var(--fs-body);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The market entries are a longer, changing list, so they sit back a
+   step from the four fixed section links above them. */
+.itx-board-navlist button {
+  color: var(--ld-sub);
+}
+
+.itx-board-navlist a:hover,
+.itx-board-navlist button:hover {
+  color: var(--ld-light);
+  text-decoration: underline;
+}
+
+/* Which market the carousel is currently showing. */
+.itx-board-navlist button.is-active {
+  color: var(--ld-light);
+  font-weight: 700;
+}
+
+.itx-board-navhead {
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  color: var(--ld-sub);
+}
+
+/* Links off the board entirely, held apart from the in-page ones and
+   pinned to the foot of the rail -- there are only ever a handful of
+   markets to list, so without this the rail ends in dead space. */
+.itx-board-navlist-pages {
+  margin-top: auto;
+  padding-top: var(--sp-2);
+  border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+}
+
+.itx-board-navlist-pages a {
+  color: var(--ld-blue);
 }
 
 .itx-board-rail .itx-board-label:nth-of-type(2) {
@@ -827,9 +940,25 @@ body.itx-landing-body {
   letter-spacing: 0.02em;
 }
 
+/* Fixed row height rather than one that follows its contents, so a
+   panel's capacity is arithmetic instead of a guess -- see --row-h.
+   `height` on a cell is a minimum, so the padding is dropped to the
+   sides and the row's own height governs. Border-box because a cell is
+   content-box by default, which would have put the separator *outside*
+   the 34px and left every row a pixel taller than the count assumed --
+   enough, over fifteen rows, to clip the last one. */
 .itx-board-table td {
-  padding: var(--sp-3) var(--sp-3);
+  box-sizing: border-box;
+  height: var(--row-h);
+  padding: 0 var(--sp-3);
   border-bottom: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+}
+
+/* An inline SVG sits on the text baseline and reserves descender space
+   below it, which is enough to push a 20px sparkline past the row
+   height it was sized for. */
+.itx-board-table .itx-spark {
+  display: block;
 }
 
 .itx-board-table tr:last-child td {
@@ -863,9 +992,15 @@ body.itx-landing-body {
 
 .itx-board-panel-latest {
   /* Less vertical padding than the other panels on purpose: the rows
-     inside carry their own, and doubling them left a visible gap. */
+     inside carry their own, and doubling them left a visible gap.
+
+     A fixed height rather than a minimum, so the tape fills the panel
+     exactly: six rows plus the padding, and `useFitRows` drops in as
+     many updates as that leaves room for. */
   padding: 6px var(--pad-panel-x);
-  min-height: 128px;
+  height: calc(var(--row-h) * 6 + 12px + 2px); /* six rows, the padding, and the outline */
+  display: flex;
+  flex-direction: column;
 }
 
 .itx-board-updates {
@@ -876,9 +1011,9 @@ body.itx-landing-body {
 
 .itx-board-updates li {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-6);
-  padding: var(--sp-3) 0;
+  height: var(--row-h);
   font-size: var(--fs-body);
 }
 
@@ -928,6 +1063,14 @@ body.itx-landing-body {
   .itx-board-cols {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--sp-7);
+  }
+
+  /* Stacked, the nav is no longer sized by a row it shares with the
+     panels, so it needs a height of its own -- without one its fit box
+     resolves to nothing and the market list empties. Sized for the
+     fixed entries plus about six markets. */
+  .itx-board-panel-nav {
+    min-height: 480px;
   }
 
   .itx-board-markets {

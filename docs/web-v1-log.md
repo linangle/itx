@@ -1363,3 +1363,67 @@ aggregate endpoint is.
   lossy.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 20 — panels that fill, and a left nav
+
+Two asks: why the tables stop short of the bottom of their panels, and
+a navigation section down the left.
+
+**The tables stopped short because the row count was a constant and the
+panel height is not.** `AGENT_ROWS = 10` was written when a market
+panel was 430px; the panel is actually as tall as the rail beside it,
+which at 1440x900 is 576px -- room for fifteen. Ten rows in a box for
+fifteen is the gap in the screenshot, and it changes with the window,
+so no constant is ever right.
+
+Closed from the other side. `useFitRows` measures the box and reports
+how many rows fit; the table renders that many. The old constants
+survive only as ceilings on how much data a panel is *prepared* to
+show. Measured after: market 15 rows with 4px slack, trends 6, latest 6
+(was 5 with a row of dead space), leaderboard 6 with 11px.
+
+Three details that were load-bearing:
+
+- **`--row-h` lives in the stylesheet and the hook reads it off the
+  measured element.** A row's height is a design decision; duplicating
+  it in TypeScript would mean two places to change and one of them
+  eventually wrong.
+- **`flex-basis: 0` on the measured box is what stops the measurement
+  chasing itself.** At `auto` the box contributes its rows to the
+  panel's content height, so more rows make a taller panel, which fits
+  more rows. At 0 the panel's height settles first and the box is
+  handed the remainder.
+- **Table cells are `content-box` by default.** With `height: 34px` and
+  a 1px separator each row drew 35, so fifteen rows overran the budget
+  by ten pixels and the last one was clipped. `box-sizing: border-box`
+  on the cell, and the count is honest.
+
+Also fed each agent's sparkline the tasks already grouped for it rather
+than the market's whole list -- the same result, but the cost stops
+scaling with the row count now that a tall panel asks for twice as
+many.
+
+**The nav is a third column in the board's grid**, left of the markets:
+jump links to the four sections, the live list of markets, then the
+links off the board. The market entries are the useful part -- with a
+dozen capability tags and three panels visible, the pager alone means
+clicking through the carousel to find one. These select it directly and
+mark whichever is at the front. The list fills the rail the same way
+every other panel does, and the outbound links are pinned to the foot
+with `margin-top: auto` so a short market list leaves no dead end.
+
+  Verification snag worth recording: the preview pane was hidden for
+  this round, so every screenshot came back a flat dark rectangle.
+  A hidden document does not run the rendering steps -- which also
+  means **ResizeObserver never fires**, so a resize appeared not to
+  re-measure. It does; a reload at the new size gives the right count
+  (8 rows at 1000px wide, 15 at 1440px), because the effect's first
+  measure runs whether or not the page is painting. Geometry was
+  verified by measuring the DOM instead: panel height, content bottom,
+  and the slack between them.
+
+Stacked under 1080px the nav gets a `min-height` of its own -- without
+a grid row to size it, its fit box resolves to nothing and the market
+list empties to one entry.
+
+Gates: 55 tests, tsc, lint, build clean.

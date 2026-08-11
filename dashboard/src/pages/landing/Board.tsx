@@ -4,6 +4,7 @@ import Sparkline from "../../components/Sparkline";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
+import { useFitRows } from "../../hooks/useFitRows";
 import { getLeaderboard } from "../../lib/hub";
 import type { Page, TaskDto } from "../../lib/hub";
 import {
@@ -25,10 +26,14 @@ import {
 } from "../../lib/series";
 import type { KindSummary } from "../../lib/series";
 
-const AGENT_ROWS = 10;
-const TRENDING_ROWS = 6;
-const UPDATE_ROWS = 5;
-const LEADER_ROWS = 8;
+/** Ceilings, not row counts. Every table on the board now renders as
+ * many rows as its panel has room for -- see `useFitRows` -- so these
+ * only cap how much a panel is *prepared* to show, which is what stops
+ * a tall window from asking for a sparkline per agent on the board. */
+const MAX_AGENT_ROWS = 24;
+const MAX_TRENDING_ROWS = 24;
+const MAX_UPDATE_ROWS = 24;
+const MAX_LEADER_ROWS = 24;
 /** How often the board re-asks the hub. Slow enough to be cheap, quick
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
@@ -91,7 +96,7 @@ function topAgents(tasks: TaskDto[], windowMs: number): AgentRow[] {
     earnedBy.set(t.claimant, (earnedBy.get(t.claimant) ?? 0) + t.bounty);
   }
 
-  const top = [...earnedBy.entries()].sort((a, b) => b[1] - a[1]).slice(0, AGENT_ROWS);
+  const top = [...earnedBy.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_AGENT_ROWS);
   if (top.length === 0) return [];
 
   // Only the rows that will be rendered get a curve.
@@ -105,7 +110,8 @@ function topAgents(tasks: TaskDto[], windowMs: number): AgentRow[] {
   }
 
   return top.map(([pubkey, earned]) => {
-    const buckets = sumByCreatedAt(paidByAgent.get(pubkey) ?? [], (t) => t.bounty, { windowMs });
+    const paid = paidByAgent.get(pubkey) ?? [];
+    const buckets = sumByCreatedAt(paid, (t) => t.bounty, { windowMs });
     // A single bucket of activity is not a trend. Left to itself the
     // period-over-period maths turns one payout into +100% or -100%
     // depending only on which half of the window it landed in, which
@@ -118,7 +124,13 @@ function topAgents(tasks: TaskDto[], windowMs: number): AgentRow[] {
       // Cumulative curve for shape; change from the per-bucket sums,
       // since a cumulative series only rises and would read every agent
       // as permanently up.
-      series: agentEarningsSeries(tasks, pubkey, { windowMs }),
+      //
+      // Fed the agent's own paid tasks rather than the market's whole
+      // list. `agentEarningsSeries` would filter to the same set itself,
+      // but doing it here reuses the grouping pass above -- which is
+      // what keeps the cost flat now that a tall panel asks for twice
+      // as many rows as it used to.
+      series: agentEarningsSeries(paid, pubkey, { windowMs }),
       changePct: active >= 2 ? periodChangePct(buckets) : null,
     };
   });
@@ -189,16 +201,24 @@ export default function Board({
   );
   const trending = useMemo(
     () =>
-      summarizeByCapability(items, 12, { windowMs: window.windowMs })
+      summarizeByCapability(items, MAX_TRENDING_ROWS, { windowMs: window.windowMs })
         .slice()
-        .sort((a, b) => Math.abs(b.changePct ?? -Infinity) - Math.abs(a.changePct ?? -Infinity))
-        .slice(0, TRENDING_ROWS),
+        .sort((a, b) => Math.abs(b.changePct ?? -Infinity) - Math.abs(a.changePct ?? -Infinity)),
     [items, window.windowMs],
   );
   const latest = useMemo(
-    () => [...items].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, UPDATE_ROWS),
+    () =>
+      [...items]
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, MAX_UPDATE_ROWS),
     [items],
   );
+
+  // One of these per table: the panel measures itself and says how many
+  // rows it has room for, and the table renders that many.
+  const [leaderFit, leaderRows] = useFitRows();
+  const [trendFit, trendRows] = useFitRows();
+  const [latestFit, latestRows] = useFitRows();
 
   // Rotated rather than sliced, so there is always one more item past
   // the clip -- the peek from the mockup that says the pager has
@@ -220,7 +240,9 @@ export default function Board({
         <h2 className="itx-board-title">market overview</h2>
 
         <div className="itx-board-cols">
-          <div className="itx-board-markets">
+          <BoardNav markets={markets} page={page} onSelect={setPage} />
+
+          <div className="itx-board-markets" id="itx-board-markets">
             {/* Floated over the track's right end rather than being a row
              * item: it must not take part in the width the panels divide
              * up, or the labels and the panels resolve their percentages
@@ -270,7 +292,7 @@ export default function Board({
 
           <div className="itx-board-rail">
             <span className="itx-board-label">leaderboard</span>
-            <div className="itx-board-panel itx-board-panel-leaders">
+            <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">
               <div className="itx-board-search">
                 <SearchIcon />
                 <input
@@ -281,57 +303,63 @@ export default function Board({
                   aria-label="Search agents by public key"
                 />
               </div>
-              {leaders.data === null ? (
-                <p className="itx-board-note">loading agents…</p>
-              ) : found.length === 0 ? (
-                <p className="itx-board-note">
-                  {query ? "no agent matches that key." : "no agents have earned yet."}
-                </p>
-              ) : (
-                <table className="itx-board-table">
-                  <tbody>
-                    {found.slice(0, LEADER_ROWS).map((agent) => (
-                      <tr key={agent.pubkey}>
-                        <td>
-                          <Link to={`/agents/${agent.pubkey}`}>{truncatePubkey(agent.pubkey)}</Link>
-                        </td>
-                        <td className="right">{formatCompactItx(agent.total_earned)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+              <div className="itx-board-fit" ref={leaderFit}>
+                {leaders.data === null ? (
+                  <p className="itx-board-note">loading agents…</p>
+                ) : found.length === 0 ? (
+                  <p className="itx-board-note">
+                    {query ? "no agent matches that key." : "no agents have earned yet."}
+                  </p>
+                ) : (
+                  <table className="itx-board-table">
+                    <tbody>
+                      {found.slice(0, Math.min(leaderRows, MAX_LEADER_ROWS)).map((agent) => (
+                        <tr key={agent.pubkey}>
+                          <td>
+                            <Link to={`/agents/${agent.pubkey}`}>
+                              {truncatePubkey(agent.pubkey)}
+                            </Link>
+                          </td>
+                          <td className="right">{formatCompactItx(agent.total_earned)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
 
             <span className="itx-board-label">trends</span>
-            <div className="itx-board-panel itx-board-panel-trends">
-              {trending.length === 0 ? (
-                <p className="itx-board-note">no capability tags in use yet.</p>
-              ) : (
-                <table className="itx-board-table">
-                  <tbody>
-                    {trending.map((row) => (
-                      <tr key={row.capability}>
-                        <td>
-                          <Link to={`/tasks?capability=${encodeURIComponent(row.capability)}`}>
-                            {row.capability}
-                          </Link>
-                        </td>
-                        <td className="itx-board-cell-spark">
-                          <Sparkline
-                            values={row.series}
-                            direction={directionOf(row.changePct)}
-                            label={`${row.capability} tasks posted over the last ${window.label}`}
-                          />
-                        </td>
-                        <td className={`right ${directionOf(row.changePct)}`}>
-                          {formatPct(row.changePct)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+            <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
+              <div className="itx-board-fit" ref={trendFit}>
+                {trending.length === 0 ? (
+                  <p className="itx-board-note">no capability tags in use yet.</p>
+                ) : (
+                  <table className="itx-board-table">
+                    <tbody>
+                      {trending.slice(0, trendRows).map((row) => (
+                        <tr key={row.capability}>
+                          <td>
+                            <Link to={`/tasks?capability=${encodeURIComponent(row.capability)}`}>
+                              {row.capability}
+                            </Link>
+                          </td>
+                          <td className="itx-board-cell-spark">
+                            <Sparkline
+                              values={row.series}
+                              direction={directionOf(row.changePct)}
+                              label={`${row.capability} tasks posted over the last ${window.label}`}
+                            />
+                          </td>
+                          <td className={`right ${directionOf(row.changePct)}`}>
+                            {formatPct(row.changePct)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -340,20 +368,22 @@ export default function Board({
           <span className="itx-board-label">latest</span>
           <span className="itx-board-live-dot" aria-label="live" title="live" />
         </div>
-        <div className="itx-board-panel itx-board-panel-latest">
-          <ul className="itx-board-updates">
-            {latest.length === 0 && !tasks.loading && (
-              <li className="itx-board-note">nothing on the tape yet.</li>
-            )}
-            {latest.map((t) => (
-              <li key={t.id}>
-                <span className="itx-board-dot" aria-hidden="true" />
-                <span className="itx-board-when">{ago(t.created_at)}</span>
-                <Link to={`/tasks/${t.id}`}>{t.description}</Link>
-                <span className="itx-board-amt">{formatCompactItx(t.bounty)} itx</span>
-              </li>
-            ))}
-          </ul>
+        <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
+          <div className="itx-board-fit" ref={latestFit}>
+            <ul className="itx-board-updates">
+              {latest.length === 0 && !tasks.loading && (
+                <li className="itx-board-note">nothing on the tape yet.</li>
+              )}
+              {latest.slice(0, latestRows).map((t) => (
+                <li key={t.id}>
+                  <span className="itx-board-dot" aria-hidden="true" />
+                  <span className="itx-board-when">{ago(t.created_at)}</span>
+                  <Link to={`/tasks/${t.id}`}>{t.description}</Link>
+                  <span className="itx-board-amt">{formatCompactItx(t.bounty)} itx</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
 
         {/* Deliberately empty for now, per the mockup -- the outline is
@@ -453,44 +483,123 @@ function MarketPanel({
   error: Error | null;
 }) {
   const agents = market.agents;
+  // The panel is as tall as the row it sits in, which is set by the rail
+  // beside it -- so how many agents belong here is a question only the
+  // rendered box can answer. The header row is measured out of the
+  // budget rather than assumed, since it is inside the same box.
+  const [fitRef, rows] = useFitRows();
   return (
     <section className="itx-board-panel itx-board-panel-market">
-      {loading ? (
-        <p className="itx-board-note">loading the board…</p>
-      ) : error ? (
-        <p className="itx-board-note">couldn&apos;t reach the hub. {error.message}</p>
-      ) : agents.length === 0 ? (
-        <p className="itx-board-note">
-          nothing settled in {market.name} yet — open work here has not been paid out.
-        </p>
-      ) : (
-        <table className="itx-board-table">
-          <thead>
-            <tr>
-              <th>agent</th>
-              <th>price</th>
-              <th className="right">change</th>
-            </tr>
-          </thead>
-          <tbody>
-            {agents.map((a) => (
-              <tr key={a.pubkey}>
-                <td>
-                  <Link to={`/agents/${a.pubkey}`}>{truncatePubkey(a.pubkey)}</Link>
-                </td>
-                <td className="itx-board-cell-spark">
-                  <Sparkline
-                    values={a.series}
-                    direction={directionOf(a.changePct)}
-                    label={`earnings for agent ${a.pubkey} over the last ${windowLabel}`}
-                  />
-                </td>
-                <td className={`right ${directionOf(a.changePct)}`}>{formatPct(a.changePct)}</td>
+      <div className="itx-board-fit" ref={fitRef}>
+        {loading ? (
+          <p className="itx-board-note">loading the board…</p>
+        ) : error ? (
+          <p className="itx-board-note">couldn&apos;t reach the hub. {error.message}</p>
+        ) : agents.length === 0 ? (
+          <p className="itx-board-note">
+            nothing settled in {market.name} yet — open work here has not been paid out.
+          </p>
+        ) : (
+          <table className="itx-board-table">
+            <thead data-fit-fixed>
+              <tr>
+                <th>agent</th>
+                <th>price</th>
+                <th className="right">change</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+            </thead>
+            <tbody>
+              {agents.slice(0, rows).map((a) => (
+                <tr key={a.pubkey}>
+                  <td>
+                    <Link to={`/agents/${a.pubkey}`}>{truncatePubkey(a.pubkey)}</Link>
+                  </td>
+                  <td className="itx-board-cell-spark">
+                    <Sparkline
+                      values={a.series}
+                      direction={directionOf(a.changePct)}
+                      label={`earnings for agent ${a.pubkey} over the last ${windowLabel}`}
+                    />
+                  </td>
+                  <td className={`right ${directionOf(a.changePct)}`}>{formatPct(a.changePct)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </section>
+  );
+}
+
+/** The board's left rail: jump links to the four sections, then the live
+ * list of markets, then the pages that carry on past the board.
+ *
+ * The market entries are the useful part -- with a dozen capability tags
+ * and three panels visible at a time, the pager alone means clicking
+ * through the carousel to find one. These select it directly, and the
+ * one currently at the front of the carousel is marked.
+ *
+ * The list fills the rail the same way every other panel does, so a tall
+ * window shows more markets rather than more empty rail. */
+function BoardNav({
+  markets,
+  page,
+  onSelect,
+}: {
+  markets: Market[];
+  page: number;
+  onSelect: (index: number) => void;
+}) {
+  const [fitRef, rows] = useFitRows();
+  const current = markets.length ? markets[page % markets.length]?.name : undefined;
+
+  return (
+    <nav className="itx-board-nav" aria-label="Board sections">
+      <span className="itx-board-label">navigate</span>
+      <div className="itx-board-panel itx-board-panel-nav">
+        <ul className="itx-board-navlist">
+          <li>
+            <a href="#itx-board-markets">market overview</a>
+          </li>
+          <li>
+            <a href="#itx-board-leaders">leaderboard</a>
+          </li>
+          <li>
+            <a href="#itx-board-trends">trends</a>
+          </li>
+          <li>
+            <a href="#itx-board-latest">latest</a>
+          </li>
+        </ul>
+
+        <span className="itx-board-navhead">markets</span>
+        <div className="itx-board-fit" ref={fitRef}>
+          <ul className="itx-board-navlist">
+            {markets.slice(0, rows).map((m, index) => (
+              <li key={m.name}>
+                <button
+                  type="button"
+                  className={m.name === current ? "is-active" : undefined}
+                  aria-current={m.name === current ? "true" : undefined}
+                  onClick={() => onSelect(index)}
+                >
+                  {m.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <ul className="itx-board-navlist itx-board-navlist-pages">
+          <li>
+            <Link to="/tasks">all tasks</Link>
+          </li>
+          <li>
+            <Link to="/leaderboard">full leaderboard</Link>
+          </li>
+        </ul>
+      </div>
+    </nav>
   );
 }
