@@ -40,18 +40,25 @@ function market(capability: string, bounty: number): TaskDto[] {
   ];
 }
 
-function loaded(items: TaskDto[]): AsyncState<Page<TaskDto> & { complete: boolean }> {
+function loaded(
+  items: TaskDto[],
+  partialOf?: number,
+): AsyncState<Page<TaskDto> & { complete: boolean }> {
   return {
-    data: { items, total: items.length, complete: true },
+    data: {
+      items,
+      total: partialOf ?? items.length,
+      complete: partialOf === undefined,
+    },
     loading: false,
     error: null,
   } as AsyncState<Page<TaskDto> & { complete: boolean }>;
 }
 
-function renderBoard(items: TaskDto[]) {
+function renderBoard(items: TaskDto[], partialOf?: number) {
   const view = render(
     <MemoryRouter>
-      <Board tasks={loaded(items)} />
+      <Board tasks={loaded(items, partialOf)} />
     </MemoryRouter>,
   );
   // A market name is on the board twice on purpose -- once as a row in
@@ -116,6 +123,23 @@ describe("Board", () => {
     // of work it is, and no longer head the board.
     expect(screen.queryByText(/hash match/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("coding").length).toBeGreaterThan(0);
+  });
+
+  it("says so when the page walk stopped before the end of the board", () => {
+    // Every figure here is a sum over the task list, so a truncated walk
+    // misstates the market rather than showing less of it. Silence is
+    // the one thing this must not do.
+    renderBoard(tasks, 30_000);
+    const note = screen.getByRole("status");
+    expect(note).toHaveTextContent(/showing the oldest 8 of 30,000 tasks/i);
+    // Which end is missing is the actionable half: the hub sorts
+    // oldest-first and the walk slices from the front.
+    expect(note).toHaveTextContent(/newest work is missing/i);
+  });
+
+  it("stays quiet when the walk saw the whole board", () => {
+    renderBoard(tasks);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("files a tag the taxonomy doesn't know under other, rather than dropping it", async () => {

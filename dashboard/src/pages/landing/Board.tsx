@@ -176,6 +176,26 @@ export default function Board({
       <div className="itx-board-inner">
         <QuoteStrip sectors={sectors} windowLabel={window.label} />
 
+        {/* Said out loud when the client's page walk stopped before the
+         * end of the board (`listAllTasks`'s `maxItems`). Every figure
+         * above and below -- sector sizes, open bounty, every sparkline
+         * -- is a sum over the task list, so a truncated walk does not
+         * show less of the market, it misstates the market. The terminal
+         * overview has said so since it was built; this board took the
+         * flag as a prop and rendered nothing, which is the one outcome
+         * the flag exists to prevent.
+         *
+         * Worth being precise about which end is missing: the hub sorts
+         * oldest-first and the walk slices from the front, so what is
+         * absent is the newest work, not the oldest. */}
+        {tasks.data && !tasks.data.complete && (
+          <p className="itx-board-note itx-board-partial" role="status">
+            showing the oldest {formatCount(items.length)} of{" "}
+            {formatCount(tasks.data.total)} tasks — figures on this board cover only
+            these, and the newest work is missing.
+          </p>
+        )}
+
         {/* Laid out on the same three columns as the board below, with the
          * heading in the middle one: the title starts where the first
          * market panel starts. The pager sits immediately after the

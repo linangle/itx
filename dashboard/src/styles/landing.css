@@ -1230,6 +1230,16 @@ body.itx-landing-body[data-theme="light"] {
   text-overflow: ellipsis;
 }
 
+/* The truncated-walk warning. Sits between the quote strip and the
+   board head, in the same red the tape uses for a falling market --
+   this is a correctness notice about every figure on the page, not a
+   footnote, and it should be the thing you read first if it is there
+   at all. */
+.itx-board-partial {
+  margin: var(--sp-4) 0 calc(-1 * var(--sp-2));
+  color: var(--ld-red);
+}
+
 /* latest + footer */
 
 .itx-board-panel-latest {
