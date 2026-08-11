@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
 import { useFitRows } from "../../hooks/useFitRows";
-import { useSwipe } from "../../hooks/useSwipe";
-import type { SwipeDirection } from "../../hooks/useSwipe";
+import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
 import { getLeaderboard } from "../../lib/hub";
 import type { Page, TaskDto } from "../../lib/hub";
@@ -231,7 +229,6 @@ export default function Board({
   tasks: AsyncState<Page<TaskDto> & { complete: boolean }>;
 }) {
   const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
-  const [page, setPage] = useState(0);
   const [query, setQuery] = useState("");
 
   const items = useMemo(() => tasks.data?.items ?? [], [tasks.data]);
@@ -262,30 +259,17 @@ export default function Board({
 
   const arrivals = useArrivals(latest);
 
-  // The one place that decides what "next" means, so the arrows and the
-  // swipe cannot drift apart. Wraps in both directions: the carousel is
-  // a ring, and running out of markets at one end would leave a control
-  // that silently does nothing.
-  const turn = (direction: SwipeDirection) =>
-    setPage((p) => (p + direction + markets.length) % Math.max(1, markets.length));
-
-  // Touch devices get the same paging by dragging the row itself, which
-  // is what a panel half past the clip invites you to try.
-  const [swipeRef, swipeOffset, swiping] = useSwipe(turn);
+  // The row scrolls itself -- see useCarousel and `overflow-x` in the
+  // stylesheet. This is only what the browser cannot work out on its
+  // own: which market is at the front, whether either end is reached,
+  // and where the arrows should land.
+  const [carouselRef, carousel] = useCarousel<HTMLDivElement>(markets.length);
 
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
   const [leaderFit, leaderRows] = useFitRows();
   const [trendFit, trendRows] = useFitRows();
   const [latestFit, latestRows] = useFitRows();
-
-  // Rotated rather than sliced, so there is always one more item past
-  // the clip -- the peek from the mockup that says the pager has
-  // somewhere to go. Markets re-sort as the board moves, so `page` is an
-  // offset into a list whose order is not fixed; that is the point.
-  const ordered = markets.length
-    ? Array.from({ length: markets.length }, (_, i) => markets[(page + i) % markets.length])
-    : [];
 
   // Matches the name as well as the key, because the rail now shows the
   // name -- a list you can read but not search by the thing it displays
@@ -315,13 +299,26 @@ export default function Board({
           <div className="itx-board-headline">
             <h2 className="itx-board-title">market overview</h2>
 
+            {/* Disabled at the ends rather than wrapping. The row is a
+             * scroll now, and a control that jumps the whole way back
+             * would contradict what dragging it does. */}
             <div className="itx-board-pager">
-              <button type="button" aria-label="Previous category" onClick={() => turn(-1)}>
+              <button
+                type="button"
+                aria-label="Previous category"
+                disabled={carousel.atStart}
+                onClick={() => carousel.step(-1)}
+              >
                 <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
                   <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
                 </svg>
               </button>
-              <button type="button" aria-label="Next category" onClick={() => turn(1)}>
+              <button
+                type="button"
+                aria-label="Next category"
+                disabled={carousel.atEnd}
+                onClick={() => carousel.step(1)}
+              >
                 <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
                   <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
                 </svg>
@@ -331,19 +328,23 @@ export default function Board({
         </div>
 
         <div className="itx-board-cols">
-          <BoardNav markets={markets} page={page} onSelect={setPage} />
+          <BoardNav
+            markets={markets}
+            current={markets[carousel.index]?.name}
+            onSelect={carousel.to}
+          />
 
           <div className="itx-board-markets" id="itx-board-markets">
-            {/* The pull is handed to CSS as a length rather than written
-             * onto a transform here: which parts of the row move, and
-             * how they spring back, are the stylesheet's business. */}
+            {/* Which end the row is against is handed to CSS as a pair
+             * of flags: whether an edge is fading, and how, is the
+             * stylesheet's business. */}
             <div
               className="itx-board-carousel"
-              ref={swipeRef}
-              data-swiping={swiping || undefined}
-              style={{ "--drag": `${swipeOffset}px` } as CSSProperties}
+              ref={carouselRef}
+              data-at-start={carousel.atStart || undefined}
+              data-at-end={carousel.atEnd || undefined}
             >
-              {ordered.map((m) => (
+              {markets.map((m) => (
                 // Label and panel are one item, so the label cannot drift
                 // from the panel it names at any width.
                 <div className="itx-board-market" key={m.name}>
@@ -634,15 +635,17 @@ function MarketPanel({
  * window shows more markets rather than more empty rail. */
 function BoardNav({
   markets,
-  page,
+  current,
   onSelect,
 }: {
   markets: Market[];
-  page: number;
+  /** Name of the market at the front of the carousel, or none while the
+   * board is still empty. Passed by name rather than index because that
+   * is what the list matches on, and the list re-sorts under it. */
+  current: string | undefined;
   onSelect: (index: number) => void;
 }) {
   const [fitRef, rows] = useFitRows();
-  const current = markets.length ? markets[page % markets.length]?.name : undefined;
 
   return (
     <nav className="itx-board-nav" aria-label="Board sections">

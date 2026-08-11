@@ -2335,3 +2335,71 @@ just before the row lands, so it is readable the moment it stops.
 Gates: 68 tests, lint clean. `tsc -b` and `vite build` still fail on
 `Board.tsx`, which remains mid-refactor in another session; this
 round is CSS only and the commit carries landing.css and this log.
+
+### Round 34 — the row scrolls itself
+
+Rounds 32 and 33 were the wrong shape. Reading a gesture as pointer
+events, then again as wheel deltas, and turning either into a whole
+page is a reimplementation of scrolling that is worse than scrolling in
+every way that matters: it moved a panel at a time when the hand asked
+for an inch, and on Safari — whose gesture plumbing differs from
+Chrome's on both paths — it did nothing at all. `useSwipe` is gone.
+
+The carousel is now a real scroll container: `overflow-x: auto`, and
+that is the entire gesture story. Trackpad swipes, finger drags,
+momentum, rubber-banding, shift-scroll and keyboard scrolling all come
+from the browser, on every engine, composited off the main thread. It
+follows the hand continuously because it *is* the scroll, not a
+reading of one.
+
+**What is left in JS is only what the browser cannot know.**
+`useCarousel` reports which market is at the leading edge and whether
+either end is reached, and turns an arrow into a snap. Three things
+that had to be got right:
+
+- `snapTarget` rounds *towards* the direction asked for, not to the
+  nearest boundary. From halfway through a panel, "next" finishes the
+  move the row is in the middle of rather than skipping the panel you
+  are looking at. That is the arrows' new job: the scroll is free, the
+  arrows tidy it back onto the grid.
+- A step is taken from where a smooth scroll is *going*, not where it
+  is. Reading `scrollLeft` mid-animation meant clicking through the
+  markets quickly lost most of the clicks — each one re-snapped to the
+  boundary the row was passing through. Fourteen clicks moved six
+  markets; now they move fourteen. Any hand on the row clears that
+  pending target, because the reader outranks an arrow.
+- The row is re-measured when the market count changes. Nothing else
+  announces it: items arriving from the hub do not resize the container
+  (its width comes from the column it sits in) and adding them fires no
+  scroll event, so the first measurement — taken on an empty row —
+  said the row was against both of its ends, and *both* arrows came up
+  disabled on a full board.
+
+**Both fades are S-curves now.** The far edge used to step straight to
+55% alpha at the peek's start, on the theory that the step landed in
+the gap between two panels where there is nothing painted to step. That
+held while the row sat on fixed pages; a freely scrolling row stops
+wherever the reader lets go, so the step landed mid-panel and read as a
+crease down the glass. The stops now follow smoothstep (3t²-2t³) at
+quarters, sampled rather than eased because a gradient interpolates
+linearly between its stops whatever curve you had in mind. Leaving and
+arriving at zero slope is what removes the seam: there is no instant at
+which the dimming starts. The near edge gets the same treatment, and
+each collapses to nothing at its own end.
+
+Also `overscroll-behavior-x: contain`, so a flick that runs out of
+markets cannot reach the browser's back gesture; `-webkit-mask-image`
+alongside the standard one, for Safari before 15.4; and the scrollbar
+hidden both ways, since `scrollbar-width` is not WebKit's spelling.
+
+Verified over CDP at 1600 and 1000 wide: a small wheel nudge moves the
+row 60px and a larger one 300px (free, not paged), an arrow from 300
+snaps to 479 — one stride of a 459px panel plus its 20px gap — running
+the arrows to the far end lands exactly on the last scrollable pixel
+with the next arrow disabled, and a vertical wheel over the row still
+scrolls the page. **Not verified on Safari**: driving it needs "Allow
+remote automation" turned on in Safari's Develop settings, which is the
+user's to grant. The reason to expect it to work now is that there is
+no gesture code left to be wrong — only `overflow-x`, which is as old
+as the web. Gates: 68 dashboard tests (five for the snap arithmetic,
+which is where the edge cases live), tsc, lint, build clean.
