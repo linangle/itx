@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import ProfileIcon from "../../components/ProfileIcon";
+import SectorBreakdown from "./SectorBreakdown";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
@@ -331,6 +332,8 @@ export default function Board({
               </ul>
             </div>
           </div>
+
+          <SectorBreakdown sectors={sectors} />
           </div>
 
           <div className="itx-board-rail">

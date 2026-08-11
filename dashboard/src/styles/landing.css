@@ -1814,3 +1814,186 @@ body.itx-landing-body[data-theme="light"] {
     font-size: 21px; /* one step down from --fs-title on narrow screens */
   }
 }
+
+/* ------------------------------------------------------------ sectors
+ *
+ * The visual breakdown under the tape: a table of sectors by weight, and
+ * a treemap where a sector's area is its share of the value on offer and
+ * its colour is which way it is moving. Size and colour deliberately
+ * carry different facts -- see SectorBreakdown.tsx.
+ */
+
+.itx-sectors {
+  margin-top: var(--gap-section);
+}
+
+.itx-sectors-panel {
+  display: grid;
+  /* The table needs a readable minimum before the map gets the rest;
+     below that the two stack rather than both being cramped. */
+  grid-template-columns: minmax(260px, 5fr) minmax(0, 7fr);
+  gap: var(--sp-8);
+  padding: var(--pad-panel-y) var(--pad-panel-x);
+}
+
+.itx-sectors-head {
+  margin: 0 0 var(--sp-5);
+  color: var(--ld-sub);
+  font-size: var(--fs-meta);
+}
+
+.itx-sectors-table table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* The name column is a button, not a link -- it selects rather than
+   navigates -- so it needs the anchor styling restated rather than
+   inherited. */
+.itx-sectors-table td button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ld-light);
+  font: inherit;
+  font-size: var(--fs-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.itx-sectors-table tr.is-selected td button {
+  color: var(--ld-blue);
+}
+
+.itx-sectors-weight {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.itx-sectors-bar {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bd-line) 62%, transparent);
+  overflow: hidden;
+}
+
+.itx-sectors-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ld-blue);
+}
+
+.itx-sectors-pct {
+  flex: none;
+  color: var(--ld-sub);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.itx-sectors-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.itx-sectors-map {
+  position: relative;
+  /* Held to the ratio the layout was computed in (MAP_W x MAP_H), which
+     is what lets the tiles be positioned in percentages without anything
+     measuring the box. */
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  border-radius: var(--r-field);
+  overflow: hidden;
+}
+
+.itx-sectors-tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 2px;
+  box-sizing: border-box;
+  /* Hairline gutters between tiles, drawn as a border rather than a gap
+     so the boxes still tile the map exactly -- a gap would need the
+     layout to know about it, and the layout is pure geometry. */
+  border: 1px solid var(--ld-dark);
+  overflow: hidden;
+  /* The tint mixes the direction's hue into the panel ground, so a flat
+     sector reads as the panel and a strong mover as the hue. */
+  background: color-mix(in srgb, var(--tile-hue) calc(var(--tile-tint, 0) * 62%), var(--ld-dark));
+  color: var(--ld-light);
+  text-align: center;
+  transition: opacity 120ms ease-out;
+}
+
+.itx-sectors-tile[data-dir="up"],
+.itx-sectors-legend i[data-dir="up"] {
+  --tile-hue: var(--ld-green);
+}
+.itx-sectors-tile[data-dir="down"],
+.itx-sectors-legend i[data-dir="down"] {
+  --tile-hue: var(--ld-red);
+}
+.itx-sectors-tile[data-dir="flat"],
+.itx-sectors-legend i[data-dir="flat"] {
+  --tile-hue: var(--ld-sub);
+}
+
+/* Selecting one sector dims the others rather than hiding them: the map
+   is a comparison, and a tile that vanishes takes its own context with
+   it. */
+.itx-sectors-tile[data-dim] {
+  opacity: 0.35;
+}
+.itx-sectors-tile[data-on] {
+  outline: 1px solid var(--ld-light);
+  outline-offset: -2px;
+}
+
+.itx-sectors-tile-name {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: calc(var(--fs-body) * var(--tile-scale, 1));
+  line-height: 1.1;
+}
+
+.itx-sectors-tile-pct {
+  font-size: calc(var(--fs-meta) * var(--tile-scale, 1));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+.itx-sectors-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  color: var(--ld-sub);
+  font-size: var(--fs-micro);
+}
+
+.itx-sectors-legend i {
+  width: 26px;
+  height: 10px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--tile-hue) calc(var(--tile-tint, 0) * 62%), var(--ld-dark));
+  border: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+}
+
+@media (max-width: 1080px) {
+  .itx-sectors-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
