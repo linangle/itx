@@ -529,7 +529,12 @@ body.itx-landing-body[data-theme="light"] {
    * chart. The strip still renders 58px above this box; only the box
    * itself stays put. */
   display: flow-root;
-  max-width: 1560px;
+  /* The board follows the window out to 2400px rather than stopping at
+     1560 and turning the rest into margin. Past that it stops: the side
+     columns are fixed, so everything beyond this goes to the market row
+     alone, and there is a width past which a row of tables is just far
+     apart. */
+  max-width: 2400px;
   margin: 0 auto;
   padding: 0 var(--sp-11);
 }
@@ -728,6 +733,12 @@ body.itx-landing-body[data-theme="light"] {
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-5);
+  /* The cells divide the strip's whole width, so with only three kinds
+     of task on the board they are enormous -- and `space-between` spent
+     all of it pushing each figure away from its own sparkline. The cells
+     still stretch, which is what keeps the strip full; their contents
+     stop spreading here. */
+  max-width: 260px;
 }
 
 .itx-board-quote-value {
@@ -1420,6 +1431,34 @@ body.itx-landing-body[data-theme="light"] {
 }
 
 /* responsive */
+
+/* Wide screens show more of the market rather than a wider two of it.
+ *
+ * The panel count is stepped rather than computed because the peek's
+ * mask has to know it: `--markets-shown` is what tells the carousel
+ * where the dissolve starts, and CSS cannot divide a width by a width to
+ * work it out for itself.
+ *
+ * The steps are placed to keep a panel between about 340 and 500 pixels
+ * across -- wide enough for a key, a sparkline and a percentage without
+ * the three drifting apart, narrow enough that the next one is worth
+ * showing. At the moment each new panel arrives the row goes from its
+ * widest to its narrowest (502 to 337 at the first step, 470 to 356 at
+ * the second), which is the trade for not letting a two-panel row
+ * stretch to 600px each on a monitor this size. */
+@media (min-width: 1700px) {
+  .itx-board-markets {
+    --market-basis: calc(29.6% - 4px);
+    --markets-shown: 3;
+  }
+}
+
+@media (min-width: 2150px) {
+  .itx-board-markets {
+    --market-basis: calc(22.5% - 4px);
+    --markets-shown: 4;
+  }
+}
 
 @media (max-width: 1080px) {
   .itx-board-inner {

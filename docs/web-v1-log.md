@@ -2527,3 +2527,35 @@ under `Board`. Not verified in a browser: navigation to the dev server
 was blocked in this session, so the render counts above are derived from
 the data and the component tree rather than read off a profile. The
 network and derivation figures are measured.
+
+### Round 30 — the board follows the window out
+
+**Past 1560px everything extra was margin.** The board stopped there and
+a wide monitor got the same two market panels with more empty page
+around them. The cap is 2400 now, and the market row takes all of it --
+the nav and the rail are fixed widths, so every pixel past the old stop
+goes to the panels.
+
+**And the row shows more of the market rather than a wider two of it.**
+Three panels from 1700px, four from 2150. Stepped rather than computed
+because the peek's mask has to know the count: `--markets-shown` is what
+tells the carousel where the dissolve starts, and CSS cannot divide a
+width by a width to find it.
+
+  The steps are placed to hold a panel between about 340 and 500 px --
+  wide enough for a key, a sparkline and a percentage without the three
+  drifting apart, narrow enough that the next panel is worth showing.
+  Measured: 388px at 1440 (two, as before), 367 at 1800 (three), 390 at
+  2300 and 434 at 2560 (four), with the peek running 92 to 131px. The
+  cost is a jump at each step, from the row's widest to its narrowest --
+  502 to 337 at the first -- which is the trade for not letting two
+  panels stretch to 600px each on a monitor this size.
+
+**The quote strip needed a guard, not a stretch.** Its cells divide the
+whole width, so with three kinds of task on the board they are 700px
+across, and `space-between` was spending every one of those pixels
+pushing each figure away from its own sparkline. The cells still
+stretch -- that is what keeps the strip full -- but their contents stop
+spreading at 260.
+
+Gates: 68 tests, tsc, lint, build clean.
