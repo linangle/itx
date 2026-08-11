@@ -1079,7 +1079,7 @@ body.itx-landing-body {
 
    The gesture is a card being swapped onto the top of a deck: out of
    the stack, up and over, in. The arc is sampled rather than drawn --
-   eleven points along `x = 14·sin(πs)`, `y = 30·(1-s)`, with
+   eleven points along `x = 4·sin(πs)`, `y = 10·(1-s)`, with
    `s = (1-cos(πp))/2` so the swing eases in and out, and straight
    lines between them. Bulging right at the halfway point and returning
    to zero at the top is what makes it a swing rather than a slide; an
@@ -1095,12 +1095,16 @@ body.itx-landing-body {
    the same x, which held the card against an invisible wall at the
    widest part of the swing -- exactly where the eye is.
 
-   **The amplitudes are the whole design.** Earlier versions moved the
+   **The amplitudes are the whole design.** Early versions moved the
    row 52px up and 68px across, which is a slab being flown into
    position: at that size the eye tracks the block rather than reading
-   the news. Half a row up and fourteen pixels across is the same
-   gesture at a scale that registers without being watched -- it is
-   over before you would think to follow it.
+   the news. Halving it was not enough either -- 30 and 14 still had a
+   visible passenger. It is now ten pixels of lift and a four-pixel
+   bulge: under a third of a row, and narrower than a character. The
+   path is the same swing, drawn small enough that it is felt as the
+   row settling rather than seen as something arriving. What announces
+   the news is the glow; the movement only has to keep it from
+   appearing out of nowhere.
 
    It bulges out to the *right*. Going left, the row's own content is
    what the clip eats -- the bullet and the timestamp vanish and the
@@ -1125,7 +1129,7 @@ body.itx-landing-body {
      underneath it, which is the kind of cost that never shows in a
      still and reads as "not smooth" in motion. */
   will-change: transform;
-  /* Swing lands at 400ms, glow gone by 900. */
+  /* Swing lands at 360ms, glow gone by 900. */
   animation: itx-arrive 900ms linear both;
 }
 
@@ -1134,57 +1138,57 @@ body.itx-landing-body {
    and put a hitch at every point. The one eased segment is the fade,
    which is a value rather than a path. */
 @keyframes itx-arrive {
-  /* In the deck: half a row down, not yet drawn. */
+  /* In the deck: a third of a row down, not yet drawn. */
   0% {
     opacity: 0;
-    transform: translate(0, 30px);
+    transform: translate(0, 10px);
     background: color-mix(in srgb, var(--ld-red) 32%, var(--ld-dark));
     box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 24%, transparent);
   }
 
   /* Swinging out and up. */
-  5% {
+  4.5% {
     opacity: 1;
-    transform: translate(1.3px, 29.1px);
+    transform: translate(0.4px, 9.7px);
   }
 
-  10% {
-    transform: translate(5px, 26.5px);
+  9% {
+    transform: translate(1.4px, 8.8px);
   }
 
-  15% {
-    transform: translate(9.9px, 22.5px);
+  13% {
+    transform: translate(2.8px, 7.5px);
   }
 
-  20% {
-    transform: translate(13.5px, 17.6px);
+  18% {
+    transform: translate(3.9px, 5.9px);
   }
 
   /* Widest point of the arc, halfway up. */
-  22.5% {
-    transform: translate(14px, 15px);
+  20% {
+    transform: translate(4px, 5px);
     background: color-mix(in srgb, var(--ld-red) 30%, var(--ld-dark));
   }
 
-  25% {
-    transform: translate(13.5px, 12.4px);
+  22% {
+    transform: translate(3.9px, 4.1px);
   }
 
-  30% {
-    transform: translate(9.9px, 7.5px);
+  27% {
+    transform: translate(2.8px, 2.5px);
   }
 
-  35% {
-    transform: translate(5.1px, 3.5px);
+  31% {
+    transform: translate(1.4px, 1.2px);
   }
 
   /* Coming back in over the top slot. */
-  40% {
-    transform: translate(1.3px, 0.9px);
+  36% {
+    transform: translate(0.4px, 0.3px);
   }
 
   /* Down, still lit. */
-  45% {
+  40% {
     opacity: 1;
     transform: translate(0, 0);
     background: color-mix(in srgb, var(--ld-red) 28%, var(--ld-dark));

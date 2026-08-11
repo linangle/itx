@@ -1942,3 +1942,27 @@ from its first pixel rather than only near the clip.
 
 Verified at 1600 and 900 wide against the mock. Gates: 58 dashboard
 tests, lint, build clean.
+
+### Round 32 — the lift, barely there
+
+Thirty pixels and a fourteen-pixel bulge still had a visible passenger.
+The swing is now **10px of lift and a 4px bulge** -- under a third of a
+row, and narrower than a character -- landing at 360ms with the glow
+gone by 900.
+
+The path, the eleven sample points and the apex point all stay; only
+the amplitudes changed. That is the useful thing to have learned over
+the last few rounds: the shape was right from the moment it became an
+arc, and every complaint since -- bulky, aggressive, too much movement
+to register -- was about size, not about mechanism. It is worth
+resisting the urge to rebuild the animation each time; twice now the
+answer has been two numbers.
+
+What announces the news is the glow. The movement only has to keep the
+row from appearing out of nowhere, and at this size it is felt as the
+row settling rather than seen as something arriving.
+
+Measured: out to 2.9px by 120ms, apex 3.9px at 160-200ms halfway up,
+home at 360ms.
+
+Gates: 58 tests, tsc, lint, build clean.
