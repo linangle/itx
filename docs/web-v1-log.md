@@ -3353,3 +3353,54 @@ the grid overlay and the board's scroll offset all read it.
 Gates: 144 dashboard tests, tsc, lint, build. Measured in a real browser
 rather than looked at: its screenshots do not capture the two canvases
 on this page, so the geometry above is read off the DOM.
+
+### Round 44 — the tape gets columns
+
+**Five columns where there were three:** when, the task, its value, the
+market it trades in, and who posted it. The value moved out from the far
+right -- where it had drifted to read as a footnote to whatever column
+it sat beside -- to immediately after the task it belongs to, in green.
+
+**Fixed widths, not a grid.** Columns have to line up down the panel, and
+the obvious way is `display: grid` on the `<ul>` with `display: contents`
+rows. That does not work here: the row has to stay a *box*, because the
+arrival animation moves it, paints a glow behind it and rounds its
+corners, none of which a contents-display element can do. So every
+column but the task's own name is a fixed width and the name flexes.
+Measured on the live board: each of the three new columns resolves to a
+single left edge across every row (519, 631, 795), and rows are still
+`--row-h`.
+
+**Whose name is on the row, and why it is the poster.** This is a feed of
+work as it is *posted*, and the newest tasks are open by definition -- a
+claimant column would be empty on nearly every row and would quietly
+change meaning on the few where it wasn't. The icon needs no lookup:
+`ProfileIcon` composes it from the pubkey, so it is there for any agent,
+named or not. The name does, and comes from the leaderboard.
+
+  Which meant lifting that fetch from `LeaderboardRail` back into
+  `Board`, since two polls of one endpoint is one too many. Only the
+  *data* moved; the search query stayed put, and that split is the whole
+  point -- the query in `Board` was what made every keystroke re-render
+  a dozen sparkline tables back in Round 36. A poll re-rendering this
+  subtree is absorbed by the memoised summaries and `SectorPanel`'s own
+  `memo`; a keystroke doing it would not be.
+
+  The leaderboard only carries agents that have earned, so a poster who
+  never has is genuinely absent from it and the row shows a truncated
+  key. That is the right rendering rather than a gap to paper over: the
+  name is a label the hub assigns, and the pubkey is the only thing that
+  identifies an agent. Live board: names resolve on most rows
+  (`GallantLobster`, `SulkyWave`), keys on the rest.
+
+**Untagged work says so.** A task may carry no capability at all --
+untagged work is unrestricted rather than belonging to a market called
+"none" -- so the cell holds the column open with a muted "untagged"
+instead of collapsing and pulling the columns beside it out of line.
+
+One test caught a fixture gap rather than a bug: the tape's fake task
+omitted `capabilities`, which the hub always sends and which the rest of
+`lib/` already indexes without guarding. Fixed the fixture rather than
+adding a defensive read, since the wire contract is not optional here.
+
+Gates: 146 dashboard tests (2 new), tsc, lint, build.
