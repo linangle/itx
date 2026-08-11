@@ -23,6 +23,46 @@
   }
 }
 
+/* The theme cross-fade. Set on <body> for the length of the switch and
+   taken off again -- see `startShift` in useTheme.ts -- so nothing else
+   the page does gets a transition it did not ask for.
+ *
+ * It lives in this file because this is the one stylesheet that is not
+ * scoped to a surface: the switch has to carry the masthead, the landing
+ * and the terminal pages together, or they would cross over at
+ * different moments and the seam between bar and page would show.
+ *
+ * Deliberately only the four colour properties, and `opacity` for the
+ * grid behind the board, which changes weight between themes. Not
+ * `all` -- that would animate layout as well, and a board mid-switch is
+ * not somewhere to be moving rows around.
+ *
+ * `body` in the selector so it outranks the components that declare
+ * transitions of their own; those resume the moment the flag comes off.
+ * The body is named on its own as well as through the descendant
+ * selector: it carries the ground that overscroll bounces against, and
+ * `body *` does not match the body itself, so it was the one surface
+ * still snapping while everything on it faded.
+ *
+ * 260ms is enough to read as a shift rather than a fade -- the ground is
+ * doing most of the work, and a slow ground looks like a page loading. */
+body.itx-theme-shift,
+body.itx-theme-shift *,
+body.itx-theme-shift *::before,
+body.itx-theme-shift *::after {
+  transition: background-color 260ms ease, color 260ms ease, border-color 260ms ease,
+    fill 260ms ease, stroke 260ms ease, opacity 260ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.itx-theme-shift,
+  body.itx-theme-shift *,
+  body.itx-theme-shift *::before,
+  body.itx-theme-shift *::after {
+    transition: none;
+  }
+}
+
 .itx-sitebar {
   /* The landing palette, restated here because the bar keeps it
      everywhere -- the tape is the same red-blue-green wherever it

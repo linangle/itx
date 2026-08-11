@@ -2076,3 +2076,38 @@ exactly one market, a 30px one turns none, and the row reports a 42px
 damped pull mid-drag and zero at rest. Gates: 64 dashboard tests (six
 new for the hook, including the vertical-scroll and mouse cases), tsc,
 lint, build clean.
+
+### Round 28 — the switch crosses over instead of cutting
+
+**Light and dark swapped on the frame.** Ground, ink, hairlines and the
+grid all changed at once with nothing in between, which read as a
+different page appearing rather than the same page changing its mind.
+They cross over in 260ms now -- long enough to see, short enough that
+the ground is not visibly "loading".
+
+  Only during the switch. A `body.itx-theme-shift` class goes on when
+  the theme changes and comes off again, so the transition cannot also
+  catch every hover, every arriving row on the tape and every panel
+  that repaints on a poll. Left on permanently it would have been a
+  surface where nothing quite lands.
+
+  It carries six properties and no more -- the four colour ones, plus
+  `fill` and `stroke` for the sparklines and `opacity` for the grid,
+  which changes weight between themes. Not `all`: a board mid-switch is
+  not somewhere to be animating layout.
+
+  The class is held 320ms against a 260ms transition. Removing it is
+  what *ends* the transition, so equal values would let a timer landing
+  a frame early cancel the fade at 95% and snap the rest -- the very
+  thing being fixed.
+
+  Two things that looked necessary and were not. A forced reflow
+  between setting the class and changing the tokens: a transition
+  starts from the *after*-change style, so declaring it in the same
+  recalc is enough -- the panels report six running transitions either
+  way, measured. And the rule needs `body` named on its own as well as
+  `body *`, which does not match the body itself -- the ground that
+  overscroll bounces against was the one surface still cutting while
+  everything on it faded.
+
+Gates: 64 tests, tsc, lint, build clean.

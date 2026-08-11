@@ -37,6 +37,41 @@ export function getTheme(): Theme {
   return current;
 }
 
+/** The class that lets the ground, the ink and the outlines cross over,
+ * and how long it stays on.
+ *
+ * Deliberately longer than the 260ms transition in sitebar.css. Taking
+ * the class off is what ends the transition, so if the two were equal a
+ * timer that fired a frame early would cancel the cross-fade at 95% and
+ * snap the last of it -- the exact thing this is here to remove. The
+ * slack costs nothing: with no transition left to run, the class is
+ * inert for its last 60ms. */
+const SHIFT_CLASS = "itx-theme-shift";
+const SHIFT_MS = 320;
+let shiftTimer: number | undefined;
+
+/** Colour transitions are worth having only on the switch itself.
+ *
+ * Left on permanently they would also catch every hover, every arriving
+ * row and every panel that repaints on a poll -- a page where nothing
+ * quite lands when it changes. So the flag goes on for the length of the
+ * cross-fade and comes off again, and the rest of the time the surface
+ * is as immediate as it was. */
+function startShift(): void {
+  // No forced reflow between this and the token change, deliberately.
+  // The usual trick would be to flush styles here so the "before" style
+  // already declares the transition -- but a transition is started from
+  // the *after*-change style, so declaring it in the same recalc as the
+  // new colours is enough. Verified in the browser: the panels report
+  // six running transitions either way.
+  document.body.classList.add(SHIFT_CLASS);
+
+  window.clearTimeout(shiftTimer);
+  shiftTimer = window.setTimeout(() => {
+    document.body.classList.remove(SHIFT_CLASS);
+  }, SHIFT_MS);
+}
+
 export function setTheme(next: Theme): void {
   if (next === getTheme()) return;
   current = next;
@@ -45,6 +80,10 @@ export function setTheme(next: Theme): void {
   } catch {
     // Not being able to remember the choice is not a reason to refuse it.
   }
+  // Before the subscribers re-render, so the flag is already on the body
+  // in the frame the new tokens land -- a transition cannot catch a
+  // change that happened before it was declared.
+  startShift();
   for (const fn of listeners) fn();
 }
 
