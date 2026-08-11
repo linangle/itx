@@ -52,8 +52,16 @@ body.itx-landing-body[data-theme="light"] {
    * The bloom fades out by the strip's top edge rather than the canvas
    * bottom -- an opaque strip cutting off a live glow reads as a
    * clipping bug -- so this is also how much of the glow is actually on
-   * screen. */
-  --ld-chart-base: 56px;
+   * screen, and -- because the strip's own pull-up is a fixed
+   * `--bd-overlap` off the box's bottom, independent of this band --
+   * it is also exactly the gap between the rule and the strip's top
+   * edge. 24px, not the 56 an earlier round widened it to for the
+   * bloom's falloff: that put the rule a whole strip-height above the
+   * box, floating clear of it, where the reference has the dotted line
+   * landing inside the box's top third. The falloff stops below are
+   * fractions of this band, so they compress with it and the glow
+   * still reads as a wave, just a tighter one. */
+  --ld-chart-base: 24px;
 
   /* Heights of the two sticky bar rows. Declared rather than measured
    * because the hero subtracts them to work out its own height. */
@@ -1223,6 +1231,58 @@ body.itx-landing-body[data-theme="light"] {
 
 .itx-board-cell-spark {
   width: 68px;
+}
+
+/* The quoted level. Tabular figures so the column reads as a column --
+   proportional digits make 1s narrow and every row start at a slightly
+   different place, which is exactly what a price column must not do. */
+.itx-board-cell-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Sortable headings. The button carries the whole cell so the hit area
+   is the heading rather than the few pixels of the word, which is what
+   makes this usable in a 34px row. */
+.itx-board-sorth {
+  padding: 0;
+}
+.itx-board-sorth button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
+  border: 0;
+  background: none;
+  /* Headings are set from the table's own header rule; a button resets
+     all of it, so the three that matter are restated rather than
+     inherited from a parent that no longer applies. */
+  color: var(--ld-sub);
+  font: inherit;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.itx-board-sorth:last-child button {
+  padding-right: 0;
+}
+.itx-board-sorth button:hover,
+.itx-board-sorth button:focus-visible {
+  color: var(--ld-light);
+}
+.itx-board-sorth button.is-active {
+  color: var(--ld-light);
+}
+
+/* The caret keeps its width whether or not it is drawn, so taking over
+   the sort does not shunt the two headings sideways. */
+.itx-board-caret {
+  display: inline-block;
+  min-width: 7px;
+  font-size: 7px;
+  line-height: 1;
 }
 /* A market's name, which is a capability tag and so can be long and
    hyphenated (`relationship-advice`, `machine-learning`) where this

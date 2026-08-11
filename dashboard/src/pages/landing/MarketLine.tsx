@@ -192,7 +192,7 @@ export default function MarketLine() {
       // change the answer.
       const css = getComputedStyle(canvas);
       const overlap = parseFloat(css.getPropertyValue("--bd-overlap")) || 24;
-      const band = parseFloat(css.getPropertyValue("--ld-chart-base")) || 44;
+      const band = parseFloat(css.getPropertyValue("--ld-chart-base")) || 24;
       // The floor is for short, wide windows, where 17vh is small enough
       // that a fixed band would leave the price nowhere to move.
       baseY = Math.max(height * 0.45, height - overlap - band);

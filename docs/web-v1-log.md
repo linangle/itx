@@ -3044,3 +3044,27 @@ grew a `?only=` row filter and the rail was verified by measurement.
 
 Gates: 112 dashboard tests (5 new on the derivation, pinned), tsc,
 lint, build clean.
+
+### Round 41 — the rule comes back down to the strip
+
+The dotted baseline and its bloom (Round 37-38) sat a full strip-height
+above the quote strip by the time the band grew to 56px for the wave's
+falloff -- floating clear of the box instead of landing inside it, per
+the reference the boundary was built from in the first place. The gap
+between the rule and the strip's top edge is exactly `--ld-chart-base`,
+independent of `--bd-overlap`: bringing it back down to 24px puts the
+rule about a third of the way down the (62px) strip again, matching
+where it sat before the band existed at all.
+
+The falloff stops are fractions of the band, so they compressed along
+with it rather than needing their own retune -- the glow is tighter now
+but still reads as a wave, just over a shorter run.
+
+Verified with an isolated harness (the hero chart and the quote strip,
+nothing else on the page) rather than the live site: another session
+has `Board.tsx` mid-refactor and it does not currently render. The
+gates below only cover the two files this round actually touched.
+
+Gates: tsc and lint clean on `MarketLine.tsx` and `landing.css`; 112
+tests pass (none exercise this pixel relationship directly -- checked
+by measuring the rendered gap in both themes instead, 24px in each).
