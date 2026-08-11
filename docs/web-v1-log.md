@@ -2596,3 +2596,61 @@ first.
 
 Gates: 117 hub tests. The dashboard is untouched apart from a comment
 in the mock; the restarted mock serves 630 unique names, cap holding.
+
+### Round 37 — the market line gets a zero line
+
+The chart's area ran off the bottom of its box and stopped dead where
+the board began, which on the light theme is a hard horizontal cut
+between a saturated red and the page's own ground. Per the reference,
+it now ends on a **dotted baseline** the way a printed chart is ruled at
+its zero, with a **bloom underneath in the counter colour** — green while
+the tape is red, red while it is green — densest against the rule and
+pulsing on its own 3.4 s clock. Explicitly not a mirrored chart pattern
+below the line: a plain gradient, so the band reads as the inverse of
+the wash rather than a second chart.
+
+**The bloom rides the existing composite rather than adding one.** The
+area already needed an offscreen buffer, because a canvas gradient can
+vary colour horizontally or alpha vertically but not both. The bloom is
+a second full-strength fill on that same buffer — same `mixAt` sample,
+inverted — and because it sits in a band the area never touches, one
+alpha ramp carries both: it climbs to the baseline for the area, *steps*
+to the pulse (two stops at the same offset), and falls away again. Same
+`mixAt` call for both, which is what keeps the two fronts crossing the
+rule at the same instant instead of merely at the same speed.
+
+**It fades out at the strip's top edge, not the canvas bottom.** The
+quote strip is opaque and overlaps the chart by `--bd-overlap`, so a
+glow still lit where the strip starts would be chopped off — a clipping
+bug, not a design. `--ld-chart-base` is the band's height, read by both
+the stylesheet (which grows `.itx-hero-chart` by it, upward, into the
+copy's dead space) and by the canvas (which puts its baseline that far
+off its own bottom). One token, because the two have to agree.
+
+**The baseline exposed a latent bug in the price mapping.** The vertical
+bounds *ease* toward the window's min and max, so a fresh extreme — an
+impulse leg lands one, and `span` has a floor of 0.08 to divide by — is
+briefly outside them and normalises past [0, 1]. Simulating the walk
+over ten minutes puts that at ~3% of printed points, overshooting by up
+to a couple of dozen pixels. It was invisible before: the excursion fell
+off the bottom of the box, which is where the strip is. Against a dotted
+rule it is the line crossing its own zero, and it was doing it in the
+first screenshot taken.
+
+  Clamped at the low end only, rather than easing faster, so the rescale
+  stays exactly as gentle as it was. Measured after: 1–2 consecutive
+  points rest level, never three, which is a support line and reads as
+  one. The high end is deliberately left free — that overshoot leaves
+  the top of the box, which is dead space behind the hero's copy and
+  always was, and pinning it there instead draws a flat plateau through
+  the middle of the chart, the one shape this generator goes out of its
+  way not to produce.
+
+**And the bounds now start on real prices.** They opened at a fixed
+0.35/0.65 guess and eased in, which the walk opens wider than — so the
+first half-second clamped a good part of the line flat against the new
+floor, and the reduced-motion path, which draws exactly one frame and
+never eases at all, would have rendered that as the finished chart.
+
+Gates: 91 tests, lint and tsc clean on the touched files. Checked in
+both themes and at 375px.

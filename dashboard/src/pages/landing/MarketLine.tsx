@@ -46,6 +46,23 @@ const IMPULSE_CHANCE = 0.16;
 const IMPULSE_MIN = 0.42;
 const IMPULSE_MAX = 0.8;
 
+/** The dotted baseline, in the neutral grey a printed chart rules its
+ * zero line in. Hard-coded rather than taken from `--ld-sub` for the
+ * same reason the wash is: this canvas is theme-blind, and the line
+ * lands on the fill's densest band rather than on the page's ground, so
+ * it has the same job against either theme. */
+const BASE_RULE = "rgba(138, 142, 156, 0.9)";
+const BASE_DASH = [3, 5];
+
+/** The bloom under the baseline breathes on its own clock, slower than
+ * anything else on the page and unrelated to the wash's 13 s -- the two
+ * drifting in and out of phase is what stops the pair reading as one
+ * mechanical blink. Never all the way to nothing at the trough: a glow
+ * that fully extinguishes reads as a dropped frame. */
+const PULSE_PERIOD = 3.4;
+const PULSE_MIN = 0.3;
+const PULSE_MAX = 0.68;
+
 interface Walk {
   y: number;
   dir: number;
@@ -82,11 +99,26 @@ function nextPrice(w: Walk): number {
  * version, where every vertex re-animated in place and the result read
  * as a wobbling rope rather than a chart.
  *
+ * The area stops on a dotted baseline rather than running off the
+ * bottom of the box, the way a chart is ruled at its zero line, and
+ * under that line sits a bloom in the *counter* colour -- green while
+ * the tape is red, red while it is green -- densest against the line
+ * and pulsing. It reads as the mirror of the wash above rather than a
+ * second chart, which is what the mirrored pattern would have looked
+ * like.
+ *
  * The vertical fade is why there's an offscreen buffer: a canvas
  * gradient can vary color horizontally or alpha vertically, but not
  * both in one fill. So the area is filled at full strength on the
  * buffer, a destination-in pass multiplies in the vertical alpha ramp,
- * and the result is composited onto the visible canvas. */
+ * and the result is composited onto the visible canvas.
+ *
+ * The bloom rides along on that same pass. It is a second full-strength
+ * fill on the buffer -- same sweep, inverted -- and because it occupies
+ * a band the area never touches, one alpha ramp can carry both: it
+ * climbs to the baseline for the area, steps to the pulse, and falls
+ * away again for the bloom. Two stops at the same offset are what make
+ * that step, and they are why this is one composite rather than two. */
 export default function MarketLine() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -103,6 +135,12 @@ export default function MarketLine() {
     let height = 0;
     let dpr = 1;
     let spacing = 56;
+    /** Canvas y of the dotted baseline: the floor the price walks on and
+     * the top of the bloom. */
+    let baseY = 0;
+    /** Canvas y the bloom has faded to nothing by -- the quote strip's
+     * top edge, not the canvas bottom. */
+    let glowY = 0;
     /** Smoothed vertical bounds of the visible window. A real chart
      * rescales to the data it is showing, which is also what keeps the
      * line filling its box instead of drifting into a corner; easing
@@ -110,6 +148,8 @@ export default function MarketLine() {
      * the rescale from jolting when an old extreme scrolls off. */
     let loBound = 0.35;
     let hiBound = 0.65;
+    /** Whether those two have been sat on real prices yet (see `resize`). */
+    let seeded = false;
     /** Price history, oldest first, as height fractions. One entry per
      * `spacing` px, plus two spare so the ends stay off-canvas. */
     let prices: number[] = [];
@@ -124,27 +164,84 @@ export default function MarketLine() {
       canvas.width = buffer.width = Math.round(width * dpr);
       canvas.height = buffer.height = Math.round(height * dpr);
       spacing = spacingFor(width);
+      // Both bands come from landing.css, which is also where the box's
+      // own height is worked out from them -- so the baseline lands
+      // where the stylesheet says it does instead of where this file
+      // guesses. Read here rather than per frame: getComputedStyle
+      // forces a style recalc, and a resize is the only thing that can
+      // change the answer.
+      const css = getComputedStyle(canvas);
+      const overlap = parseFloat(css.getPropertyValue("--bd-overlap")) || 24;
+      const band = parseFloat(css.getPropertyValue("--ld-chart-base")) || 44;
+      // The floor is for short, wide windows, where 17vh is small enough
+      // that a fixed band would leave the price nowhere to move.
+      baseY = Math.max(height * 0.45, height - overlap - band);
+      glowY = Math.max(baseY + 1, height - overlap);
       const need = Math.ceil(width / spacing) + 3;
       // Keep the visible shape across a resize; extend or trim only.
       while (prices.length < need) prices.push(nextPrice(walk));
       if (prices.length > need) prices = prices.slice(prices.length - need);
+
+      // First sizing only: start the bounds on the prices that were just
+      // generated rather than easing in from a guess. The guess is a
+      // narrow one and the walk opens wider than it, so the opening
+      // frames clamp a good part of the line flat against the floor --
+      // and the reduced-motion path, which draws exactly one frame and
+      // never eases at all, would render that as the finished chart.
+      if (!seeded) {
+        loBound = Math.min(...prices);
+        hiBound = Math.max(...prices);
+        seeded = true;
+      }
     };
 
-    const gradientFor = (g2d: CanvasRenderingContext2D, t: number) => {
+    /** The travelling wash across the width. `invert` flips each sample
+     * to the other end of the green<->red pair, which is all "the
+     * opposite colour" means here: the wash is a one-dimensional mix, so
+     * its counter-colour is the same mix read backwards. Taking it from
+     * the same `mixAt` call is also what keeps the bloom's front tied to
+     * the line's -- a separately-phased sweep underneath would cross the
+     * baseline at a different moment and the two would visibly disagree. */
+    const gradientFor = (g2d: CanvasRenderingContext2D, t: number, invert = false) => {
       const grad = g2d.createLinearGradient(0, 0, width, 0);
       for (let s = 0; s <= 8; s++) {
         const f = s / 8;
-        grad.addColorStop(f, mixColor(mixAt(f, t)));
+        const m = mixAt(f, t);
+        grad.addColorStop(f, mixColor(invert ? 1 - m : m));
       }
       return grad;
     };
 
     /** Map a price to a canvas y through the smoothed bounds, leaving
      * headroom top and bottom so peaks and troughs never touch the
-     * edges of the box. */
+     * edges of the box. Scaled to the baseline, not the canvas: the band
+     * below it belongs to the bloom, and a trough dipping into it would
+     * put the line under its own floor.
+     *
+     * The floor is what makes that a guarantee rather than a hope. The
+     * bounds *ease* toward the window's true min and max, so a fresh
+     * extreme -- an impulse leg lands one, and `span` has a floor of
+     * 0.08 to divide by -- is briefly outside them and normalises past
+     * [0, 1]. Simulating the walk puts that at ~3% of printed points,
+     * overshooting by up to a couple of dozen px: before the baseline
+     * existed it fell off the bottom of the box, where the quote strip
+     * is, and nobody saw it. Against a dotted rule it is the line
+     * crossing its own zero.
+     *
+     * Clamping here rather than speeding up the easing keeps the
+     * rescale exactly as gentle as it was. The cost is that a trough
+     * occasionally bottoms out level instead of overshooting -- which
+     * is a support line, and reads as one.
+     *
+     * Only the low end is clamped. An overshoot the other way leaves
+     * the top of the box, which is dead space behind the hero's copy
+     * and always was; pinning it there instead draws a flat plateau in
+     * the middle of the chart, which is the one shape this generator
+     * goes out of its way not to produce. */
     const yOf = (price: number) => {
       const span = Math.max(0.08, hiBound - loBound);
-      return (0.12 + ((price - loBound) / span) * 0.76) * height;
+      const f = Math.min(1, (price - loBound) / span);
+      return (0.12 + f * 0.76) * baseY;
     };
 
     // x of the oldest point: one `spacing` off the left edge, minus how
@@ -185,21 +282,48 @@ export default function MarketLine() {
       bctx.globalCompositeOperation = "source-over";
       bctx.beginPath();
       linePath(bctx);
-      bctx.lineTo(width + spacing, height);
-      bctx.lineTo(-spacing * 2, height);
+      bctx.lineTo(width + spacing, baseY);
+      bctx.lineTo(-spacing * 2, baseY);
       bctx.closePath();
       bctx.fillStyle = gradientFor(bctx, t);
       bctx.fill();
 
+      // The bloom, at full strength; the ramp below shapes it.
+      bctx.fillStyle = gradientFor(bctx, t, true);
+      bctx.fillRect(0, baseY, width, glowY - baseY);
+
+      const pulse =
+        PULSE_MIN + (PULSE_MAX - PULSE_MIN) * (0.5 - 0.5 * Math.cos((t / PULSE_PERIOD) * Math.PI * 2));
+
       bctx.globalCompositeOperation = "destination-in";
+      const base = baseY / height;
       const fade = bctx.createLinearGradient(0, 0, 0, height);
       fade.addColorStop(0, "rgba(0, 0, 0, 0)");
-      fade.addColorStop(0.55, "rgba(0, 0, 0, 0.16)");
-      fade.addColorStop(1, "rgba(0, 0, 0, 0.85)");
+      fade.addColorStop(0.55 * base, "rgba(0, 0, 0, 0.16)");
+      // Twice at the baseline: the area arrives at its densest and the
+      // bloom starts at the pulse, and the step between them is what the
+      // dotted rule is drawn on. Ramping instead of stepping would put a
+      // washed-out seam under the line where the two colours meet.
+      fade.addColorStop(base, "rgba(0, 0, 0, 0.85)");
+      fade.addColorStop(base, `rgba(0, 0, 0, ${pulse})`);
+      fade.addColorStop(glowY / height, "rgba(0, 0, 0, 0)");
+      fade.addColorStop(1, "rgba(0, 0, 0, 0)");
       bctx.fillStyle = fade;
       bctx.fillRect(0, 0, width, height);
 
       ctx.drawImage(buffer, 0, 0, width, height);
+
+      // The zero line. Half a pixel off a whole one so a 1px rule lands
+      // on a device pixel row instead of straddling two at half strength.
+      ctx.save();
+      ctx.setLineDash(BASE_DASH);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = BASE_RULE;
+      ctx.beginPath();
+      ctx.moveTo(0, Math.round(baseY) + 0.5);
+      ctx.lineTo(width, Math.round(baseY) + 0.5);
+      ctx.stroke();
+      ctx.restore();
 
       // Sharp corners at every print -- a stock tape, not a wave.
       ctx.lineWidth = 2;
