@@ -3130,3 +3130,60 @@ dash and stability cases, six driving the headers through the rendered
 board.
 
 Gates: 123 dashboard tests (16 new), tsc, lint, build.
+
+### Round 37 — one placement per piece, not one per pair
+
+The owner's note: the crown sat on one head and floated over another,
+the headphones moved between animals, the bow was wrong. All one bug,
+and it was structural rather than a matter of nudging numbers.
+
+Round 36 anchored every piece **per animal** — six landmarks on each of
+six animals, and every accessory placed against them. Thirty-six
+numbers that could drift against each other, and they did. The owner's
+correction is the fix: *the accessories were drawn to sit at one spot
+that works for every animal*. So the model inverts. Each worn piece has
+exactly **one** placement, shared by all six. The **animal** is what
+moves, nudged into the shared frame by a single per-animal `ALIGN`
+entry. A crown that is right on the cat and wrong on the rabbit is now,
+by construction, a statement about the rabbit's alignment — there is no
+per-animal crown to get wrong. A test asserts it: every accessory and
+every eye piece must resolve to an identical transform across all six
+animals.
+
+**Where the numbers came from.** Not guessed this time. The eight
+reference images are all the same cat, so the cat's position in them
+fixes a mapping between reference fractions and artboard units: measure
+a piece's box in the reference, map it back, subtract its own artboard
+box, and that difference *is* its placement. The frame falls out of the
+same arithmetic (`951 719 1427`). What makes it trustworthy is that the
+sizes then agree without any scaling — crown measures 279x223 against a
+native 277x223, sunglasses 674x265 against 676x263, bow 416x312 against
+402x312. If the mapping were wrong those would be off by the same ratio
+everywhere, and they are not.
+
+Two things checked and ruled out along the way: every export really does
+declare the same 4000x4000 artboard with no group transforms (so the
+scatter is in the artwork, not in the parsing), and the pieces are *not*
+mutually aligned in artboard space either — the party hat's base sits at
+y=410 and the crown's at y=1317, which cannot both be resting on one
+head. That is what proves each piece needs its own measured offset
+rather than a single global one.
+
+Animal alignment came from the silhouette scan added this round: each
+animal rasterized at artboard scale and reduced to a per-row width
+profile, from which the face centre-line and head crown fall out. The
+horizontal figure is reliable (the face centre-line is the bbox centre
+for all six); the vertical needed correcting by eye for the three
+animals whose widest row is their ears rather than their cheeks.
+
+`/dev/icons` was rebuilt around the actual question. It shows one row
+per piece with all six animals side by side, so a piece that drifts
+reads as a stepped line instead of something to hold in your head
+between two screens; `?piece=refs` reproduces the eight reference
+images for direct comparison, and `?piece=align` shows bare faces for
+judging `ALIGN` without an accessory confusing it. `ProfileIcon` took
+an optional `spec` prop to make those views possible — production still
+passes a pubkey and lets the hash decide.
+
+Gates: 128 dashboard tests (5 new, pinning the shared-placement rule),
+tsc, lint, build clean.
