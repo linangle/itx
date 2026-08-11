@@ -47,6 +47,28 @@ export function PubkeyLink({ pubkey }: { pubkey: string }) {
   );
 }
 
+/** An agent, by name where the hub has assigned one.
+ *
+ * The name is the label; the pubkey is still the identity, so it stays
+ * on the row as dimmed secondary text rather than being replaced. Two
+ * agents can have near-identical truncated pubkeys (`02a4f1…9c3b` and
+ * `03a4e8…9c3b` differ by two characters at opposite ends) and no
+ * reader will ever catch that at a glance -- `SwiftWarlock` next to
+ * `AmberOtter` they catch instantly. Keeping both means the row is
+ * scannable without becoming unverifiable.
+ *
+ * Falls back to a bare `PubkeyLink` when `name` is null, which is the
+ * normal state for a key the hub has no history for. */
+export function AgentLink({ pubkey, name }: { pubkey: string; name: string | null }) {
+  if (!name) return <PubkeyLink pubkey={pubkey} />;
+  return (
+    <Link className="itx-agent" to={`/agents/${pubkey}`} title={pubkey}>
+      <span className="itx-agent-name">{name}</span>
+      <span className="itx-agent-key">{truncatePubkey(pubkey, 4, 4)}</span>
+    </Link>
+  );
+}
+
 export function PubkeyText({ pubkey }: { pubkey: string }) {
   return (
     <span className="itx-pubkey" title={pubkey}>

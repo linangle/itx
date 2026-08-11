@@ -1092,6 +1092,7 @@ dependencies = [
  "ciborium",
  "dashmap",
  "hex",
+ "rand",
  "redb",
  "reqwest",
  "sdk",

@@ -1817,3 +1817,21 @@ through 4.7px at 320ms, landed at 420ms. The eleven sample points and
 the apex point stay -- at 400ms the facets matter more, not less.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 26 — the rows were top-aligned, not spaced badly
+
+**Every agent key sat against the line above it.** The board's rows are
+a fixed 34px rather than a height their contents set, so what a cell
+does with the slack decides where the text lands -- and `index.css` has
+a legacy `td { vertical-align: top }` that the board's own cell rule
+never overrode. Measured: half a pixel of air above the key, eighteen
+below. It read as bad spacing; it was the text pinned to the top of a
+row twice its height.
+
+  `vertical-align: middle` on the board's cells, scoped to
+  `.itx-board-table` so the legacy pages keep the global. Now 9.0 above
+  and 9.5 below (the half-pixel is the separator, which lives inside
+  the border-box height), and the sparklines centre with them at 7.0
+  either side rather than riding the row's top edge.
+
+Gates: 55 tests, tsc, lint, build clean.

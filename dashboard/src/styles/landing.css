@@ -928,6 +928,13 @@ body.itx-landing-body {
 .itx-board-table td {
   border: 0;
   background: none;
+  /* The rows are a fixed height rather than one their contents set (see
+     --row-h below), so what a cell does with the slack matters. The
+     legacy `td { vertical-align: top }` in index.css was pinning every
+     agent key to the top of its 34px row -- half a pixel under the line
+     above it and eighteen clear below -- which is what made the tables
+     read as unevenly spaced rather than as rows. */
+  vertical-align: middle;
 }
 
 .itx-board-table th {

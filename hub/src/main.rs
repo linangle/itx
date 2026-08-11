@@ -583,6 +583,7 @@ mod tests {
             operator_private_key: operator_private_key.clone(),
             operator_public_key,
             payout_lock: Mutex::new(()),
+            names: RwLock::new(NameRegistry::new()),
         });
 
         let app = build_router(state.clone());
@@ -944,6 +945,139 @@ mod tests {
             .expect("agent should be on the leaderboard");
         assert_eq!(entry["total_earned"], 500);
         assert_eq!(entry["net_worth"], 7_000_000);
+    }
+
+    /// Gives `agent` a paid, completed task so it earns a reputation
+    /// record -- which is what makes it an agent the naming registry is
+    /// willing to name.
+    async fn seed_completed_task_for(hub: &TestHub, agent: &PublicKey, bounty: u64) {
+        let expected_output = Hash::hash_bytes(b"x");
+        let mut board = hub.state.board.write().await;
+        let task = board.create_task(
+            hub.state.operator_public_key.clone(),
+            "t".to_string(),
+            bounty,
+            expected_output,
+        );
+        board
+            .claim_task(task.id, agent.clone(), Utc::now() + chrono::Duration::minutes(5))
+            .unwrap();
+        board.submit(task.id, agent.clone(), expected_output).unwrap();
+        board.mark_recipient_paid(task.id, agent, bounty).unwrap();
+    }
+
+    #[tokio::test]
+    async fn leaderboard_names_every_agent_uniquely_and_stably() {
+        let operator_key = PrivateKey::new_key();
+        let hub = spawn_hub(operator_key, dead_address().await).await;
+
+        let agents: Vec<PublicKey> = (0..5).map(|_| PrivateKey::new_key().public_key()).collect();
+        for (i, agent) in agents.iter().enumerate() {
+            seed_completed_task_for(&hub, agent, 100 + i as u64).await;
+        }
+
+        let fetch = || async {
+            hub.client
+                .get(format!("{}/leaderboard", hub.base_url))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        };
+
+        let first: Value = fetch().await;
+        let entries = first.as_array().unwrap();
+        assert_eq!(entries.len(), agents.len());
+
+        let mut seen = std::collections::HashSet::new();
+        for entry in entries {
+            let name = entry["name"].as_str().expect("every agent gets a name");
+            assert!(
+                name.chars().count() <= names::MAX_NAME_LEN,
+                "{name} is longer than the {} character cap",
+                names::MAX_NAME_LEN
+            );
+            assert!(name.chars().all(|c| c.is_ascii_alphabetic()));
+            assert!(
+                name.chars().next().unwrap().is_ascii_uppercase(),
+                "{name} should be CamelCase"
+            );
+            assert!(seen.insert(name.to_string()), "{name} was assigned twice");
+        }
+
+        // A second request must return the same names -- a leaderboard
+        // whose agents were renamed between two page loads would be
+        // worse than one with no names at all.
+        let second: Value = fetch().await;
+        for (before, after) in entries.iter().zip(second.as_array().unwrap()) {
+            assert_eq!(before["pubkey"], after["pubkey"]);
+            assert_eq!(before["name"], after["name"]);
+        }
+
+        // and they're durable: the same names came back out of the store
+        let stored = hub.state.store.load_all_agent_names().unwrap();
+        assert_eq!(stored.len(), agents.len());
+        for (pubkey, name) in stored {
+            let entry = entries
+                .iter()
+                .find(|e| e["pubkey"] == pubkey.to_string())
+                .expect("a persisted name for an agent that isn't on the board");
+            assert_eq!(entry["name"], name);
+        }
+    }
+
+    #[tokio::test]
+    async fn get_reputation_reports_a_name_but_never_mints_one() {
+        let operator_key = PrivateKey::new_key();
+        let hub = spawn_hub(operator_key, dead_address().await).await;
+
+        // A pubkey with no history on the board. The route resolves it
+        // (any pubkey does) but must not spend a name on it -- this is
+        // an unauthenticated GET, so minting here would let anyone drain
+        // the pool one request at a time.
+        let stranger = PrivateKey::new_key().public_key();
+        let dto: Value = hub
+            .client
+            .get(format!("{}/reputation/{stranger}", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(dto["completed"], 0);
+        assert_eq!(dto["name"], Value::Null, "a stranger must not be named");
+        assert!(hub.state.names.read().await.is_empty());
+        assert!(hub.state.store.load_all_agent_names().unwrap().is_empty());
+
+        // An agent that has actually worked gets named by /leaderboard,
+        // and /reputation then reports that same name.
+        let agent = PrivateKey::new_key().public_key();
+        seed_completed_task_for(&hub, &agent, 500).await;
+        let leaderboard: Value = hub
+            .client
+            .get(format!("{}/leaderboard", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let assigned = leaderboard.as_array().unwrap()[0]["name"].clone();
+        assert!(assigned.is_string());
+
+        let dto: Value = hub
+            .client
+            .get(format!("{}/reputation/{agent}", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(dto["name"], assigned);
     }
 
     #[tokio::test]

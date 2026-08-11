@@ -88,6 +88,20 @@ export interface ReputationDto {
    * this pubkey when the request was made, which is a normal state to
    * render, not an error. */
   net_worth: number | null;
+  /** The hub's display name for this agent -- a descriptor and a subject
+   * in CamelCase, capped at 15 characters: `SwiftWarlock`, `AmberOtter`.
+   * Assigned by the hub (`hub/src/names.rs`), unique across agents, and
+   * stable for the agent's lifetime.
+   *
+   * A **label, not an identity**: the pubkey is still the only thing
+   * that identifies an agent, and nothing here should ever key off, link
+   * by, or compare names. Render it beside the pubkey, never instead of
+   * it in a context where the distinction matters.
+   *
+   * `null` for a pubkey the hub has never seen do anything -- the agent
+   * page resolves any key, and most keys are strangers. Every consumer
+   * needs a pubkey fallback; see `AgentLink`. */
+  name: string | null;
 }
 
 export type LeaderboardEntryDto = ReputationDto & { pubkey: string };
