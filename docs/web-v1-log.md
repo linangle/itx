@@ -2182,3 +2182,29 @@ the threshold turns exactly one market, a six-event momentum tail turns
 none, a deliberate second swipe turns one more, and a vertical wheel
 over the same box still scrolls the page 200px. Gates: 69 dashboard
 tests (five more for the trackpad), tsc, lint, build clean.
+
+### Round 33 — the travel was too short, not too big
+
+Three rounds of shrinking the arrival was the wrong direction, and it
+is worth writing down why. The movement read as aggressive, so the
+amplitudes came down -- 52px, then 30, then 10 -- and each cut made it
+worse. A short hop is a jolt however small it is. The row was appearing
+halfway up a list it had no history in, and no amount of shaving the
+distance fixes that; it just makes the flinch smaller.
+
+It now travels **the whole tape**: from under the bottom edge of the
+panel to the top slot, 180px, landing at 600ms with the glow gone by
+1.1s. The eye picks it up at the bottom, follows it the length of the
+list, and it arrives somewhere it was already going. The bow across
+stays small next to it -- 12px against a 180px rise -- there to keep
+the line from being a lift shaft, not to be seen in its own right.
+
+The distance is one custom property, `--arrive-rise`, and the eleven
+sampled points are fractions of it, so the whole path scales from a
+single number. Given how many of these rounds have been amplitude
+changes, that seemed worth building in.
+
+Measured: starts at y=180 under the clip, apex 12px across at 300ms
+halfway up, home at 600ms.
+
+Gates: 69 tests, tsc, lint, build clean.

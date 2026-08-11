@@ -1182,44 +1182,47 @@ body.itx-landing-body[data-theme="light"] {
   padding: 0 var(--sp-5);
 }
 
-/* A row that landed on the last poll: it is carried up into the top
-   slot on a small arc and the whole line glows red, fading as it
-   settles.
+/* A row that landed on the last poll: it rises the length of the tape
+   into the top slot, bowing slightly out on the way, and the whole
+   line glows red and fades as it settles.
 
    The wash and the halo are painted on the row rather than on the
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
 
-   The gesture is a card being swapped onto the top of a deck: out of
-   the stack, up and over, in. The arc is sampled rather than drawn --
-   eleven points along `x = 4·sin(πs)`, `y = 10·(1-s)`, with
-   `s = (1-cos(πp))/2` so the swing eases in and out, and straight
-   lines between them. Bulging right at the halfway point and returning
-   to zero at the top is what makes it a swing rather than a slide; an
-   earlier version did the same three moves as *separate* legs --
-   right, then up, then left -- and the right angles between them read
-   as a machine indexing a part rather than a hand moving a card.
+   The gesture is a card being swapped onto the top of a deck. The path
+   is sampled rather than drawn -- eleven points along
+   `x = 12·sin(πs)`, `y = rise·(1-s)`, with `s = (1-cos(πp))/2` so it
+   eases in and out, and straight lines between them. Bowing out at the
+   halfway point and returning to zero at the top is what makes it a
+   swing rather than a slide; an early version did the same moves as
+   *separate* legs -- right, then up, then left -- and the right angles
+   between them read as a machine indexing a part rather than a hand
+   moving a card.
 
-   Eleven points rather than five because the whole path takes under
-   half a second. A sampled curve is only as smooth as its facets are
-   short, and at this speed five points put a visible corner every
-   100ms; the extra ones cost nothing. One of them sits *on* the apex,
+   Eleven points rather than five because a sampled curve is only as
+   smooth as its facets are short. One of them sits *on* the apex,
    because sampling symmetrically about it left the two neighbours at
    the same x, which held the card against an invisible wall at the
    widest part of the swing -- exactly where the eye is.
 
-   **The amplitudes are the whole design.** Early versions moved the
-   row 52px up and 68px across, which is a slab being flown into
-   position: at that size the eye tracks the block rather than reading
-   the news. Halving it was not enough either -- 30 and 14 still had a
-   visible passenger. It is now ten pixels of lift and a four-pixel
-   bulge: under a third of a row, and narrower than a character. The
-   path is the same swing, drawn small enough that it is felt as the
-   row settling rather than seen as something arriving. What announces
-   the news is the glow; the movement only has to keep it from
-   appearing out of nowhere.
+   **The length of the travel is what makes it calm.** This went the
+   wrong way for three rounds: the movement read as aggressive, so it
+   was made smaller -- 52px, then 30, then 10 -- and each cut made it
+   worse, because a short hop is a jolt however small it is. The
+   trouble was never the distance, it was that the row appeared halfway
+   up a list it had no history in. It now travels the whole tape, from
+   under the bottom edge to the top slot, which is far enough to be a
+   glide: the eye picks it up at the bottom, follows it, and it arrives
+   somewhere it was already going. Ten pixels of the same motion
+   arrives out of nowhere and is over before it can be read as
+   anything but a flinch.
 
-   It bulges out to the *right*. Going left, the row's own content is
+   The bow stays small next to it -- 12px against a 180px rise. It is
+   there to keep the line from being a lift shaft, not to be seen in
+   its own right.
+
+   It bows out to the *right*. Going left, the row's own content is
    what the clip eats -- the bullet and the timestamp vanish and the
    headline seems to grow out of the middle of the panel. Held out to
    the right the whole card stays legible and only its trailing edge
@@ -1227,23 +1230,31 @@ body.itx-landing-body[data-theme="light"] {
    a deck actually looks like.
 
    While it travels it is opaque and lifted above its siblings, because
-   a card passing over the row below has to hide it. A translucent wash
+   a card crossing the rows below has to hide them. A translucent wash
    over live text underneath reads as a rendering fault. It ends on the
    panel's own colour, which is indistinguishable from the transparent
    it started life with. */
 .itx-board-updates li.is-new {
+  /* How far the card travels. One number, because the last several
+     rounds of this animation have all been amplitude changes: the
+     sampled points below are fractions of it, so the whole path scales
+     from here. A shade more than the five row-heights between the top
+     and bottom slots, so the card starts under the clip and rises into
+     view rather than blinking on at the bottom row. */
+  --arrive-rise: 180px;
+
   /* Lifted out of the flow for the duration. Rows are static, so later
      siblings paint over earlier ones -- without this the card would
-     pass *under* the row it is supposed to be moving over. */
+     pass *under* the rows it is supposed to be moving over. */
   position: relative;
   z-index: 1;
-  /* Promoted for the duration: the card is opaque and moves across
-     live text, so without this every frame repaints the row
-     underneath it, which is the kind of cost that never shows in a
-     still and reads as "not smooth" in motion. */
+  /* Promoted for the duration: the card is opaque and crosses every
+     row in the list, so without this each frame repaints all of them,
+     which is the kind of cost that never shows in a still and reads as
+     "not smooth" in motion. */
   will-change: transform;
-  /* Swing lands at 360ms, glow gone by 900. */
-  animation: itx-arrive 900ms linear both;
+  /* Rise lands at 600ms, glow gone by 1.1s. */
+  animation: itx-arrive 1100ms linear both;
 }
 
 /* Straight lines between the sampled points, which is what keeps the
@@ -1251,61 +1262,59 @@ body.itx-landing-body[data-theme="light"] {
    and put a hitch at every point. The one eased segment is the fade,
    which is a value rather than a path. */
 @keyframes itx-arrive {
-  /* In the deck: a third of a row down, not yet drawn. */
+  /* Below the last row, under the clip. */
   0% {
     opacity: 0;
-    transform: translate(0, 10px);
-    background: color-mix(in srgb, var(--ld-red) 32%, var(--ld-dark));
-    box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 24%, transparent);
+    transform: translate(0, var(--arrive-rise));
+    background: color-mix(in srgb, var(--ld-red) 26%, var(--ld-dark));
+    box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 22%, transparent);
   }
 
-  /* Swinging out and up. */
-  4.5% {
+  6% {
     opacity: 1;
-    transform: translate(0.4px, 9.7px);
+    transform: translate(1.1px, calc(var(--arrive-rise) * 0.9698));
   }
 
-  9% {
-    transform: translate(1.4px, 8.8px);
-  }
-
-  13% {
-    transform: translate(2.8px, 7.5px);
+  12% {
+    transform: translate(4.3px, calc(var(--arrive-rise) * 0.883));
   }
 
   18% {
-    transform: translate(3.9px, 5.9px);
+    transform: translate(8.5px, calc(var(--arrive-rise) * 0.75));
   }
 
-  /* Widest point of the arc, halfway up. */
-  20% {
-    transform: translate(4px, 5px);
-    background: color-mix(in srgb, var(--ld-red) 30%, var(--ld-dark));
+  24% {
+    transform: translate(11.6px, calc(var(--arrive-rise) * 0.587));
   }
 
-  22% {
-    transform: translate(3.9px, 4.1px);
-  }
-
-  27% {
-    transform: translate(2.8px, 2.5px);
+  /* Widest point of the bow, halfway up. */
+  27.5% {
+    transform: translate(12px, calc(var(--arrive-rise) * 0.5));
+    background: color-mix(in srgb, var(--ld-red) 27%, var(--ld-dark));
   }
 
   31% {
-    transform: translate(1.4px, 1.2px);
+    transform: translate(11.6px, calc(var(--arrive-rise) * 0.413));
   }
 
-  /* Coming back in over the top slot. */
-  36% {
-    transform: translate(0.4px, 0.3px);
+  37% {
+    transform: translate(8.5px, calc(var(--arrive-rise) * 0.25));
   }
 
-  /* Down, still lit. */
-  40% {
+  43% {
+    transform: translate(4.3px, calc(var(--arrive-rise) * 0.117));
+  }
+
+  49% {
+    transform: translate(1.1px, calc(var(--arrive-rise) * 0.0302));
+  }
+
+  /* Home, and lit. */
+  55% {
     opacity: 1;
     transform: translate(0, 0);
-    background: color-mix(in srgb, var(--ld-red) 28%, var(--ld-dark));
-    box-shadow: 0 0 20px color-mix(in srgb, var(--ld-red) 18%, transparent);
+    background: color-mix(in srgb, var(--ld-red) 30%, var(--ld-dark));
+    box-shadow: 0 0 20px color-mix(in srgb, var(--ld-red) 20%, transparent);
     /* Holds the colour for a beat before it goes, and lands on zero
        gently -- the eye follows a fade far better than it follows a
        drop-off. */
