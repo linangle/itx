@@ -1244,3 +1244,54 @@ which is a nice accident ("chain node unreachable" right where the
 eye goes first).
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 18 — the mock starts ticking
+
+The user asked whether the mock keeps updating. It did not: tasks were
+built once at startup and frozen, which meant the "live" pill and the
+scrolling tape were decoration over a snapshot. Two things had to
+change for that to stop being true, and only one of them was the
+fixture.
+
+**The hub now evolves.** Every 2.5s a few in-flight tasks advance one
+step and, roughly every fourth tick, a new one is posted. Steps follow
+the real state machine rather than teleporting: claimed before
+verified, verified before paid; consensus fills a seat at a time and
+only starts once full; only an *answered* disputable task can be
+disputed; a challenger who wins means the original claimant is not
+paid. A minority of claimed work fails outright, so Closed keeps
+occurring. Bounded at 900 tasks -- long sessions cannot grow without
+limit, and it stays under the client's 1000-item walk so `complete`
+never goes false and the partial-totals caveat never appears.
+
+`STATIC=1` freezes it at the backfill. Worth having: a board that moves
+under you is worse than a stale one when you are diffing screenshots,
+which is most of what this fixture is for.
+
+**The client had to poll**, or none of it would ever have been visible
+-- `useAsync` ran once on mount. It now takes an optional interval.
+Refreshes are *silent*: they never flip `loading`, so the screen
+updates in place instead of flashing its skeleton every few seconds,
+and a failed poll leaves the last good state alone rather than blanking
+a populated board over one dropped request. The trade is that a hub
+dying mid-session goes unreported until the next navigation; noted in
+the hook, and the honest fix is connection state from a realtime
+channel rather than inference from polls.
+
+Scale went to 120 agents / 800 backfilled tasks, which opens with 104
+earning agents instead of filling in over several minutes.
+
+**Two details that only show up once things move.** The tape's marquee
+duration is an inline style, so *any* change to it restarts the scroll
+from the left -- with polling, an exact character count would have
+nudged it on nearly every refresh, so it is quantised to 4s steps. And
+the first post rate (0.7/tick) filled every row of "latest" with "just
+now", which is accurate and useless; eased to 0.25 so the feed shows a
+spread of ages.
+
+The tape also polls at 15s rather than the board's 5s: both walk the
+entire task list, making them the two most expensive things on the
+page, and headlines do not need five-second freshness.
+
+Gates: 55 tests, tsc, lint, build clean. Verified live -- 12 seconds,
+no reload, feed turned over and quote figures moved.
