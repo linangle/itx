@@ -526,20 +526,39 @@ body.itx-body[data-theme="light"] {
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
 }
 
 /* --------------------------------------------------------- agent naming */
 
-/* An agent cell: name over key. Stacked rather than inline because the
-   name is the thing being scanned down the column and a trailing key on
-   the same line would push every name's right edge to a different place,
-   which is exactly what makes a column stop reading as a column. */
+/* An agent cell: the profile icon, then name over key. The name/key
+   pair is stacked rather than inline because the name is the thing
+   being scanned down the column and a trailing key on the same line
+   would push every name's right edge to a different place, which is
+   exactly what makes a column stop reading as a column. */
 .itx-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+}
+
+.itx-agent-stack {
   display: inline-flex;
   flex-direction: column;
   gap: 1px;
   line-height: 1.25;
-  text-decoration: none;
+}
+
+/* The icon is decoration for a key, not content: it never shrinks, and
+   the soft corner keeps a saturated square from overpowering a row of
+   mono text. */
+.itx-avatar {
+  flex: none;
+  border-radius: 5px;
 }
 
 /* The names are capped at 15 characters by the hub, so the column has a
@@ -569,7 +588,23 @@ body.itx-body[data-theme="light"] {
 }
 
 .itx-agent-subkey {
+  margin: 0;
+}
+
+/* The agent page's header: portrait beside the name/key block. The
+   margin that used to live on the key/title moves out here so the pair
+   stays vertically centred against the portrait regardless of whether
+   a name line is present. */
+.itx-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   margin: 0 0 20px;
+}
+
+.itx-agent-portrait {
+  flex: none;
+  border-radius: 10px;
 }
 
 /* ------------------------------------------------------------- sparkline */

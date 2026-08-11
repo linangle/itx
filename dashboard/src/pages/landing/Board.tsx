@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
+import ProfileIcon from "../../components/ProfileIcon";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
@@ -505,7 +506,12 @@ function LeaderboardRail() {
                         not fit. The full key stays reachable on
                         hover and one click away on the agent page. */}
                     <td>
-                      <Link to={`/agents/${agent.pubkey}`} title={agent.pubkey}>
+                      <Link
+                        className="itx-board-agent"
+                        to={`/agents/${agent.pubkey}`}
+                        title={agent.pubkey}
+                      >
+                        <ProfileIcon pubkey={agent.pubkey} size={22} className="itx-board-avatar" />
                         {agent.name ?? truncatePubkey(agent.pubkey)}
                       </Link>
                     </td>

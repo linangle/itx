@@ -1183,6 +1183,21 @@ body.itx-landing-body[data-theme="light"] {
   display: block;
 }
 
+/* An agent row: profile icon, then name (or key). Flex rather than
+   inline so the 22px icon centres inside the fixed 34px row instead of
+   riding the text baseline -- the same trap the sparkline note above
+   describes, solved the same way. */
+.itx-board-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.itx-board-avatar {
+  flex: none;
+  border-radius: 4px;
+}
+
 .itx-board-table tr:last-child td {
   border-bottom: 0;
 }

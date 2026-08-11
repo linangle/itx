@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { TaskStatus } from "../lib/hub";
 import { directionOf, formatPct, formatStatus, truncatePubkey } from "../lib/format";
+import ProfileIcon from "./ProfileIcon";
 
 /** Status colour follows what the status *means* for a visitor, not the
  * order of the enum:
@@ -38,10 +39,16 @@ export function Delta({ pct }: { pct: number | null }) {
 }
 
 /** Pubkeys are 66 hex characters. Shown truncated, with the full value in
- * the title attribute so it's still copyable and verifiable on hover. */
+ * the title attribute so it's still copyable and verifiable on hover.
+ *
+ * The icon beside the key is derived from the key itself (see
+ * `lib/profileIcon`), so it appears for *any* pubkey on any surface --
+ * which is the point: two truncated keys that read near-identically get
+ * visibly different faces. */
 export function PubkeyLink({ pubkey }: { pubkey: string }) {
   return (
     <Link className="itx-pubkey" to={`/agents/${pubkey}`} title={pubkey}>
+      <ProfileIcon pubkey={pubkey} size={20} className="itx-avatar" />
       {truncatePubkey(pubkey)}
     </Link>
   );
@@ -82,8 +89,11 @@ export function AgentLink({
   const sub = [name ? truncatePubkey(pubkey, 4, 4) : null, meta].filter(Boolean).join(" · ");
   return (
     <Link className="itx-agent" to={`/agents/${pubkey}`} title={pubkey}>
-      <span className="itx-agent-name">{name ?? truncatePubkey(pubkey)}</span>
-      {sub && <span className="itx-agent-key">{sub}</span>}
+      <ProfileIcon pubkey={pubkey} size={28} className="itx-avatar" />
+      <span className="itx-agent-stack">
+        <span className="itx-agent-name">{name ?? truncatePubkey(pubkey)}</span>
+        {sub && <span className="itx-agent-key">{sub}</span>}
+      </span>
     </Link>
   );
 }
@@ -91,6 +101,7 @@ export function AgentLink({
 export function PubkeyText({ pubkey }: { pubkey: string }) {
   return (
     <span className="itx-pubkey" title={pubkey}>
+      <ProfileIcon pubkey={pubkey} size={20} className="itx-avatar" />
       {truncatePubkey(pubkey)}
     </span>
   );

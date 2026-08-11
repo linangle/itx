@@ -2983,3 +2983,64 @@ descriptions. Still not a browser: `preview_start` needs a
 
 Gates: 107 dashboard tests (7 new), 128 hub tests (11 new), tsc, lint,
 cargo build, build.
+
+### Round 36 — every agent gets a face
+
+Profile icons, composed from the owner's new `assets/profiles/`
+artwork: an animal in one of five flat colours on a different-coloured
+square, wearing one of three sets of eyes, one of three mouths, and one
+of eight accessories. 7,680 possible icons; the pig contributes fewer
+than the others because its snout-and-mouth is drawn into the body
+artwork (it is the one animal with a second, dark fill) and so it never
+picks a mouth piece.
+
+**The icon is a hash of the pubkey, not a hub assignment.** That was
+the owner's call between two architectures, and it is what the names
+system could not have: the icon works on *every* surface that has a
+pubkey — task detail's poster/claimant/challenger, the tasks list, the
+landing rail, the agent page — with no storage, no cap, and no gap for
+agents the hub has never named. The cost is that uniqueness is
+statistical, not guaranteed: among ~600 agents roughly twenty pairs
+will share an icon, and the name and key beside it carry the identity.
+FNV-1a over the pubkey string, fields peeled off by modulo; the hash
+and field order are frozen and pinned by a test, because "refactoring"
+them re-rolls every face on the site overnight. The mouth index is
+drawn (and discarded) even for pigs, so being a pig never shifts the
+rest of the derivation.
+
+**The exports shared no coordinate space.** Every piece sits wherever
+it was drawn on its own 4000×4000 artboard — the three mouths at three
+different spots, each animal at a different origin. A build script
+(`dashboard/scripts/build-profile-assets.mjs`, run via `npm run
+gen:profiles`) measures each piece's real bounding box by sampling the
+path data (32 steps per curve; matches the browser's `getBBox` exactly
+on every spot check) and compiles the markup into a generated module,
+fills rewritten to `var(--pi-body)` / `var(--pi-dark)` so recolouring
+is CSS, not string surgery. Composition is then translate-only against
+per-animal anchor tables (eye line, mouth, head top, right ear, chest)
+tuned by eye on a dev-only contact sheet (`/dev/icons`, DEV builds
+only) against the owner's eight reference images. Nothing scales:
+the artist drew every piece at its intended size, and the tables place
+rather than transform.
+
+Colours, per the owner: the landing palette's red, green and blue plus
+purple #BB76DC and yellow #E7BF68; features always in the landing dark
+#161418. Body and background are drawn as an ordered pair of *distinct*
+colours (5×4 = 20), so the animal never blends into its backdrop.
+
+Tuning notes that survived to the tables: hats overlap the head outline
+(a floating hat reads as a bug); the frame's bottom edge must always
+cut *into* the body like the references — four animals initially showed
+background under their feet; the tie and headphones both hang off the
+chest anchor with opposite nudges; the rabbit's frame rides high
+because its ears nearly double its height.
+
+Verified against the mock on every surface, including that a poster
+appearing four times in the task list wears the same face four times,
+and that the landing rail's fixed 34px rows centre a 22px icon with
+6px above and below. One session-quality note: the Browser pane's
+screenshot capture goes black on scrolled pages, so the contact sheet
+grew a `?only=` row filter and the rail was verified by measurement.
+
+Gates: 112 dashboard tests (5 new on the derivation, pinned), tsc,
+lint, build clean.

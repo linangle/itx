@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "gen:profiles": "node scripts/build-profile-assets.mjs",
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run"
