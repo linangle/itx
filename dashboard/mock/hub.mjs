@@ -8,9 +8,9 @@
 //
 // This serves the same shapes as `hub/src/handlers.rs` (including the
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
-// activity sized like a real marketplace rather than a smoke test: a
-// thousand agents with distinct keys, five thousand tasks, every status,
-// and 35 capability tags that trend differently on purpose -- some
+// activity sized like a real marketplace rather than a smoke test: four
+// thousand agents with distinct keys, twenty thousand tasks, every
+// status, and 35 capability tags that trend differently on purpose -- some
 // surging, some fading, some steady -- so change columns show real ups
 // and downs instead of a wall of identical numbers.
 //
@@ -65,14 +65,20 @@ function hex(length) {
 // truncated pubkeys read as one agent cloned -- realistic filler needs
 // the first six and last four characters to differ. Generated before
 // anything else so the key material is stable in the LCG stream.
-const AGENTS = Array.from({ length: 1000 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
+const AGENTS = Array.from({ length: 4000 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
 const OPERATOR = "02" + hex(64);
 
 // Which agents work which kind. Overlapping pools rather than one big
 // one, so each market's ticker table has its own cast with familiar
 // faces recurring, the way a real marketplace has specialists.
-const HASH_WORKERS = AGENTS.slice(0, 620);
-const DISPUTE_WORKERS = AGENTS.slice(380, 1000);
+//
+// Proportions rather than the fixed indices these were: 62% of the field
+// in each pool, overlapping across the middle quarter. Written this way
+// so the roster count is the only number to change when the fixture is
+// resized -- the previous `slice(380, 1000)` silently stopped covering
+// the field the moment the agent count moved.
+const HASH_WORKERS = AGENTS.slice(0, Math.round(AGENTS.length * 0.62));
+const DISPUTE_WORKERS = AGENTS.slice(Math.round(AGENTS.length * 0.38));
 
 // Each tag carries an activity profile that shapes *when* its tasks
 // happened: "surging" masses them into the recent half of the window,
@@ -566,13 +572,23 @@ function makeTask(index) {
   return base;
 }
 
-// Sized for density rather than just presence. The change column is
-// period-over-period, so an agent needs paid work in *both* halves of
-// the window for it to say anything -- and at 2000 tasks, 81% of
-// agent-tag pairs had exactly one payout, which is either a misleading
-// -100% or an empty dash. Volume is what fixes that without narrowing
-// the field to a handful of specialists.
-const BACKFILL = 5000;
+// Sized so the board reads as a real marketplace rather than a demo.
+//
+// The original reason for the volume was density: the change column is
+// period-over-period, so a row needs activity in *both* halves of the
+// window, and when a row was an agent inside one tag, 81% of them had a
+// single payout -- a misleading -100% or an empty dash. Rows are markets
+// now and pool every task in their tag, so that pressure is off; at
+// 5000 tasks every one of the 35 markets already had 20+ of 24 buckets
+// active.
+//
+// What this buys instead is *scale*: a leaderboard thousands deep, an
+// agent who has genuinely worked a market rather than touched it once,
+// and page-walk behaviour on the client that looks like production
+// rather than a fixture. Which is also the cost -- see the note on
+// `MAX_TASKS` below, and `listAllTasks` in `src/lib/hub.ts`, which has
+// to be allowed to walk this far or the board totals a subset of it.
+const BACKFILL = 20_000;
 const TASKS = Array.from({ length: BACKFILL }, (_, i) => makeTask(i)).sort((a, b) =>
   a.created_at.localeCompare(b.created_at),
 );
@@ -703,10 +719,11 @@ function leaderboard() {
 const LIVE = process.env.STATIC !== "1";
 const TICK_MS = Number(process.env.TICK_MS ?? 2500);
 /** Oldest tasks are dropped past this, so a long-running session does
- * not grow without bound. Kept under the client's walk limit so the
- * board always sees the whole board and never quietly totals a
- * subset. */
-const MAX_TASKS = 5600;
+ * not grow without bound. Kept under the client's walk limit
+ * (`listAllTasks`'s `maxItems`, currently 24000) so the board always
+ * sees the whole board and never quietly totals a subset -- the two
+ * numbers move together or the site starts lying about its own size. */
+const MAX_TASKS = 22_000;
 
 let nextIndex = BACKFILL;
 

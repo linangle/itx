@@ -215,10 +215,32 @@ const MAX_PARALLEL_PAGES = 6;
  * the UI can say so instead of quietly presenting a partial total as a
  * whole one. Parallelism cuts the walk's latency, not its weight: every
  * client still downloads and re-derives what the hub could have summed
- * once, and the server-side endpoint remains the actual answer. */
+ * once, and the server-side endpoint remains the actual answer.
+ *
+ * **What hitting the stop actually costs.** Every headline figure on the
+ * board -- open bounty, settled value, a sector's size, a market's
+ * sparkline -- is a sum over the whole task list. Stop the walk early
+ * and those sums are computed from the tasks that were fetched but
+ * rendered as though they were the market, which is the site
+ * misreporting its own size rather than merely showing less.
+ *
+ * And it truncates at the wrong end. The hub sorts ascending on
+ * `created_at` (`tasks.sort_by_key` in `list_tasks`) and offsets slice
+ * from the front, so the tasks dropped are the **newest** ones -- the
+ * half of a live market anyone is actually looking at. A truncated
+ * board would show sparklines flattening toward the right edge and a
+ * "latest" feed that has quietly stopped being latest. Which is the
+ * other reason this is a stop and not a policy: the fix when a real
+ * board outgrows it is the aggregate endpoint, not walking from the
+ * other end and inheriting the mirror-image problem.
+ *
+ * Raised to 24000 with the fixture's backfill (`dashboard/mock/hub.mjs`
+ * seeds 20000 and caps its live growth at 22000); the two move
+ * together, since a limit under the board's size means every figure on
+ * the page is wrong by an unknown amount. */
 export async function listAllTasks(
   params: Omit<ListTasksParams, "offset" | "limit"> = {},
-  maxItems = 7000,
+  maxItems = 24_000,
 ): Promise<Page<TaskDto> & { complete: boolean }> {
   const pageSize = 200;
   const first = await listTasks({ ...params, limit: pageSize });
