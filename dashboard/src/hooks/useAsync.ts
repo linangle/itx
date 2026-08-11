@@ -37,6 +37,22 @@ export interface AsyncState<T> {
  * realtime channel, that's the moment to surface connection state
  * properly rather than inferring it from a poll.
  *
+ * A tick that arrives while the previous request is still in flight is
+ * *skipped*, not queued. Without that guard a fetch slower than the
+ * interval doesn't delay the next poll -- it gets a second fetch started
+ * underneath it, each one making the network slower and the next overlap
+ * more likely. That is a threshold, not a slowdown: the page is fine
+ * until the day the fetch crosses the interval, and then it spirals.
+ * Skipping means a slow hub is polled exactly as fast as it can answer,
+ * and no faster.
+ *
+ * Refreshes also pause while the tab is hidden -- rAF loops stop on
+ * their own when a tab is backgrounded, but `setInterval` does not, and
+ * a board nobody is looking at should not keep pulling the whole task
+ * list. Coming back to the tab refreshes immediately rather than waiting
+ * out the rest of an interval, so the first thing a returning reader
+ * sees is current.
+ *
  * The `cancelled` flag prevents a slow response from setting state on an
  * unmounted component, and prevents an earlier request from overwriting a
  * later one when `deps` change mid-flight.
@@ -54,8 +70,11 @@ export function useAsync<T>(
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     const run = (silent: boolean) => {
+      if (inFlight) return;
+      inFlight = true;
       if (!silent) setState((previous) => ({ ...previous, loading: true, error: null }));
 
       fn()
@@ -69,6 +88,9 @@ export function useAsync<T>(
             error: error instanceof Error ? error : new Error(String(error)),
             loading: false,
           });
+        })
+        .finally(() => {
+          inFlight = false;
         });
     };
 
@@ -79,10 +101,19 @@ export function useAsync<T>(
       };
     }
 
-    const timer = setInterval(() => run(true), refreshMs);
+    // One callback for both the timer and the visibility change: a tick
+    // in a hidden tab does nothing, and becoming visible refreshes right
+    // away. (`visibilitychange` also fires on the way *to* hidden, where
+    // the `document.hidden` check makes it a no-op.)
+    const refresh = () => {
+      if (!document.hidden) run(true);
+    };
+    const timer = setInterval(refresh, refreshMs);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
     };
   }, [...deps, refreshMs]);
 
