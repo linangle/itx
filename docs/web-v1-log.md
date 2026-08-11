@@ -2442,3 +2442,88 @@ positions than the DOM reported a moment earlier. Two rounds of
 "the numbers say flush, the screenshot says sliced" were that and not
 the code. Screenshots of this row have to be plain viewport captures,
 cropped afterwards.
+
+### Round 36 — where the latency actually comes from
+
+An audit, not a change. Nothing in `dashboard/src` was touched; this
+round is the note so the next one can be a fix. Measured against the
+seeded mock (`dashboard/mock/hub.mjs`, 5600 tasks, 1000 agents, 12
+capability tags), which is the closest thing here to a board with real
+volume.
+
+**The landing page pulls 2.83 MB of JSON every five seconds, over 28
+sequential round trips.** That is the finding; the rest are footnotes to
+it. `listAllTasks` walks the board 200 at a time to `maxItems = 7000`,
+which at 5600 tasks is 28 requests it cannot start until the one before
+it returns, and `LandingPage` puts that on a 5s `REFRESH_MS`. The walk
+is already flagged in `lib/hub.ts` as a stopgap awaiting a server-side
+aggregate; what the measurement adds is that it is not a "someday"
+problem, it is the page's dominant cost today. On localhost the walk
+finishes in 0.4s and nothing looks wrong, which is exactly why it has
+survived. Off localhost the 28 trips are 28 × RTT before any bytes:
+about 1.4s at a 50ms RTT, ~2.8s on a phone. The transfer is on top of
+that — 2.83 MB over a 5 Mbps link is another 4.5s.
+
+**And when the walk takes longer than five seconds, the polls overlap.**
+`useAsync` arms a bare `setInterval(() => run(true), refreshMs)` with no
+in-flight guard, so a slow walk does not delay the next one, it gets a
+second walk started underneath it. Each new walk makes the network
+slower, which makes the next overlap more likely. That is the shape of
+"fine most of the time, then suddenly not" — it is not random, it is a
+threshold, and once crossed the page does not recover on its own until
+the walks get cheap again. The same `setInterval` also has no
+`visibilitychange` gate, so a backgrounded tab keeps pulling megabytes
+while the rAF work correctly pauses.
+
+**None of it is compressed.** `hub/Cargo.toml` takes `tower-http` with
+`features = ["cors"]` and nothing else — there is no `CompressionLayer`
+in the stack. This JSON is repeated field names and 66-character hex
+keys, which is the best case for gzip: a 200-task page measures 106,248
+bytes raw and 20,300 gzipped, 5.2×. The full walk would go from 2.83 MB
+to about 0.54 MB for one layer and no frontend change at all. It is the
+cheapest thing on this list by a wide margin and it is a hub change, not
+a dashboard one.
+
+Four other screens make the same full walk for much less reason.
+`AgentPage` pulls all 5600 tasks to show one agent's rows; terminal
+`OverviewPage`, `LeaderboardPage` and `TasksPage` each pull the board for
+aggregates. Those at least do not poll — they fetch once per mount — so
+they are a slow first paint rather than a compounding one.
+
+The client-side derivation is *not* the problem, which is worth writing
+down so nobody optimises it first. Over the same 5600 tasks the whole
+per-poll chain costs 11.4ms: `chooseWindow` 1.5, `summarizeByKind` 2.2,
+`marketsByCapability` 3.3, `summarizeByCapability` 4.0, the `latest`
+sort 0.4. The grouping pass that replaced the per-agent filter did its
+job. Parsing the JSON is 6.5ms. Against 28 round trips these are rounding
+errors.
+
+Rendering is a different matter. Every market panel is in the DOM at
+once — the carousel is an `overflow-x` scroller over `markets.map`, not
+a window onto it — so at 12 capability tags and ~12 rows a panel that is
+144 sparklines in the markets, ~12 in trends and 3 in the quote strip:
+about 159 SVGs, each four elements around a 24-point polyline and
+polygon, so roughly 640 SVG nodes. Nothing is memoised below `Board`,
+so all of it re-renders on every poll — and on **every keystroke in the
+agent search**, which is the one place a reader can feel it directly.
+`chooseWindow` runs unmemoised in the render body and adds its 1.5ms to
+each of those keystrokes; the `useMemo`s above it are safe only because
+`window.windowMs` happens to be a primitive that compares equal.
+
+Smaller, and last: `itx-arrive` animates `background` and `box-shadow`
+across its 1400ms. Both are paint properties — the `will-change:
+transform` next to them promotes the layer for the translate but does
+nothing for these, so each arriving row repaints for the full duration.
+Bounded by how many rows land per poll, and only worth touching if the
+`latest` list ever gets long; the fix if so is a pseudo-element carrying
+the glow and animating `opacity` alone.
+
+Ranked by what a fix buys per unit of work: compression on the hub
+(one layer, 5×), an in-flight guard and a `visibilitychange` gate on
+`useAsync` (small, and it removes the cliff), a server-side aggregate so
+the board stops being walked at all (the real answer, and the one
+`lib/hub.ts` already names), then memoising `chooseWindow` and the rows
+under `Board`. Not verified in a browser: navigation to the dev server
+was blocked in this session, so the render counts above are derived from
+the data and the component tree rather than read off a profile. The
+network and derivation figures are measured.
