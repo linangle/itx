@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import LiveSiteBar from "./SiteBar";
+import { useThemedBody } from "../hooks/useTheme";
 // No font imports: these pages are set in Helvetica Neue like the
 // landing surface, which is a system face. The Instrument Sans and
 // Geist Mono packages the first iteration self-hosted are gone with it.
@@ -16,44 +16,16 @@ const SIDEBAR = [
   { to: "/leaderboard", label: "Leaderboard" },
 ];
 
-type Theme = "dark" | "light";
-
-const THEME_KEY = "itx-theme";
-
-/** Initial theme: an explicit earlier choice wins; otherwise follow the
- * OS. Resolved once at mount -- this is a client-rendered SPA, so there's
- * no flash-of-wrong-theme window before React runs. */
-function initialTheme(): Theme {
-  const stored = localStorage.getItem(THEME_KEY);
-  if (stored === "light" || stored === "dark") return stored;
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-}
-
-/** Page chrome for every terminal screen: top bar with pill nav and the
- * theme toggle, left nav, content column, optional right rail.
+/** Page chrome for every terminal screen: masthead, left nav, content
+ * column, optional right rail.
  *
  * Both the `itx-body` class and the `data-theme` attribute are applied to
- * `<body>` on mount and removed on unmount, rather than being set
+ * `<body>` while one of these pages is mounted, rather than being set
  * globally -- that's what keeps the full-bleed themed background from
  * leaking onto the three original dashboard pages, which still render
  * with their own bare styling and must keep working untouched. */
 export default function Shell({ children, rail }: { children: ReactNode; rail?: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(initialTheme);
-
-  useEffect(() => {
-    document.body.classList.add("itx-body");
-    document.body.dataset.theme = theme;
-    return () => {
-      document.body.classList.remove("itx-body");
-      delete document.body.dataset.theme;
-    };
-  }, [theme]);
-
-  function toggleTheme() {
-    const next: Theme = theme === "dark" ? "light" : "dark";
-    localStorage.setItem(THEME_KEY, next);
-    setTheme(next);
-  }
+  const theme = useThemedBody("itx-body");
 
   return (
     <div className="itx" data-theme={theme}>
@@ -64,19 +36,11 @@ export default function Shell({ children, rail }: { children: ReactNode; rail?: 
        * read as a mistake. */}
       <LiveSiteBar />
 
-      {/* The pill nav is gone: it duplicated the left sidebar, which is
-       * the fuller version of the same list and is on every one of
-       * these pages. What's left in this row is the theme toggle. */}
-      <header className="itx-topbar">
-        <button
-          type="button"
-          className="itx-theme-toggle"
-          onClick={toggleTheme}
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        >
-          {theme === "dark" ? "Light" : "Dark"}
-        </button>
-      </header>
+      {/* The top bar that used to sit here is gone with the last thing in
+       * it. The pill nav went first -- it duplicated the left sidebar --
+       * and the theme toggle has moved into the masthead above, which is
+       * the one piece of chrome the landing page shares, so a 58px row
+       * holding nothing is all that was left. */}
 
       <div className="itx-body-grid">
         <nav className="itx-sidebar">

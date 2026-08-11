@@ -123,26 +123,46 @@
   min-height: 100vh;
 }
 
+/* The light counterpart. Shared with the landing surface, value for
+   value (see the block of the same name in landing.css) -- the two are
+   one design, so a colour that exists on both is decided once.
+ *
+ * Every value here is derived rather than picked by eye, which is what
+ * the first pass at this block was missing: it reached for white and for
+ * pale greys that looked right in isolation and left the surface washed
+ * out next to its dark twin.
+ *
+ * Surfaces and lines are matched by *contrast against their own ground*.
+ * The dark panel sits 1.05:1 off the dark ground and the dark hairline
+ * 1.86:1 off it; these land at 1.05 and 1.90, so a panel is the same
+ * hair of lift and an outline the same weight in both themes. White was
+ * 1.14 -- a distinct slab, on a board whose whole idea is that panels
+ * are outlines rather than cards.
+ *
+ * The three hues keep their dark-theme hue angle to within two degrees
+ * and take their lightness down to ~33%, which is what clears 4.5:1 for
+ * a 13px figure on both the ground and a panel. */
 .itx[data-theme="light"] {
   --bg: #e9f2ed;
-  --panel: #ffffff;
-  --panel-hover: #f4f8f6;
-  --border: #c7ccd8;
-  --border-strong: #a9b0c0;
+  --panel: #f1f7f4;
+  --panel-hover: #f8fbf9;
+  --border: #a9b0c0;
+  --border-strong: #969db0;
 
   --text: #161418;
   --text-dim: #5c6070;
-  --text-faint: #8b8d99;
+  /* Its own value, not the dark theme's: #8b8d99 is 5.55:1 on the dark
+     ground and 2.89:1 here, so the one token that did not change per
+     theme was also the one that failed on this one. */
+  --text-faint: #6b6e7b;
 
-  /* The dark-surface hues are too pale to read as glyphs here, so text
-     duty goes to deepened versions; raw hues stay in charts. */
-  --up: #3f8f49;
-  --down: #b8331f;
-  --accent: #2f6fa8;
-  --accent-text: #2f6fa8;
-  --brand: #3f8f49;
-  --brand-contrast: #ffffff;
-  --warn: #b8331f;
+  --up: #2f7a3a;
+  --down: #ab301d;
+  --accent: #2b6ba6;
+  --accent-text: #2b6ba6;
+  --brand: #2f7a3a;
+  --brand-contrast: #e9f2ed;
+  --warn: #ab301d;
 
   --card-fill: transparent;
   --card-fill-text: #161418;
@@ -199,8 +219,9 @@ body.itx-body[data-theme="light"] {
 /* ---- the site-wide masthead, on these pages ---------------------- */
 
 /* The bar's own rules are in sitebar.css; these are the two things that
-   have to follow the terminal's theme rather than the landing's fixed
-   dark. The tape's gradient is untouched -- it is the same tape here. */
+   have to follow this page's theme rather than the palette the bar
+   declares on itself. The landing does the same for its own light theme.
+   The tape's gradient is untouched -- it is the same tape here. */
 .itx .itx-sitebar {
   background: var(--bg);
   color: var(--text);
@@ -222,40 +243,12 @@ body.itx-body[data-theme="light"] {
   --sb-h: var(--sb-brand-h);
 }
 
-.itx-topbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-8);
-  height: 58px;
-  padding: 0 var(--sp-7);
-  background: var(--bg);
-  position: sticky;
-  /* Parks under the masthead instead of at the viewport's top, so the
-     two sticky rows stack rather than overlap. */
-  top: var(--sb-h);
-  z-index: 10;
-}
-
-/* The wordmark and the pill nav that used to sit in this row are gone:
-   the masthead above carries the wordmark, and the pill nav was a
-   three-item copy of the left sidebar standing right next to it. */
-
-.itx-theme-toggle {
-  margin-left: auto;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: var(--fs-body);
-  padding: var(--sp-3) var(--sp-6);
-  cursor: pointer;
-}
-
-.itx-theme-toggle:hover {
-  color: var(--text);
-  background: var(--panel-hover);
-}
+/* The top bar and its theme toggle are gone. The row was already down
+   to one control after the pill nav went -- a duplicate of the left
+   sidebar -- and the toggle now lives in the masthead, which is the one
+   piece of chrome the landing page also has, so the setting is reachable
+   from the front page too. Content starts under the masthead directly;
+   `--sb-h` is still what everything sticky here parks against. */
 
 .itx-body-grid {
   display: grid;

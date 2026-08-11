@@ -14,7 +14,18 @@ body.itx-landing-body {
   background: #161418;
 }
 
+body.itx-landing-body[data-theme="light"] {
+  background: #e9f2ed;
+}
+
 .itx-landing {
+  /* These six are *roles*, not literals, which is what lets one set of
+     rules paint both themes: --ld-dark is the ground and --ld-light the
+     ink, and in light mode they hold each other's values. The three
+     hues are the ink versions -- text and hairlines -- and are deepened
+     for the light ground below. The wash on the hero's market line and
+     the quote strip is painted in JS from the brand pair (see
+     marketHue.ts) and stays the same on both themes, like the tape. */
   --ld-red: #d8402d;
   --ld-green: #63ba6c;
   --ld-blue: #91c4f2;
@@ -68,6 +79,61 @@ body.itx-landing-body {
 
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   background: var(--ld-dark);
+}
+
+/* The light counterpart, from the same seven colours. Only tokens change
+   here -- every rule below this block is theme-blind, which is the whole
+   reason the roles above are named for their job rather than their
+   value.
+ *
+ * The three hues are deepened rather than reused. #63ba6c on #e9f2ed is
+ * 2.1:1 -- fine for a 2px chart stroke, unreadable as a percentage in a
+ * 13px table cell -- so text duty goes to the same hues taken down to
+ * L≈33%, which clears 4.5:1 on the ground and on a panel. Hue is held
+ * within two degrees of the dark palette's, so the surface still reads
+ * as the same green and the same red.
+ *
+ * The greys are matched by *contrast against their own ground*, not by
+ * eye: the hairline is 1.9:1 on the light ground where the dark one is
+ * 1.86:1 on the dark, so the board's outlines carry the same weight in
+ * both. Picking a pale grey that merely looked right on white was the
+ * thing that made the first light mode read as washed out. */
+.itx-landing[data-theme="light"] {
+  --ld-dark: #e9f2ed;
+  --ld-light: #161418;
+  --ld-sub: #5c6070;
+
+  --ld-red: #ab301d;
+  --ld-green: #2f7a3a;
+  --ld-blue: #2b6ba6;
+}
+
+.itx-landing[data-theme="light"] .itx-board {
+  --bd-line: #a9b0c0;
+  --bd-grid-opacity: 0.22;
+}
+
+/* The masthead follows the page it is on -- the terminal's already did
+   (see terminal.css), and a dark bar over a light board would be the one
+   thing on the site that ignored the switch.
+ *
+ * Done by restating the two roles *on the bar*, not by rules against its
+ * background and colour: sitebar.css declares the palette on itself so
+ * the bar can render outside any page root, and a nearer declaration
+ * wins. The three hues are deliberately left alone -- the tape is the
+ * same red-blue-green wherever it rides. */
+.itx-landing[data-theme="light"] .itx-sitebar {
+  --ld-dark: #e9f2ed;
+  --ld-light: #161418;
+  --ld-sub: #5c6070;
+}
+
+/* The wordmark's full stop, which is the tape's green and so is not
+   covered by the roles above. Deepened to the light theme's green (the
+   --ld-green in this theme's block): the pale one is 2.1:1 on this
+   ground, under the 3:1 that even large text needs. */
+.itx-landing[data-theme="light"] .itx-sitebar-dot {
+  color: #2f7a3a;
 }
 
 /* Ticker + hero as one viewport-tall column: the hero absorbs the
@@ -365,6 +431,13 @@ body.itx-landing-body {
      bluer-white set of outlines. */
   --bd-line: #3f4351;
 
+  /* How hard the grid behind the board prints. The asset is one fixed
+     dark blue-grey, so on a light ground the same 30% would draw a mid
+     grey mesh -- about four times the contrast against its ground that
+     it has against the dark one. The light theme dials it to 22%, which
+     lands the lines at the same 1.24:1 they sit at in the dark. */
+  --bd-grid-opacity: 0.3;
+
   /* One scale for the board, so radii, type and panel padding are
      decisions made once rather than per rule. Each type step has a job:
      title, panel label, the leading number in a quote, body copy and
@@ -434,7 +507,7 @@ body.itx-landing-body {
   position: absolute;
   inset: calc(-1 * var(--bd-overlap)) 0 0 0;
   z-index: -1;
-  opacity: 0.3;
+  opacity: var(--bd-grid-opacity);
   background-image: url("/grid.svg");
   background-repeat: repeat;
   background-size: 1160px 1160px;
@@ -568,8 +641,11 @@ body.itx-landing-body {
   color: var(--ld-sub);
 }
 
+/* The ink at 12%, rather than a literal light grey: on the light theme
+   the same rule draws a faint dark dash instead of an invisible pale
+   one. */
 .itx-board .itx-spark-baseline {
-  stroke: rgba(233, 242, 237, 0.12);
+  stroke: color-mix(in srgb, var(--ld-light) 12%, transparent);
   stroke-dasharray: 3 3;
 }
 

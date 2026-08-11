@@ -61,6 +61,42 @@
   padding: 0 var(--sp-10);
 }
 
+/* Treated like the tape's close button -- the glyph alone, growing a
+   little on hover -- rather than as a bordered pill, which in the
+   masthead read as a second wordmark.
+
+   Colour is the bar's own text at reduced opacity rather than a token.
+   The bar follows the theme on both surfaces, and inheriting means this
+   button cannot be the one thing that misses a ground it was not
+   written for: it is always the right ink, one step back. */
+.itx-sitebar-theme {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.68;
+  cursor: pointer;
+  transition: transform 140ms ease, opacity 140ms ease;
+}
+
+.itx-sitebar-theme:hover {
+  opacity: 1;
+  transform: scale(1.12);
+}
+
+.itx-sitebar-theme:focus-visible {
+  opacity: 1;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
 /* Wordmark and tagline are one link home -- the reliable way back from
    a deep page, and on the front page itself a way back to the top.
 

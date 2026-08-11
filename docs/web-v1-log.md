@@ -1966,3 +1966,58 @@ Measured: out to 2.9px by 120ms, apex 3.9px at 160-200ms halfway up,
 home at 360ms.
 
 Gates: 58 tests, tsc, lint, build clean.
+
+### Round 27 — light mode reaches the front page
+
+**The toggle has moved into the masthead.** It lived in `Shell`, which
+only the terminal pages mount, so the front page -- the one a visitor
+actually lands on -- had no way to reach a setting the rest of the site
+had. The masthead is the one piece of chrome on every surface, so the
+button belongs there. The terminal's top bar went with it: the pill nav
+had already gone as a duplicate of the left sidebar, and what was left
+was a 58px sticky row holding one control.
+
+  Which meant the theme could no longer be component state. Two roots
+  read it now -- the masthead's button and whichever page root is
+  mounted -- and they are in different trees. `useTheme.ts` holds it as
+  a module-level store behind `useSyncExternalStore`: no provider to
+  place, one re-render for every subscriber, and there was only ever
+  one theme per document anyway.
+
+**The landing surface has a light theme.** Its six colour tokens were
+already *roles* rather than literals -- `--ld-dark` is the ground,
+`--ld-light` the ink -- so light mode is one token block where the two
+hold each other's values, and every rule below stays theme-blind.
+
+  Three things did not follow from the tokens. The grid behind the
+  board is a fixed dark blue-grey asset, so the same 30% opacity that
+  is barely there on the dark ground draws a mid-grey mesh on the light
+  one; it is a token now, 0.22 on light, which lands the lines at the
+  same 1.24:1 in both. The sparkline baseline was a literal
+  `rgba(233, 242, 237, 0.12)` -- the ink at 12% instead, so it flips.
+  And the masthead: it already followed the theme on terminal pages,
+  and a dark bar over a light board would have been the one thing on
+  the site ignoring the switch, so the landing restates the two roles
+  on the bar itself.
+
+**The light palette is derived now, not picked.** The existing one on
+the agent pages had reached for white and for pale greys, and next to
+its dark twin it read as washed out. Measured, the deviations were
+specific: the panel sat 1.14:1 off its ground where the dark panel sits
+1.05:1 -- a card, on a design whose panels are outlines -- the hairline
+1.41:1 against the dark one's 1.86:1, `--text-faint` was the same value
+in both themes and so was 2.89:1 here against 5.55:1 there, and the
+"up" green was 3.51:1 under thirteen-pixel figures.
+
+  Every value is now matched by contrast against its *own* ground:
+  panel 1.05, hairline 1.90, faint 4.44, and the three hues taken to
+  L≈33% for 4.64 / 5.80 / 4.90 while holding their dark-theme hue angle
+  to within two degrees. Both files declare the same block, since the
+  two surfaces are one design.
+
+  The wash is the exception and stays as it is: the hero's market line
+  and the quote strip's outline are painted in JS from the brand green
+  and red, the same pair the tape rides in, and they are objects rather
+  than text.
+
+Gates: 58 tests, tsc, lint, build clean.

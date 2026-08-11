@@ -4,6 +4,7 @@ import { SiteBar } from "../../components/SiteBar";
 import { BOARD_ANCHOR, scrollToBoard } from "../../components/siteNav";
 import MarketLine from "./MarketLine";
 import { useAsync } from "../../hooks/useAsync";
+import { useThemedBody } from "../../hooks/useTheme";
 import { listAllTasks } from "../../lib/hub";
 
 /** three.js is ~170 KB gzipped and only the landing hero uses it, so the
@@ -37,15 +38,14 @@ export default function LandingPage() {
   // free.
   const tasks = useAsync(() => listAllTasks({ status: "all" }), [], REFRESH_MS);
   // `index.css` gives `body` a 16px margin for the three legacy pages,
-  // which on a full-bleed dark page shows as a white frame around the
-  // whole viewport. Rather than change that global rule -- the legacy
-  // pages still want it -- flag the body while this page is mounted and
-  // remove the flag on unmount, the same approach `Shell` takes for the
-  // terminal screens.
-  useEffect(() => {
-    document.body.classList.add("itx-landing-body");
-    return () => document.body.classList.remove("itx-landing-body");
-  }, []);
+  // which on a full-bleed page shows as a white frame around the whole
+  // viewport. Rather than change that global rule -- the legacy pages
+  // still want it -- flag the body while this page is mounted and remove
+  // the flag on unmount, the same approach `Shell` takes for the
+  // terminal screens. The theme rides along on the same flag, so
+  // overscroll at either end of the page bounces against the ground the
+  // page is actually painted in.
+  const theme = useThemedBody("itx-landing-body");
 
   // Arriving with `#itx-board` -- which is where the masthead points --
   // starts on the board rather than the hero. A browser would do this
@@ -63,7 +63,7 @@ export default function LandingPage() {
   }, [hash]);
 
   return (
-    <div className="itx-landing">
+    <div className="itx-landing" data-theme={theme}>
       {/* Tape and wordmark ride together in one sticky bar so both stay
        * pinned for the whole page, not just the hero. It has to be a
        * direct child of the full-height landing root: a sticky element
