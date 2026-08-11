@@ -1743,3 +1743,29 @@ panel's own colour, which is indistinguishable from the transparent it
 started with.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 29 — an arc instead of three right angles
+
+Pull right, lift, push left was three legs with right angles between
+them, which reads as a machine indexing a part rather than a hand
+moving a card. It is one swing now: out and up together, widest at the
+halfway point, back to zero as it lands.
+
+The path is a sampled curve rather than a drawn one -- five points
+along `x = 26·sin(πs)`, `y = 52·(1-s)`, with `s` spaced to ease in and
+out -- and the segments between them are deliberately **linear**. A
+curve on each segment as well would fight the sampling and put a hitch
+at every point; the easing belongs in where the points are, not in how
+the animation travels between them. The one eased segment left is the
+glow's fade, which is a value rather than a path.
+
+The sideways reach came down from 68px to a peak of 26. It only has to
+show the card leaving the stack; past about 30px it stops being a swing
+and starts being a detour.
+
+Faster, too: 1.6s rather than 2.2, with the swing done in under a
+second (measured: peak 24.6px at 480ms, landed at 960ms) and the glow
+gone by 1.6. The arc is what lets it read at speed -- the shape is
+doing the work a longer straight line had to do with duration.
+
+Gates: 55 tests, tsc, lint, build clean.

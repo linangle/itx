@@ -1042,18 +1042,23 @@ body.itx-landing-body {
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
 
-   The path is a card being swapped to the top of a deck, in three
-   moves: the row appears low in the stack, is drawn out sideways, is
-   carried up level with the top slot, and is pushed back in.
+   The path is a card being swapped to the top of a deck: it appears
+   low in the stack, swings out and up in one arc, and comes back in at
+   the top slot.
 
-   Which is the whole point of doing it in three. A diagonal from the
-   bottom-left covers the same ground in one gesture and reads as
-   "something slid in from the corner" -- the hand is missing from it.
-   Corners in the path are what make it a hand moving a card: pull,
-   lift, place. Each leg gets its own eased segment so the turns are
-   deliberate rather than smoothed into a curve.
+   The arc is sampled rather than drawn -- five points along
+   `x = 26·sin(πs)`, `y = 52·(1-s)`, with `s` spaced to ease in and
+   out, and straight lines between them. Bulging right at the halfway
+   point and returning to zero at the top is what makes it a swing;
+   an earlier version did the same three moves as *separate* legs --
+   right, then up, then left -- and the right angles between them read
+   as a machine indexing a part rather than a hand moving a card.
 
-   It travels out to the *right*. Going left, the row's own content is
+   The sideways reach is small on purpose. It only has to be enough to
+   show the card leaving the stack; past about 30px it stops being a
+   swing and starts being a detour.
+
+   It bulges out to the *right*. Going left, the row's own content is
    what the clip eats -- the bullet and the timestamp vanish and the
    headline seems to grow out of the middle of the panel. Held out to
    the right the whole card stays legible and only its trailing edge
@@ -1074,9 +1079,17 @@ body.itx-landing-body {
      pass *under* the rows it is supposed to be moving over. */
   position: relative;
   z-index: 1;
-  animation: itx-arrive 2400ms linear both;
+  /* The swing is done in under a second and the glow is gone by 1.6s.
+     Slower than this and the card looks like it is being carried
+     carefully rather than dealt -- the arc reads at speed because the
+     shape is doing the work, which a straight line could not. */
+  animation: itx-arrive 1600ms linear both;
 }
 
+/* Straight lines between the sampled points, which is what keeps the
+   arc an arc: a curve on each segment as well would fight the sampling
+   and put a hitch at every point. The one eased segment is the fade,
+   which is a value rather than a path. */
 @keyframes itx-arrive {
   /* In the deck: low in the stack, not yet drawn. */
   0% {
@@ -1084,42 +1097,39 @@ body.itx-landing-body {
     transform: translate(0, 52px);
     background: color-mix(in srgb, var(--ld-red) 34%, var(--ld-dark));
     box-shadow: 0 0 28px color-mix(in srgb, var(--ld-red) 26%, transparent);
-    animation-timing-function: cubic-bezier(0.45, 0, 0.35, 1);
   }
 
-  7% {
+  6% {
     opacity: 1;
-    transform: translate(0, 52px);
-    animation-timing-function: cubic-bezier(0.45, 0, 0.35, 1);
+    transform: translate(3px, 50px);
   }
 
-  /* Drawn out to the side. */
-  24% {
+  /* Swinging out and up. */
+  14% {
     opacity: 1;
-    transform: translate(68px, 52px);
-    background: color-mix(in srgb, var(--ld-red) 34%, var(--ld-dark));
-    animation-timing-function: cubic-bezier(0.4, 0, 0.3, 1);
+    transform: translate(16px, 43px);
   }
 
-  /* Carried up, level with the top slot. */
-  47% {
+  /* Widest point of the arc, halfway up. */
+  28% {
     opacity: 1;
-    transform: translate(68px, 0);
-    background: color-mix(in srgb, var(--ld-red) 32%, var(--ld-dark));
-    animation-timing-function: cubic-bezier(0.35, 0, 0.25, 1);
+    transform: translate(26px, 26px);
+    background: color-mix(in srgb, var(--ld-red) 33%, var(--ld-dark));
   }
 
-  /* Pushed home, a shade past the mark. The overshoot is small enough
-     to be felt rather than seen: it is the difference between a card
-     being placed and a row appearing. */
-  64% {
+  42% {
     opacity: 1;
-    transform: translate(-5px, 0);
-    animation-timing-function: cubic-bezier(0.4, 0, 0.4, 1);
+    transform: translate(16px, 9px);
+  }
+
+  /* Coming back in over the top slot. */
+  52% {
+    opacity: 1;
+    transform: translate(3px, 1px);
   }
 
   /* Down, still lit. */
-  69% {
+  58% {
     opacity: 1;
     transform: translate(0, 0);
     background: color-mix(in srgb, var(--ld-red) 28%, var(--ld-dark));
@@ -1142,14 +1152,14 @@ body.itx-landing-body {
    just doesn't travel to say so. */
 @media (prefers-reduced-motion: reduce) {
   .itx-board-updates li.is-new {
-    animation: itx-arrive-still 2000ms ease-out both;
+    animation: itx-arrive-still 1600ms ease-out both;
   }
 
   /* Held, then faded, on the same clock as the moving version -- a
      quick flash is the thing that was hard to read. */
   @keyframes itx-arrive-still {
     0%,
-    52% {
+    58% {
       background: color-mix(in srgb, var(--ld-red) 28%, transparent);
     }
 
