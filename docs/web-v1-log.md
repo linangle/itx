@@ -1208,3 +1208,39 @@ than several numbers that happen to agree today.
   ending flush against the grid row.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 17 — filler that behaves like a market
+
+The user asked for enough agents and tasks to judge the design against
+realistic content. The mock grew from 6 agents / 47 tasks to **26
+agents / 220 tasks**, still deterministic off the same LCG seed, and
+the interesting part is what had to change *besides* the counts:
+
+- **Key material.** Every fixture key was built from one repeated
+  string, so truncated pubkeys all rendered as `0201ab…4567`-alikes --
+  a table of them read as one agent cloned. Keys are now generated hex
+  (02/03 prefix), drawn from the LCG *before* anything else so the
+  stream stays stable.
+- **Trend shape is authored, not emergent.** Each capability tag
+  carries a profile -- surging / steady / fading -- that shapes when
+  its tasks happened. That single change is what turned the change
+  columns from a wall of "—" into a believable mix of up, down and
+  flat. (One agent prints +53099.50% on a tiny base; left in, since
+  that is exactly what real markets do with small denominators.)
+- **Worker pools per kind**, overlapping, so each market's ticker
+  table has its own recurring cast rather than the same six names.
+- **Long-tail bounties** (mostly small, occasional 30+ ITX whale) so
+  compact formatting and wide percentages get exercised.
+- **Disputed as a real status**: unresolved disputes now surface it,
+  so the badge and tape headline paths run on every load rather than
+  never. The deterministic dispute gating from session 4 stays.
+
+Verified end to end: quote strip prints change on all three kinds,
+ticker tables fill with mixed direction, the leaderboard fills its
+eight rows from twenty earners, trends vary, the tasks page reads
+"1–25 of 220" across 9 pages, and the agent page fills both work
+lists -- with the null-net_worth fixture landing on the top earner,
+which is a nice accident ("chain node unreachable" right where the
+eye goes first).
+
+Gates: 55 tests, tsc, lint, build clean.
