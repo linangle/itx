@@ -8,8 +8,11 @@
 //
 // This serves the same shapes as `hub/src/handlers.rs` (including the
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
-// activity: three task kinds, every status, overlapping capability tags,
-// and a handful of agents with different track records.
+// activity sized like a real marketplace rather than a smoke test:
+// two dozen agents with distinct keys, a few hundred tasks, every
+// status, and capability tags that trend differently on purpose --
+// some surging, some fading, some steady -- so change columns show
+// real ups and downs instead of a wall of identical numbers.
 //
 //   node dashboard/mock/hub.mjs
 //   VITE_HUB_URL=http://127.0.0.1:9101 npm run dev
@@ -36,50 +39,125 @@ function pick(items) {
   return items[Math.floor(random() * items.length)];
 }
 
-function pubkey(index) {
-  return `02${String(index).padStart(2, "0")}${"abcdef0123456789".repeat(4)}`.slice(0, 66);
+function hex(length) {
+  let out = "";
+  for (let i = 0; i < length; i++) out += "0123456789abcdef"[Math.floor(random() * 16)];
+  return out;
 }
 
-const AGENTS = Array.from({ length: 6 }, (_, i) => pubkey(i + 1));
-const OPERATOR = pubkey(99);
+// Distinct-looking compressed SEC1 keys (02/03 prefix + 64 hex). The old
+// fixture built every key from the same repeated string, so a table of
+// truncated pubkeys read as one agent cloned -- realistic filler needs
+// the first six and last four characters to differ. Generated before
+// anything else so the key material is stable in the LCG stream.
+const AGENTS = Array.from({ length: 26 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
+const OPERATOR = "02" + hex(64);
 
-const CAPABILITIES = ["python", "translation", "ocr", "scraping", "summarization", "rust"];
+// Which agents work which kind. Overlapping pools rather than one big
+// one, so each market's ticker table has its own cast with familiar
+// faces recurring, the way a real marketplace has specialists.
+const HASH_WORKERS = AGENTS.slice(0, 12);
+const DISPUTE_WORKERS = AGENTS.slice(8, 20);
+
+// Each tag carries an activity profile that shapes *when* its tasks
+// happened: "surging" masses them into the recent half of the window,
+// "fading" into the early half, "steady" spreads them evenly. That is
+// what makes period-over-period change read as a mix of up, down and
+// flat instead of null everywhere (the old fixture's single weighting
+// left one half of the window nearly empty).
+const CAPABILITIES = [
+  ["python", "surging"],
+  ["rust", "steady"],
+  ["translation", "fading"],
+  ["ocr", "steady"],
+  ["scraping", "surging"],
+  ["summarization", "fading"],
+  ["geocoding", "steady"],
+  ["labeling", "surging"],
+  ["transcription", "steady"],
+  ["vision", "fading"],
+  ["sql", "steady"],
+  ["prover", "surging"],
+];
+
+const SPAN_DAYS = 6.5;
+function ageDaysFor(profile) {
+  const r = random();
+  if (profile === "surging") return Math.pow(r, 2.4) * SPAN_DAYS;
+  if (profile === "fading") return (1 - Math.pow(r, 2.4)) * SPAN_DAYS;
+  return r * SPAN_DAYS;
+}
+
 const DESCRIPTIONS = [
   "Transcribe a 12-minute audio clip to text",
+  "Transcribe a 3-minute voicemail backlog",
   "Compute SHA256 of the attached dataset manifest",
+  "Compute checksums for a nightly backup set",
   "Translate a product listing into German",
+  "Translate onboarding emails into Japanese",
+  "Translate a help-center article into Spanish",
   "Summarize a 40-page regulatory filing",
+  "Summarize this week's incident reports",
   "Extract tables from a scanned invoice PDF",
+  "Extract line items from 80 receipts",
   "Rank these 200 search results by relevance",
+  "Rank candidate headlines for clickthrough",
   "Label sentiment across a customer feedback batch",
+  "Label 1,200 images for a detection model",
   "Deduplicate a 50k-row address list",
+  "Deduplicate a merged CRM export",
   "Write property tests for a parser module",
+  "Write fuzz harnesses for a decoder crate",
   "Classify 500 support tickets by topic",
+  "Classify job postings by seniority",
   "Geocode a batch of freeform address strings",
+  "Geocode delivery stops for a route planner",
   "Verify a proof-of-work nonce against a target",
+  "Verify Merkle proofs for a light client",
+  "Scrape a public filings index into JSON",
+  "Scrape a public tenders portal daily snapshot",
+  "OCR a box of handwritten lab notebooks",
+  "OCR historical census sheets, batch 7",
+  "Normalize currency fields across ledgers",
+  "Draft SQL for a churn cohort report",
+  "Backfill missing alt-text for a docs site",
 ];
-const STATUSES = ["Open", "Open", "Open", "Claimed", "Paid", "Paid", "Paid", "Verified", "Closed"];
+
+const STATUSES = [
+  "Open",
+  "Open",
+  "Open",
+  "Claimed",
+  "Claimed",
+  "Paid",
+  "Paid",
+  "Paid",
+  "Paid",
+  "Verified",
+  "Closed",
+];
 
 function makeTask(index) {
-  const kind = pick(["hash_match", "hash_match", "consensus", "disputable"]);
+  const kind = pick(["hash_match", "hash_match", "consensus", "disputable", "disputable"]);
   const status = pick(STATUSES);
-  // Weighted toward recent so the sparklines have visible slope rather
-  // than a uniform block.
-  const ageDays = Math.pow(random(), 1.7) * 7;
+  const tagged = random() < 0.8 ? pick(CAPABILITIES) : null;
+  const ageDays = ageDaysFor(tagged ? tagged[1] : "steady");
   const created_at = new Date(NOW - ageDays * DAY).toISOString();
   const claimed = status !== "Open";
+  const workers = kind === "hash_match" ? HASH_WORKERS : DISPUTE_WORKERS;
 
   const base = {
     id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
     description: pick(DESCRIPTIONS),
-    bounty: Math.round((0.05 + random() * 3) * UNITS),
+    // Long-tail bounties: mostly under a few ITX, the occasional whale.
+    bounty: Math.round((0.05 + Math.pow(random(), 3) * 40) * UNITS),
     status,
-    poster: random() < 0.4 ? OPERATOR : pick(AGENTS),
-    claimant: claimed && kind !== "consensus" ? pick(AGENTS) : null,
+    poster: random() < 0.25 ? OPERATOR : pick(AGENTS),
+    claimant: claimed && kind !== "consensus" ? pick(workers) : null,
     failed_attempts: random() < 0.25 ? Math.floor(random() * 3) : 0,
     min_reputation: random() < 0.2 ? Math.floor(random() * 4) : 0,
     close_reason: status === "Closed" ? pick(["no_majority", "understaffed"]) : null,
-    capabilities: random() < 0.75 ? [pick(CAPABILITIES)] : [],
+    capabilities: tagged ? [tagged[0]] : [],
     created_at,
     kind,
   };
@@ -99,22 +177,26 @@ function makeTask(index) {
     const answered = status !== "Open";
     // Deterministic rather than probabilistic: a fixture exists to make
     // every UI state reachable, and with a random gate the seed happened
-    // to produce zero disputes across all eight disputable tasks --
-    // leaving the dispute callout, bond display, and resolution states
-    // permanently unrendered. Every third answered task is challenged,
-    // and every other one of those is still awaiting the operator.
+    // to produce zero disputes -- leaving the dispute callout, bond
+    // display, and resolution states permanently unrendered. Every third
+    // answered task is challenged, and every other one of those is still
+    // awaiting the operator; those pending ones carry the Disputed
+    // status the type already declares, so the badge and tape paths for
+    // it are exercised too.
     const disputed = answered && index % 3 === 0;
+    const resolution = disputed && index % 6 !== 0 ? pick(["challenger_wins", "assignee_wins"]) : null;
     return {
       ...base,
+      status: disputed && resolution === null ? "Disputed" : base.status,
       answer: answered ? "See attached working; total is 41,208." : null,
       dispute_deadline: answered ? new Date(NOW - ageDays * DAY + DAY).toISOString() : null,
       dispute: disputed
         ? {
-            challenger: pick(AGENTS),
+            challenger: pick(DISPUTE_WORKERS),
             reason: "Figures don't reconcile with the source data.",
             bond_amount: Math.round(0.2 * UNITS),
             filed_at: new Date(NOW - ageDays * DAY + 0.5 * DAY).toISOString(),
-            resolution: index % 6 === 0 ? null : pick(["challenger_wins", "assignee_wins"]),
+            resolution,
           }
         : null,
     };
@@ -123,7 +205,7 @@ function makeTask(index) {
   return base;
 }
 
-const TASKS = Array.from({ length: 47 }, (_, i) => makeTask(i)).sort((a, b) =>
+const TASKS = Array.from({ length: 220 }, (_, i) => makeTask(i)).sort((a, b) =>
   a.created_at.localeCompare(b.created_at),
 );
 
@@ -132,7 +214,7 @@ const LEADERBOARD = AGENTS.map((pk) => {
   return {
     pubkey: pk,
     completed: paid.length,
-    failed: Math.floor(random() * 3),
+    failed: Math.floor(random() * 4),
     total_earned: paid.reduce((sum, t) => sum + t.bounty, 0),
     // One agent's node lookup deliberately fails, so the null-net_worth
     // path gets exercised on every page load rather than only in prod.
