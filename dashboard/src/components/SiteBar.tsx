@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import NewsTicker from "./NewsTicker";
 import { useAsync } from "../hooks/useAsync";
 import type { AsyncState } from "../hooks/useAsync";
@@ -20,12 +20,30 @@ const REFRESH_MS = 5000;
  * The wordmark is a link home. It is the only thing on a deep page like
  * an agent's profile that reliably goes back to the front. */
 export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) {
+  const { pathname } = useLocation();
+
+  /** The masthead shows a pointer, so it has to do something on every
+   * page -- including the front page, where the link home is a no-op
+   * and clicking it appeared to do nothing at all. It scrolls back to
+   * the top instead, which is what the wordmark on a long page is for.
+   *
+   * Smooth only when you are already where the link points; on the way
+   * to another page the outgoing page animating away is just noise, and
+   * an instant reset means the next page starts at its top rather than
+   * wherever this one was left. Reduced-motion gets the instant one
+   * either way. */
+  function toTop() {
+    const stay = pathname === "/";
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: stay && !reduce ? "smooth" : "auto" });
+  }
+
   return (
     <div className="itx-sitebar">
       <NewsTicker tasks={tasks} />
 
       <header className="itx-sitebar-brand">
-        <Link to="/" className="itx-sitebar-home">
+        <Link to="/" className="itx-sitebar-home" onClick={toTop}>
           <span className="itx-sitebar-mark">
             ITX<span className="itx-sitebar-dot">.</span>
           </span>

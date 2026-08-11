@@ -62,9 +62,18 @@
 }
 
 /* Wordmark and tagline are one link home -- the reliable way back from
-   a deep page. It carries no underline or colour of its own: it should
-   read as the masthead, not as a link in a sentence. */
-.itx-sitebar-home {
+   a deep page, and on the front page itself a way back to the top.
+
+   The selector is heavier than it looks because it has to be. The
+   terminal surface styles every anchor inside it (`.itx a`, and
+   `.itx a:hover` for the underline), which outranks a lone class and
+   was painting the masthead blue with an underline on hover. Matching
+   the element and the class, and restating hover, wins on both surfaces
+   without reaching for `!important`. It should read as the masthead,
+   not as a link in a sentence. */
+.itx-sitebar a.itx-sitebar-home,
+.itx-sitebar a.itx-sitebar-home:hover,
+.itx-sitebar a.itx-sitebar-home:focus {
   display: flex;
   align-items: center;
   gap: var(--sp-5);

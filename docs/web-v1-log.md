@@ -1472,3 +1472,33 @@ they never see the bar. Checked at `/legacy` -- 16px body margin, no
 masthead, table intact.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 22 — the masthead was a link, and looked like one
+
+Two things wrong with the bar from round 21, both about it behaving
+like a link in a sentence rather than a masthead.
+
+**On the terminal pages it rendered blue with a hover underline.** The
+rule was there -- `color: inherit; text-decoration: none` -- and it
+lost. `.itx a` and `.itx a:hover` style every anchor on that surface,
+and a class on its own is a weaker selector than a class plus an
+element. Matching the element too and restating hover wins on both
+surfaces without `!important`. Verified under a real hover: colour
+stays the theme's text, no underline.
+
+**On the front page it showed a pointer and did nothing.** The link
+points at `/` and you were already on `/`, so the click was a no-op --
+a cursor promising a function that wasn't there. It now scrolls back to
+the top, which is what a wordmark on a long page is for. Smooth when
+you are already home; instant when the click is also a navigation,
+where animating the outgoing page away is just noise and the next page
+should start at its own top. Reduced motion gets the instant one
+regardless.
+
+  A hidden tab does not run smooth scrolling -- the same missing
+  rendering steps behind this session's black screenshots and frozen
+  ResizeObserver. Forcing the reduced-motion branch is what confirmed
+  the handler fires at all: 1200 to 0. Worth remembering as a way to
+  test a smooth-scroll path without a visible browser.
+
+Gates: 55 tests, tsc, lint, build clean.
