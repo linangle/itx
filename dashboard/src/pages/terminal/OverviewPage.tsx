@@ -49,12 +49,29 @@ export default function OverviewPage() {
 
       {tasks.loading && <Loading what="the board" />}
       {tasks.error && <ErrorNote error={tasks.error} />}
-      {tasks.data && <Board tasks={tasks.data.items} complete={tasks.data.complete} />}
+      {tasks.data && (
+        <Board
+          tasks={tasks.data.items}
+          complete={tasks.data.complete}
+          total={tasks.data.total}
+        />
+      )}
     </Shell>
   );
 }
 
-function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
+function Board({
+  tasks,
+  complete,
+  total,
+}: {
+  tasks: TaskDto[];
+  complete: boolean;
+  /** The board's real size, from `X-Total-Count` -- which is what makes
+   * the truncation notice below able to say how much is missing rather
+   * than only that something is. */
+  total: number;
+}) {
   // One window for the whole page, sized to the board's real age -- so a
   // board seeded an hour ago charts over an hour instead of squashing
   // every task into the last 1/168th of a seven-day axis. Every panel
@@ -104,10 +121,17 @@ function Board({ tasks, complete }: { tasks: TaskDto[]; complete: boolean }) {
         />
       </div>
 
+      {/* Which end of the board is missing, not just that some of it is.
+          `listAllTasks` walks pages from offset 0 and stops at its
+          `maxItems`, and the hub sorts ascending on `created_at`
+          (`tasks.sort_by_key` in `list_tasks`, then `.skip(offset)`), so
+          a truncated walk keeps the *oldest* tasks. This line used to
+          say "the most recent", which was exactly backwards and pointed
+          anyone debugging a stale-looking board at the wrong end. */}
       {!complete && (
         <p className="flat" style={{ fontSize: 12, marginTop: -12, marginBottom: 18 }}>
-          Showing the most recent {formatCount(tasks.length)} tasks — totals above cover
-          only these.
+          Showing the oldest {formatCount(tasks.length)} of {formatCount(total)} tasks —
+          totals above cover only these, and the newest work is missing.
         </p>
       )}
 
