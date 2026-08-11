@@ -426,6 +426,13 @@ body.itx-landing-body {
   --pad-panel-y: var(--sp-6);
   --pad-panel-x: var(--sp-6);
 
+  /* Vertical rhythm. Three relationships, each with one value:
+     between major blocks, from a heading to what it introduces, and
+     from a label to the panel it names. */
+  --gap-section: var(--sp-9);
+  --gap-heading: var(--sp-7);
+  --gap-label: var(--sp-4);
+
   position: relative;
   isolation: isolate;
   padding: 0 0 var(--sp-14);
@@ -465,7 +472,7 @@ body.itx-landing-body {
 }
 
 .itx-board-title {
-  margin: var(--sp-9) 0 var(--sp-7);
+  margin: var(--gap-section) 0 var(--gap-heading);
   font-size: var(--fs-title);
   font-weight: 700;
   letter-spacing: -0.012em;
@@ -481,7 +488,7 @@ body.itx-landing-body {
 
 .itx-board-label {
   display: block;
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--gap-label);
   font-size: var(--fs-label);
   line-height: 1.25;
   font-weight: 700;
@@ -494,7 +501,7 @@ body.itx-landing-body {
 }
 
 .itx-board-labels-latest {
-  margin-top: var(--sp-9);
+  margin-top: var(--gap-section);
 }
 
 .itx-board-live-dot {
@@ -638,7 +645,9 @@ body.itx-landing-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 232px;
   gap: var(--sp-8);
-  align-items: start;
+  /* Deliberately not `align-items: start`: both columns take the row's
+     height so they finish on the same line, as the mockup has them.
+     The panels below grow into it. */
 }
 
 .itx-board-markets {
@@ -649,6 +658,8 @@ body.itx-landing-body {
 
   position: relative;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .itx-board-market {
@@ -702,17 +713,23 @@ body.itx-landing-body {
  * tells you the pager has somewhere to go. */
 .itx-board-carousel {
   display: flex;
+  flex: 1;
   gap: var(--sp-7);
   overflow: hidden;
 }
 
 .itx-board-panel-market {
+  /* Grows to the column's height; the min-height is a floor for when
+     the rail is the shorter of the two. */
+  flex: 1;
   min-height: 430px;
   padding: var(--pad-panel-y) var(--pad-panel-x);
 }
 
 .itx-board-rail {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .itx-board-panel-leaders {
@@ -721,13 +738,16 @@ body.itx-landing-body {
 }
 
 .itx-board-panel-trends {
+  /* The last panel in the rail takes up any slack, so the rail ends
+     level with the markets column rather than leaving a ragged edge. */
+  flex: 1;
   min-height: 244px;
   margin-bottom: 0;
   padding: var(--pad-panel-y) var(--pad-panel-x);
 }
 
 .itx-board-rail .itx-board-label:nth-of-type(2) {
-  margin-top: var(--sp-7);
+  margin-top: var(--gap-heading);
 }
 
 /* search */
@@ -884,7 +904,7 @@ body.itx-landing-body {
 
 .itx-board-footer {
   min-height: 96px;
-  margin-top: var(--sp-9);
+  margin-top: var(--gap-section);
 }
 
 /* responsive */
