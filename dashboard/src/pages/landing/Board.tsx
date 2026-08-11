@@ -28,6 +28,9 @@ const AGENT_ROWS = 10;
 const TRENDING_ROWS = 6;
 const UPDATE_ROWS = 5;
 const LEADER_ROWS = 8;
+/** How often the board re-asks the hub. Slow enough to be cheap, quick
+ * enough that a settling task shows up while you are still looking. */
+const REFRESH_MS = 5000;
 
 /** The supplied search glyph (`assets/search_icon.svg`), inlined.
  *
@@ -96,8 +99,10 @@ function agentsForKind(tasks: TaskDto[], kind: TaskDto["kind"], windowMs: number
  * Panel *labels sit outside their panels* here, above the outline,
  * which is the main structural difference from the previous version. */
 export default function Board() {
-  const tasks = useAsync(() => listAllTasks({ status: "all" }), []);
-  const leaders = useAsync(() => getLeaderboard(), []);
+  // Polled: the board carries a "live" pill, and the hub has no realtime
+  // channel, so the only way to honour that is to go and ask.
+  const tasks = useAsync(() => listAllTasks({ status: "all" }), [], REFRESH_MS);
+  const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState("");
 

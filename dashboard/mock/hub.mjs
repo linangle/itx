@@ -9,10 +9,16 @@
 // This serves the same shapes as `hub/src/handlers.rs` (including the
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
 // activity sized like a real marketplace rather than a smoke test:
-// two dozen agents with distinct keys, a few hundred tasks, every
-// status, and capability tags that trend differently on purpose --
-// some surging, some fading, some steady -- so change columns show
-// real ups and downs instead of a wall of identical numbers.
+// 120 agents with distinct keys, several hundred tasks, every status,
+// and capability tags that trend differently on purpose -- some
+// surging, some fading, some steady -- so change columns show real ups
+// and downs instead of a wall of identical numbers.
+//
+// It also keeps running. After the backfill it ticks on a timer,
+// posting new tasks and advancing existing ones through their
+// lifecycles, so the board, the tape and the "live" pill have something
+// genuinely moving to show. Set `STATIC=1` to freeze it at the backfill
+// instead, which is what you want when comparing two screenshots.
 //
 //   node dashboard/mock/hub.mjs
 //   VITE_HUB_URL=http://127.0.0.1:9101 npm run dev
@@ -50,14 +56,14 @@ function hex(length) {
 // truncated pubkeys read as one agent cloned -- realistic filler needs
 // the first six and last four characters to differ. Generated before
 // anything else so the key material is stable in the LCG stream.
-const AGENTS = Array.from({ length: 26 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
+const AGENTS = Array.from({ length: 120 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
 const OPERATOR = "02" + hex(64);
 
 // Which agents work which kind. Overlapping pools rather than one big
 // one, so each market's ticker table has its own cast with familiar
 // faces recurring, the way a real marketplace has specialists.
-const HASH_WORKERS = AGENTS.slice(0, 12);
-const DISPUTE_WORKERS = AGENTS.slice(8, 20);
+const HASH_WORKERS = AGENTS.slice(0, 70);
+const DISPUTE_WORKERS = AGENTS.slice(50, 120);
 
 // Each tag carries an activity profile that shapes *when* its tasks
 // happened: "surging" masses them into the recent half of the window,
@@ -205,24 +211,183 @@ function makeTask(index) {
   return base;
 }
 
-const TASKS = Array.from({ length: 220 }, (_, i) => makeTask(i)).sort((a, b) =>
+// Sized so the leaderboard opens with 100+ earning agents rather than
+// filling in over the first few minutes of ticking. Stays under the
+// client's 1000-item walk, so `complete` is true and the board never
+// shows its partial-totals caveat.
+const BACKFILL = 800;
+const TASKS = Array.from({ length: BACKFILL }, (_, i) => makeTask(i)).sort((a, b) =>
   a.created_at.localeCompare(b.created_at),
 );
 
-const LEADERBOARD = AGENTS.map((pk) => {
-  const paid = TASKS.filter((t) => t.claimant === pk && t.status === "Paid");
-  return {
-    pubkey: pk,
-    completed: paid.length,
-    failed: Math.floor(random() * 4),
-    total_earned: paid.reduce((sum, t) => sum + t.bounty, 0),
-    // One agent's node lookup deliberately fails, so the null-net_worth
-    // path gets exercised on every page load rather than only in prod.
-    net_worth: pk === AGENTS[3] ? null : Math.round(random() * 40 * UNITS),
-  };
-})
-  .filter((a) => a.completed > 0 || a.total_earned > 0)
-  .sort((a, b) => b.total_earned - a.total_earned);
+// Per-agent figures the task list cannot derive. Fixed once so they do
+// not jitter on every poll -- only `completed` and `total_earned` move,
+// and those move because the tasks behind them actually changed.
+const AGENT_FACTS = new Map(
+  AGENTS.map((pk, i) => [
+    pk,
+    {
+      failed: Math.floor(random() * 4),
+      // One agent's node lookup deliberately fails, so the null
+      // net_worth path gets exercised on every load rather than in prod.
+      net_worth: i === 3 ? null : Math.round(random() * 40 * UNITS),
+    },
+  ]),
+);
+
+function leaderboard() {
+  const earned = new Map();
+  for (const t of TASKS) {
+    if (t.status !== "Paid" || !t.claimant) continue;
+    const row = earned.get(t.claimant) ?? { completed: 0, total: 0 };
+    row.completed += 1;
+    row.total += t.bounty;
+    earned.set(t.claimant, row);
+  }
+  return AGENTS.map((pk) => {
+    const row = earned.get(pk) ?? { completed: 0, total: 0 };
+    const facts = AGENT_FACTS.get(pk);
+    return {
+      pubkey: pk,
+      completed: row.completed,
+      failed: facts.failed,
+      total_earned: row.total,
+      net_worth: facts.net_worth,
+    };
+  })
+    .filter((a) => a.completed > 0 || a.total_earned > 0)
+    .sort((a, b) => b.total_earned - a.total_earned);
+}
+
+// ---------------------------------------------------------------- live
+//
+// The backfill above is a snapshot; this is what makes it a market. On
+// each tick a few tasks move one step along their lifecycle and, some of
+// the time, a new one is posted. Nothing here is a real simulation --
+// there is no matching, no economics, no consistency beyond "a task can
+// only move to a state it could actually reach next" -- but it is enough
+// that the tape scrolls new headlines, the change columns drift, and the
+// leaderboard reorders while you watch.
+//
+// STATIC=1 freezes it. Reach for that when diffing screenshots, where a
+// board that moves under you is worse than one that is merely stale.
+
+const LIVE = process.env.STATIC !== "1";
+const TICK_MS = Number(process.env.TICK_MS ?? 2500);
+/** Oldest tasks are dropped past this, so a long-running session does not
+ * grow without bound (and stays under the client's 1000-item walk). */
+const MAX_TASKS = 900;
+
+let nextIndex = BACKFILL;
+
+/** One step along a task's lifecycle, or null if it is already terminal.
+ * Kept deliberately close to the real state machine in `btclib`: work is
+ * claimed before it is verified, verified before it is paid, and only a
+ * disputable task that has been answered can be disputed. */
+function advance(task) {
+  const now = new Date().toISOString();
+  switch (task.status) {
+    case "Open":
+      if (task.kind === "consensus") {
+        // Consensus fills a seat at a time and only starts once full.
+        if (task.assignees_joined < task.num_assignees) {
+          task.assignees_joined += 1;
+          if (task.assignees_joined === task.num_assignees) {
+            task.status = "Claimed";
+            task.submission_deadline = new Date(Date.now() + DAY).toISOString();
+          }
+          return true;
+        }
+        return false;
+      }
+      task.status = "Claimed";
+      task.claimant = pick(task.kind === "hash_match" ? HASH_WORKERS : DISPUTE_WORKERS);
+      return true;
+
+    case "Claimed":
+      if (task.kind === "disputable") {
+        task.status = "AwaitingDispute";
+        task.answer = "See attached working; total is 41,208.";
+        task.dispute_deadline = new Date(Date.now() + DAY).toISOString();
+        return true;
+      }
+      // A minority of work fails outright rather than clearing.
+      if (random() < 0.12) {
+        task.status = "Closed";
+        task.close_reason = task.kind === "consensus" ? "no_majority" : "understaffed";
+        return true;
+      }
+      task.status = "Verified";
+      return true;
+
+    case "AwaitingDispute":
+      if (random() < 0.3) {
+        task.status = "Disputed";
+        task.dispute = {
+          challenger: pick(DISPUTE_WORKERS),
+          reason: "Figures don't reconcile with the source data.",
+          bond_amount: Math.round(0.2 * UNITS),
+          filed_at: now,
+          resolution: null,
+        };
+        return true;
+      }
+      task.status = "Verified";
+      return true;
+
+    case "Disputed":
+      task.dispute.resolution = random() < 0.5 ? "challenger_wins" : "assignee_wins";
+      // The challenger taking it means the original claimant is not paid.
+      if (task.dispute.resolution === "challenger_wins") {
+        task.status = "Closed";
+        task.close_reason = "cancelled_by_operator";
+      } else {
+        task.status = "Verified";
+      }
+      return true;
+
+    case "Verified":
+      task.status = "Paid";
+      return true;
+
+    default:
+      return false; // Paid and Closed are terminal.
+  }
+}
+
+function tick() {
+  // Move a handful of in-flight tasks. Sampling at random rather than
+  // walking in order keeps the tape from reading as a queue draining.
+  const movable = TASKS.filter((t) => t.status !== "Paid" && t.status !== "Closed");
+  for (let i = 0; i < 3 && movable.length > 0; i++) {
+    advance(movable[Math.floor(random() * movable.length)]);
+  }
+
+  // And post something new every fourth tick or so. Faster than this and
+  // every row of "latest" reads "just now", which is technically correct
+  // and tells you nothing -- a feed wants a spread of ages.
+  if (random() < 0.25) {
+    const task = makeTask(nextIndex++);
+    task.status = "Open";
+    task.claimant = null;
+    task.close_reason = null;
+    task.created_at = new Date().toISOString();
+    if (task.kind === "consensus") {
+      task.assignees_joined = 0;
+      task.join_deadline = new Date(Date.now() + DAY).toISOString();
+      task.submission_deadline = null;
+    }
+    if (task.kind === "disputable") {
+      task.answer = null;
+      task.dispute = null;
+      task.dispute_deadline = null;
+    }
+    TASKS.push(task);
+    if (TASKS.length > MAX_TASKS) TASKS.splice(0, TASKS.length - MAX_TASKS);
+  }
+}
+
+if (LIVE) setInterval(tick, TICK_MS).unref?.();
 
 function send(res, status, body, extraHeaders = {}) {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
@@ -260,11 +425,11 @@ createServer((req, res) => {
     return task ? send(res, 200, task) : send(res, 404, { error: "task not found" });
   }
 
-  if (path === "/leaderboard") return send(res, 200, LEADERBOARD);
+  if (path === "/leaderboard") return send(res, 200, leaderboard());
 
   const repMatch = path.match(/^\/reputation\/([^/]+)$/);
   if (repMatch) {
-    const entry = LEADERBOARD.find((a) => a.pubkey === repMatch[1]);
+    const entry = leaderboard().find((a) => a.pubkey === repMatch[1]);
     return send(
       res,
       200,
@@ -276,5 +441,8 @@ createServer((req, res) => {
 
   send(res, 404, { error: "not found" });
 }).listen(PORT, () => {
-  console.log(`mock hub on http://127.0.0.1:${PORT} — ${TASKS.length} tasks, ${LEADERBOARD.length} agents`);
+  console.log(
+    `mock hub on http://127.0.0.1:${PORT} — ${TASKS.length} tasks, ` +
+      `${leaderboard().length} agents${LIVE ? `, ticking every ${TICK_MS / 1000}s` : " (static)"}`,
+  );
 });

@@ -50,7 +50,11 @@ function headline(task: TaskDto): string {
  * freed space on its own, since its height is `100svh` minus the tape
  * via a CSS variable that the wrapper drops when closed. */
 export default function NewsTicker() {
-  const tasks = useAsync(() => listAllTasks({ status: "all" }), []);
+  // Slower than the board's poll on purpose. The tape and the board both
+  // walk the whole task list, so they are the two most expensive things
+  // on the page; headlines do not need five-second freshness, and this
+  // halves the traffic that decision costs.
+  const tasks = useAsync(() => listAllTasks({ status: "all" }), [], 15000);
   const [open, setOpen] = useState(true);
 
   const items = useMemo(() => {
@@ -62,8 +66,12 @@ export default function NewsTicker() {
     return list.length > 0 ? list : FILLER;
   }, [tasks.data]);
 
+  // Quantised to 4s steps. The duration is an inline style, so any change
+  // to it restarts the marquee from the left -- and with the tape now
+  // polling, an exact character count would nudge it on almost every
+  // refresh. Rounding means only a real change in volume moves it.
   const chars = items.reduce((sum, item) => sum + item.length, 0);
-  const duration = Math.min(96, Math.max(24, chars * 0.14));
+  const duration = Math.round(Math.min(96, Math.max(24, chars * 0.14)) / 4) * 4;
 
   if (!open) return null;
 
