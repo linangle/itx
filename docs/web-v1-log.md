@@ -1173,3 +1173,38 @@ sits absolutely over the right end of the label line, with a background
 so the clipped third label passes underneath rather than colliding.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 16 — the gaps between sections
+
+Measured the vertical gaps rather than reading the CSS, which is what
+turned up the real problem. The rhythm was already broadly consistent
+-- 32px between major blocks, 20px heading to content, 8px label to
+panel -- but one gap came back at **205px**: the markets carousel down
+to "latest".
+
+That was not a spacing value. `.itx-board-cols` carried
+`align-items: start`, so the two columns were free to be different
+heights, and the rail (leaderboard + trends) is the taller. The markets
+column stopped ~150px short, which left dead space under the panels and
+meant the following section was pushed down from the *rail's* bottom
+rather than from its own. No amount of adjusting margins would have
+fixed it, because the margin was already 32.
+
+Both columns now take the grid row's height and finish on the same
+line, as the mockup has them: the market panel grows into its column,
+the trends panel takes up the rail's slack, and the existing
+min-heights stay as floors for when the markets column is the taller
+one. Measured 1690 / 1690 for the two column bottoms, and the gap now
+reads 32 like every other break.
+
+The three relationships are named as well -- `--gap-section`,
+`--gap-heading`, `--gap-label` -- so the rhythm is one decision rather
+than several numbers that happen to agree today.
+
+  Verifying on mobile needed a different measurement: the columns stack
+  there, so carousel-bottom to "latest" legitimately spans the whole
+  rail (683px) and looks alarming. The adjacent-element gaps are the
+  meaningful figure once stacked, and those read 32 / 32 with the rail
+  ending flush against the grid row.
+
+Gates: 55 tests, tsc, lint, build clean.
