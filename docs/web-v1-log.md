@@ -1642,3 +1642,32 @@ line above them. A non-breaking space holds the second line open until
 the hub answers, so the panel does not jump when it does.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 26 — slow enough to watch
+
+The arrival animation was too quick to read as movement: the eye caught
+a flash, not a direction. Two things were wrong, and only one of them
+was the duration.
+
+**The curve was doing most of the damage.** A single hard decelerating
+bezier across the whole animation covered three quarters of the
+distance in the first 400ms and crept the rest -- so even a full second
+of travel read as an instant jump followed by nothing. The keyframes
+now carry their own timing functions and the animation itself is
+linear: an ease-in-out for the move, a hold-then-fade for the glow. A
+single curve across both halves can only rush one of them.
+
+Measured across the new 2.4 seconds: 9% of the distance at 180ms, 46%
+at 360, 78% at 540, settled by a second. The glow holds at 26% red
+until 1.4s, is down to 15% at 1.7s, and reaches zero softly at 2.2s
+rather than dropping off. The peak wash came down from 38% to 30%,
+since it is now on screen long enough to be looked at rather than
+glimpsed.
+
+  Tuning an animation against a hidden preview pane is done by seeking
+  it: set `currentTime` and read back the computed transform and
+  colour. That is how the front-loading was caught -- the numbers said
+  76% of the travel was gone in the first third, which is exactly what
+  "I don't register the motion" feels like.
+
+Gates: 55 tests, tsc, lint, build clean.

@@ -1019,32 +1019,57 @@ body.itx-landing-body {
   border-radius: var(--r-field);
 }
 
-/* A row that landed on the last poll: it drops into the top slot and
+/* A row that landed on the last poll: it rises into the top slot and
    the whole line glows red, which fades as it settles.
 
    The wash and the halo are painted on the row rather than on the
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
 
-   Timing is deliberately lopsided: the movement is over in the first
-   fifth, and the rest of the second is the glow burning off. Reversing
-   that -- a slow slide with a quick flash -- reads as the list being
-   sluggish rather than as news landing. */
+   It travels *upward*, from a row's height below its resting place.
+   The row is at the top of a list, so it reads as having come up from
+   the tape below rather than as having been dropped in from off-screen.
+
+   Timing is the part that took tuning. The first pass ran the whole
+   thing in a second with the movement over in the first fifth, which
+   was quick enough that the eye registered a flash but not a
+   direction -- the row simply appeared, already lit. It now takes 2.4
+   seconds: a full second of eased travel that can actually be
+   followed, then the glow held briefly at the top of the slot before
+   it burns off over the second half. The peak wash is lighter than it
+   was, since it is now on screen long enough to be looked at rather
+   than glimpsed. */
+/* The two halves want different curves, so each keyframe carries its
+   own and the animation itself is linear -- a single curve across both
+   would either rush the travel or clip the fade. */
 .itx-board-updates li.is-new {
-  animation: itx-arrive 1000ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  animation: itx-arrive 2400ms linear both;
 }
 
 @keyframes itx-arrive {
   0% {
     opacity: 0;
-    transform: translateY(-8px);
-    background: color-mix(in srgb, var(--ld-red) 38%, transparent);
-    box-shadow: 0 0 20px color-mix(in srgb, var(--ld-red) 34%, transparent);
+    transform: translateY(22px);
+    background: color-mix(in srgb, var(--ld-red) 30%, transparent);
+    box-shadow: 0 0 26px color-mix(in srgb, var(--ld-red) 22%, transparent);
+    /* Eases in and out of the move, rather than covering most of the
+       distance immediately and creeping the rest. A hard decelerating
+       curve was the reason a full second of travel still read as an
+       instant jump: three quarters of it was over in the first 400ms,
+       and what remained was too slow to see. */
+    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  18% {
+  /* Landed, still lit. */
+  45% {
     opacity: 1;
     transform: translateY(0);
+    background: color-mix(in srgb, var(--ld-red) 26%, transparent);
+    box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 18%, transparent);
+    /* Holds the colour for a beat before it goes, and lands on zero
+       gently -- the eye follows a fade far better than it follows a
+       drop-off. */
+    animation-timing-function: cubic-bezier(0.55, 0, 0.45, 1);
   }
 
   100% {
@@ -1059,12 +1084,15 @@ body.itx-landing-body {
    just doesn't travel to say so. */
 @media (prefers-reduced-motion: reduce) {
   .itx-board-updates li.is-new {
-    animation: itx-arrive-still 1000ms ease-out both;
+    animation: itx-arrive-still 2400ms ease-out both;
   }
 
+  /* Held, then faded, on the same clock as the moving version -- a
+     quick flash is the thing that was hard to read. */
   @keyframes itx-arrive-still {
-    0% {
-      background: color-mix(in srgb, var(--ld-red) 38%, transparent);
+    0%,
+    45% {
+      background: color-mix(in srgb, var(--ld-red) 26%, transparent);
     }
 
     100% {
