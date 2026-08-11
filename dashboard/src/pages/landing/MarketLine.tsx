@@ -1,18 +1,7 @@
 import { useEffect, useRef } from "react";
-
-/** Landing green and red, shared with landing.css. */
-const GREEN = [99, 186, 108] as const;
-const RED = [216, 64, 45] as const;
-
-/** The wash cycle: sit on a color, sweep to the other, sit again --
- * per the user's spec ("green, then it gradients to red and maintains
- * for a bit, then gradients to green"). One full loop is
- * 2 * (HOLD + SWEEP) = 13 s. */
-const HOLD = 4.0;
-const SWEEP = 2.5;
-const CYCLE = 2 * (HOLD + SWEEP);
-/** Width of the travelling color front, as a fraction of the canvas. */
-const EDGE = 0.35;
+// The wash lives in its own module because the quote strip below the
+// hero draws its outline from the same function and clock.
+import { mixAt, mixColor } from "./marketHue";
 
 /** Horizontal pixels between ticks. Wide spacing is deliberate:
  * sharpness in a chart pattern comes from *long straight legs meeting
@@ -29,34 +18,6 @@ function spacingFor(width: number): number {
 /** Scroll speed in px/s. Paired with the spacing above, a new price
  * prints every ~0.4 s on a phone and ~0.8 s on a desktop. */
 const SCROLL = 70;
-
-function mixColor(m: number): string {
-  const r = Math.round(GREEN[0] + (RED[0] - GREEN[0]) * m);
-  const g = Math.round(GREEN[1] + (RED[1] - GREEN[1]) * m);
-  const b = Math.round(GREEN[2] + (RED[2] - GREEN[2]) * m);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-function smoothstep(lo: number, hi: number, x: number): number {
-  const s = Math.min(1, Math.max(0, (x - lo) / (hi - lo)));
-  return s * s * (3 - 2 * s);
-}
-
-/** Red fraction (0 = green, 1 = red) at horizontal position xFrac.
- * During holds the whole strip is one color; during sweeps a soft
- * front enters from the left and crosses to the right, overshooting
- * by EDGE on both sides so the far edge finishes its transition. */
-function mixAt(xFrac: number, t: number): number {
-  const tc = t % CYCLE;
-  if (tc < HOLD) return 0;
-  if (tc < HOLD + SWEEP) {
-    const front = ((tc - HOLD) / SWEEP) * (1 + 2 * EDGE) - EDGE;
-    return 1 - smoothstep(front - EDGE, front + EDGE, xFrac);
-  }
-  if (tc < 2 * HOLD + SWEEP) return 1;
-  const front = ((tc - 2 * HOLD - SWEEP) / SWEEP) * (1 + 2 * EDGE) - EDGE;
-  return smoothstep(front - EDGE, front + EDGE, xFrac);
-}
 
 /** Next price in the walk, as a fraction of the chart's value range.
  *

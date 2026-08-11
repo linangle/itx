@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
+import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import { getLeaderboard, listAllTasks } from "../../lib/hub";
 import type { TaskDto } from "../../lib/hub";
@@ -278,12 +279,57 @@ export default function Board() {
   );
 }
 
+/** How many colour stops the strip's outline samples across its width.
+ * The wash's front is soft (it spans most of the width), so the colour
+ * changes slowly in space and five stops resolve it without banding. */
+const SWEEP_STOPS = 5;
+
 /** The Yahoo-Finance-style quote strip: one cell per task kind, in the
- * green-to-grey gradient outline from the mockup. Structure only for
- * now -- how these figures are chosen and formatted is a later pass. */
+ * gradient outline from the mockup. Structure only for now -- how these
+ * figures are chosen and formatted is a later pass.
+ *
+ * The outline's colour is driven from the same wash as the hero's market
+ * line, sampled across the strip's width, so the two sweep together. It
+ * writes CSS custom properties rather than a whole gradient string,
+ * which keeps the gradient's geometry in the stylesheet and lets this
+ * only supply colours. */
 function QuoteStrip({ kinds, windowLabel }: { kinds: KindSummary[]; windowLabel: string }) {
+  const stripRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+
+    const paint = (t: number) => {
+      const colors = sweepColors(t, SWEEP_STOPS);
+      for (let i = 0; i < colors.length; i++) el.style.setProperty(`--q${i}`, colors[i]);
+    };
+
+    // Reading performance.now() is what locks this to the market line:
+    // both sample the wash at the same absolute time, so they agree in
+    // phase rather than merely sharing a period.
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      paint(2);
+      return;
+    }
+
+    // Paint once here rather than waiting for the first frame. rAF does
+    // not run while the document is hidden, so a tab opened in the
+    // background would otherwise sit on the CSS fallback colour until it
+    // was focused, then jump.
+    paint(performance.now() / 1000);
+
+    let raf = 0;
+    const loop = () => {
+      paint(performance.now() / 1000);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
-    <div className="itx-board-quotes">
+    <div className="itx-board-quotes" ref={stripRef}>
       <div className="itx-board-quotes-inner">
         {kinds.map((k) => (
           <div className="itx-board-quote" key={k.kind}>

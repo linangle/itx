@@ -509,11 +509,28 @@ body.itx-landing-body {
  * follow a border-radius). Straight down at 180deg: green along the top
  * edge, grey by the bottom. */
 .itx-board-quotes {
+  /* Sampled across the width from the same wash the hero's market line
+     uses, written per frame by QuoteStrip. The fallbacks are the wash's
+     resting colour, so the outline is right on the first paint before
+     any script runs. */
+  --q0: var(--ld-green);
+  --q1: var(--ld-green);
+  --q2: var(--ld-green);
+  --q3: var(--ld-green);
+  --q4: var(--ld-green);
+
   position: relative;
   margin-top: calc(-1 * var(--bd-overlap));
   padding: 1px;
   border-radius: 15px;
-  background: linear-gradient(180deg, var(--ld-green) 0%, #4a5160 55%, var(--bd-line) 100%);
+  /* Two layers, not one gradient: a grey painted *over* a horizontal
+     sweep, transparent at the top so the sweep shows through and opaque
+     by the bottom. One gradient cannot vary colour horizontally and
+     fade vertically at the same time -- the same constraint the market
+     line's own fill runs into. */
+  background-image:
+    linear-gradient(180deg, transparent 0%, var(--bd-line) 62%),
+    linear-gradient(90deg, var(--q0), var(--q1), var(--q2), var(--q3), var(--q4));
 }
 
 .itx-board-quotes-inner {
