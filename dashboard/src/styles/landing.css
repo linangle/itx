@@ -34,6 +34,31 @@ body.itx-landing-body {
 
   /* Heights of the two sticky bar rows. Declared rather than measured
    * because the hero subtracts them to work out its own height. */
+  /* Spacing scale. Every margin, padding and gap picks a step from this
+     rather than inventing a number -- the two files had 23 and 19
+     distinct spacing literals between them, including 5/7/9/11/13,
+     which differ from their neighbours by a pixel and read as identical.
+     6px is kept as a step because the dense table rows genuinely need a
+     tighter rhythm than 8px gives; everything above that is a 4px grid.
+
+     Values that are *not* rhythm keep their literals: 1px hairlines and
+     the gradient ring, fixed widths, min-heights, and anything in
+     calc()/vh. */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-7: 20px;
+  --sp-8: 24px;
+  --sp-9: 32px;
+  --sp-10: 40px;
+  --sp-11: 48px;
+  --sp-12: 56px;
+  --sp-13: 64px;
+  --sp-14: 72px;
+
   --ld-news-h: 40px;
   --ld-brand-h: 56px;
   --ld-bar-h: calc(var(--ld-news-h) + var(--ld-brand-h));
@@ -115,7 +140,7 @@ body.itx-landing-body {
 }
 
 .itx-news-item {
-  padding: 0 24px;
+  padding: 0 var(--sp-8);
   font-size: 16px;
   font-weight: 400;
   letter-spacing: 0.01em;
@@ -202,9 +227,9 @@ body.itx-landing-body {
 .itx-hero-brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-5);
   height: var(--ld-brand-h);
-  padding: 0 40px;
+  padding: 0 var(--sp-10);
 }
 
 .itx-hero-mark {
@@ -235,8 +260,13 @@ body.itx-landing-body {
    * left edge just past the midline as the mock has it. */
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  padding: 0 56px 13vh 0;
+  gap: var(--sp-5);
+  /* 56px, not 48: this padding sets the copy column's width, which sets
+     the globe column's width, which sets the globe's height (it is
+     square) -- and the hero's height feeds the fold arithmetic. Dropping
+     a step here pushed the hero 6px past its min-height and moved the
+     quote strip off the fold. */
+  padding: 0 var(--sp-12) 13vh 0;
   position: relative;
   z-index: 2;
 }
@@ -275,7 +305,7 @@ body.itx-landing-body {
 }
 
 .itx-hero-copy h1 {
-  margin: 0 0 34px;
+  margin: 0 0 var(--sp-9);
   font-size: clamp(34px, 3.6vw, 56px);
   font-weight: 700;
   line-height: 1.06;
@@ -322,8 +352,8 @@ body.itx-landing-body {
   .itx-hero-grid {
     grid-template-columns: 1fr;
     align-content: start;
-    gap: 6px;
-    padding: 0 26px 30vh;
+    gap: var(--sp-3);
+    padding: 0 var(--sp-8) 30vh;
   }
 
   .itx-hero-globe {
@@ -331,7 +361,7 @@ body.itx-landing-body {
   }
 
   .itx-hero-brand {
-    padding: 0 26px;
+    padding: 0 var(--sp-8);
   }
 
   .itx-hero-mark,
@@ -341,7 +371,7 @@ body.itx-landing-body {
 
   .itx-news-item {
     font-size: 14px;
-    padding: 0 16px;
+    padding: 0 var(--sp-6);
   }
 
   .itx-landing {
@@ -389,12 +419,16 @@ body.itx-landing-body {
 
   /* Every panel insets its content by the same amount, which is what
      lets content in different panels line up across the row. */
-  --pad-panel-y: 14px;
-  --pad-panel-x: 16px;
+
+
+  /* Panels share one inset on all four sides, which is what makes their
+     content line up across a row. */
+  --pad-panel-y: var(--sp-6);
+  --pad-panel-x: var(--sp-6);
 
   position: relative;
   isolation: isolate;
-  padding: 0 0 70px;
+  padding: 0 0 var(--sp-14);
   color: var(--ld-light);
   background: var(--ld-dark);
 }
@@ -427,11 +461,11 @@ body.itx-landing-body {
   display: flow-root;
   max-width: 1560px;
   margin: 0 auto;
-  padding: 0 46px;
+  padding: 0 var(--sp-11);
 }
 
 .itx-board-title {
-  margin: 34px 0 20px;
+  margin: var(--sp-9) 0 var(--sp-7);
   font-size: var(--fs-title);
   font-weight: 700;
   letter-spacing: -0.012em;
@@ -441,13 +475,13 @@ body.itx-landing-body {
 .itx-board-labels {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 9px;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-4);
 }
 
 .itx-board-label {
   display: block;
-  margin-bottom: 9px;
+  margin-bottom: var(--sp-4);
   font-size: var(--fs-label);
   font-weight: 700;
   letter-spacing: -0.004em;
@@ -459,7 +493,7 @@ body.itx-landing-body {
 }
 
 .itx-board-labels-latest {
-  margin-top: 34px;
+  margin-top: var(--sp-9);
 }
 
 .itx-board-live-dot {
@@ -508,7 +542,7 @@ body.itx-landing-body {
 }
 
 .itx-board-note {
-  margin: 2px 0;
+  margin: var(--sp-1) 0;
   color: var(--ld-sub);
   font-size: var(--fs-body);
   line-height: 1.5;
@@ -556,9 +590,9 @@ body.itx-landing-body {
 
 .itx-board-quotes-inner {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-5);
   overflow-x: auto;
-  padding: 11px 22px;
+  padding: var(--sp-5) var(--sp-8);
   border-radius: var(--r-panel);
   background: var(--ld-dark);
   scrollbar-width: none;
@@ -571,11 +605,11 @@ body.itx-landing-body {
 .itx-board-quote {
   flex: 1 0 auto;
   min-width: 152px;
-  padding-right: 10px;
+  padding-right: var(--sp-5);
 }
 
 .itx-board-quote-name {
-  margin-bottom: 3px;
+  margin-bottom: var(--sp-2);
   font-size: var(--fs-meta);
   font-weight: 700;
   color: var(--ld-light);
@@ -585,7 +619,7 @@ body.itx-landing-body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sp-5);
 }
 
 .itx-board-quote-value {
@@ -602,7 +636,7 @@ body.itx-landing-body {
 .itx-board-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 232px;
-  gap: 26px;
+  gap: var(--sp-8);
   align-items: start;
 }
 
@@ -621,12 +655,12 @@ body.itx-landing-body {
 .itx-board-pager {
   flex: none;
   display: flex;
-  gap: 9px;
+  gap: var(--sp-4);
   color: var(--ld-sub);
 }
 
 .itx-board-pager button {
-  padding: 2px;
+  padding: var(--sp-1);
   border: 0;
   background: none;
   color: inherit;
@@ -643,7 +677,7 @@ body.itx-landing-body {
  * tells you the pager has somewhere to go. */
 .itx-board-carousel {
   display: flex;
-  gap: 20px;
+  gap: var(--sp-7);
   overflow: hidden;
 }
 
@@ -669,7 +703,7 @@ body.itx-landing-body {
 }
 
 .itx-board-rail .itx-board-label:nth-of-type(2) {
-  margin-top: 20px;
+  margin-top: var(--sp-7);
 }
 
 /* search */
@@ -677,9 +711,9 @@ body.itx-landing-body {
 .itx-board-search {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 6px 11px;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-3) var(--sp-5);
   border: 1px solid var(--bd-line);
   border-radius: var(--r-field);
 }
@@ -730,7 +764,7 @@ body.itx-landing-body {
 }
 
 .itx-board-table th {
-  padding: 2px 5px 6px;
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
   text-align: left;
   color: var(--ld-sub);
   font-weight: 400;
@@ -739,7 +773,7 @@ body.itx-landing-body {
 }
 
 .itx-board-table td {
-  padding: 6px 5px;
+  padding: var(--sp-3) var(--sp-3);
   border-bottom: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
 
@@ -788,8 +822,8 @@ body.itx-landing-body {
 .itx-board-updates li {
   display: flex;
   align-items: baseline;
-  gap: 14px;
-  padding: 7px 0;
+  gap: var(--sp-6);
+  padding: var(--sp-3) 0;
   font-size: var(--fs-body);
 }
 
@@ -826,19 +860,19 @@ body.itx-landing-body {
 
 .itx-board-footer {
   min-height: 96px;
-  margin-top: 30px;
+  margin-top: var(--sp-9);
 }
 
 /* responsive */
 
 @media (max-width: 1080px) {
   .itx-board-inner {
-    padding: 0 22px;
+    padding: 0 var(--sp-8);
   }
 
   .itx-board-cols {
     grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
+    gap: var(--sp-7);
   }
 
   .itx-board-panel-market {
