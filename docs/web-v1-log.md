@@ -2654,3 +2654,73 @@ never eases at all, would have rendered that as the finished chart.
 
 Gates: 91 tests, lint and tsc clean on the touched files. Checked in
 both themes and at 375px.
+
+### Round 37 — the four fixes Round 36 asked for
+
+Round 36 was the audit; this is the work. Ranked as it ranked them, by
+payoff per unit of effort, and each landed as its own commit.
+
+**Gzip on the hub.** `tower-http` was built with `cors` alone, so every
+response went out identity. One `CompressionLayer`, outermost so it
+compresses after the inner layers have shaped the response, and the
+board's walk goes from ~2.8 MB to ~0.5 MB. Verified live rather than
+asserted from theory: the real hub's `/llms.txt` 8,425 -> 3,573 bytes
+with `vary: accept-encoding`, and an empty `/tasks` correctly left
+alone under the layer's own size threshold. The test uses reqwest
+*without* its `gzip` feature on purpose -- with it, reqwest would send
+`Accept-Encoding` on its own and strip `Content-Encoding` off the
+response before an assertion could see either, and the test would pass
+whatever the server did.
+
+The mock hub gzips too now. It is what the dashboard's latency actually
+gets measured against, and a fixture that hides a 5x transfer
+difference is a fixture that lies about the thing being measured:
+101,842 -> 18,038 bytes on a 200-task page, gunzipping back
+byte-identical.
+
+**The overlap guard, which is the real answer to "sometimes".** A tick
+arriving while the previous fetch is still running is now skipped
+rather than started underneath it. The old behaviour was not a
+slowdown, it was a cliff: fine every day until the walk crosses five
+seconds, then each overlap makes the network slower and the next
+overlap likelier, and it does not recover on its own. Skipping means a
+slow hub is polled exactly as fast as it can answer. Polls also pause
+while the tab is hidden -- rAF stops itself, `setInterval` never did --
+and becoming visible refreshes immediately instead of waiting out the
+rest of an interval.
+
+**28 sequential round trips became two rounds.** `listAllTasks` fetches
+the first page alone for its `X-Total-Count`, then every remaining
+offset concurrently in flights of six -- what a browser will actually
+run against one HTTP/1.1 origin, so a larger number would queue in the
+browser instead of here. Pages land by position, not arrival order, so
+the hub's oldest-first ordering survives however the responses come
+back; there is a test for exactly that, because it is the kind of thing
+that would silently corrupt every sparkline rather than fail loudly.
+This cuts the walk's *latency*, not its weight. The server-side
+aggregate is still the real answer and the doc comment still says so.
+
+**And the render containment.** The agent search's `query` lived in
+`Board`, so every keystroke re-rendered twelve market panels to filter
+one list; it moves into a `LeaderboardRail` that owns the query, the
+fit and the leaderboard poll. `chooseWindow` joins the memos instead of
+re-parsing every `created_at` in the render body. `useCarousel` handed
+React a fresh state object on every scroll event of a freely-scrolling
+row, so most scroll frames re-rendered the board just to move an edge
+fade -- it now returns the previous object when the index and both ends
+are unchanged, with `MarketPanel` memoised so the renders that do
+happen skip the sparkline tables whose props survived.
+
+Two notes on verifying this round. The carousel could not be driven
+through the browser pane at all: that browser ignores `scrollTo`'s
+`behavior: "smooth"` outright and dispatches no scroll event for a
+programmatic scroll -- confirmed with an independent spy listener
+attached outside React, so it is the environment and not the hook. The
+bail-out is covered by unit tests instead, and the "does not re-render"
+one was checked against a reverted bail-out to make sure it can fail;
+a test that cannot fail is worse than no test, particularly for a
+negative claim. And the derivation cost measured in Round 36 (11.4ms)
+was deliberately left alone. It was never the problem, and the point of
+measuring first was to not spend the effort there.
+
+Gates: 91 dashboard tests (15 new), 117 hub tests, tsc, lint, build.
