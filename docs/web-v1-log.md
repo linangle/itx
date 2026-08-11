@@ -3312,3 +3312,44 @@ screenshots come back blank at any scroll position, so everything above
 is measured off the DOM rather than looked at.
 
 Gates: 144 dashboard tests (16 new), tsc, lint, build.
+
+### Round 43 — the strip rides over the line
+
+**Why tuning `--bd-overlap` had never produced an overlap.** The token
+did three jobs at once: it was how far the strip is pulled up, *and* how
+much the chart box grows by (`.itx-hero-chart`), *and* what `MarketLine`
+subtracts from the canvas to find its baseline. Growing the box by the
+same amount the strip rises cancels the two exactly -- the strip lands
+in the same place over the line whatever the number is, which is why the
+chart and the strip kept meeting edge to edge. The dotted rule sat above
+the strip's top edge, and the line, which is scaled to that rule, could
+never reach it.
+
+So the pull-up is now two tokens. `--bd-overlap` keeps its three jobs
+and its value; `--bd-lift` is applied to the strip alone and is not
+compensated anywhere, so it is the part that actually carries the strip
+up over the line. The canvas keeps its geometry and the baseline stays
+put; the strip simply covers more of it. At 64px, measured on the live
+page: the baseline sits 40px behind the strip's top edge and 22px of the
+line's own travel is behind it, so troughs disappear under the strip and
+peaks read above it, as the reference has.
+
+**And the same lever fixed what the landing screen was leaking.** The
+rule sits `--bd-overlap + --ld-chart-base` (48px) up from the canvas's
+bottom edge, while the canvas only reached `--bd-overlap` (24px) below
+the fold -- so the rule and the top of the bloom printed ~24px *above*
+the fold and were the last thing on the first screen, which is exactly
+what they should not be. The hero now grows by the whole pull-up rather
+than by the overlap alone, which puts the canvas's bottom far enough
+down that the rule clears the fold. Measured at two viewport heights,
+since the chart's own height is `vh`-based: at 720 and at 900 the
+strip's top edge lands on the fold to the pixel (delta 0) and the rule
+sits 40px below it, coming into view on the first scroll.
+
+Both numbers move together from one place -- raising `--bd-lift` deepens
+the overlap and pushes the rule further below the fold, and the hero,
+the grid overlay and the board's scroll offset all read it.
+
+Gates: 144 dashboard tests, tsc, lint, build. Measured in a real browser
+rather than looked at: its screenshots do not capture the two canvases
+on this page, so the geometry above is read off the DOM.
