@@ -141,13 +141,11 @@ export default function Board() {
 
         <div className="itx-board-cols">
           <div className="itx-board-markets">
-            <div className="itx-board-labels">
-              {ordered.slice(0, 2).map((k) => (
-                <span className="itx-board-label" key={k.kind}>
-                  {formatKind(k.kind).toLowerCase()}
-                </span>
-              ))}
-              <div className="itx-board-pager">
+            {/* Floated over the track's right end rather than being a row
+             * item: it must not take part in the width the panels divide
+             * up, or the labels and the panels resolve their percentages
+             * against different widths and stop lining up. */}
+            <div className="itx-board-pager">
                 <button
                   type="button"
                   aria-label="Previous category"
@@ -166,19 +164,22 @@ export default function Board() {
                     <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
                   </svg>
                 </button>
-              </div>
             </div>
 
             <div className="itx-board-carousel">
               {ordered.map((k) => (
-                <KindPanel
-                  key={k.kind}
-                  summary={k}
-                  agents={agentsForKind(items, k.kind, window.windowMs)}
-                  windowLabel={window.label}
-                  loading={tasks.loading}
-                  error={tasks.error}
-                />
+                // Label and panel are one item, so the label cannot drift
+                // from the panel it names at any width.
+                <div className="itx-board-market" key={k.kind}>
+                  <span className="itx-board-label">{formatKind(k.kind).toLowerCase()}</span>
+                  <KindPanel
+                    summary={k}
+                    agents={agentsForKind(items, k.kind, window.windowMs)}
+                    windowLabel={window.label}
+                    loading={tasks.loading}
+                    error={tasks.error}
+                  />
+                </div>
               ))}
             </div>
           </div>

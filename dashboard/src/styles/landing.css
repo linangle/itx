@@ -483,6 +483,7 @@ body.itx-landing-body {
   display: block;
   margin-bottom: var(--sp-4);
   font-size: var(--fs-label);
+  line-height: 1.25;
   font-weight: 700;
   letter-spacing: -0.004em;
   color: var(--ld-light);
@@ -641,7 +642,20 @@ body.itx-landing-body {
 }
 
 .itx-board-markets {
+  /* One width for a market column, read by the carousel items. The
+     label lives inside the item, so it inherits this automatically
+     instead of being laid out separately and hoping the two agree. */
+  --market-basis: calc(44% - 4px);
+
+  position: relative;
   min-width: 0;
+}
+
+.itx-board-market {
+  flex: 0 0 var(--market-basis);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Scoped to the markets row: there the labels share the width so each
@@ -652,10 +666,21 @@ body.itx-landing-body {
   min-width: 0;
 }
 
+/* Sits over the right end of the label line rather than in the flow.
+   As a row item it would have consumed width the panels do not, which
+   is what made the labels and the panels disagree. The background is
+   there to occlude the clipped third label passing underneath. */
 .itx-board-pager {
-  flex: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  height: calc(var(--fs-label) * 1.25);
   display: flex;
+  align-items: center;
   gap: var(--sp-4);
+  padding-left: var(--sp-4);
+  background: var(--ld-dark);
   color: var(--ld-sub);
 }
 
@@ -673,7 +698,7 @@ body.itx-landing-body {
   transform: scale(1.25);
 }
 
-/* The third panel is deliberately half past the clip: the peek is what
+/* The third item is deliberately half past the clip: the peek is what
  * tells you the pager has somewhere to go. */
 .itx-board-carousel {
   display: flex;
@@ -682,7 +707,6 @@ body.itx-landing-body {
 }
 
 .itx-board-panel-market {
-  flex: 0 0 calc(44% - 4px);
   min-height: 430px;
   padding: var(--pad-panel-y) var(--pad-panel-x);
 }
@@ -875,15 +899,18 @@ body.itx-landing-body {
     gap: var(--sp-7);
   }
 
+  .itx-board-markets {
+    --market-basis: calc(78% - 4px);
+  }
+
   .itx-board-panel-market {
-    flex-basis: calc(78% - 4px);
     min-height: 340px;
   }
 }
 
 @media (max-width: 640px) {
-  .itx-board-panel-market {
-    flex-basis: 92%;
+  .itx-board-markets {
+    --market-basis: 92%;
   }
 
   .itx-board-when {
