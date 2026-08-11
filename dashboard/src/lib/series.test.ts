@@ -201,6 +201,25 @@ describe("summarizeBySector", () => {
     expect(data?.posted).toBe(1);
   });
 
+  it("counts a task once when it carries the same tag twice", () => {
+    // The grouping pass replaced a per-tag filter, which was immune to
+    // this; without the guard the bounty would be counted twice.
+    const summary = summarizeBySector(
+      [
+        task({
+          created_at: at(1),
+          capabilities: ["python", "python"],
+          status: "Open",
+          bounty: 100,
+        }),
+      ],
+      opts,
+    );
+    expect(summary[0].openBounty).toBe(100);
+    expect(summary[0].markets).toHaveLength(1);
+    expect(summary[0].markets[0].openBounty).toBe(100);
+  });
+
   it("withholds a market's change below two active buckets", () => {
     // One payout in one half of the window is not a trend -- the agent
     // tickers had this guard and the markets keep it.
@@ -223,6 +242,26 @@ describe("summarizeBySector", () => {
       opts,
     );
     expect(summary[0].markets[0].changePct).toBe(200);
+  });
+});
+
+describe("summarizeByCapability", () => {
+  it("counts a task once when it carries the same tag twice", () => {
+    const summary = summarizeByCapability(
+      [
+        task({
+          created_at: new Date(NOW - HOUR).toISOString(),
+          capabilities: ["ocr", "ocr"],
+          status: "Open",
+          bounty: 250,
+        }),
+      ],
+      8,
+      opts,
+    );
+    expect(summary).toHaveLength(1);
+    expect(summary[0].open).toBe(1);
+    expect(summary[0].openBounty).toBe(250);
   });
 });
 

@@ -228,14 +228,27 @@ export function summarizeByCapability(
   limit = 8,
   options: BucketOptions = {},
 ): CapabilitySummary[] {
-  const tags = new Set<string>();
+  // One grouping pass, then work proportional to each tag's own tasks.
+  //
+  // This used to collect the tag names and then, for each one, filter
+  // the whole task list again -- so the cost was tasks x tags, and every
+  // task's `capabilities` array was scanned once per tag on the board.
+  // Fine at a dozen tags and a few hundred tasks; at 35 tags and 20000
+  // it was 700k array scans and measured 282ms on every poll, which was
+  // two thirds of the landing page's entire derivation budget. Same
+  // shape of fix as `topAgents` in `Board.tsx` and for the same reason.
+  // Results are identical -- this is arithmetic order, not policy.
+  const byCapability = new Map<string, TaskDto[]>();
   for (const task of tasks) {
-    for (const capability of task.capabilities) tags.add(capability);
+    for (const capability of uniqueCapabilities(task)) {
+      const list = byCapability.get(capability);
+      if (list) list.push(task);
+      else byCapability.set(capability, [task]);
+    }
   }
 
-  return [...tags]
-    .map((capability) => {
-      const tagged = tasks.filter((t) => t.capabilities.includes(capability));
+  return [...byCapability.entries()]
+    .map(([capability, tagged]) => {
       const open = tagged.filter((t) => t.status === "Open");
       const series = countByCreatedAt(tagged, options);
       return {
@@ -248,6 +261,26 @@ export function summarizeByCapability(
     })
     .sort((a, b) => b.open - a.open || b.openBounty - a.openBounty)
     .slice(0, limit);
+}
+
+/** A task's capability tags with repeats removed.
+ *
+ * Only matters to the grouping passes below. Filtering the task list per
+ * tag -- which is what they replaced -- counted a task once however many
+ * times it carried the same tag, because `includes` either matches or
+ * does not. A grouping pass would file it once per entry and
+ * double-count its bounty instead, so the duplicate is dropped here and
+ * the two approaches keep agreeing.
+ *
+ * Nothing is known to emit a repeated tag; this is about the rewrite not
+ * quietly changing what a malformed task means. The array is returned
+ * as-is unless there is actually a repeat, so the common cases -- no
+ * tags, one tag -- allocate nothing. */
+function uniqueCapabilities(task: TaskDto): string[] {
+  const caps = task.capabilities;
+  if (caps.length < 2) return caps;
+  const unique = [...new Set(caps)];
+  return unique.length === caps.length ? caps : unique;
 }
 
 export interface MarketSummary {
@@ -306,7 +339,7 @@ export function summarizeBySector(
   for (const task of tasks) {
     if (task.capabilities.length === 0) continue;
     const sectors = new Set<string>();
-    for (const capability of task.capabilities) {
+    for (const capability of uniqueCapabilities(task)) {
       const list = byCapability.get(capability);
       if (list) list.push(task);
       else byCapability.set(capability, [task]);
