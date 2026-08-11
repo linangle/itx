@@ -1427,3 +1427,48 @@ a grid row to size it, its fit box resolves to nothing and the market
 list empties to one entry.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 21 — one masthead, every page
+
+The tape and the ITX header were landing-page furniture; every terminal
+screen had its own bare "ITX." in the top bar and no tape at all, so an
+agent's page read as a different product from the board it was linked
+from. Both now ride on every page.
+
+The bar is its own component (`components/SiteBar.tsx`) in its own
+stylesheet, and the tape moved out of `pages/landing/` with it -- there
+was nothing hero-specific left in it. The landing page's copy of the
+markup is gone; it renders the shared bar like everything else.
+
+**The tape needs data, and the obvious way to get it was too
+expensive.** The landing page walks the whole board already, so it
+hands its list over -- that page still makes exactly one pass. Every
+other page uses `listLatestTasks`, which is two small requests: the hub
+lists tasks *oldest-first*, so ask for the total with a one-item
+request and take the last page. Fourteen headlines cost 2 requests
+instead of 26, and no page pulls a megabyte of JSON for a decoration.
+
+**Two sticky rows had to learn to stack.** The terminal's top bar was
+`top: 0`; under a sticky masthead it would have slid beneath it. The
+page root now carries `--sb-h`, the bar's height, and the top bar parks
+there -- with `:has(.itx-news)` restating it *without* the tape when the
+visitor dismisses it, which is the same trick the landing hero uses to
+grow into the freed space. Measured: bar 96 / top bar at 96 / sidebar
+at 176; dismiss the tape and they become 56 / 56 / 136, with no JS
+between them.
+
+The bar keeps the landing's palette everywhere -- the tape is the same
+red-blue-green ribbon on every screen -- except the two things that
+must follow the terminal's light/dark toggle: the bar's own background
+and text, and the green dot on the wordmark. Verified in both themes.
+
+  The terminal top bar lost its duplicate wordmark, which is the one
+  subtractive edit here. Two ITX marks stacked forty pixels apart read
+  as a bug, and the masthead's is a link home -- the only reliable way
+  back from a deep page like `/agents/:pubkey`.
+
+Legacy pages are untouched and still bare: they don't mount `Shell`, so
+they never see the bar. Checked at `/legacy` -- 16px body margin, no
+masthead, table intact.
+
+Gates: 55 tests, tsc, lint, build clean.

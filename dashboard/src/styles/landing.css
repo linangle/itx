@@ -59,8 +59,11 @@ body.itx-landing-body {
   --sp-13: 64px;
   --sp-14: 72px;
 
-  --ld-news-h: 40px;
-  --ld-brand-h: 56px;
+  /* The bar's own heights come from sitebar.css, which owns the bar on
+     every surface now. Kept under these names because the hero's fold
+     arithmetic below reads them. */
+  --ld-news-h: var(--sb-news-h);
+  --ld-brand-h: var(--sb-brand-h);
   --ld-bar-h: calc(var(--ld-news-h) + var(--ld-brand-h));
 
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -73,16 +76,10 @@ body.itx-landing-body {
   --ld-bar-h: var(--ld-brand-h);
 }
 
-/* Sticky against the landing root, which spans the whole document, so
- * the tape and wordmark stay pinned all the way down past the board.
- * z-index clears the board (position relative, z-index auto) and the
- * hero, which isolates its own children. */
-.itx-landing-bar {
-  position: sticky;
-  top: 0;
-  z-index: 200;
-  background: var(--ld-dark);
-}
+/* The bar itself is `.itx-sitebar` now (sitebar.css): sticky against
+ * whichever page root it is in, which here is the landing root spanning
+ * the whole document, so the tape and wordmark stay pinned all the way
+ * down past the board. */
 
 .itx-landing-top {
   display: flex;
@@ -224,29 +221,8 @@ body.itx-landing-body {
   background: var(--ld-dark);
 }
 
-.itx-hero-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-5);
-  height: var(--ld-brand-h);
-  padding: 0 var(--sp-10);
-}
-
-.itx-hero-mark {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--ld-light);
-}
-
-.itx-hero-dot {
-  color: var(--ld-green);
-}
-
-.itx-hero-tag {
-  font-size: 21px;
-  font-weight: 400;
-  color: var(--ld-light);
-}
+/* The wordmark row that used to live here is `.itx-sitebar-brand` in
+ * sitebar.css -- same markup, now shared with every other page. */
 
 /* Proportioned off the reference mock: the globe owns the left half
  * and the copy starts just past the midline (~50%), not at 44%. The
@@ -360,23 +336,9 @@ body.itx-landing-body {
     width: min(66vw, 42vh);
   }
 
-  .itx-hero-brand {
-    padding: 0 var(--sp-8);
-  }
-
-  .itx-hero-mark,
-  .itx-hero-tag {
-    font-size: 18px;
-  }
-
   .itx-news-item {
     font-size: 14px;
     padding: 0 var(--sp-6);
-  }
-
-  .itx-landing {
-    --ld-news-h: 36px;
-    --ld-brand-h: 48px;
   }
 
   .itx-news-mask {

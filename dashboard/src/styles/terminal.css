@@ -196,6 +196,32 @@ body.itx-body[data-theme="light"] {
 
 /* ---------------------------------------------------------------- layout */
 
+/* ---- the site-wide masthead, on these pages ---------------------- */
+
+/* The bar's own rules are in sitebar.css; these are the two things that
+   have to follow the terminal's theme rather than the landing's fixed
+   dark. The tape's gradient is untouched -- it is the same tape here. */
+.itx .itx-sitebar {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.itx .itx-sitebar-dot {
+  color: var(--brand);
+}
+
+/* How much sticky chrome sits above the content. Declared on the page
+   root rather than measured, and restated without the tape when the
+   visitor dismisses it -- `:has` reads that off the DOM, so nothing has
+   to be told. */
+.itx {
+  --sb-h: calc(var(--sb-news-h) + var(--sb-brand-h));
+}
+
+.itx:not(:has(.itx-news)) {
+  --sb-h: var(--sb-brand-h);
+}
+
 .itx-topbar {
   display: flex;
   align-items: center;
@@ -204,7 +230,9 @@ body.itx-body[data-theme="light"] {
   padding: 0 var(--sp-7);
   background: var(--bg);
   position: sticky;
-  top: 0;
+  /* Parks under the masthead instead of at the viewport's top, so the
+     two sticky rows stack rather than overlap. */
+  top: var(--sb-h);
   z-index: 10;
 }
 
@@ -299,7 +327,9 @@ body.itx-body[data-theme="light"] {
   gap: var(--sp-1);
   align-self: start;
   position: sticky;
-  top: 80px;
+  /* Clears the masthead and the top bar both, with the same 22px of air
+     under them that this had before the masthead existed. */
+  top: calc(var(--sb-h) + 80px);
 }
 
 .itx-sidebar a {

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from "react";
-import NewsTicker from "./NewsTicker";
+import { SiteBar } from "../../components/SiteBar";
 import MarketLine from "./MarketLine";
 import { useAsync } from "../../hooks/useAsync";
 import { listAllTasks } from "../../lib/hub";
@@ -55,17 +55,12 @@ export default function LandingPage() {
        *
        * Dismissing the tape still needs no JS coordination -- the bar
        * simply gets shorter, and the CSS reads its own height back off
-       * whether .itx-news is present. */}
-      <div className="itx-landing-bar">
-        <NewsTicker tasks={tasks} />
-
-        <header className="itx-hero-brand">
-          <span className="itx-hero-mark">
-            ITX<span className="itx-hero-dot">.</span>
-          </span>
-          <span className="itx-hero-tag">internet traffic exchange</span>
-        </header>
-      </div>
+       * whether .itx-news is present.
+       *
+       * `SiteBar` rather than `LiveSiteBar`: this page is already
+       * holding the task list, so the tape reads from it instead of
+       * fetching headlines of its own. */}
+      <SiteBar tasks={tasks} />
 
       <div className="itx-landing-top">
         <section className="itx-hero">

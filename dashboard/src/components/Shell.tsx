@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
+import LiveSiteBar from "./SiteBar";
 // No font imports: these pages are set in Helvetica Neue like the
 // landing surface, which is a system face. The Instrument Sans and
 // Geist Mono packages the first iteration self-hosted are gone with it.
@@ -62,10 +63,14 @@ export default function Shell({ children, rail }: { children: ReactNode; rail?: 
 
   return (
     <div className="itx" data-theme={theme}>
+      {/* The same masthead the landing page wears, inside the themed
+       * root so the top bar below can read whether the tape is still
+       * there and park itself accordingly. The bar carries the wordmark
+       * now, so the top bar keeps only the nav and the toggle -- two
+       * ITX marks stacked read as a mistake. */}
+      <LiveSiteBar />
+
       <header className="itx-topbar">
-        <span className="itx-wordmark">
-          ITX<span>.</span>
-        </span>
         <nav className="itx-topnav">
           {TOPNAV.map((item) => (
             <NavLink

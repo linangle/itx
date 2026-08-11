@@ -1,0 +1,98 @@
+/* The site-wide masthead: the market tape plus the wordmark, on every
+ * screen.
+ *
+ * These rules are deliberately *not* scoped under .itx-landing or .itx.
+ * The bar renders inside both roots, and the point of the change is
+ * that it looks the same wherever it is. The tape's own rules
+ * (.itx-news*) still live in landing.css, which is where they were
+ * written; what this file adds is the tokens they read, declared on the
+ * bar itself so they resolve outside the landing root too. */
+
+:root {
+  /* The two rows' heights, and the one place they are decided. Both
+     page roots subtract this bar: the landing hero sizes itself to the
+     fold with it, and the terminal's sticky top bar parks under it. */
+  --sb-news-h: 40px;
+  --sb-brand-h: 56px;
+}
+
+@media (max-width: 900px) {
+  :root {
+    --sb-news-h: 36px;
+    --sb-brand-h: 48px;
+  }
+}
+
+.itx-sitebar {
+  /* The landing palette, restated here because the bar keeps it
+     everywhere -- the tape is the same red-blue-green wherever it
+     rides. Terminal pages override the two that have to follow the
+     theme (see terminal.css); the rest are the tape's own colours and
+     do not change. */
+  --ld-red: #d8402d;
+  --ld-green: #63ba6c;
+  --ld-blue: #91c4f2;
+  --ld-dark: #161418;
+  --ld-light: #e9f2ed;
+  --ld-sub: #b3b4bf;
+
+  --ld-news-h: var(--sb-news-h);
+
+  /* The tape's item padding and the brand row's rhythm. Restated for
+     the same reason as the colours: the bar cannot assume it is inside
+     a root that has the scale. */
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-8: 24px;
+  --sp-10: 40px;
+
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  background: var(--ld-dark);
+  color: var(--ld-light);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.itx-sitebar-brand {
+  display: flex;
+  align-items: center;
+  height: var(--sb-brand-h);
+  padding: 0 var(--sp-10);
+}
+
+/* Wordmark and tagline are one link home -- the reliable way back from
+   a deep page. It carries no underline or colour of its own: it should
+   read as the masthead, not as a link in a sentence. */
+.itx-sitebar-home {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  color: inherit;
+  text-decoration: none;
+}
+
+.itx-sitebar-mark {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.itx-sitebar-dot {
+  color: var(--ld-green);
+}
+
+.itx-sitebar-tag {
+  font-size: 21px;
+  font-weight: 400;
+}
+
+@media (max-width: 900px) {
+  .itx-sitebar-brand {
+    padding: 0 var(--sp-6);
+  }
+
+  .itx-sitebar-mark,
+  .itx-sitebar-tag {
+    font-size: 18px;
+  }
+}

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import type { AsyncState } from "../../hooks/useAsync";
-import type { Page, TaskDto } from "../../lib/hub";
-import { formatCompactItx, formatKind, truncatePubkey } from "../../lib/format";
+import type { AsyncState } from "../hooks/useAsync";
+import type { TaskDto } from "../lib/hub";
+import { formatCompactItx, formatKind, truncatePubkey } from "../lib/format";
 
 /** What scrolls while the hub is loading, unreachable, or empty -- the
  * reference mock's literal "news news news", which doubles as an honest
@@ -36,8 +36,10 @@ function headline(task: TaskDto): string {
   }
 }
 
-/** The sticky tape across the top of the page: newest market events
- * scrolling right to left over the red->blue->green gradient.
+/** The tape across the top of every page: newest market events
+ * scrolling right to left over the red->blue->green gradient. It moved
+ * out of `pages/landing/` when the bar became site-wide chrome; nothing
+ * about it is specific to the hero any more.
  *
  * The track holds two identical copies of the item list and the CSS
  * animation translates it by exactly -50%; copy two lands where copy
@@ -51,9 +53,11 @@ function headline(task: TaskDto): string {
 export default function NewsTicker({
   tasks,
 }: {
-  /** Shared with the board rather than fetched here: one walk of the
-   * task list per poll, not two. */
-  tasks: AsyncState<Page<TaskDto> & { complete: boolean }>;
+  /** Supplied rather than fetched here, so the landing page can hand
+   * over the list its board already walked instead of asking for one of
+   * its own. Typed as loosely as the tape actually needs -- any state
+   * carrying a list of tasks will do, whatever else it carries. */
+  tasks: AsyncState<{ items: TaskDto[] }>;
 }) {
   const [open, setOpen] = useState(true);
 

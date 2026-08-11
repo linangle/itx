@@ -205,6 +205,30 @@ export async function listAllTasks(
   return { items, total, complete: items.length >= total };
 }
 
+/** The newest `count` tasks, for the ticker that now rides on every
+ * page.
+ *
+ * Two small requests rather than `listAllTasks`. The tape needs a
+ * dozen headlines; walking the whole board for them would pull a
+ * megabyte of JSON on every page load and every poll, which is a real
+ * cost to pay for a decoration.
+ *
+ * The hub lists tasks **oldest-first** by `created_at` (see
+ * `list_tasks` in `hub/src/handlers.rs`), so the newest are the tail:
+ * ask for the total with a one-item request, then take the last page.
+ * The count is read from `X-Total-Count`, which is the same header the
+ * paginated views already rely on. */
+export async function listLatestTasks(
+  count = 14,
+  params: Omit<ListTasksParams, "offset" | "limit"> = { status: "all" },
+): Promise<TaskDto[]> {
+  const probe = await listTasks({ ...params, limit: 1 });
+  if (probe.total <= count) {
+    return (await listTasks({ ...params, limit: count })).items;
+  }
+  return (await listTasks({ ...params, offset: probe.total - count, limit: count })).items;
+}
+
 export function getTask(id: string): Promise<TaskDto> {
   return getJson<TaskDto>(`/tasks/${encodeURIComponent(id)}`);
 }
