@@ -2288,10 +2288,17 @@ Measured: y 180 → 137 at 100ms → 45 at 400 → 1 at 700, rebound to -3 at
 730, home at 800. Wash lightness 0.226 → 0.316 over the same span, text
 opacity 0 → 1 by 700ms, everything back to the panel's colour by 1.4s.
 
-  Gates: 63 tests pass, lint clean, and my own files typecheck -- but
-  `tsc -b` and `vite build` do not currently pass on the tree as a
-  whole. `Board.tsx` is mid-refactor in another session (a `useSwipe`
-  hook deleted, `useCarousel.ts` added but not yet wired), which is
-  neither mine to fix nor mine to commit. This round's change is CSS
-  only, and only landing.css and this log went into the commit.
+  Gates: 63 tests pass, lint clean, and this round's change is CSS
+  only -- but `tsc -b` and `vite build` do not currently pass on the
+  tree as a whole. `Board.tsx` is mid-refactor in another session (a
+  `useSwipe` hook deleted, `useCarousel.ts` added but not yet wired),
+  which is neither mine to fix nor mine to commit.
+
+  Which nearly went wrong: the first commit of this round used
+  `git add` on a tree carrying that session's *staged* deletions and
+  swallowed them, so a commit about an animation also deleted two files
+  it had never heard of. Undone with a soft reset and recommitted by
+  path. Worth remembering that on a repo with a second session in it,
+  `git add -A` stages someone else's work in progress -- check
+  `git status` before the commit, not after.
 
