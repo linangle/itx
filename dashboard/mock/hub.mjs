@@ -29,6 +29,7 @@
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 const PORT = Number(process.env.PORT ?? 9101);
 const UNITS = 100_000_000;
@@ -300,7 +301,7 @@ for (const d of DESCRIPTORS) {
 }
 
 // Drawn the same way the hub draws: probe at random until an unused name
-// turns up. With ~79k names and 1000 agents the pool is far larger than
+// turns up. With ~165k names and 1000 agents the pool is far larger than
 // the demand, so collisions are rare and the loop is short.
 const takenNames = new Set();
 function nextName() {
@@ -491,13 +492,26 @@ function tick() {
 if (LIVE) setInterval(tick, TICK_MS).unref?.();
 
 function send(res, status, body, extraHeaders = {}) {
-  const payload = typeof body === "string" ? body : JSON.stringify(body);
-  res.writeHead(status, {
+  let payload = typeof body === "string" ? body : JSON.stringify(body);
+  const headers = {
     "content-type": typeof body === "string" ? "text/plain" : "application/json",
     "access-control-allow-origin": "*",
     "access-control-expose-headers": "x-total-count",
     ...extraHeaders,
-  });
+  };
+  // Mirrors the real hub's CompressionLayer (`hub/src/main.rs`): the
+  // dashboard's latency gets measured against this mock, so it should
+  // pay the same transfer costs the real hub charges -- a 200-task page
+  // is ~106 KB raw and ~20 KB gzipped, which is not a difference a
+  // fixture gets to hide. Same small-response threshold idea too, so
+  // tiny bodies aren't wrapped for no gain.
+  const acceptsGzip = /\bgzip\b/.test(res.req?.headers["accept-encoding"] ?? "");
+  if (acceptsGzip && payload.length > 32) {
+    payload = gzipSync(payload);
+    headers["content-encoding"] = "gzip";
+    headers["vary"] = "accept-encoding";
+  }
+  res.writeHead(status, headers);
   res.end(payload);
 }
 

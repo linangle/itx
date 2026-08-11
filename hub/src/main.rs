@@ -21,6 +21,7 @@ use std::sync::Arc;
 use store::HubStore;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
@@ -410,6 +411,16 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/leaderboard", get(handlers::leaderboard))
         .route("/llms.txt", get(handlers::llms_txt))
         .layer(cors)
+        // Gzip for any client that asks (every browser does). The task
+        // list is repeated field names and 66-character hex keys -- the
+        // best case for gzip: a full 200-task page measures ~106 KB raw
+        // and ~20 KB compressed, and the dashboard pulls the whole board
+        // on a timer, so this one layer is worth more to that page than
+        // anything the dashboard can do for itself. Small responses are
+        // skipped by the layer's own default threshold. Outermost, so it
+        // compresses the response after every inner layer has finished
+        // shaping it.
+        .layer(CompressionLayer::new())
         .with_state(state)
 }
 
@@ -900,6 +911,48 @@ mod tests {
         ] {
             assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
         }
+    }
+
+    /// The dashboard polls the full task list on a timer, and that JSON
+    /// gzips about 5x -- so the compression layer is load-bearing for
+    /// the site's latency, not an optimization detail. reqwest here has
+    /// no `gzip` feature, which is exactly what the test needs: nothing
+    /// auto-sends `Accept-Encoding` or strips `Content-Encoding` before
+    /// the assertion can see it. `/llms.txt` is the target because it is
+    /// reliably larger than the layer's minimum-size threshold on a
+    /// fresh hub, where `/tasks` is a 2-byte `[]`.
+    #[tokio::test]
+    async fn responses_gzip_when_asked_and_stay_identity_when_not() {
+        let operator_key = PrivateKey::new_key();
+        let hub = spawn_hub(operator_key, dead_address().await).await;
+
+        let compressed = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .header("accept-encoding", "gzip")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(compressed.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            compressed
+                .headers()
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip"),
+        );
+
+        // A client that never asked must get the bytes as they are --
+        // the SDK's agents and curl without flags both read this API.
+        let identity = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(identity.status(), reqwest::StatusCode::OK);
+        assert!(identity.headers().get("content-encoding").is_none());
+        assert!(identity.text().await.unwrap().contains("hash_match"));
     }
 
     /// `net_worth` (current on-chain balance) and `total_earned`
