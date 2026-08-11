@@ -288,6 +288,21 @@ export interface MarketSummary {
   capability: string;
   open: number;
   openBounty: number;
+  /** Bounty posted into this market across the window -- the market's
+   * quoted level, and deliberately the *same* quantity the other two
+   * columns describe: `series` is its running total, so the sparkline
+   * ends here, and `changePct` is this flow's period-over-period
+   * movement.
+   *
+   * `openBounty` would have been the other candidate for a price, and is
+   * a truer "level" in the stock sense -- what is on offer right now.
+   * It is not used, because there is no honest change to pair it with:
+   * a task carries its current status but no record of when it reached
+   * it (see the note at the top of this file), so how open bounty moved
+   * over time cannot be derived at all. Quoting one quantity beside
+   * another's percentage is the kind of pairing a reader would never
+   * question and would always misread. */
+  value: number;
   /** Cumulative bounty posted over the window -- the shape that reads
    * as a price line. Same honesty caveat as every series here: keyed on
    * `created_at`, because that is the only timestamp there is. */
@@ -361,6 +376,7 @@ export function summarizeBySector(
       capability,
       open: open.length,
       openBounty: open.reduce((sum, t) => sum + t.bounty, 0),
+      value: perBucket.reduce((sum, v) => sum + v, 0),
       series: cumulative(perBucket),
       changePct: active >= 2 ? periodChangePct(perBucket) : null,
     };
@@ -487,6 +503,7 @@ export function sectorsFromSummary(summary: BoardSummaryDto): SectorSummary[] {
       capability: c.capability,
       open: c.open,
       openBounty: c.open_bounty,
+      value: c.bounty_series.reduce((sum, v) => sum + v, 0),
       // Cumulative for shape, change from the per-bucket sums -- a
       // cumulative series only rises and would read as permanently up.
       series: cumulative(c.bounty_series),
@@ -523,4 +540,54 @@ export function sectorsFromSummary(summary: BoardSummaryDto): SectorSummary[] {
       changePct: periodChangePct(sector.series),
     }))
     .sort((a, b) => b.openBounty - a.openBounty || b.open - a.open);
+}
+
+// ---------------------------------------------------------------------
+// Ordering the markets in a panel
+// ---------------------------------------------------------------------
+
+/** Which column the market tables are ordered by. */
+export type MarketSortKey = "value" | "change";
+export type SortDirection = "asc" | "desc";
+
+export interface MarketSort {
+  key: MarketSortKey;
+  direction: SortDirection;
+}
+
+/** What a panel shows before anyone touches a header: biggest first by
+ * the column whose number is on screen, so the order explains itself. */
+export const DEFAULT_MARKET_SORT: MarketSort = { key: "value", direction: "desc" };
+
+/** Markets in a panel, ordered by one of its columns.
+ *
+ * Returns a new array -- the summaries are memoized upstream and shared
+ * between renders, so sorting in place would reorder the memo and make
+ * the ordering depend on how many times it had been read.
+ *
+ * A market with no change to report sorts to the end in *both*
+ * directions. `null` there does not mean zero; it means there was too
+ * little activity to compare halves of the window (see
+ * `summarizeBySector`). Treating it as zero would file "nothing
+ * happened" in among the genuinely flat markets, and treating it as
+ * -Infinity would put the emptiest markets at the top of an ascending
+ * sort, which is the opposite of what "sort by change" is for. Ties, and
+ * the dashes among themselves, fall back to the market's name so the
+ * order is stable rather than dependent on the input's arrival order. */
+export function sortMarkets(markets: MarketSummary[], sort: MarketSort): MarketSummary[] {
+  const sign = sort.direction === "asc" ? 1 : -1;
+  return markets.slice().sort((a, b) => {
+    if (sort.key === "change") {
+      const left = a.changePct;
+      const right = b.changePct;
+      if (left === null || right === null) {
+        if (left !== right) return left === null ? 1 : -1;
+        return a.capability.localeCompare(b.capability);
+      }
+      if (left !== right) return (left - right) * sign;
+    } else if (a.value !== b.value) {
+      return (a.value - b.value) * sign;
+    }
+    return a.capability.localeCompare(b.capability);
+  });
 }

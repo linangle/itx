@@ -1,4 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import Board from "./Board";
@@ -162,5 +163,106 @@ describe("Board", () => {
     expect(
       screen.getByRole("link", { name: "Fine-tune a sentiment classifier" }),
     ).toHaveAttribute("href", "/tasks/abc");
+  });
+});
+
+describe("Board sorting", () => {
+  /** Three coding markets whose value and change orders disagree, so a
+   * test cannot pass by accident on a table sorted the other way. */
+  function codingMarkets(): CapabilitySummaryDto[] {
+    const at = (early: number, late: number) => {
+      const s = new Array(BUCKETS).fill(0);
+      s[2] = early;
+      s[BUCKETS - 2] = late;
+      return s;
+    };
+    return [
+      // value 400, change +300%
+      { ...market("python", 1), bounty_series: at(100, 300), posted_series: at(1, 3) },
+      // value 900, change +12.5%
+      { ...market("rust", 1), bounty_series: at(400, 450), posted_series: at(1, 1) },
+      // value 250, change -50%
+      { ...market("sql", 1), bounty_series: at(200, 100), posted_series: at(2, 1) },
+    ];
+  }
+
+  const names = (panel: HTMLElement) =>
+    within(panel)
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.textContent?.match(/^[a-z-]+/)?.[0]);
+
+  function codingPanel(container: HTMLElement) {
+    return within(container.querySelector("#itx-board-markets") as HTMLElement).getAllByRole(
+      "table",
+    )[0];
+  }
+
+  it("quotes each market's value beside its change", () => {
+    const { container } = renderBoard(codingMarkets());
+    const row = within(codingPanel(container)).getAllByRole("row")[1];
+    // Biggest value first by default, so this is rust: 850 base units.
+    expect(row.textContent).toContain("rust");
+    expect(row.textContent).toMatch(/\+12\.50%/);
+  });
+
+  it("orders by value, largest first, before anyone touches a header", () => {
+    const { container } = renderBoard(codingMarkets());
+    expect(names(codingPanel(container))).toEqual(["rust", "python", "sql"]);
+  });
+
+  it("flips direction when the active column is clicked again", async () => {
+    const user = userEvent.setup();
+    const { container } = renderBoard(codingMarkets());
+    const panel = codingPanel(container);
+
+    await user.click(within(panel).getByRole("button", { name: /value/i }));
+    expect(names(codingPanel(container))).toEqual(["sql", "python", "rust"]);
+
+    await user.click(within(codingPanel(container)).getByRole("button", { name: /value/i }));
+    expect(names(codingPanel(container))).toEqual(["rust", "python", "sql"]);
+  });
+
+  it("takes over at largest-first when the other column is clicked", async () => {
+    const user = userEvent.setup();
+    const { container } = renderBoard(codingMarkets());
+
+    await user.click(within(codingPanel(container)).getByRole("button", { name: /change/i }));
+    // Change order disagrees with value order, which is the point.
+    expect(names(codingPanel(container))).toEqual(["python", "rust", "sql"]);
+
+    await user.click(within(codingPanel(container)).getByRole("button", { name: /change/i }));
+    expect(names(codingPanel(container))).toEqual(["sql", "rust", "python"]);
+  });
+
+  it("marks which column is sorting the table, and which way", async () => {
+    const user = userEvent.setup();
+    const { container } = renderBoard(codingMarkets());
+    // By name rather than position: the sparkline's heading is
+    // aria-hidden (it labels no figure of its own), so the columns and
+    // the accessible headers are deliberately not one-to-one.
+    const header = (name: RegExp) =>
+      within(codingPanel(container)).getByRole("columnheader", { name });
+
+    expect(header(/value/i)).toHaveAttribute("aria-sort", "descending");
+    expect(header(/change/i)).toHaveAttribute("aria-sort", "none");
+
+    await user.click(within(codingPanel(container)).getByRole("button", { name: /change/i }));
+    expect(header(/value/i)).toHaveAttribute("aria-sort", "none");
+    expect(header(/change/i)).toHaveAttribute("aria-sort", "descending");
+  });
+
+  it("sorts every sector's panel together, so the board stays comparable", async () => {
+    const user = userEvent.setup();
+    const { container } = renderBoard([...codingMarkets(), market("therapy", 100)]);
+    const panels = () =>
+      within(container.querySelector("#itx-board-markets") as HTMLElement).getAllByRole("table");
+
+    await user.click(within(panels()[0]).getByRole("button", { name: /change/i }));
+    // The conversation panel's own header reflects the same ordering,
+    // rather than each panel keeping its own.
+    expect(
+      within(panels()[1]).getByRole("columnheader", { name: /change/i }),
+    ).toHaveAttribute("aria-sort", "descending");
   });
 });

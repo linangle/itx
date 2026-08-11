@@ -1299,10 +1299,23 @@ body.itx-landing-body[data-theme="light"] {
    size themselves fine today. */
 .itx-board-cell-market a {
   display: block;
-  max-width: 22ch;
+  /* 18ch, not the 22 this started at: the panel carries a fourth column
+     now (the quoted value), and at the narrowest carousel step the four
+     of them plus the sparkline are within a few pixels of the panel's
+     width. The longest tag in the taxonomy -- `relationship-advice`, 19
+     -- clips by a character here, which is why the full name is on the
+     link's `title`. */
+  max-width: 18ch;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* Narrower than the rail's, for the same reason. The sparkline is the
+   most compressible thing in the row -- it carries shape, not figures,
+   and reads the same 16px shorter. */
+.itx-board-panel-market .itx-board-cell-spark {
+  width: 52px;
 }
 
 /* The truncated-walk warning. Sits between the quote strip and the

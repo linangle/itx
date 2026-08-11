@@ -19,11 +19,18 @@ import {
   truncatePubkey,
 } from "../../lib/format";
 import {
+  DEFAULT_MARKET_SORT,
   capabilitiesFromSummary,
   sectorsFromSummary,
+  sortMarkets,
   windowFromSummary,
 } from "../../lib/series";
-import type { SectorSummary, SeriesWindow } from "../../lib/series";
+import type {
+  MarketSort,
+  MarketSortKey,
+  SectorSummary,
+  SeriesWindow,
+} from "../../lib/series";
 
 /** Ceilings, not row counts. Every table on the board now renders as
  * many rows as its panel has room for -- see `useFitRows` -- so these
@@ -172,6 +179,9 @@ export default function Board({
 
   const arrivals = useArrivals(updates);
 
+  // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
+  const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
+
   // The row scrolls itself -- see useCarousel and `overflow-x` in the
   // stylesheet. This is only what the browser cannot work out on its
   // own: which sector is at the front, whether either end is reached,
@@ -275,6 +285,8 @@ export default function Board({
                     windowLabel={window.label}
                     loading={summary.loading}
                     error={summary.error}
+                    sort={sort}
+                    onSort={setSort}
                   />
                 </div>
               ))}
@@ -538,6 +550,8 @@ function LeaderboardRail() {
  * panel re-renders, which is exactly right. */
 const SectorPanel = memo(function SectorPanel({
   sector,
+  sort,
+  onSort,
   windowLabel,
   loading,
   error,
@@ -546,8 +560,18 @@ const SectorPanel = memo(function SectorPanel({
   windowLabel: string;
   loading: boolean;
   error: Error | null;
+  /** Held by `Board` rather than per panel, so the carousel stays one
+   * comparable board: sorting by change in one sector and by value in
+   * the next would make two panels side by side mean different things.
+   * Passing it down also keeps `memo` working -- it is one small object
+   * that only changes when a header is actually clicked. */
+  sort: MarketSort;
+  onSort: (sort: MarketSort) => void;
 }) {
-  const markets = sector.markets;
+  // Sorted here rather than upstream: the summaries are memoized and
+  // shared between panels, and the order is a view state that changes
+  // without the data changing.
+  const markets = useMemo(() => sortMarkets(sector.markets, sort), [sector.markets, sort]);
   // The panel is as tall as the row it sits in, which is set by the rail
   // beside it -- so how many markets belong here is a question only the
   // rendered box can answer. The header row is measured out of the
@@ -567,8 +591,13 @@ const SectorPanel = memo(function SectorPanel({
             <thead data-fit-fixed>
               <tr>
                 <th>market</th>
-                <th>value</th>
-                <th className="right">change</th>
+                {/* The sparkline's column is deliberately unlabelled --
+                    it is the same quantity `value` names, drawn rather
+                    than written, and heading it separately would imply a
+                    third figure. */}
+                <th aria-hidden="true" />
+                <SortHeader column="value" label="value" sort={sort} onSort={onSort} />
+                <SortHeader column="change" label="change" sort={sort} onSort={onSort} />
               </tr>
             </thead>
             <tbody>
@@ -578,17 +607,24 @@ const SectorPanel = memo(function SectorPanel({
                       capability tag on the wire, and the task list
                       already filters by exactly that. */}
                   <td className="itx-board-cell-market">
-                    <Link to={`/tasks?capability=${encodeURIComponent(m.capability)}`}>
+                    {/* Titled because the cell clips: the longest tags
+                        lose a character at the narrowest panel width. */}
+                    <Link
+                      to={`/tasks?capability=${encodeURIComponent(m.capability)}`}
+                      title={m.capability}
+                    >
                       {m.capability}
                     </Link>
                   </td>
                   <td className="itx-board-cell-spark">
                     <Sparkline
                       values={m.series}
+                      width={52}
                       direction={directionOf(m.changePct)}
                       label={`bounty posted in ${m.capability} over the last ${windowLabel}`}
                     />
                   </td>
+                  <td className="right itx-board-cell-value">{formatCompactItx(m.value)}</td>
                   <td className={`right ${directionOf(m.changePct)}`}>{formatPct(m.changePct)}</td>
                 </tr>
               ))}
@@ -599,6 +635,51 @@ const SectorPanel = memo(function SectorPanel({
     </section>
   );
 });
+
+/** A sortable column heading, after the reference: the label, and a caret
+ * that appears on whichever column is currently ordering the table and
+ * points the way it is ordered.
+ *
+ * Clicking the active column flips its direction; clicking the other one
+ * takes it over at `desc`, because "most" is what anyone means the first
+ * time they sort by a number. `aria-sort` carries the same fact to a
+ * screen reader, which is the part a caret alone cannot do. */
+function SortHeader({
+  column,
+  label,
+  sort,
+  onSort,
+}: {
+  column: MarketSortKey;
+  label: string;
+  sort: MarketSort;
+  onSort: (sort: MarketSort) => void;
+}) {
+  const active = sort.key === column;
+  const direction = active ? sort.direction : undefined;
+  return (
+    <th
+      className="right itx-board-sorth"
+      aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        className={active ? "is-active" : undefined}
+        onClick={() =>
+          onSort({
+            key: column,
+            direction: active && sort.direction === "desc" ? "asc" : "desc",
+          })
+        }
+      >
+        <span className="itx-board-caret" aria-hidden="true">
+          {direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}
+        </span>
+        {label}
+      </button>
+    </th>
+  );
+}
 
 /** The board's left rail: jump links to the four sections, then the live
  * list of sectors, then the pages that carry on past the board.

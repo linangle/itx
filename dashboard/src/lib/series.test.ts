@@ -12,8 +12,10 @@ import {
   windowFromSummary,
   sectorsFromSummary,
   capabilitiesFromSummary,
+  sortMarkets,
 } from "./series";
 import type { CapabilitySummaryDto, TaskDto } from "./hub";
+import type { MarketSummary } from "./series";
 
 const NOW = Date.parse("2026-08-09T12:00:00Z");
 const HOUR = 3_600_000;
@@ -421,5 +423,71 @@ describe("from the hub's board summary", () => {
       2,
     );
     expect(rows.map((r) => r.capability)).toEqual(["ocr", "rust"]);
+  });
+});
+
+describe("sortMarkets", () => {
+  const market = (
+    capability: string,
+    value: number,
+    changePct: number | null,
+  ): MarketSummary => ({
+    capability,
+    open: 1,
+    openBounty: 1,
+    value,
+    series: [],
+    changePct,
+  });
+
+  const markets = [
+    market("python", 300, 10),
+    market("rust", 100, -5),
+    market("ocr", 200, 40),
+  ];
+
+  it("orders by value in both directions", () => {
+    expect(
+      sortMarkets(markets, { key: "value", direction: "desc" }).map((m) => m.capability),
+    ).toEqual(["python", "ocr", "rust"]);
+    expect(
+      sortMarkets(markets, { key: "value", direction: "asc" }).map((m) => m.capability),
+    ).toEqual(["rust", "ocr", "python"]);
+  });
+
+  it("orders by change in both directions", () => {
+    expect(
+      sortMarkets(markets, { key: "change", direction: "desc" }).map((m) => m.capability),
+    ).toEqual(["ocr", "python", "rust"]);
+    expect(
+      sortMarkets(markets, { key: "change", direction: "asc" }).map((m) => m.capability),
+    ).toEqual(["rust", "python", "ocr"]);
+  });
+
+  it("sinks markets with no change to report, whichever way it is sorted", () => {
+    // A dash means "too little activity to compare", not zero and not
+    // minus infinity -- so it must not win either end of the sort.
+    const withDash = [...markets, market("therapy", 50, null)];
+    expect(
+      sortMarkets(withDash, { key: "change", direction: "asc" }).map((m) => m.capability),
+    ).toEqual(["rust", "python", "ocr", "therapy"]);
+    expect(
+      sortMarkets(withDash, { key: "change", direction: "desc" }).map((m) => m.capability),
+    ).toEqual(["ocr", "python", "rust", "therapy"]);
+  });
+
+  it("breaks ties on the market name, so the order cannot wobble", () => {
+    const tied = [market("web-dev", 100, 5), market("cpp", 100, 5), market("sql", 100, 5)];
+    expect(
+      sortMarkets(tied, { key: "value", direction: "desc" }).map((m) => m.capability),
+    ).toEqual(["cpp", "sql", "web-dev"]);
+  });
+
+  it("does not reorder the array it was given", () => {
+    // The summaries are memoized and shared between panels; sorting in
+    // place would make the order depend on how often it was read.
+    const original = markets.map((m) => m.capability);
+    sortMarkets(markets, { key: "change", direction: "asc" });
+    expect(markets.map((m) => m.capability)).toEqual(original);
   });
 });
