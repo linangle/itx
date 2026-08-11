@@ -1,5 +1,7 @@
 import { Suspense, lazy, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { SiteBar } from "../../components/SiteBar";
+import { BOARD_ANCHOR, scrollToBoard } from "../../components/siteNav";
 import MarketLine from "./MarketLine";
 import { useAsync } from "../../hooks/useAsync";
 import { listAllTasks } from "../../lib/hub";
@@ -44,6 +46,21 @@ export default function LandingPage() {
     document.body.classList.add("itx-landing-body");
     return () => document.body.classList.remove("itx-landing-body");
   }, []);
+
+  // Arriving with `#itx-board` -- which is where the masthead points --
+  // starts on the board rather than the hero. A browser would do this
+  // itself for a plain anchor, but on a client-rendered route the
+  // element does not exist yet when the hash is applied, and a sticky
+  // masthead means the right offset is not the element's top anyway.
+  //
+  // Instant, not smooth: this is where the page *starts*, so animating
+  // from a hero the visitor never asked for would be a scroll they
+  // didn't make. The hero's height doesn't depend on hub data, so the
+  // board's position is settled as soon as it mounts.
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (hash === `#${BOARD_ANCHOR}`) scrollToBoard({ smooth: false });
+  }, [hash]);
 
   return (
     <div className="itx-landing">

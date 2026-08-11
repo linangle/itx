@@ -1502,3 +1502,35 @@ regardless.
   test a smooth-scroll path without a visible browser.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 23 — the pill nav goes, and "home" means the board
+
+**The Board / Tasks / Agents pill is removed.** It was a three-item
+copy of the left sidebar standing eighteen pixels from it, and with the
+masthead above carrying the wordmark the row had three navigations
+stacked in 154px. What is left in that row is the theme toggle; the
+sidebar, which is the fuller version of the same list, is on every one
+of these pages. Its CSS goes with it, along with the wordmark rules
+orphaned in the previous round.
+
+**The masthead now points at the board, not the top of the document.**
+The hero is the pitch -- a globe and a paragraph -- and someone
+clicking ITX from inside the site is looking for the market. It links
+to `/#itx-board`, so the address is shareable and the browser's own
+handling of it works.
+
+  Which turned out to matter more than expected. The first version did
+  the arithmetic in JS -- board's top minus the measured bar height --
+  and it was *overruled on a fresh load*: React mounts, the effect
+  scrolls to 830, and then the browser's fragment navigation finds the
+  element that now exists and scrolls it to 926, the board's top edge
+  parked behind a 96px sticky bar.
+
+  The fix is `scroll-margin-top` on the board, which every route
+  respects -- the click handler's `scrollIntoView`, the browser's own
+  anchor scroll, and any future link to it. It follows `--ld-bar-h`, so
+  it is 96 normally, 84 on narrow screens, and 56 once the tape is
+  dismissed. Verified all three: the board's top lands exactly on the
+  bar's bottom edge in each.
+
+Gates: 55 tests, tsc, lint, build clean.

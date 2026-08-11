@@ -236,47 +236,9 @@ body.itx-body[data-theme="light"] {
   z-index: 10;
 }
 
-.itx-wordmark {
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  font-size: var(--fs-label);
-}
-
-.itx-wordmark span {
-  color: var(--brand);
-}
-
-/* Pill nav, after the reference design: one rounded capsule, the active
-   item a filled pill inside it. */
-.itx-topnav {
-  display: flex;
-  gap: var(--sp-2);
-  align-items: center;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: var(--sp-2);
-}
-
-.itx-topnav a {
-  color: var(--text-dim);
-  font-weight: 500;
-  padding: var(--sp-3) var(--sp-6);
-  border-radius: 999px;
-  font-size: var(--fs-body);
-}
-
-.itx-topnav a:hover {
-  color: var(--text);
-  text-decoration: none;
-}
-
-.itx-topnav a.active {
-  background: var(--panel-hover);
-  color: var(--text);
-  font-weight: 600;
-}
+/* The wordmark and the pill nav that used to sit in this row are gone:
+   the masthead above carries the wordmark, and the pill nav was a
+   three-item copy of the left sidebar standing right next to it. */
 
 .itx-theme-toggle {
   margin-left: auto;

@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import NewsTicker from "./NewsTicker";
 import { useAsync } from "../hooks/useAsync";
 import type { AsyncState } from "../hooks/useAsync";
+import { BOARD_ANCHOR, scrollToBoard } from "./siteNav";
 import { listLatestTasks, type TaskDto } from "../lib/hub";
 import "../styles/sitebar.css";
 
@@ -22,20 +23,18 @@ const REFRESH_MS = 5000;
 export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) {
   const { pathname } = useLocation();
 
-  /** The masthead shows a pointer, so it has to do something on every
-   * page -- including the front page, where the link home is a no-op
-   * and clicking it appeared to do nothing at all. It scrolls back to
-   * the top instead, which is what the wordmark on a long page is for.
+  /** "Home" means the board, not the top of the document. The hero is
+   * the pitch -- a globe and a paragraph -- and someone clicking the
+   * masthead from inside the site is looking for the market, so the
+   * link lands on the data and the pitch stays where a first-time
+   * visitor meets it.
    *
-   * Smooth only when you are already where the link points; on the way
-   * to another page the outgoing page animating away is just noise, and
-   * an instant reset means the next page starts at its top rather than
-   * wherever this one was left. Reduced-motion gets the instant one
-   * either way. */
-  function toTop() {
-    const stay = pathname === "/";
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.scrollTo({ top: 0, behavior: stay && !reduce ? "smooth" : "auto" });
+   * Already on the landing page, this scrolls; from anywhere else the
+   * hash rides along with the navigation and `LandingPage` acts on it
+   * once the board has rendered. */
+  function toBoard() {
+    if (pathname !== "/") return;
+    scrollToBoard({ smooth: true });
   }
 
   return (
@@ -43,7 +42,7 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
       <NewsTicker tasks={tasks} />
 
       <header className="itx-sitebar-brand">
-        <Link to="/" className="itx-sitebar-home" onClick={toTop}>
+        <Link to={`/#${BOARD_ANCHOR}`} className="itx-sitebar-home" onClick={toBoard}>
           <span className="itx-sitebar-mark">
             ITX<span className="itx-sitebar-dot">.</span>
           </span>

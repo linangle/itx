@@ -5,6 +5,7 @@ import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
 import { useFitRows } from "../../hooks/useFitRows";
+import { BOARD_ANCHOR } from "../../components/siteNav";
 import { getLeaderboard } from "../../lib/hub";
 import type { Page, TaskDto } from "../../lib/hub";
 import {
@@ -233,7 +234,9 @@ export default function Board({
   );
 
   return (
-    <section className="itx-board" aria-label="Market board">
+    // The masthead's link home targets this, not the top of the
+    // document -- see SiteBar. The hero is the pitch; this is the site.
+    <section className="itx-board" id={BOARD_ANCHOR} aria-label="Market board">
       <div className="itx-board-inner">
         <QuoteStrip kinds={kinds} windowLabel={window.label} />
 

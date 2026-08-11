@@ -406,6 +406,14 @@ body.itx-landing-body {
   padding: 0 0 var(--sp-14);
   color: var(--ld-light);
   background: var(--ld-dark);
+
+  /* The masthead links here, and it is sticky: without this the board's
+     top edge stops under the bar. Applies to every route to it -- the
+     click handler's `scrollIntoView`, and the browser's own handling of
+     a `/#itx-board` address, which lands after React mounts and would
+     overrule any offset computed in JS. Follows the bar's own height,
+     so it is right on narrow screens and once the tape is dismissed. */
+  scroll-margin-top: var(--ld-bar-h);
 }
 
 /* The grid is a separate layer rather than a background on .itx-board

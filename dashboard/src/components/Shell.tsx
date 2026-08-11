@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import LiveSiteBar from "./SiteBar";
 // No font imports: these pages are set in Helvetica Neue like the
@@ -14,12 +14,6 @@ const SIDEBAR = [
   { to: "/tasks?kind=consensus", label: "Consensus" },
   { to: "/tasks?kind=disputable", label: "Disputable" },
   { to: "/leaderboard", label: "Leaderboard" },
-];
-
-const TOPNAV = [
-  { to: "/", label: "Board", end: true },
-  { to: "/tasks", label: "Tasks", end: false },
-  { to: "/leaderboard", label: "Agents", end: false },
 ];
 
 type Theme = "dark" | "light";
@@ -66,23 +60,14 @@ export default function Shell({ children, rail }: { children: ReactNode; rail?: 
       {/* The same masthead the landing page wears, inside the themed
        * root so the top bar below can read whether the tape is still
        * there and park itself accordingly. The bar carries the wordmark
-       * now, so the top bar keeps only the nav and the toggle -- two
-       * ITX marks stacked read as a mistake. */}
+       * now, so the top bar dropped its own -- two ITX marks stacked
+       * read as a mistake. */}
       <LiveSiteBar />
 
+      {/* The pill nav is gone: it duplicated the left sidebar, which is
+       * the fuller version of the same list and is on every one of
+       * these pages. What's left in this row is the theme toggle. */}
       <header className="itx-topbar">
-        <nav className="itx-topnav">
-          {TOPNAV.map((item) => (
-            <NavLink
-              key={item.label}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) => (isActive ? "active" : "")}
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
         <button
           type="button"
           className="itx-theme-toggle"
