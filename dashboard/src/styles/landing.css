@@ -1046,13 +1046,19 @@ body.itx-landing-body {
    low in the stack, swings out and up in one arc, and comes back in at
    the top slot.
 
-   The arc is sampled rather than drawn -- five points along
-   `x = 26·sin(πs)`, `y = 52·(1-s)`, with `s` spaced to ease in and
-   out, and straight lines between them. Bulging right at the halfway
-   point and returning to zero at the top is what makes it a swing;
-   an earlier version did the same three moves as *separate* legs --
-   right, then up, then left -- and the right angles between them read
-   as a machine indexing a part rather than a hand moving a card.
+   The arc is sampled rather than drawn -- eleven points along
+   `x = 26·sin(πs)`, `y = 52·(1-s)`, with `s = (1-cos(πp))/2` so the
+   swing eases in and out, and straight lines between them. Bulging
+   right at the halfway point and returning to zero at the top is what
+   makes it a swing; an earlier version did the same three moves as
+   *separate* legs -- right, then up, then left -- and the right angles
+   between them read as a machine indexing a part rather than a hand
+   moving a card.
+
+   Eleven rather than five because the whole path now takes 600ms. A
+   sampled curve is only as smooth as its facets are short, and at this
+   speed five points put a visible corner every 150ms; the extra ones
+   cost nothing and quarter the facet.
 
    The sideways reach is small on purpose. It only has to be enough to
    show the card leaving the stack; past about 30px it stops being a
@@ -1070,20 +1076,23 @@ body.itx-landing-body {
    wash over live text underneath reads as a rendering fault. It ends
    on the panel's own colour, which is indistinguishable from the
    transparent it started life with. */
-/* The two halves want different curves, so each keyframe carries its
-   own and the animation itself is linear -- a single curve across both
-   would either rush the travel or clip the fade. */
 .itx-board-updates li.is-new {
   /* Lifted out of the flow for the duration. Rows are static, so later
      siblings paint over earlier ones -- without this the card would
      pass *under* the rows it is supposed to be moving over. */
   position: relative;
   z-index: 1;
-  /* The swing is done in under a second and the glow is gone by 1.6s.
-     Slower than this and the card looks like it is being carried
-     carefully rather than dealt -- the arc reads at speed because the
-     shape is doing the work, which a straight line could not. */
-  animation: itx-arrive 1600ms linear both;
+  /* Swing in 600ms, glow gone by 1.2s. Slower than this and the card
+     looks like it is being carried carefully rather than dealt -- the
+     arc reads at speed because the shape is doing the work, which a
+     straight line could not.
+
+     Promoted to its own layer for the duration. The card is opaque and
+     moves across live text, so without this every frame repaints the
+     rows underneath it, which is exactly the kind of jitter that reads
+     as "not smooth" at this speed. */
+  will-change: transform, opacity;
+  animation: itx-arrive 1200ms linear both;
 }
 
 /* Straight lines between the sampled points, which is what keeps the
@@ -1099,37 +1108,52 @@ body.itx-landing-body {
     box-shadow: 0 0 28px color-mix(in srgb, var(--ld-red) 26%, transparent);
   }
 
-  6% {
-    opacity: 1;
-    transform: translate(3px, 50px);
-  }
-
   /* Swinging out and up. */
-  14% {
+  5.5% {
     opacity: 1;
-    transform: translate(16px, 43px);
+    transform: translate(2.5px, 50.4px);
   }
 
-  /* Widest point of the arc, halfway up. */
-  28% {
-    opacity: 1;
+  11% {
+    transform: translate(9.3px, 45.9px);
+  }
+
+  17% {
+    transform: translate(18.4px, 39px);
+  }
+
+  22% {
+    transform: translate(25px, 30.5px);
+  }
+
+  /* Widest point of the arc, halfway up. Sampling symmetrically about
+     the apex left the two neighbours at the same x, which held the
+     card against an invisible wall for 80ms; this is the extra point
+     that rounds the turn. */
+  25% {
     transform: translate(26px, 26px);
+  }
+
+  28% {
+    transform: translate(25px, 21.5px);
     background: color-mix(in srgb, var(--ld-red) 33%, var(--ld-dark));
   }
 
-  42% {
-    opacity: 1;
-    transform: translate(16px, 9px);
+  33% {
+    transform: translate(18.4px, 13px);
+  }
+
+  39% {
+    transform: translate(9.4px, 6.1px);
   }
 
   /* Coming back in over the top slot. */
-  52% {
-    opacity: 1;
-    transform: translate(3px, 1px);
+  44% {
+    transform: translate(2.5px, 1.6px);
   }
 
   /* Down, still lit. */
-  58% {
+  50% {
     opacity: 1;
     transform: translate(0, 0);
     background: color-mix(in srgb, var(--ld-red) 28%, var(--ld-dark));

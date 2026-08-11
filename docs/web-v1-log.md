@@ -1769,3 +1769,27 @@ gone by 1.6. The arc is what lets it read at speed -- the shape is
 doing the work a longer straight line had to do with duration.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 30 — faster, and the facets taken out of the curve
+
+Down to 1.2s: the swing lands at 600ms, the glow is gone by 1.2.
+
+**Speed exposed the sampling.** A sampled curve is only as smooth as
+its facets are short, and five points across 600ms put a direction
+change every 150ms -- slow enough to be a corner rather than a curve.
+Eleven points now, which costs nothing and quarters the facet.
+
+  One of those points exists purely to fix a fault the sampling
+  created. Taking the samples symmetrically about the apex put the two
+  neighbouring points at the *same* x -- 25px either side of the
+  peak -- so the card held against an invisible wall for 80ms at the
+  widest part of the swing, which is exactly where the eye is. A point
+  at the apex itself rounds the turn: measured, x now runs
+  24.6 - 25.4 - 26 - 25.4 - 24.6 through it.
+
+**The card is promoted to its own layer while it moves.** It is opaque
+and travels over live text, so every frame was repainting the rows
+underneath it. That is the kind of cost that does not show up in a
+still and reads as "not smooth" in motion.
+
+Gates: 55 tests, tsc, lint, build clean.
