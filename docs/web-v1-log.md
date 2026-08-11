@@ -1912,3 +1912,33 @@ in the site bar's live ticker, so a page test has to stub
 
 Gates: 116 Rust tests, 58 dashboard tests, tsc, lint, build clean.
 Verified against the mock in both themes.
+
+### Round 31 — the pager moves to the heading, and the peek fades
+
+The carousel's arrows sat at the far right of the markets column, on
+the same line as "market overview" but a thousand pixels away from it.
+Out there they read as decoration on an empty stretch of rule: nothing
+tied them to the thing they move, and the fact that the board pages at
+all was easy to miss. They now sit immediately after the title, as
+`.itx-board-headline` — one flex item in the head's middle column
+holding both, which also means the two stay together at every width
+instead of each being placed against the grid separately.
+
+The other half of the same problem is the panel past the clip. A market
+panel sliced down the middle reads as a rendering fault — same rows,
+same label as its neighbours, just chopped — rather than as the next
+thing along. The carousel now carries a `mask-image` that fades it out.
+
+Two details make the mask behave. The ramp starts at the peeking
+panel's own left edge, computed as `--markets-shown × (--market-basis +
+gap)`, so it lands in the gutter between it and the last whole panel
+and nothing fully on screen is dimmed; `--markets-shown` is declared
+next to `--market-basis` and drops to 1 at both narrow breakpoints,
+where a wider basis means only one panel is whole. And the gradient
+steps to 0.55 alpha at that same stop before ramping to zero — a step
+that is invisible, because it falls where nothing is painted, and buys
+the peek a flat dimming on top of the dissolve so it reads as inactive
+from its first pixel rather than only near the clip.
+
+Verified at 1600 and 900 wide against the mock. Gates: 58 dashboard
+tests, lint, build clean.

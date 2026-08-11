@@ -461,9 +461,9 @@ body.itx-landing-body {
   padding: 0 var(--sp-11);
 }
 
-/* The heading line: the title over the carousel's first panel, the pager
-   over its last, both centred on the same line so the arrows sit clear of
-   the category names below. */
+/* The heading line: the title over the carousel's first panel, with the
+   pager beside it, on the same line so the arrows sit clear of the
+   category names below. */
 .itx-board-head {
   display: grid;
   grid-template-columns: var(--col-nav) minmax(0, 1fr) var(--col-rail);
@@ -472,14 +472,16 @@ body.itx-landing-body {
   margin: var(--gap-section) 0 var(--gap-heading);
 }
 
-.itx-board-head .itx-board-title,
-.itx-board-head .itx-board-pager {
+/* Title and pager as one unit in the middle column. Out at the column's
+   right end the arrows read as decoration on an empty stretch of rule;
+   sitting against the heading they are plainly the control for what the
+   heading names. */
+.itx-board-headline {
   grid-row: 1;
   grid-column: 2;
-}
-
-.itx-board-head .itx-board-pager {
-  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
 }
 
 .itx-board-title {
@@ -692,6 +694,9 @@ body.itx-landing-body {
      label lives inside the item, so it inherits this automatically
      instead of being laid out separately and hoping the two agree. */
   --market-basis: calc(44% - 4px);
+  /* How many panels the clip shows whole. The one after them is the
+     peek, and this is what tells the carousel where to start fading it. */
+  --markets-shown: 2;
 
   position: relative;
   min-width: 0;
@@ -718,7 +723,7 @@ body.itx-landing-body {
    to be floated out of the flow -- as a row item it would have consumed
    width the panels do not, and the labels and panels stopped lining up --
    and even then it crowded whichever category name was clipped beneath
-   it. Up here it is simply a grid item. */
+   it. Up here it is simply a flex item next to the title. */
 .itx-board-pager {
   display: flex;
   align-items: center;
@@ -740,13 +745,35 @@ body.itx-landing-body {
   transform: scale(1.25);
 }
 
-/* The third item is deliberately half past the clip: the peek is what
- * tells you the pager has somewhere to go. */
+/* The next item is deliberately half past the clip: the peek is what
+ * tells you the pager has somewhere to go.
+ *
+ * It fades out rather than ending on a hard edge. A panel sliced down
+ * the middle reads as a rendering fault -- the same rows and the same
+ * label as its neighbours, just chopped -- whereas one dissolving into
+ * the page reads as the next thing along, not yet arrived. The ramp
+ * starts at the peeking panel's own left edge, which lands in the gap
+ * between it and the last whole panel, so nothing that is fully on
+ * screen is dimmed by it. */
 .itx-board-carousel {
+  /* Where the peeking panel starts: the whole panels before it, each
+     with the gap that follows it. */
+  --peek-edge: calc(var(--markets-shown) * (var(--market-basis) + var(--sp-7)));
+
   display: flex;
   flex: 1;
   gap: var(--sp-7);
   overflow: hidden;
+  /* The step at --peek-edge is invisible: it falls in the gap, where
+     there is nothing painted to step. It buys the peek a uniform dimming
+     on top of the dissolve, so the panel reads as inactive from its
+     first pixel rather than only towards the clip. */
+  mask-image: linear-gradient(
+    to right,
+    #000 var(--peek-edge),
+    rgba(0, 0, 0, 0.55) var(--peek-edge),
+    transparent 100%
+  );
 }
 
 .itx-board-panel-market {
@@ -1245,14 +1272,13 @@ body.itx-landing-body {
     gap: var(--sp-7);
   }
 
-  /* Stacked, there is no nav column to clear, so the title goes back to
-     the page's left edge and the pager to its right. */
+  /* Stacked, there is no nav column to clear, so the heading goes back
+     to the page's left edge. */
   .itx-board-head {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .itx-board-head .itx-board-title,
-  .itx-board-head .itx-board-pager {
+  .itx-board-headline {
     grid-column: 1;
   }
 
@@ -1271,6 +1297,7 @@ body.itx-landing-body {
 
   .itx-board-markets {
     --market-basis: calc(78% - 4px);
+    --markets-shown: 1;
   }
 
   .itx-board-panel-market {
@@ -1281,6 +1308,7 @@ body.itx-landing-body {
 @media (max-width: 640px) {
   .itx-board-markets {
     --market-basis: 92%;
+    --markets-shown: 1;
   }
 
   .itx-board-when {

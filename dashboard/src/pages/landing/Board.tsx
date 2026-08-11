@@ -285,33 +285,38 @@ export default function Board({
         <QuoteStrip kinds={kinds} windowLabel={window.label} />
 
         {/* Laid out on the same three columns as the board below, with the
-         * heading and the pager both in the middle one: the title starts
-         * where the first market panel starts, and the pager sits over the
-         * carousel's right end. Keeping the pager up here rather than on
-         * the label line is what stops it colliding with the category
-         * names it used to sit among. */}
+         * heading in the middle one: the title starts where the first
+         * market panel starts. The pager sits immediately after the
+         * title rather than out at the carousel's right end -- there it
+         * was easy to miss, and nothing tied it to the thing it moves.
+         * Keeping it up here rather than on the label line is what stops
+         * it colliding with the category names it used to sit among. */}
         <div className="itx-board-head">
-          <h2 className="itx-board-title">market overview</h2>
+          <div className="itx-board-headline">
+            <h2 className="itx-board-title">market overview</h2>
 
-          <div className="itx-board-pager">
-            <button
-              type="button"
-              aria-label="Previous category"
-              onClick={() => setPage((p) => (p + markets.length - 1) % Math.max(1, markets.length))}
-            >
-              <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
-                <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              aria-label="Next category"
-              onClick={() => setPage((p) => (p + 1) % Math.max(1, markets.length))}
-            >
-              <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
-                <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
-              </svg>
-            </button>
+            <div className="itx-board-pager">
+              <button
+                type="button"
+                aria-label="Previous category"
+                onClick={() =>
+                  setPage((p) => (p + markets.length - 1) % Math.max(1, markets.length))
+                }
+              >
+                <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
+                  <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                aria-label="Next category"
+                onClick={() => setPage((p) => (p + 1) % Math.max(1, markets.length))}
+              >
+                <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
+                  <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
