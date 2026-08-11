@@ -1042,59 +1042,87 @@ body.itx-landing-body {
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
 
-   It comes in from the left and rises at the same time, per the
-   sketch: out from behind the panel's edge, up, and into the top slot.
-   The diagonal is what gives it energy -- a straight vertical nudge
-   was legible but flat, because a row moving 22px in a list of 34px
-   rows barely leaves its own lane. Sixty-odd pixels of travel across
-   the panel's edge is a path the eye follows rather than notices.
+   The path is a card being swapped to the top of a deck, in three
+   moves: the row appears low in the stack, is drawn out sideways, is
+   carried up level with the top slot, and is pushed back in.
 
-   The fit box's `overflow: hidden` is doing real work here: the row
-   starts outside the panel's content box, so it is genuinely hidden
-   until it crosses the edge.
+   Which is the whole point of doing it in three. A diagonal from the
+   bottom-left covers the same ground in one gesture and reads as
+   "something slid in from the corner" -- the hand is missing from it.
+   Corners in the path are what make it a hand moving a card: pull,
+   lift, place. Each leg gets its own eased segment so the turns are
+   deliberate rather than smoothed into a curve.
 
-   Timing, twice revised. A second flat was too quick to read as
-   movement at all; 2.4 seconds of pure rise read as careful rather
-   than urgent, which is the wrong note for breaking news. Two seconds,
-   with the travel in the first half and a small overshoot at the end
-   of it, is the compromise: quick enough to have some snap, long
-   enough to watch. */
+   It travels out to the *right*. Going left, the row's own content is
+   what the clip eats -- the bullet and the timestamp vanish and the
+   headline seems to grow out of the middle of the panel. Held out to
+   the right the whole card stays legible and only its trailing edge
+   crosses the boundary, which is what a card sliding past the edge of
+   a deck actually looks like.
+
+   While it travels it is opaque and lifted above its siblings, because
+   a card passing over the rows below has to hide them. A translucent
+   wash over live text underneath reads as a rendering fault. It ends
+   on the panel's own colour, which is indistinguishable from the
+   transparent it started life with. */
 /* The two halves want different curves, so each keyframe carries its
    own and the animation itself is linear -- a single curve across both
    would either rush the travel or clip the fade. */
 .itx-board-updates li.is-new {
-  animation: itx-arrive 2000ms linear both;
+  /* Lifted out of the flow for the duration. Rows are static, so later
+     siblings paint over earlier ones -- without this the card would
+     pass *under* the rows it is supposed to be moving over. */
+  position: relative;
+  z-index: 1;
+  animation: itx-arrive 2400ms linear both;
 }
 
 @keyframes itx-arrive {
+  /* In the deck: low in the stack, not yet drawn. */
   0% {
     opacity: 0;
-    transform: translate(-64px, 26px);
-    background: color-mix(in srgb, var(--ld-red) 34%, transparent);
+    transform: translate(0, 52px);
+    background: color-mix(in srgb, var(--ld-red) 34%, var(--ld-dark));
     box-shadow: 0 0 28px color-mix(in srgb, var(--ld-red) 26%, transparent);
-    /* Eases in and out of the move rather than covering most of the
-       distance immediately and creeping the rest -- a hard
-       decelerating curve is what made an earlier, slower version still
-       read as an instant jump. */
-    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    animation-timing-function: cubic-bezier(0.45, 0, 0.35, 1);
   }
 
-  /* Up and across, a few pixels past where it belongs. The overshoot
-     is small enough to be felt rather than seen: it is the difference
-     between a row arriving and a row being placed. */
-  40% {
+  7% {
     opacity: 1;
-    transform: translate(5px, 0);
-    background: color-mix(in srgb, var(--ld-red) 30%, transparent);
-    box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 22%, transparent);
-    animation-timing-function: cubic-bezier(0.33, 0, 0.2, 1);
+    transform: translate(0, 52px);
+    animation-timing-function: cubic-bezier(0.45, 0, 0.35, 1);
   }
 
-  /* Settled, still lit. */
-  52% {
+  /* Drawn out to the side. */
+  24% {
+    opacity: 1;
+    transform: translate(68px, 52px);
+    background: color-mix(in srgb, var(--ld-red) 34%, var(--ld-dark));
+    animation-timing-function: cubic-bezier(0.4, 0, 0.3, 1);
+  }
+
+  /* Carried up, level with the top slot. */
+  47% {
+    opacity: 1;
+    transform: translate(68px, 0);
+    background: color-mix(in srgb, var(--ld-red) 32%, var(--ld-dark));
+    animation-timing-function: cubic-bezier(0.35, 0, 0.25, 1);
+  }
+
+  /* Pushed home, a shade past the mark. The overshoot is small enough
+     to be felt rather than seen: it is the difference between a card
+     being placed and a row appearing. */
+  64% {
+    opacity: 1;
+    transform: translate(-5px, 0);
+    animation-timing-function: cubic-bezier(0.4, 0, 0.4, 1);
+  }
+
+  /* Down, still lit. */
+  69% {
     opacity: 1;
     transform: translate(0, 0);
-    background: color-mix(in srgb, var(--ld-red) 28%, transparent);
+    background: color-mix(in srgb, var(--ld-red) 28%, var(--ld-dark));
     box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 20%, transparent);
     /* Holds the colour for a beat before it goes, and lands on zero
        gently -- the eye follows a fade far better than it follows a
@@ -1105,7 +1133,7 @@ body.itx-landing-body {
   100% {
     opacity: 1;
     transform: translate(0, 0);
-    background: transparent;
+    background: var(--ld-dark);
     box-shadow: 0 0 0 transparent;
   }
 }

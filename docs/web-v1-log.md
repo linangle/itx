@@ -1709,3 +1709,37 @@ somewhere to go.
   still starting at 65 and 88 as before.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 28 — a card swapped onto the deck
+
+The diagonal entrance still read as "something slid in from the
+corner". The gesture asked for is a card being pulled out of a deck and
+placed on top, and a diagonal covers that ground in one move with the
+hand missing from it. It is now three legs with corners between them --
+appear low in the stack, draw out sideways, carry up level with the top
+slot, push home -- each with its own eased segment so the turns stay
+deliberate instead of smoothing into a curve.
+
+Measured: still at (0, 52) at 170ms, out to x=68 by 580ms, up to y=0 by
+1130ms, home with a 4px overshoot at 1560ms and settled at 1660ms, glow
+gone by 2.4s.
+
+**It travels out to the right, not the left**, and that is the fix for
+what made the previous version read as a wipe. Going left, the clip
+eats the row's own content: the bullet and timestamp vanish and the
+headline appears to grow out of the middle of the panel. Held out to
+the right the whole card stays legible and only its trailing edge
+crosses the boundary -- which is what a card sliding past the edge of a
+deck actually looks like.
+
+**Two things a moving card needs that a glowing row did not.** It is
+opaque while it travels, mixing the red into the page colour rather
+than into transparency, because a translucent wash sliding over live
+text underneath reads as a rendering fault. And it is lifted with
+`z-index`: list rows are static, so later siblings paint over earlier
+ones, and the card -- which is the *first* row -- would otherwise pass
+underneath the rows it is meant to be moving over. It ends on the
+panel's own colour, which is indistinguishable from the transparent it
+started with.
+
+Gates: 55 tests, tsc, lint, build clean.
