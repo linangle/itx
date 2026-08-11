@@ -804,9 +804,45 @@ body.itx-landing-body[data-theme="light"] {
   display: grid;
   grid-template-columns: var(--col-nav) minmax(0, 1fr) var(--col-rail);
   gap: var(--sp-8);
-  /* Deliberately not `align-items: start`: both columns take the row's
-     height so they finish on the same line, as the mockup has them.
-     The panels below grow into it. */
+  /* `align-items: start` now, where it used to be deliberately absent.
+     Stretching every column to the row's height was right while the
+     three of them were the same height; the middle one is taller than
+     the viewport now (markets, then the tape), and stretching the two
+     pinned columns to *that* would leave them taller than the screen
+     with nothing to pin against. Each column is given its own height
+     below instead. */
+  align-items: start;
+}
+
+/* The two columns that stay put.
+ *
+ * Pinned just under the sticky masthead, and exactly as tall as what is
+ * left of the viewport under it, so the leaderboard and trends are
+ * always fully on screen rather than scrolling half out of view. A
+ * definite height is also what the panels inside need: the trends panel
+ * takes the rail's slack with `flex: 1`, and `useFitRows` divides a real
+ * height to decide how many rows to draw -- against `height: auto` both
+ * resolve to nothing and the panels come up empty. */
+.itx-board-nav,
+.itx-board-rail {
+  position: sticky;
+  top: calc(var(--ld-bar-h) + var(--sp-6));
+  height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
+}
+
+/* The column that actually scrolls: the carousel at a screen's height,
+   then the tape below it. */
+.itx-board-mid {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.itx-board-mid .itx-board-markets {
+  /* The same height as the pinned columns, so the market overview and
+     the rail beside it start and finish together -- which is what the
+     panels' `flex: 1` used to get from the grid row. */
+  height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
 }
 
 .itx-board-markets {
@@ -830,6 +866,51 @@ body.itx-landing-body[data-theme="light"] {
   display: flex;
   flex-direction: column;
 }
+
+/* Where the row sits, under the panels it belongs to.
+ *
+ * A real scrollbar is hidden on this row (`scrollbar-width: none`) --
+ * the peek and its dissolve are what say "there is more this way", and
+ * a native bar under a masked row reads as a second, contradicting
+ * edge. This is the same information drawn to match the board: a
+ * hairline track with a thumb as wide a fraction of it as the row is of
+ * its own scroll width.
+ *
+ * Both numbers arrive as custom properties written by `useCarousel` on
+ * the parent, on every scroll frame and off React's render path -- so
+ * this follows a finger exactly, and moves with a snapped arrow step
+ * because that is a scroll too. The fallbacks are the at-rest state, so
+ * a row that has not been measured yet shows a full track rather than
+ * an empty one.
+ *
+ * `translate` rather than `left`: it moves the thumb on the compositor,
+ * where `left` would lay the row out again on every frame of a scroll
+ * that is already doing work. */
+.itx-board-slider {
+  position: relative;
+  height: 3px;
+  margin-top: var(--sp-5);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--bd-line) 62%, transparent);
+  overflow: hidden;
+  /* So the thumb can measure the track: `100cqw` below is this box's
+     width. A percentage on the thumb resolves against the same box it
+     is sized from, which cannot express "the track's width minus my
+     own". Scoped to the track rather than the markets column so the
+     containment cannot reach anything that lays out. */
+  container-type: inline-size;
+}
+
+.itx-board-slider span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--rail-thumb, 1) * 100%);
+  border-radius: inherit;
+  background: var(--ld-sub);
+  /* The thumb travels the track's width less its own. */
+  translate: calc(var(--rail-progress, 0) * (100cqw - 100%)) 0;
+}
+
 
 /* Scoped to the markets row: there the labels share the width so each
  * sits over its panel. In the "latest" row the label must stay its own
@@ -1323,6 +1404,62 @@ body.itx-landing-body[data-theme="light"] {
   width: 52px;
 }
 
+/* A percentage is the one thing in these tables that must never be
+   shortened: half a number reads as a whole one. `+290.11%` is the
+   widest it gets, and the cell is sized to hold it so the columns
+   beside it give way instead. */
+.itx-board-table .right,
+.itx-board-cell-pct {
+  white-space: nowrap;
+}
+.itx-board-cell-pct {
+  width: 1%;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The trends rail is 232px wide, against a market panel's 340 and up, so
+   its three columns need their own budget: a 44px sparkline (set on the
+   element too -- the SVG carries its own width), and a name capped
+   tighter than the panels' 18ch. Without this the longest tags wrapped
+   to a second line, which broke the fixed row height *and* pushed the
+   percentage out past the panel's edge, where it was clipped mid-digit. */
+/* Fixed layout, because auto layout will not let the name column give
+   way. A `max-width` in ch on the link is a *preferred* width as far as
+   automatic table layout is concerned, so the table sized itself to the
+   longest tag and ran 8px past the panel's edge -- the percentages were
+   still being painted outside the box, just less obviously than when
+   they wrapped. Fixed layout takes the two right-hand columns at the
+   widths declared here and hands the rest to the name, which then
+   ellipsizes into whatever it is given at any rail width. */
+.itx-board-panel-trends table {
+  table-layout: fixed;
+  width: 100%;
+}
+.itx-board-panel-trends .itx-board-cell-spark {
+  width: 44px;
+}
+.itx-board-panel-trends .itx-board-cell-pct {
+  width: 66px;
+}
+/* The cap belongs to the market panels, where the column is content-
+   sized; here the column is already bounded by the table. */
+.itx-board-panel-trends .itx-board-cell-market a {
+  max-width: none;
+}
+
+/* Grey, not the board's link blue. Every row here is a link, so the blue
+   stopped reading as "these are links" and started reading as a colour
+   the panel happened to be painted in -- against a rail whose other
+   panel is a plain list of figures. Grey lets the sparkline and the
+   change carry the colour, which are the two things in the row that
+   actually mean something by being coloured. */
+.itx-board-panel-trends a {
+  color: var(--ld-sub);
+}
+.itx-board-panel-trends a:hover {
+  color: var(--ld-light);
+}
+
 /* The truncated-walk warning. Sits between the quote strip and the
    board head, in the same red the tape uses for a falling market --
    this is a correctness notice about every figure on the page, not a
@@ -1611,6 +1748,23 @@ body.itx-landing-body[data-theme="light"] {
   .itx-board-cols {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--sp-7);
+  }
+
+  /* Nothing to pin against once the columns stack: three sections one
+     under another, each a viewport tall and two of them sticky, would
+     mean scrolling a screen's worth of nav before reaching a market.
+     They go back to being ordinary blocks, sized by their contents. */
+  .itx-board-nav,
+  .itx-board-rail {
+    position: static;
+    height: auto;
+  }
+
+  /* And the markets column gives its height back to the panels'
+     own min-heights, rather than holding a screen it no longer shares
+     with anything. */
+  .itx-board-mid .itx-board-markets {
+    height: auto;
   }
 
   /* Stacked, there is no nav column to clear, so the heading goes back

@@ -255,6 +255,12 @@ export default function Board({
             onSelect={carousel.to}
           />
 
+          {/* The middle column: the carousel, its position indicator,
+            * and the tape. `latest` used to span the whole board width
+            * below the three columns; with the nav and the rail pinned
+            * it belongs in the one column that actually scrolls, and
+            * within the same bounds as the markets above it. */}
+          <div className="itx-board-mid">
           <div className="itx-board-markets" id="itx-board-markets">
             {/* Which end the row is against is handed to CSS as a pair
              * of flags: whether an edge is fading, and how, is the
@@ -291,6 +297,40 @@ export default function Board({
                 </div>
               ))}
             </div>
+
+            {/* Where the row sits, as a track under it. Driven entirely
+              * from custom properties `useCarousel` writes on this
+              * element on each scroll frame -- the same arrangement the
+              * edge fade uses, and for the same reason: a free-scrolling
+              * row moves on frames that change nothing React renders, so
+              * putting the position in state would re-render the board
+              * behind every one of them. */}
+            <div className="itx-board-slider" aria-hidden="true">
+              <span />
+            </div>
+          </div>
+
+          <div className="itx-board-labels itx-board-labels-latest">
+            <span className="itx-board-label">latest</span>
+            <span className="itx-board-live-dot" aria-label="live" title="live" />
+          </div>
+          <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
+            <div className="itx-board-fit" ref={latestFit}>
+              <ul className="itx-board-updates">
+                {updates.length === 0 && !latest.loading && (
+                  <li className="itx-board-note">nothing on the tape yet.</li>
+                )}
+                {updates.slice(0, latestRows).map((t) => (
+                  <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
+                    <span className="itx-board-dot" aria-hidden="true" />
+                    <span className="itx-board-when">{ago(t.created_at)}</span>
+                    <Link to={`/tasks/${t.id}`}>{t.description}</Link>
+                    <span className="itx-board-amt">{formatCompactItx(t.bounty)} itx</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
           </div>
 
           <div className="itx-board-rail">
@@ -305,19 +345,30 @@ export default function Board({
                     <tbody>
                       {trending.slice(0, trendRows).map((row) => (
                         <tr key={row.capability}>
-                          <td>
-                            <Link to={`/tasks?capability=${encodeURIComponent(row.capability)}`}>
+                          {/* Clipped like the market panels'. Untreated,
+                              a long hyphenated tag wrapped to a second
+                              line in a rail this narrow, which both
+                              broke the fixed row height and pushed the
+                              percentage past the panel's edge -- the
+                              change column was being cut off mid-number
+                              ("+28"). */}
+                          <td className="itx-board-cell-market">
+                            <Link
+                              to={`/tasks?capability=${encodeURIComponent(row.capability)}`}
+                              title={row.capability}
+                            >
                               {row.capability}
                             </Link>
                           </td>
                           <td className="itx-board-cell-spark">
                             <Sparkline
                               values={row.series}
+                              width={44}
                               direction={directionOf(row.changePct)}
                               label={`${row.capability} tasks posted over the last ${window.label}`}
                             />
                           </td>
-                          <td className={`right ${directionOf(row.changePct)}`}>
+                          <td className={`right itx-board-cell-pct ${directionOf(row.changePct)}`}>
                             {formatPct(row.changePct)}
                           </td>
                         </tr>
@@ -330,27 +381,6 @@ export default function Board({
           </div>
         </div>
 
-        <div className="itx-board-labels itx-board-labels-latest">
-          <span className="itx-board-label">latest</span>
-          <span className="itx-board-live-dot" aria-label="live" title="live" />
-        </div>
-        <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
-          <div className="itx-board-fit" ref={latestFit}>
-            <ul className="itx-board-updates">
-              {updates.length === 0 && !latest.loading && (
-                <li className="itx-board-note">nothing on the tape yet.</li>
-              )}
-              {updates.slice(0, latestRows).map((t) => (
-                <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
-                  <span className="itx-board-dot" aria-hidden="true" />
-                  <span className="itx-board-when">{ago(t.created_at)}</span>
-                  <Link to={`/tasks/${t.id}`}>{t.description}</Link>
-                  <span className="itx-board-amt">{formatCompactItx(t.bounty)} itx</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
 
         {/* Deliberately empty for now, per the mockup -- the outline is
          * the deliverable at this stage. */}

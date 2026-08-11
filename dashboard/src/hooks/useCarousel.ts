@@ -121,6 +121,26 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     const fade = Math.max(0, Math.min(into, step - into, cap.current));
     el.style.setProperty("--leading-fade", `${Math.round(fade)}px`);
 
+    // Where the row sits, for the indicator under it: how much of the
+    // row is on screen, and how far through the rest we are. Written on
+    // the *parent* because the indicator is a sibling of this scroll
+    // container -- custom properties inherit down, not sideways, and an
+    // indicator inside the container would scroll away with the panels.
+    //
+    // Set here rather than kept in state for the same reason
+    // `--leading-fade` is: most frames of a free-scrolling row move the
+    // row without changing anything React renders, and putting this in
+    // state would re-render the whole board behind every one of them.
+    //
+    // A row that fits entirely on screen has nowhere to travel, so the
+    // thumb fills the track and sits at 0 rather than dividing by zero.
+    const track = el.parentElement;
+    if (track) {
+      const visible = el.scrollWidth > 0 ? el.clientWidth / el.scrollWidth : 1;
+      track.style.setProperty("--rail-thumb", `${Math.min(1, visible)}`);
+      track.style.setProperty("--rail-progress", `${max > 0 ? el.scrollLeft / max : 0}`);
+    }
+
     const index = step > 0 ? Math.round(el.scrollLeft / step) : 0;
     // A pixel of slack at each end: a scroll that has arrived can sit
     // a fraction short of its own maximum, and the arrow at that end
