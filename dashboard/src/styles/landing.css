@@ -412,8 +412,15 @@ body.itx-landing-body {
      click handler's `scrollIntoView`, and the browser's own handling of
      a `/#itx-board` address, which lands after React mounts and would
      overrule any offset computed in JS. Follows the bar's own height,
-     so it is right on narrow screens and once the tape is dismissed. */
-  scroll-margin-top: var(--ld-bar-h);
+     so it is right on narrow screens and once the tape is dismissed.
+
+     Plus the overlap, because the first thing on the board is not at
+     the board's top edge: the quote strip is pulled up by
+     `--bd-overlap` to ride over the hero's market line, so aligning the
+     box put the strip -- and its labels -- behind the bar. Plus a step
+     of air, so the strip stops clear of the bar rather than welded to
+     it. */
+  scroll-margin-top: calc(var(--ld-bar-h) + var(--bd-overlap) + var(--sp-5));
 }
 
 /* The grid is a separate layer rather than a background on .itx-board

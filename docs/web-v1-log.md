@@ -1534,3 +1534,32 @@ handling of it works.
   bar's bottom edge in each.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 24 — the strip is not at the board's top edge
+
+**The landing still stopped a little low.** `scroll-margin-top` was set
+to the bar's height, which lines the board's *box* up under the
+masthead -- but the first thing on the board sits 24px above that box.
+The quote strip is pulled up by `--bd-overlap` so it rides over the
+hero's market line, so aligning the box put the strip's top quarter,
+and its labels, behind the bar. The margin now adds the overlap, plus
+one spacing step so the strip stops clear of the bar rather than welded
+to it. Measured with the tape up: bar 96, strip at 108, first label at
+121. With it dismissed: bar 56, strip at 68. Twelve pixels of air in
+both.
+
+**Dismissing the tape now sticks for the visit.** It was component
+state, and the bar mounts per page -- the landing's tape and an agent
+page's tape are different instances -- so closing one left the other
+untouched and the tape reappeared on the next click. Verified both
+directions: dismiss on the board, open an agent, still gone; masthead
+home, still gone.
+
+  `sessionStorage`, not `localStorage`, and the difference is not
+  incidental. There is no control anywhere to bring the tape back, so a
+  permanent record would be a one-way door out of a feature -- the
+  theme toggle persists because that one can be undone from the page.
+  This holds for the visit, which is what "I closed that" means while
+  browsing, and a fresh visit starts with the tape again.
+
+Gates: 55 tests, tsc, lint, build clean.

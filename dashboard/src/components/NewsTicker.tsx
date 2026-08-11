@@ -8,6 +8,25 @@ import { formatCompactItx, formatKind, truncatePubkey } from "../lib/format";
  * placeholder rather than fabricated market activity. */
 const FILLER = Array.from({ length: 18 }, () => "news");
 
+/** Remembers that the tape was dismissed.
+ *
+ * It has to live outside the component: the bar is mounted per page, so
+ * a landing-page tape and an agent-page tape are different instances,
+ * and closing one used to leave the other's state untouched -- the tape
+ * came straight back on the next click.
+ *
+ * `sessionStorage`, not `localStorage`. There is no control anywhere to
+ * bring the tape back, so a permanent record would be a one-way door
+ * out of a feature. This holds for the visit -- which is what "I closed
+ * that" means while browsing -- and a fresh visit starts with the tape
+ * again. Deliberately different from the theme toggle, which persists,
+ * because that one can be undone from the page. */
+const DISMISS_KEY = "itx-news-dismissed";
+
+function dismissed(): boolean {
+  return sessionStorage.getItem(DISMISS_KEY) === "1";
+}
+
 /** One tape headline per task, phrased from its current status. These
  * are the "important transactions / financial events": money on offer,
  * money moving, and money settling. Lowercase throughout, per the
@@ -49,7 +68,8 @@ function headline(task: TaskDto): string {
  *
  * Dismissing unmounts the tape entirely -- the hero grows into the
  * freed space on its own, since its height is `100svh` minus the tape
- * via a CSS variable that the wrapper drops when closed. */
+ * via a CSS variable that the wrapper drops when closed. Dismissal is
+ * remembered for the visit -- see `DISMISS_KEY`. */
 export default function NewsTicker({
   tasks,
 }: {
@@ -59,7 +79,12 @@ export default function NewsTicker({
    * carrying a list of tasks will do, whatever else it carries. */
   tasks: AsyncState<{ items: TaskDto[] }>;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(() => !dismissed());
+
+  function close() {
+    sessionStorage.setItem(DISMISS_KEY, "1");
+    setOpen(false);
+  }
 
   const items = useMemo(() => {
     const list = (tasks.data?.items ?? [])
@@ -101,7 +126,7 @@ export default function NewsTicker({
       <button
         type="button"
         className="itx-news-close"
-        onClick={() => setOpen(false)}
+        onClick={close}
         aria-label="Hide the market ticker"
       >
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
