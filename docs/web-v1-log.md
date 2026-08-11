@@ -2302,3 +2302,36 @@ opacity 0 → 1 by 700ms, everything back to the panel's colour by 1.4s.
   `git add -A` stages someone else's work in progress -- check
   `git status` before the commit, not after.
 
+
+### Round 35 — straight up, with weight
+
+The sideways component is gone. Several versions had one -- a
+diagonal, then three legs, then a bow -- on the theory that a card is
+drawn out of a deck before it is placed on top, and every one of them
+read as a thing being manoeuvred. A row joining a list is not a card
+trick, and the horizontal was the part the eye kept catching on.
+
+One axis pays for itself twice: a single bezier is *exactly* smooth
+where eleven interpolated sample points were only nearly so, and the
+whole path is four keyframes instead of thirteen.
+
+**Weight is three things, all in the ending.** The curve is eased out,
+so the row is quickest leaving the bottom and slows into the top. It
+rebounds three pixels past the slot and settles back, which is what
+something with mass does when it stops. And the red builds from 8% to
+its fullest exactly as it lands, so the colour settles *with* the row
+rather than announcing it from the bottom of the panel.
+
+The contents fade in over the climb on their own clock, reaching full
+just before the row lands, so it is readable the moment it stops.
+
+  Two passes on the easing curve, both measured rather than eyeballed.
+  `cubic-bezier(0.1, 0.55, 0.2, 1)` put half the distance in the first
+  80ms and then took 480ms over the last five pixels -- a launch and a
+  crawl, not weight. `(0.28, 0.7, 0.45, 1)` spends its time where the
+  eye is: 25% of the climb in the first 60ms, 65% by 180, 94% by 360,
+  over the top at 480, and settled at 660.
+
+Gates: 68 tests, lint clean. `tsc -b` and `vite build` still fail on
+`Board.tsx`, which remains mid-refactor in another session; this
+round is CSS only and the commit carries landing.css and this log.

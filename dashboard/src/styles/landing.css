@@ -816,9 +816,16 @@ body.itx-landing-body[data-theme="light"] {
   transition: transform 130ms ease, color 130ms ease;
 }
 
-.itx-board-pager button:hover {
+.itx-board-pager button:hover:not(:disabled) {
   color: var(--ld-light);
   transform: scale(1.25);
+}
+
+/* At an end. Dimmed rather than hidden, so the pair stays a pair and
+   the heading line does not reflow as you scroll the row. */
+.itx-board-pager button:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 /* A real scroll container, not a clip with a transform driven from JS.
@@ -846,8 +853,13 @@ body.itx-landing-body[data-theme="light"] {
      with the gap that follows it. */
   --peek-edge: calc(var(--markets-shown) * (var(--market-basis) + var(--sp-7)));
   /* The near edge's ramp, once the row has been scrolled and there is a
-     panel passing under it. Zeroed at the start below. */
-  --leading-fade: 64px;
+     panel passing under it. Zeroed at the start below. Roughly the
+     width the peek's own dissolve covers at the far edge, so a row
+     stopped mid-scroll is bounded the same way at both ends. */
+  --leading-fade: 96px;
+  /* How far the far edge's dissolve runs: from where the peek starts to
+     the end of the row. */
+  --peek-span: calc(100% - var(--peek-edge));
 
   display: flex;
   flex: 1;
@@ -856,24 +868,44 @@ body.itx-landing-body[data-theme="light"] {
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
-  /* The step at --peek-edge is invisible: it falls in the gap, where
-     there is nothing painted to step. It buys the peek a uniform dimming
-     on top of the dissolve, so the panel reads as inactive from its
-     first pixel rather than only towards the clip. */
+  /* Both fades are S-curves, not straight ramps, sampled at quarters.
+     A linear fade changes alpha at a constant rate but *starts* doing
+     so all at once, and that corner is visible as a seam down the panel
+     -- across a row of figures it reads as a crease in the glass. These
+     stops follow smoothstep (3t²-2t³), which leaves and arrives with
+     zero slope, so there is no instant where the dimming begins.
+     Sampled rather than eased because a gradient interpolates linearly
+     between its stops whatever curve you had in mind.
+
+     An earlier version stepped straight to 55% at --peek-edge on the
+     theory that the step fell in the gap between two panels, where
+     there is nothing painted to step. That was true only while the row
+     sat on fixed pages; now that it scrolls freely the same edge lands
+     wherever the reader stopped, which is usually mid-panel. */
   -webkit-mask-image: linear-gradient(
     to right,
     transparent 0,
+    rgba(0, 0, 0, 0.16) calc(var(--leading-fade) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--leading-fade) * 0.5),
+    rgba(0, 0, 0, 0.84) calc(var(--leading-fade) * 0.75),
     #000 var(--leading-fade),
     #000 var(--peek-edge),
-    rgba(0, 0, 0, 0.55) var(--peek-edge),
+    rgba(0, 0, 0, 0.84) calc(var(--peek-edge) + var(--peek-span) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--peek-edge) + var(--peek-span) * 0.5),
+    rgba(0, 0, 0, 0.16) calc(var(--peek-edge) + var(--peek-span) * 0.75),
     transparent 100%
   );
   mask-image: linear-gradient(
     to right,
     transparent 0,
+    rgba(0, 0, 0, 0.16) calc(var(--leading-fade) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--leading-fade) * 0.5),
+    rgba(0, 0, 0, 0.84) calc(var(--leading-fade) * 0.75),
     #000 var(--leading-fade),
     #000 var(--peek-edge),
-    rgba(0, 0, 0, 0.55) var(--peek-edge),
+    rgba(0, 0, 0, 0.84) calc(var(--peek-edge) + var(--peek-span) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--peek-edge) + var(--peek-span) * 0.5),
+    rgba(0, 0, 0, 0.16) calc(var(--peek-edge) + var(--peek-span) * 0.75),
     transparent 100%
   );
 }
@@ -885,11 +917,11 @@ body.itx-landing-body[data-theme="light"] {
   display: none;
 }
 
-/* Against an end, that edge has nothing behind it. The leading one goes
-   flat -- the first panel starts exactly there, and fading it would dim
-   a panel with nothing past it to suggest. The trailing one drops the
-   dissolve back to the peek's own dimming, so the last market is not
-   left half invisible with nowhere further to go. */
+/* Against an end, that edge has nothing behind it and its fade goes to
+   nothing: the panel there starts or finishes exactly on the edge, and
+   dimming it would be a promise of more that isn't there. Both collapse
+   by moving a stop rather than by removing one, so the gradient keeps
+   its shape and no transition is needed to hide a change of syntax. */
 .itx-board-carousel[data-at-start] {
   --leading-fade: 0px;
 }
@@ -1192,158 +1224,105 @@ body.itx-landing-body[data-theme="light"] {
 }
 
 /* A row that landed on the last poll: it rises the length of the tape
-   into the top slot, bowing slightly out on the way, and the whole
-   line glows red and fades as it settles.
+   into the top slot, resolving as it climbs, and glows red as it
+   settles.
 
    The wash and the halo are painted on the row rather than on the
    panel. What is new is one headline, and lighting the whole panel for
    it would say the section changed rather than that a task arrived.
-
-   The gesture is a card being swapped onto the top of a deck. The path
-   is sampled rather than drawn -- eleven points along
-   `x = 12·sin(πs)`, `y = rise·(1-s)`, with `s = (1-cos(πp))/2` so it
-   eases in and out, and straight lines between them. Bowing out at the
-   halfway point and returning to zero at the top is what makes it a
-   swing rather than a slide; an early version did the same moves as
-   *separate* legs -- right, then up, then left -- and the right angles
-   between them read as a machine indexing a part rather than a hand
-   moving a card.
-
-   Eleven points rather than five because a sampled curve is only as
-   smooth as its facets are short. One of them sits *on* the apex,
-   because sampling symmetrically about it left the two neighbours at
-   the same x, which held the card against an invisible wall at the
-   widest part of the swing -- exactly where the eye is.
 
    **The length of the travel is what makes it calm.** This went the
    wrong way for three rounds: the movement read as aggressive, so it
    was made smaller -- 52px, then 30, then 10 -- and each cut made it
    worse, because a short hop is a jolt however small it is. The
    trouble was never the distance, it was that the row appeared halfway
-   up a list it had no history in. It now travels the whole tape, from
-   under the bottom edge to the top slot, which is far enough to be a
-   glide: the eye picks it up at the bottom, follows it, and it arrives
+   up a list it had no history in. It travels the whole tape now, from
+   under the bottom edge to the top slot: far enough to be a glide, so
+   the eye picks it up at the bottom, follows it, and it arrives
    somewhere it was already going.
 
-   **Speed and colour both build in one direction**, which is what
-   stopped the long version reading as a zoom. `s` is eased *out*
-   rather than in-and-out, so the card is quickest as it leaves the
-   bottom and spends the second half of the climb slowing down; it
-   rebounds three pixels past the slot and settles back, which is what
-   a thing with mass does. Meanwhile the wash comes up from 8% red to
-   30% and the row's contents fade in over the climb, so the card is
-   dimmest and least legible when it is moving fastest and resolves as
-   it lands. A card that is fully lit and readable from the first frame
-   has already arrived and is merely being carried; one that resolves
-   on the way is arriving.
+   **Straight up, and nothing else.** Several versions gave it a
+   sideways component too -- a diagonal, then three legs, then a bow --
+   on the theory that a card is drawn out of a deck before it is placed
+   on top. Every one of them read as a thing being manoeuvred. A row
+   joining a list is not a card trick, and the horizontal was the part
+   the eye kept catching on. One axis needs no sampled path either: a
+   single bezier is exactly smooth where eleven interpolated points
+   were only nearly so.
 
-   The bow stays small next to the rise -- 12px against 180 -- and,
-   because the speed is front-loaded, it happens during the rush rather
-   than during the settle. It is there to keep the line from being a
-   lift shaft, not to be seen in its own right.
+   **Weight is three things, all in the ending.** The curve is eased
+   *out*, so the row is quickest as it leaves the bottom and spends the
+   second half of the climb slowing down. It rebounds three pixels past
+   the slot and settles back, which is what something with mass does
+   when it stops. And the red builds from 8% to its fullest exactly as
+   it lands, so the colour settles with the row rather than announcing
+   it from the bottom of the panel -- then fades.
 
-   It bows out to the *right*. Going left, the row's own content is
-   what the clip eats -- the bullet and the timestamp vanish and the
-   headline seems to grow out of the middle of the panel. Held out to
-   the right the whole card stays legible and only its trailing edge
-   crosses the boundary, which is what a card sliding past the edge of
-   a deck actually looks like.
+   **The contents fade in over the climb**, on their own animation on
+   the row's children so the wash and the text can be on different
+   clocks. A line that is legible from the first frame has already
+   arrived and is merely being carried; one that resolves as it rises
+   is arriving.
 
    While it travels it is opaque and lifted above its siblings, because
-   a card crossing the rows below has to hide them. A translucent wash
+   a row crossing the rows below has to hide them. A translucent wash
    over live text underneath reads as a rendering fault. It ends on the
    panel's own colour, which is indistinguishable from the transparent
    it started life with. */
 .itx-board-updates li.is-new {
-  /* How far the card travels. One number, because the last several
-     rounds of this animation have all been amplitude changes: the
-     sampled points below are fractions of it, so the whole path scales
-     from here. A shade more than the five row-heights between the top
-     and bottom slots, so the card starts under the clip and rises into
-     view rather than blinking on at the bottom row. */
+  /* How far it travels. One number, because most rounds of this
+     animation have been amplitude changes. A shade more than the five
+     row-heights between the top and bottom slots, so the row starts
+     under the clip and rises into view rather than blinking on at the
+     bottom row. */
   --arrive-rise: 180px;
 
   /* Lifted out of the flow for the duration. Rows are static, so later
-     siblings paint over earlier ones -- without this the card would
+     siblings paint over earlier ones -- without this the row would
      pass *under* the rows it is supposed to be moving over. */
   position: relative;
   z-index: 1;
-  /* Promoted for the duration: the card is opaque and crosses every
-     row in the list, so without this each frame repaints all of them,
-     which is the kind of cost that never shows in a still and reads as
-     "not smooth" in motion. */
+  /* Promoted for the duration: the row is opaque and crosses every
+     other row in the list, so without this each frame repaints all of
+     them, which is the kind of cost that never shows in a still and
+     reads as "not smooth" in motion. */
   will-change: transform;
-  /* Rise lands at 800ms, glow gone by 1.4s. */
+  /* Lands at 590ms, settles at 660, glow gone by 1.4s. */
   animation: itx-arrive 1400ms linear both;
 }
 
-/* Straight lines between the sampled points, which is what keeps the
-   arc an arc: a curve on each segment as well would fight the sampling
-   and put a hitch at every point. The one eased segment is the fade,
-   which is a value rather than a path. */
 @keyframes itx-arrive {
-  /* Below the last row, under the clip: moving fastest, barely
-     tinted, its contents not yet faded in. */
+  /* Below the last row, under the clip: moving fastest, barely tinted,
+     its contents not yet faded in. The curve here governs the whole
+     climb -- the colour stops below break the *background* into
+     intervals, but transform is only given at the ends, so it keeps
+     this one easing all the way up. */
   0% {
-    transform: translate(0px, calc(var(--arrive-rise) * 1.0));
+    transform: translateY(var(--arrive-rise));
     background: color-mix(in srgb, var(--ld-red) 8%, var(--ld-dark));
     box-shadow: 0 0 18px color-mix(in srgb, var(--ld-red) 6%, transparent);
+    animation-timing-function: cubic-bezier(0.28, 0.7, 0.45, 1);
   }
 
-  5.5% {
-    transform: translate(6.7px, calc(var(--arrive-rise) * 0.811));
-  }
-
-  11% {
-    transform: translate(10.7px, calc(var(--arrive-rise) * 0.65));
-  }
-
-  /* Widest point of the bow. It falls early in the *time* because
-     the speed is front-loaded -- the bow happens during the rush
-     and the settle is a straight line, which is the right way
-     round. */
-  16.5% {
-    transform: translate(12px, calc(var(--arrive-rise) * 0.508));
+  16% {
     background: color-mix(in srgb, var(--ld-red) 14%, var(--ld-dark));
   }
 
-  22% {
-    transform: translate(11.2px, calc(var(--arrive-rise) * 0.383));
+  30% {
+    background: color-mix(in srgb, var(--ld-red) 20%, var(--ld-dark));
   }
 
-  27.5% {
-    transform: translate(8.9px, calc(var(--arrive-rise) * 0.267));
-    background: color-mix(in srgb, var(--ld-red) 18%, var(--ld-dark));
+  /* Three pixels past the slot. */
+  42% {
+    transform: translateY(-3px);
+    background: color-mix(in srgb, var(--ld-red) 27%, var(--ld-dark));
+    animation-timing-function: cubic-bezier(0.4, 0, 0.25, 1);
   }
 
-  33% {
-    transform: translate(6.3px, calc(var(--arrive-rise) * 0.172));
-  }
-
-  38.5% {
-    transform: translate(3.8px, calc(var(--arrive-rise) * 0.1));
-  }
-
-  44% {
-    transform: translate(1.8px, calc(var(--arrive-rise) * 0.0478));
-    background: color-mix(in srgb, var(--ld-red) 24%, var(--ld-dark));
-  }
-
-  49.5% {
-    transform: translate(0.5px, calc(var(--arrive-rise) * 0.0128));
-  }
-
-  /* Three pixels past the slot. The rebound is where the weight
-     is: a thing with mass overshoots its resting place and comes
-     back to it. */
-  52% {
-    transform: translate(0px, calc(var(--arrive-rise) * -0.0167));
-  }
-
-  /* Home, and at its reddest -- the glow arrives with the row
-     rather than announcing it in advance. */
-  57% {
-    transform: translate(0, 0);
+  /* Settled, and at its reddest -- the glow arrives with the row
+     rather than in advance of it. */
+  47% {
+    transform: translateY(0);
     background: color-mix(in srgb, var(--ld-red) 30%, var(--ld-dark));
     box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 20%, transparent);
     /* Holds the colour for a beat before it goes, and lands on zero
@@ -1353,17 +1332,14 @@ body.itx-landing-body[data-theme="light"] {
   }
 
   100% {
-    transform: translate(0, 0);
+    transform: translateY(0);
     background: var(--ld-dark);
     box-shadow: 0 0 0 transparent;
   }
 }
 
-/* The line's contents fade in over the climb rather than riding it
-   fully formed. A card that is legible from the first frame has
-   already arrived and is merely being moved; one that resolves as it
-   rises is arriving. Fully in just before it lands, so the row is
-   readable at the moment it stops. */
+/* Fully in just before it lands, so the row is readable at the moment
+   it stops. */
 .itx-board-updates li.is-new > * {
   animation: itx-arrive-contents 1400ms linear both;
 }
@@ -1373,7 +1349,7 @@ body.itx-landing-body[data-theme="light"] {
     opacity: 0;
   }
 
-  50% {
+  42% {
     opacity: 1;
   }
 
@@ -1385,13 +1361,6 @@ body.itx-landing-body[data-theme="light"] {
 /* Same news, no movement: the glow still marks which row is new, it
    just doesn't travel to say so. */
 @media (prefers-reduced-motion: reduce) {
-  /* The pull still tracks the finger -- that is the gesture answering,
-     not decoration -- but the spring back to zero is animation, so it
-     goes. The row simply arrives on the new page. */
-  .itx-board-market {
-    transition: none;
-  }
-
   .itx-board-updates li.is-new {
     animation: itx-arrive-still 900ms ease-out both;
   }
