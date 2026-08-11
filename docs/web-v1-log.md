@@ -2803,3 +2803,47 @@ twelve, and whether the ellipsis ever actually triggers at the narrowest
 panel step.
 
 Gates: 97 dashboard tests (6 new), tsc, lint, build.
+
+### Round 38 — the bloom becomes weather
+
+Two notes on the baseline from the round before. The rule's marks go
+from 3px to 5, longer than its gaps: at 3 a mark reads as a dot and the
+line dissolves into stipple against a busy fill, where the thing it is
+imitating is plainly *ruled*.
+
+And the bloom's uniform pulse is gone. In its place the band is the
+chart above, mirrored under the rule and smoothed with a binomial
+kernel over five prints — which takes out every corner the generator
+works to put in, leaving only the swell underneath them — with a second
+swell travelling the other way across the width on its own slow clock.
+Weighted 60/40 to the chart, so the band is recognisably its shadow
+without tracing it, and drifting *against* the tape, because a wave
+running with it at its speed reads as a reflection rather than weather.
+
+**Alpha carries the wave, not geometry.** The obvious build is a shape:
+mirror the line, fill under it. That needs its edge blurred or it reads
+as the second chart we already decided against — so a canvas filter, a
+third buffer to keep the blur off the rule, and a clip. Baking the wave
+into the *alpha* of the bloom gradient's stops instead makes the
+interpolation between stops do exactly that blur, on every browser and
+for nothing. 48 stops; the wave lives between them.
+
+  This works because strength and reach are the same thing under a
+  vertical falloff — a brighter column is also a deeper-looking one, so
+  varying alpha varies the band's height, which is the part that reads
+  as a wave.
+
+**The falloff had to stop being linear for that to be true.** How deep
+the bloom *looks* is wherever strength × ramp drops under seeing, and a
+linear ramp crosses that at nearly the same depth however bright the
+column is — an even stripe that merely brightens and dims. A fast drop
+with a long faint tail (1 → 0.55 → 0.22 → 0.07 → 0 across the band)
+puts the crossing somewhere different for each: the tail sits under the
+floor at the wave's troughs and just above it under its crests. The
+band grew from 44px to 56 to give that tail somewhere to go.
+
+`mixColor` takes an optional alpha now, defaulted to opaque, so the
+quote strip's stops are byte-identical to what they were.
+
+Gates: 97 tests, lint and tsc clean on the touched files. Checked in
+both themes.

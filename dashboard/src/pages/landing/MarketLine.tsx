@@ -52,16 +52,34 @@ const IMPULSE_MAX = 0.8;
  * lands on the fill's densest band rather than on the page's ground, so
  * it has the same job against either theme. */
 const BASE_RULE = "rgba(138, 142, 156, 0.9)";
-const BASE_DASH = [3, 5];
+/** Longer marks than gaps. At 3px a mark reads as a dot and the rule
+ * dissolves into stipple against a busy fill; at 5 it is plainly a
+ * ruled line, which is what the zero line of a printed chart is. */
+const BASE_DASH = [5, 5];
 
-/** The bloom under the baseline breathes on its own clock, slower than
- * anything else on the page and unrelated to the wash's 13 s -- the two
- * drifting in and out of phase is what stops the pair reading as one
- * mechanical blink. Never all the way to nothing at the trough: a glow
- * that fully extinguishes reads as a dropped frame. */
-const PULSE_PERIOD = 3.4;
-const PULSE_MIN = 0.3;
-const PULSE_MAX = 0.68;
+/** The bloom is the chart again, mirrored under the rule -- but smoothed
+ * with this kernel first, which is what stops it reading as a second
+ * chart. A binomial blur over five prints takes out every corner the
+ * generator works to put in, leaving the swell underneath them. */
+const WAVE_SMOOTH = [1, 4, 6, 4, 1];
+/** How much of the bloom's shape is the chart above, the rest being the
+ * travelling swell below. Weighted to the chart so the band is
+ * recognisably its shadow, not enough that it traces it. */
+const WAVE_FROM_CHART = 0.6;
+/** The swell: crests across the width, and how many widths a crest
+ * travels per second. Slow, and *against* the tape -- a wave running
+ * with it at its speed would read as a reflection rather than weather. */
+const WAVE_CRESTS = 1.6;
+const WAVE_DRIFT = 0.055;
+/** Alpha at the rule, in the wave's troughs and under its crests. Never
+ * all the way to nothing: a band that fully extinguishes anywhere reads
+ * as a gap in the glow rather than a dim patch of it. */
+const GLOW_MIN = 0.14;
+const GLOW_MAX = 0.85;
+/** Colour stops across the width. The wave lives in the interpolation
+ * between them, so this is also the bloom's resolution: too few and the
+ * crests turn into facets. */
+const GLOW_STOPS = 48;
 
 interface Walk {
   y: number;
@@ -103,9 +121,10 @@ function nextPrice(w: Walk): number {
  * bottom of the box, the way a chart is ruled at its zero line, and
  * under that line sits a bloom in the *counter* colour -- green while
  * the tape is red, red while it is green -- densest against the line
- * and pulsing. It reads as the mirror of the wash above rather than a
- * second chart, which is what the mirrored pattern would have looked
- * like.
+ * and moving in a slow wave. The wave is the chart above, mirrored and
+ * blurred past recognition, with a swell travelling the other way over
+ * the top of it: near enough to the line to be its shadow, far enough
+ * from it that it never reads as a second chart.
  *
  * The vertical fade is why there's an offscreen buffer: a canvas
  * gradient can vary color horizontally or alpha vertically, but not
@@ -113,12 +132,13 @@ function nextPrice(w: Walk): number {
  * buffer, a destination-in pass multiplies in the vertical alpha ramp,
  * and the result is composited onto the visible canvas.
  *
- * The bloom rides along on that same pass. It is a second full-strength
- * fill on the buffer -- same sweep, inverted -- and because it occupies
- * a band the area never touches, one alpha ramp can carry both: it
- * climbs to the baseline for the area, steps to the pulse, and falls
- * away again for the bloom. Two stops at the same offset are what make
- * that step, and they are why this is one composite rather than two. */
+ * The bloom rides along on that same pass. It is a second fill on the
+ * buffer -- the sweep read backwards, with its wave baked into the
+ * stops' alpha -- and because it occupies a band the area never
+ * touches, one alpha ramp can carry both: it climbs to the baseline for
+ * the area, steps back to full, and falls away again for the bloom. Two
+ * stops at the same offset are what make that step, and they are why
+ * this is one composite rather than two. */
 export default function MarketLine() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -195,19 +215,11 @@ export default function MarketLine() {
       }
     };
 
-    /** The travelling wash across the width. `invert` flips each sample
-     * to the other end of the green<->red pair, which is all "the
-     * opposite colour" means here: the wash is a one-dimensional mix, so
-     * its counter-colour is the same mix read backwards. Taking it from
-     * the same `mixAt` call is also what keeps the bloom's front tied to
-     * the line's -- a separately-phased sweep underneath would cross the
-     * baseline at a different moment and the two would visibly disagree. */
-    const gradientFor = (g2d: CanvasRenderingContext2D, t: number, invert = false) => {
+    const gradientFor = (g2d: CanvasRenderingContext2D, t: number) => {
       const grad = g2d.createLinearGradient(0, 0, width, 0);
       for (let s = 0; s <= 8; s++) {
         const f = s / 8;
-        const m = mixAt(f, t);
-        grad.addColorStop(f, mixColor(invert ? 1 - m : m));
+        grad.addColorStop(f, mixColor(mixAt(f, t)));
       }
       return grad;
     };
@@ -242,6 +254,66 @@ export default function MarketLine() {
       const span = Math.max(0.08, hiBound - loBound);
       const f = Math.min(1, (price - loBound) / span);
       return (0.12 + f * 0.76) * baseY;
+    };
+
+    /** The chart's height above the rule at each print, in [0, 1], run
+     * through `WAVE_SMOOTH`. Taken from `yOf` rather than from `prices`
+     * so it inherits the same bounds and the same floor the line is
+     * drawn with -- the bloom rescales when the chart does, instead of
+     * drifting out of step with it every time the window's range moves. */
+    const waveHeights = (): number[] => {
+      const last = prices.length - 1;
+      const out: number[] = new Array(prices.length);
+      for (let i = 0; i <= last; i++) {
+        let sum = 0;
+        let weight = 0;
+        for (let k = -2; k <= 2; k++) {
+          // Clamped rather than wrapped at the ends: the tape is a
+          // window onto a longer walk, so its edges continue, they do
+          // not meet.
+          const j = Math.min(last, Math.max(0, i + k));
+          const w = WAVE_SMOOTH[k + 2];
+          sum += (1 - yOf(prices[j]) / baseY) * w;
+          weight += w;
+        }
+        // Back out `yOf`'s headroom so a peak really is 1.
+        out[i] = ((sum / weight) - 0.12) / 0.76;
+      }
+      return out;
+    };
+
+    /** The bloom's strength at `f` across the width: the smoothed chart
+     * above, plus a swell on its own clock. */
+    const waveAt = (wave: number[], f: number, t: number) => {
+      // Same x -> print mapping `linePath` draws with, so a crest sits
+      // under the peak it came from rather than beside it.
+      const i = (f * width + spacing + offset) / spacing;
+      const i0 = Math.min(wave.length - 1, Math.max(0, Math.floor(i)));
+      const i1 = Math.min(wave.length - 1, i0 + 1);
+      const h = wave[i0] + (wave[i1] - wave[i0]) * (i - Math.floor(i));
+      const swell = 0.5 + 0.5 * Math.sin((f * WAVE_CRESTS - t * WAVE_DRIFT) * Math.PI * 2);
+      const shape = h * WAVE_FROM_CHART + swell * (1 - WAVE_FROM_CHART);
+      return GLOW_MIN + (GLOW_MAX - GLOW_MIN) * Math.min(1, Math.max(0, shape));
+    };
+
+    /** The bloom's own gradient: the sweep read backwards for colour,
+     * with the wave baked into each stop's alpha.
+     *
+     * Alpha rather than geometry is what makes this an aurora instead of
+     * a second chart. A shape would need its edge blurred to stop
+     * reading as one, and that means a canvas filter, a third buffer to
+     * keep the blur off the rule, and a clip -- where interpolating
+     * alpha between stops *is* the blur, exactly, on every browser and
+     * for nothing. Under a vertical falloff a brighter stop is also a
+     * deeper-reaching one, so varying strength varies the band's height
+     * too, which is the part that actually reads as a wave. */
+    const bloomGradient = (g2d: CanvasRenderingContext2D, t: number, wave: number[]) => {
+      const grad = g2d.createLinearGradient(0, 0, width, 0);
+      for (let s = 0; s <= GLOW_STOPS; s++) {
+        const f = s / GLOW_STOPS;
+        grad.addColorStop(f, mixColor(1 - mixAt(f, t), waveAt(wave, f, t)));
+      }
+      return grad;
     };
 
     // x of the oldest point: one `spacing` off the left edge, minus how
@@ -288,12 +360,10 @@ export default function MarketLine() {
       bctx.fillStyle = gradientFor(bctx, t);
       bctx.fill();
 
-      // The bloom, at full strength; the ramp below shapes it.
-      bctx.fillStyle = gradientFor(bctx, t, true);
+      // The bloom. Its strength varies along the width; the ramp below
+      // only has to say how far down it reaches.
+      bctx.fillStyle = bloomGradient(bctx, t, waveHeights());
       bctx.fillRect(0, baseY, width, glowY - baseY);
-
-      const pulse =
-        PULSE_MIN + (PULSE_MAX - PULSE_MIN) * (0.5 - 0.5 * Math.cos((t / PULSE_PERIOD) * Math.PI * 2));
 
       bctx.globalCompositeOperation = "destination-in";
       const base = baseY / height;
@@ -301,11 +371,24 @@ export default function MarketLine() {
       fade.addColorStop(0, "rgba(0, 0, 0, 0)");
       fade.addColorStop(0.55 * base, "rgba(0, 0, 0, 0.16)");
       // Twice at the baseline: the area arrives at its densest and the
-      // bloom starts at the pulse, and the step between them is what the
+      // bloom starts at full, and the step between them is what the
       // dotted rule is drawn on. Ramping instead of stepping would put a
       // washed-out seam under the line where the two colours meet.
       fade.addColorStop(base, "rgba(0, 0, 0, 0.85)");
-      fade.addColorStop(base, `rgba(0, 0, 0, ${pulse})`);
+      fade.addColorStop(base, "rgba(0, 0, 0, 1)");
+      // Decaying, not linear, and this is what makes the wave read as a
+      // wave. The bloom's strength varies along the width but its ramp
+      // does not, so how deep it *looks* is wherever strength x ramp
+      // falls under seeing. A linear ramp crosses that threshold at
+      // nearly the same depth however bright the column is -- an even
+      // stripe that merely brightens. A fast drop with a long faint tail
+      // puts the crossing somewhere different for each: the tail is
+      // under the floor at `GLOW_MIN` and just above it at `GLOW_MAX`,
+      // so crests reach and troughs don't.
+      const band = glowY / height - base;
+      fade.addColorStop(base + 0.2 * band, "rgba(0, 0, 0, 0.55)");
+      fade.addColorStop(base + 0.45 * band, "rgba(0, 0, 0, 0.22)");
+      fade.addColorStop(base + 0.72 * band, "rgba(0, 0, 0, 0.07)");
       fade.addColorStop(glowY / height, "rgba(0, 0, 0, 0)");
       fade.addColorStop(1, "rgba(0, 0, 0, 0)");
       bctx.fillStyle = fade;
