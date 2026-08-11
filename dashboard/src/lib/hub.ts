@@ -183,39 +183,67 @@ export async function listTasks(params: ListTasksParams = {}): Promise<Page<Task
   };
 }
 
+/** How many page requests `listAllTasks` keeps in the air at once. Six
+ * is what a browser will actually run in parallel to one HTTP/1.1
+ * origin anyway; asking for more queues in the browser instead of here,
+ * and hitting the hub harder than its own transport allows buys
+ * nothing. */
+const MAX_PARALLEL_PAGES = 6;
+
 /** The hub caps one page at `MAX_TASKS_PAGE_SIZE` (200, see
  * `hub/src/handlers.rs`), but the overview's headline figures -- total
  * settled value, open bounty -- are wrong if they only count the most
  * recent page. This walks pages until the board is exhausted.
+ *
+ * The first page is fetched alone for its `X-Total-Count`; every
+ * remaining page is known from that answer and fetched concurrently,
+ * `MAX_PARALLEL_PAGES` at a time. The previous version walked strictly
+ * one page after another, which put 28 sequential round trips in front
+ * of a 5600-task board -- off localhost that is 28 x RTT before the
+ * page has its data, and it was the single largest latency on the
+ * landing page (see Round 36 in `docs/web-v1-log.md`). Now it is two
+ * sequential rounds: the probe, then the rest in flights of six.
+ *
+ * Pages land in `pages[i]` by position rather than arrival order, so
+ * the assembled list keeps the hub's oldest-first ordering whatever
+ * order the responses came back in.
  *
  * `maxItems` is a safety stop, not a target: it bounds how much a single
  * page load can pull if the board ever grows large, at which point the
  * honest fix is a server-side aggregate endpoint rather than a bigger
  * number here. `complete` reports whether we actually saw everything, so
  * the UI can say so instead of quietly presenting a partial total as a
- * whole one.
- *
- * It was raised to 4000 so a board of a couple of thousand tasks totals
- * honestly rather than silently summing its most recent slice. That is a
- * stopgap and it does not scale: at this size a page load is already
- * pulling a megabyte or so of JSON, and every client recomputes
- * aggregates the hub could have summed once. The server-side endpoint is
- * the actual answer, not the next bump of this number. */
+ * whole one. Parallelism cuts the walk's latency, not its weight: every
+ * client still downloads and re-derives what the hub could have summed
+ * once, and the server-side endpoint remains the actual answer. */
 export async function listAllTasks(
   params: Omit<ListTasksParams, "offset" | "limit"> = {},
   maxItems = 7000,
 ): Promise<Page<TaskDto> & { complete: boolean }> {
   const pageSize = 200;
-  const items: TaskDto[] = [];
-  let total = 0;
+  const first = await listTasks({ ...params, limit: pageSize });
+  const total = first.total;
 
-  for (let offset = 0; offset < maxItems; offset += pageSize) {
-    const page = await listTasks({ ...params, offset, limit: pageSize });
-    items.push(...page.items);
-    total = page.total;
-    if (page.items.length < pageSize || items.length >= total) break;
+  const offsets: number[] = [];
+  for (let offset = pageSize; offset < Math.min(total, maxItems); offset += pageSize) {
+    offsets.push(offset);
   }
 
+  const pages = new Array<TaskDto[]>(offsets.length);
+  let cursor = 0;
+  const worker = async () => {
+    // Single-threaded, and the increment happens before the first await,
+    // so two workers can never take the same index.
+    while (cursor < offsets.length) {
+      const index = cursor++;
+      pages[index] = (await listTasks({ ...params, offset: offsets[index], limit: pageSize })).items;
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(MAX_PARALLEL_PAGES, offsets.length) }, worker),
+  );
+
+  const items = first.items.concat(...pages);
   return { items, total, complete: items.length >= total };
 }
 
