@@ -785,6 +785,22 @@ body.itx-landing-body[data-theme="light"] {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  /* The items carry the swipe's pull, not the carousel: the carousel is
+     the clip, and moving it would slide the whole row out over the nav
+     and the rail instead of past its own edges. `--drag` is 0 unless a
+     finger is on the row, so this is an identity transform the rest of
+     the time. */
+  transform: translate3d(var(--drag, 0px), 0, 0);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Under the finger there is nothing to animate towards -- the row is
+   already where the drag says it is, and easing to each new position
+   would put a lag between the panels and the thumb pushing them. The
+   transition is for the release, when the row springs back to zero and
+   the page it turned to is underneath. */
+.itx-board-carousel[data-swiping] .itx-board-market {
+  transition: none;
 }
 
 /* Scoped to the markets row: there the labels share the width so each
@@ -835,21 +851,42 @@ body.itx-landing-body[data-theme="light"] {
   /* Where the peeking panel starts: the whole panels before it, each
      with the gap that follows it. */
   --peek-edge: calc(var(--markets-shown) * (var(--market-basis) + var(--sp-7)));
+  /* Zero at rest, when the first panel starts exactly on this edge and
+     there is nothing to soften -- a ramp here would fade a panel that
+     is entirely on screen. See the swiping rule below. */
+  --leaving-edge: 0px;
 
   display: flex;
   flex: 1;
   gap: var(--sp-7);
   overflow: hidden;
+  /* Horizontal drags are the carousel's; vertical ones are the page's.
+     Declaring that here rather than calling preventDefault means the
+     browser never has to wait on a listener to find out whether a
+     scroll may start, so scrolling past the board stays as smooth as
+     anywhere else on it. */
+  touch-action: pan-y;
   /* The step at --peek-edge is invisible: it falls in the gap, where
      there is nothing painted to step. It buys the peek a uniform dimming
      on top of the dissolve, so the panel reads as inactive from its
      first pixel rather than only towards the clip. */
   mask-image: linear-gradient(
     to right,
+    transparent 0,
+    #000 var(--leaving-edge),
     #000 var(--peek-edge),
     rgba(0, 0, 0, 0.55) var(--peek-edge),
     transparent 100%
   );
+}
+
+/* Under the finger the row moves, so the panel at the front is pushed
+   past the near edge and takes a slice off the same way the peek used
+   to at the far one. It gets the same treatment, and only while the
+   drag lasts: a little wider than the pull can reach, so the edge is
+   soft for the whole of the gesture. */
+.itx-board-carousel[data-swiping] {
+  --leaving-edge: 64px;
 }
 
 .itx-board-panel-market {
@@ -1286,6 +1323,13 @@ body.itx-landing-body[data-theme="light"] {
 /* Same news, no movement: the glow still marks which row is new, it
    just doesn't travel to say so. */
 @media (prefers-reduced-motion: reduce) {
+  /* The pull still tracks the finger -- that is the gesture answering,
+     not decoration -- but the spring back to zero is animation, so it
+     goes. The row simply arrives on the new page. */
+  .itx-board-market {
+    transition: none;
+  }
+
   .itx-board-updates li.is-new {
     animation: itx-arrive-still 900ms ease-out both;
   }

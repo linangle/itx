@@ -2021,3 +2021,58 @@ in both themes and so was 2.89:1 here against 5.55:1 there, and the
   than text.
 
 Gates: 58 tests, tsc, lint, build clean.
+
+### Round 32 — the row can be dragged, not just paged
+
+The arrows are now findable, but on a phone the obvious thing to try is
+the panel itself: a market half past the clip looks draggable, and
+until now nothing happened when you pulled it. `useSwipe` turns a
+horizontal drag on the carousel into the same page turn the arrows do —
+both go through one `turn(direction)` on the board, so the two can
+never disagree about which way "next" is.
+
+**Touch and pen only.** A mouse drag across these panels is a text
+selection, or the beginning of a click on an agent link; a carousel
+that swallowed either would cost more than the swipe gains. Pointers
+with a cursor keep the arrows, which is what they are for.
+
+**The axis is settled in the first ten pixels and never revisited.**
+Nobody starts a scroll perfectly plumb, so the hook waits until the
+finger has travelled far enough to say what the gesture is, then either
+takes it or lets go of it entirely. Paired with `touch-action: pan-y`
+on the carousel: the browser is told up front that vertical is the
+page's, so it never has to wait on a listener to find out whether a
+scroll may start, and scrolling past the board stays as smooth as
+scrolling anywhere else on it. Pointer capture is taken at the moment
+the gesture is claimed rather than on `pointerdown`, for the same
+reason.
+
+**The pull is damped — 0.35 of the travel, capped at 56px.** Nothing is
+rendered before the first panel, so a one-to-one drag to the right
+would open a gap where a previous panel ought to be. What is wanted is
+a row that gives and springs back with the page turned underneath, not
+a hand-driven slide. The offset is handed to CSS as `--drag` and
+applied to the *items*, not the carousel: the carousel is the clip, and
+moving it would slide the row out over the nav and the rail instead of
+past its own edges.
+
+The mask grew a second ramp for this. A drag pushes the front panel
+past the near edge, which sliced it exactly the way the peek used to be
+sliced at the far one; `--leaving-edge` is 0 at rest — at rest the first
+panel starts on that edge and a ramp would fade a panel that is
+entirely visible — and 64px while `data-swiping` is set, a little wider
+than the pull can reach so the edge stays soft for the whole gesture.
+Under reduced motion the pull still tracks the finger, since that is
+the gesture answering rather than decoration, but the spring back is
+dropped.
+
+The hook's callback lives in a ref rather than in the effect's deps: it
+closes over the board's state, so it is a new function every render,
+and depending on it would tear the listeners down mid-gesture — losing
+the drag every time a poll landed.
+
+Verified with real touch events driven over CDP: a 160px drag turns
+exactly one market, a 30px one turns none, and the row reports a 42px
+damped pull mid-drag and zero at rest. Gates: 64 dashboard tests (six
+new for the hook, including the vertical-scroll and mouse cases), tsc,
+lint, build clean.

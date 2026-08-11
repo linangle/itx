@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
 import { useFitRows } from "../../hooks/useFitRows";
+import { useSwipe } from "../../hooks/useSwipe";
+import type { SwipeDirection } from "../../hooks/useSwipe";
 import { BOARD_ANCHOR } from "../../components/siteNav";
 import { getLeaderboard } from "../../lib/hub";
 import type { Page, TaskDto } from "../../lib/hub";
@@ -259,6 +262,17 @@ export default function Board({
 
   const arrivals = useArrivals(latest);
 
+  // The one place that decides what "next" means, so the arrows and the
+  // swipe cannot drift apart. Wraps in both directions: the carousel is
+  // a ring, and running out of markets at one end would leave a control
+  // that silently does nothing.
+  const turn = (direction: SwipeDirection) =>
+    setPage((p) => (p + direction + markets.length) % Math.max(1, markets.length));
+
+  // Touch devices get the same paging by dragging the row itself, which
+  // is what a panel half past the clip invites you to try.
+  const [swipeRef, swipeOffset, swiping] = useSwipe(turn);
+
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
   const [leaderFit, leaderRows] = useFitRows();
@@ -296,22 +310,12 @@ export default function Board({
             <h2 className="itx-board-title">market overview</h2>
 
             <div className="itx-board-pager">
-              <button
-                type="button"
-                aria-label="Previous category"
-                onClick={() =>
-                  setPage((p) => (p + markets.length - 1) % Math.max(1, markets.length))
-                }
-              >
+              <button type="button" aria-label="Previous category" onClick={() => turn(-1)}>
                 <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
                   <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
                 </svg>
               </button>
-              <button
-                type="button"
-                aria-label="Next category"
-                onClick={() => setPage((p) => (p + 1) % Math.max(1, markets.length))}
-              >
+              <button type="button" aria-label="Next category" onClick={() => turn(1)}>
                 <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
                   <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
                 </svg>
@@ -324,7 +328,15 @@ export default function Board({
           <BoardNav markets={markets} page={page} onSelect={setPage} />
 
           <div className="itx-board-markets" id="itx-board-markets">
-            <div className="itx-board-carousel">
+            {/* The pull is handed to CSS as a length rather than written
+             * onto a transform here: which parts of the row move, and
+             * how they spring back, are the stylesheet's business. */}
+            <div
+              className="itx-board-carousel"
+              ref={swipeRef}
+              data-swiping={swiping || undefined}
+              style={{ "--drag": `${swipeOffset}px` } as CSSProperties}
+            >
               {ordered.map((m) => (
                 // Label and panel are one item, so the label cannot drift
                 // from the panel it names at any width.
