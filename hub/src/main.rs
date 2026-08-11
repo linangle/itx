@@ -409,6 +409,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/faucet", post(handlers::faucet_claim))
         .route("/reputation/:pubkey", get(handlers::get_reputation))
         .route("/leaderboard", get(handlers::leaderboard))
+        // One request for the whole board's aggregates, so a dashboard
+        // does not have to page through every task to compute them (see
+        // `board_summary`). Read-only and unauthenticated, like the rest
+        // of the board's read surface.
+        .route("/board/summary", get(handlers::board_summary))
         .route("/llms.txt", get(handlers::llms_txt))
         .layer(cors)
         // Gzip for any client that asks (every browser does). The task

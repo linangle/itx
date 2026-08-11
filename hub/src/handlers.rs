@@ -1742,6 +1742,267 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>) -> Json<Vec<Leaderb
     )
 }
 
+// ---------------------------------------------------------------------
+// Board summary
+// ---------------------------------------------------------------------
+//
+// One request that answers "what does this board look like right now",
+// so a dashboard does not have to page through every task to find out.
+//
+// The problem it solves: every headline figure a market view shows --
+// value on offer, value settled, how big a capability is, what its
+// activity looks like over time -- is an aggregate over the whole task
+// list, and `/tasks` only serves pages of at most `MAX_TASKS_PAGE_SIZE`.
+// A client wanting the totals had no choice but to walk the entire board
+// and re-derive them, on first paint and again on every poll. At twenty
+// thousand tasks that is a hundred requests and about ten megabytes of
+// JSON, per client, every few seconds, to produce a few kilobytes of
+// numbers the hub can compute once from data already in memory.
+//
+// What it deliberately does not do is decide what those capabilities
+// *mean*. Grouping tags into sectors ("coding", "creative") is a
+// product's reading of the board, differs between clients, and would
+// freeze a taxonomy into the protocol; this returns one row per tag and
+// lets the caller group them. For the same reason it returns raw
+// per-bucket arrays rather than percentages: how a change is computed
+// (period over period, and when it is too thin to report at all) is a
+// presentation decision, and the caller already has that arithmetic.
+
+/// How many points every series in a board summary carries. Matches the
+/// dashboard's `DEFAULT_BUCKETS` -- the number is a rendering detail, so
+/// it is reported in the response rather than left to be assumed.
+const SUMMARY_BUCKETS: usize = 24;
+
+/// Charting windows a summary may pick from, smallest first. Mirrors
+/// `WINDOW_PRESETS` in `dashboard/src/lib/series.ts`: a fixed window is
+/// wrong at both ends of a board's life -- on one seeded an hour ago
+/// every task lands in the last bucket, and on a year-old board a week
+/// hides nearly all of it -- so the smallest window covering the board's
+/// real age wins.
+const SUMMARY_WINDOWS_MS: [u64; 6] = [
+    3_600_000,     // 1H
+    21_600_000,    // 6H
+    86_400_000,    // 24H
+    604_800_000,   // 7D
+    2_592_000_000, // 30D
+    7_776_000_000, // 90D
+];
+
+/// Window used when the board has nothing to measure. Matches the
+/// dashboard's `DEFAULT_WINDOW`; picking the *narrowest* window for an
+/// empty board would be technically true and useless.
+const SUMMARY_DEFAULT_WINDOW_MS: u64 = 604_800_000;
+
+#[derive(Serialize)]
+pub struct BoardSummaryDto {
+    /// How far back the series reach from the moment of this request.
+    pub window_ms: u64,
+    /// Length of every series below.
+    pub buckets: usize,
+    /// Tasks the summary was computed from -- the whole board, not a
+    /// page of it. Lets a caller sanity-check that it is not looking at
+    /// a subset without counting the rows itself.
+    pub total_tasks: usize,
+    pub totals: BoardTotalsDto,
+    pub kinds: Vec<KindSummaryDto>,
+    pub capabilities: Vec<CapabilitySummaryDto>,
+}
+
+#[derive(Serialize)]
+pub struct BoardTotalsDto {
+    pub open_tasks: usize,
+    pub open_bounty: u64,
+    pub paid_tasks: usize,
+    pub paid_bounty: u64,
+    /// Tasks posted per bucket, oldest bucket first.
+    pub posted_series: Vec<u64>,
+}
+
+#[derive(Serialize)]
+pub struct KindSummaryDto {
+    /// `hash_match` | `consensus` | `disputable`, matching the `kind` tag
+    /// `TaskDto` serializes.
+    pub kind: &'static str,
+    pub open: usize,
+    pub open_bounty: u64,
+    pub posted: usize,
+    pub posted_series: Vec<u64>,
+}
+
+#[derive(Serialize)]
+pub struct CapabilitySummaryDto {
+    pub capability: String,
+    pub open: usize,
+    pub open_bounty: u64,
+    pub posted: usize,
+    /// Tasks posted per bucket, oldest first.
+    pub posted_series: Vec<u64>,
+    /// Bounty posted per bucket, oldest first -- the series a value
+    /// chart is drawn from, where `posted_series` drives an activity
+    /// chart. Both are returned because the two answer different
+    /// questions and neither can be derived from the other.
+    pub bounty_series: Vec<u64>,
+}
+
+/// The wire name for a task kind. Hand-written rather than derived so it
+/// cannot drift from `TaskKindDto`'s `#[serde(tag = "kind")]` casing
+/// without this file changing too.
+fn kind_slug(kind: &TaskKind) -> &'static str {
+    match kind {
+        TaskKind::HashMatch { .. } => "hash_match",
+        TaskKind::Consensus { .. } => "consensus",
+        TaskKind::Disputable { .. } => "disputable",
+    }
+}
+
+pub async fn board_summary(State(state): State<Arc<AppState>>) -> Json<BoardSummaryDto> {
+    let board = state.board.read().await;
+    let tasks: Vec<&Task> = board.all_tasks().collect();
+    Json(summarize_board(&tasks, Utc::now()))
+}
+
+/// The aggregation itself, with `now` passed in rather than read from the
+/// clock -- same discipline `TaskBoard` follows, and what lets the tests
+/// pin a bucket boundary instead of racing one.
+fn summarize_board(tasks: &[&Task], now: DateTime<Utc>) -> BoardSummaryDto {
+    // Widest span the board actually covers, then the smallest preset
+    // that holds it -- the same rule `chooseWindow` follows client-side.
+    // Clamped at zero so a task timestamped in the future (clock skew
+    // between a client and this host) cannot produce a negative span and
+    // collapse the axis.
+    let window_ms = match tasks.iter().map(|t| t.created_at).min() {
+        None => SUMMARY_DEFAULT_WINDOW_MS,
+        Some(oldest) => {
+            let span = (now - oldest).num_milliseconds().max(0) as u64;
+            SUMMARY_WINDOWS_MS
+                .iter()
+                .copied()
+                .find(|w| *w >= span)
+                .unwrap_or(SUMMARY_WINDOWS_MS[SUMMARY_WINDOWS_MS.len() - 1])
+        }
+    };
+
+    let start_ms = now.timestamp_millis() - window_ms as i64;
+    let bucket_ms = window_ms as f64 / SUMMARY_BUCKETS as f64;
+    // Which bucket a task falls in, or `None` if it is outside the
+    // window. Tasks older than the window are dropped rather than piled
+    // into bucket zero, where a leading spike of ancient history would
+    // flatten everything recent into an unreadable baseline.
+    let bucket_of = |task: &Task| -> Option<usize> {
+        let at = task.created_at.timestamp_millis();
+        if at < start_ms || at > now.timestamp_millis() {
+            return None;
+        }
+        Some((((at - start_ms) as f64 / bucket_ms) as usize).min(SUMMARY_BUCKETS - 1))
+    };
+
+    let zeros = || vec![0u64; SUMMARY_BUCKETS];
+
+    let mut totals = BoardTotalsDto {
+        open_tasks: 0,
+        open_bounty: 0,
+        paid_tasks: 0,
+        paid_bounty: 0,
+        posted_series: zeros(),
+    };
+    // Kinds are seeded rather than discovered, so a board with no
+    // consensus work still reports a consensus row of zeros instead of
+    // dropping the category out of the response entirely.
+    let mut kinds: Vec<KindSummaryDto> = ["hash_match", "consensus", "disputable"]
+        .into_iter()
+        .map(|kind| KindSummaryDto {
+            kind,
+            open: 0,
+            open_bounty: 0,
+            posted: 0,
+            posted_series: zeros(),
+        })
+        .collect();
+    let mut capabilities: HashMap<&str, CapabilitySummaryDto> = HashMap::new();
+
+    // One pass over the board. Everything below is accumulation into
+    // fixed-size buckets, so this is linear in tasks and independent of
+    // how many tags or kinds are in play.
+    for task in tasks {
+        let bucket = bucket_of(task);
+        let is_open = task.status == TaskStatus::Open;
+
+        if is_open {
+            totals.open_tasks += 1;
+            totals.open_bounty += task.bounty;
+        }
+        if task.status == TaskStatus::Paid {
+            totals.paid_tasks += 1;
+            totals.paid_bounty += task.bounty;
+        }
+        if let Some(b) = bucket {
+            totals.posted_series[b] += 1;
+        }
+
+        let slug = kind_slug(&task.kind);
+        if let Some(entry) = kinds.iter_mut().find(|k| k.kind == slug) {
+            entry.posted += 1;
+            if is_open {
+                entry.open += 1;
+                entry.open_bounty += task.bounty;
+            }
+            if let Some(b) = bucket {
+                entry.posted_series[b] += 1;
+            }
+        }
+
+        // A tag repeated on one task must not count it twice. Tags are
+        // normalized and deduplicated before they reach the board (see
+        // `validate_capabilities`), so this is belt-and-braces against a
+        // task stored before that was true.
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for capability in &task.capabilities {
+            if !seen.insert(capability.as_str()) {
+                continue;
+            }
+            let entry =
+                capabilities.entry(capability.as_str()).or_insert_with(|| CapabilitySummaryDto {
+                    capability: capability.clone(),
+                    open: 0,
+                    open_bounty: 0,
+                    posted: 0,
+                    posted_series: zeros(),
+                    bounty_series: zeros(),
+                });
+            entry.posted += 1;
+            if is_open {
+                entry.open += 1;
+                entry.open_bounty += task.bounty;
+            }
+            if let Some(b) = bucket {
+                entry.posted_series[b] += 1;
+                entry.bounty_series[b] += task.bounty;
+            }
+        }
+    }
+
+    // Biggest first by value on offer, so a caller rendering the top few
+    // gets the ones that matter without sorting again. Ties break on the
+    // tag itself rather than on hash order, or the response would
+    // reshuffle between identical requests.
+    let mut capabilities: Vec<CapabilitySummaryDto> = capabilities.into_values().collect();
+    capabilities.sort_by(|a, b| {
+        b.open_bounty
+            .cmp(&a.open_bounty)
+            .then_with(|| b.open.cmp(&a.open))
+            .then_with(|| a.capability.cmp(&b.capability))
+    });
+
+    BoardSummaryDto {
+        window_ms,
+        buckets: SUMMARY_BUCKETS,
+        total_tasks: tasks.len(),
+        totals,
+        kinds,
+        capabilities,
+    }
+}
+
 pub async fn llms_txt(State(state): State<Arc<AppState>>) -> String {
     format!(
         r#"# itx agent hub
@@ -2153,5 +2414,181 @@ async fn persist_other_assignees_reputation(state: &AppState, task: &Task, alrea
     };
     if let Err(e) = state.store.save_reputation_batch(&entries) {
         println!("failed to persist reputation for consensus assignees of task {} after resolution: {e}", task.id);
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+    use btclib::crypto::PrivateKey;
+
+    /// A task with just the fields the summary reads. Built directly
+    /// rather than through `TaskBoard`, because what is under test is the
+    /// aggregation and every field it touches is set here explicitly --
+    /// going through the board would make the timestamps `Utc::now()` and
+    /// the bucket assertions unpinnable.
+    fn task(created_at: DateTime<Utc>, bounty: u64, status: TaskStatus, tags: &[&str]) -> Task {
+        Task {
+            id: Uuid::new_v4(),
+            description: "t".to_string(),
+            bounty,
+            kind: TaskKind::HashMatch { expected_output_hash: Hash::hash_bytes(b"x") },
+            poster: PrivateKey::new_key().public_key(),
+            status,
+            claimant: None,
+            claim_deadline: None,
+            failed_attempts: 0,
+            created_at,
+            min_reputation: 0,
+            close_reason: None,
+            escrow_id: None,
+            capabilities: tags.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-11T12:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    fn summarize(tasks: &[Task]) -> BoardSummaryDto {
+        let refs: Vec<&Task> = tasks.iter().collect();
+        summarize_board(&refs, now())
+    }
+
+    #[test]
+    fn picks_the_smallest_window_covering_the_board() {
+        let recent = [task(now() - Duration::minutes(20), 1, TaskStatus::Open, &[])];
+        assert_eq!(summarize(&recent).window_ms, 3_600_000, "1H");
+
+        let older = [task(now() - Duration::hours(30), 1, TaskStatus::Open, &[])];
+        assert_eq!(summarize(&older).window_ms, 604_800_000, "7D");
+    }
+
+    #[test]
+    fn an_empty_board_gets_the_default_window_not_the_narrowest() {
+        // The narrowest would be technically true of a board with no
+        // history and tell a caller nothing.
+        assert_eq!(summarize(&[]).window_ms, SUMMARY_DEFAULT_WINDOW_MS);
+        assert_eq!(summarize(&[]).total_tasks, 0);
+    }
+
+    #[test]
+    fn a_future_dated_task_does_not_collapse_the_window() {
+        // Clock skew between a client and this host must not produce a
+        // negative span.
+        let skewed = [task(now() + Duration::hours(5), 1, TaskStatus::Open, &[])];
+        assert_eq!(summarize(&skewed).window_ms, 3_600_000);
+    }
+
+    #[test]
+    fn buckets_tasks_by_when_they_were_posted() {
+        // A 1H window over 24 buckets is 2.5 minutes per bucket.
+        let tasks = [
+            task(now() - Duration::minutes(50), 1, TaskStatus::Open, &[]),
+            task(now() - Duration::minutes(2), 1, TaskStatus::Open, &[]),
+            task(now() - Duration::minutes(1), 1, TaskStatus::Open, &[]),
+        ];
+        let summary = summarize(&tasks);
+        assert_eq!(summary.window_ms, 3_600_000);
+        assert_eq!(summary.buckets, SUMMARY_BUCKETS);
+        assert_eq!(summary.totals.posted_series.iter().sum::<u64>(), 3);
+        // The two recent ones share the final bucket; `now` itself lands
+        // in the last bucket rather than one past the end.
+        assert_eq!(summary.totals.posted_series[SUMMARY_BUCKETS - 1], 2);
+        assert_eq!(summary.totals.posted_series[4], 1);
+    }
+
+    #[test]
+    fn drops_tasks_older_than_the_window_instead_of_piling_them_into_bucket_zero() {
+        // Both are inside 7D so the window is 7D; the 8-day-old one is
+        // what sets it, and must not then appear as a leading spike.
+        let tasks = [
+            task(now() - Duration::days(8), 1, TaskStatus::Open, &["python"]),
+            task(now() - Duration::days(1), 1, TaskStatus::Open, &["python"]),
+        ];
+        let summary = summarize(&tasks);
+        assert_eq!(summary.window_ms, 2_592_000_000, "30D covers 8 days");
+        // Both fall inside 30 days, so both are charted.
+        assert_eq!(summary.totals.posted_series.iter().sum::<u64>(), 2);
+
+        // Now one genuinely outside: 100 days against a board whose
+        // oldest is 100 days picks 90D, leaving it out of the window.
+        let far = [
+            task(now() - Duration::days(100), 1, TaskStatus::Open, &[]),
+            task(now() - Duration::days(1), 1, TaskStatus::Open, &[]),
+        ];
+        let summary = summarize(&far);
+        assert_eq!(summary.window_ms, 7_776_000_000, "90D");
+        assert_eq!(summary.totals.posted_series.iter().sum::<u64>(), 1);
+        assert_eq!(summary.total_tasks, 2, "still counted, just not charted");
+    }
+
+    #[test]
+    fn separates_value_on_offer_from_value_settled() {
+        let tasks = [
+            task(now() - Duration::hours(1), 100, TaskStatus::Open, &[]),
+            task(now() - Duration::hours(1), 700, TaskStatus::Paid, &[]),
+            task(now() - Duration::hours(1), 500, TaskStatus::Claimed, &[]),
+        ];
+        let t = summarize(&tasks).totals;
+        assert_eq!((t.open_tasks, t.open_bounty), (1, 100));
+        assert_eq!((t.paid_tasks, t.paid_bounty), (1, 700));
+    }
+
+    #[test]
+    fn reports_every_kind_even_when_the_board_has_none_of_it() {
+        // An empty category is information; a missing one is a gap the
+        // caller has to guess at.
+        let summary = summarize(&[task(now() - Duration::hours(1), 1, TaskStatus::Open, &[])]);
+        let kinds: Vec<&str> = summary.kinds.iter().map(|k| k.kind).collect();
+        assert_eq!(kinds, vec!["hash_match", "consensus", "disputable"]);
+        let consensus = summary.kinds.iter().find(|k| k.kind == "consensus").unwrap();
+        assert_eq!(consensus.posted, 0);
+        assert_eq!(consensus.posted_series.len(), SUMMARY_BUCKETS);
+    }
+
+    #[test]
+    fn ranks_capabilities_by_value_on_offer() {
+        let tasks = [
+            task(now() - Duration::hours(1), 100, TaskStatus::Open, &["python"]),
+            task(now() - Duration::hours(1), 900, TaskStatus::Open, &["ocr"]),
+            task(now() - Duration::hours(1), 50, TaskStatus::Open, &["rust"]),
+        ];
+        let summary = summarize(&tasks);
+        let order: Vec<&str> = summary.capabilities.iter().map(|c| c.capability.as_str()).collect();
+        assert_eq!(order, vec!["ocr", "python", "rust"]);
+    }
+
+    #[test]
+    fn carries_both_an_activity_series_and_a_value_series_per_capability() {
+        let tasks = [
+            task(now() - Duration::minutes(2), 400, TaskStatus::Open, &["python"]),
+            task(now() - Duration::minutes(1), 600, TaskStatus::Open, &["python"]),
+        ];
+        let summary = summarize(&tasks);
+        let python = &summary.capabilities[0];
+        assert_eq!(python.posted, 2);
+        assert_eq!(python.open_bounty, 1000);
+        // Neither series is derivable from the other, which is why both
+        // are on the wire.
+        assert_eq!(python.posted_series[SUMMARY_BUCKETS - 1], 2);
+        assert_eq!(python.bounty_series[SUMMARY_BUCKETS - 1], 1000);
+    }
+
+    #[test]
+    fn counts_a_task_once_when_it_carries_the_same_tag_twice() {
+        let tasks = [task(now() - Duration::hours(1), 250, TaskStatus::Open, &["ocr", "ocr"])];
+        let summary = summarize(&tasks);
+        assert_eq!(summary.capabilities.len(), 1);
+        assert_eq!(summary.capabilities[0].posted, 1);
+        assert_eq!(summary.capabilities[0].open_bounty, 250);
+    }
+
+    #[test]
+    fn untagged_tasks_belong_to_no_capability_but_still_count_in_the_totals() {
+        let tasks = [task(now() - Duration::hours(1), 300, TaskStatus::Open, &[])];
+        let summary = summarize(&tasks);
+        assert!(summary.capabilities.is_empty());
+        assert_eq!(summary.totals.open_bounty, 300);
     }
 }
