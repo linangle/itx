@@ -5,7 +5,7 @@ import { BOARD_ANCHOR, scrollToBoard } from "../../components/siteNav";
 import MarketLine from "./MarketLine";
 import { useAsync } from "../../hooks/useAsync";
 import { useThemedBody } from "../../hooks/useTheme";
-import { listAllTasks } from "../../lib/hub";
+import { getBoardSummary, listLatestTasks } from "../../lib/hub";
 
 /** three.js is ~170 KB gzipped and only the landing hero uses it, so the
  * globe loads as its own chunk -- a deep link straight to /tasks or
@@ -29,14 +29,32 @@ import "../../styles/landing.css";
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
 
+/** How many headlines the tape and the board's "latest" feed share. The
+ * board shows at most `MAX_UPDATE_ROWS` (24) of them, so this is sized
+ * to fill a tall panel without asking for a page of the board. */
+const LATEST_HEADLINES = 24;
+
 export default function LandingPage() {
-  // Fetched once here and handed down, rather than the tape and the board
-  // each walking the whole task list on their own timers. That was
-  // already wasteful when it was flagged as a known trade-off; with a
-  // board of a couple of thousand tasks and a poll every few seconds it
-  // is the single most expensive thing the page does, and halving it is
-  // free.
-  const tasks = useAsync(() => listAllTasks({ status: "all" }), [], REFRESH_MS);
+  // Two small requests where this page used to walk the entire board.
+  //
+  // It fetched every task, then derived the board's aggregates in the
+  // browser -- a hundred requests and about ten megabytes of JSON at
+  // twenty thousand tasks, on first paint and again every five seconds,
+  // to end up rendering a few kilobytes of numbers. The hub computes
+  // exactly those numbers now, once, from data already in memory:
+  // `/board/summary` answers in ~7KB.
+  //
+  // The tape is the one thing here that genuinely wants tasks rather
+  // than totals, and it only wants the newest dozen -- which
+  // `listLatestTasks` gets in two small requests by reading the total
+  // and taking the tail, rather than by walking to it. Wrapped to the
+  // `{ items }` shape both the tape and the board's feed expect.
+  const summary = useAsync(() => getBoardSummary(), [], REFRESH_MS);
+  const latest = useAsync(
+    () => listLatestTasks(LATEST_HEADLINES, { status: "all" }).then((items) => ({ items })),
+    [],
+    REFRESH_MS,
+  );
   // `index.css` gives `body` a 16px margin for the three legacy pages,
   // which on a full-bleed page shows as a white frame around the whole
   // viewport. Rather than change that global rule -- the legacy pages
@@ -77,7 +95,7 @@ export default function LandingPage() {
        * `SiteBar` rather than `LiveSiteBar`: this page is already
        * holding the task list, so the tape reads from it instead of
        * fetching headlines of its own. */}
-      <SiteBar tasks={tasks} />
+      <SiteBar tasks={latest} />
 
       <div className="itx-landing-top">
         <section className="itx-hero">
@@ -105,7 +123,7 @@ export default function LandingPage() {
         </section>
       </div>
 
-      <Board tasks={tasks} />
+      <Board summary={summary} latest={latest} />
     </div>
   );
 }

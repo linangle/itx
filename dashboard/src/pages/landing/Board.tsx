@@ -8,7 +8,7 @@ import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
 import { getLeaderboard } from "../../lib/hub";
-import type { Page, TaskDto } from "../../lib/hub";
+import type { BoardSummaryDto, TaskDto } from "../../lib/hub";
 import {
   directionOf,
   formatCompactItx,
@@ -17,8 +17,12 @@ import {
   formatRelative,
   truncatePubkey,
 } from "../../lib/format";
-import { chooseWindow, summarizeByCapability, summarizeBySector } from "../../lib/series";
-import type { SectorSummary } from "../../lib/series";
+import {
+  capabilitiesFromSummary,
+  sectorsFromSummary,
+  windowFromSummary,
+} from "../../lib/series";
+import type { SectorSummary, SeriesWindow } from "../../lib/series";
 
 /** Ceilings, not row counts. Every table on the board now renders as
  * many rows as its panel has room for -- see `useFitRows` -- so these
@@ -124,39 +128,48 @@ function useArrivals(latest: TaskDto[]): Set<string> {
  *
  * Panel *labels sit outside their panels* here, above the outline,
  * which is the main structural difference from the previous version. */
-export default function Board({
-  tasks,
-}: {
-  /** Fetched and polled by LandingPage and shared with the tape, so the
-   * task list is walked once per refresh rather than once per consumer. */
-  tasks: AsyncState<Page<TaskDto> & { complete: boolean }>;
-}) {
-  const items = useMemo(() => tasks.data?.items ?? [], [tasks.data]);
-  // Memoized like the summaries below it, and for the same reason: it
-  // parses every task's created_at, and the render body is the wrong
-  // place for that to happen on renders whose data hasn't changed.
-  const window = useMemo(() => chooseWindow(items), [items]);
+/** Window shown before the hub has answered. Only ever on screen for the
+ * first paint, but a panel header has to say something. */
+const PENDING_WINDOW: SeriesWindow = { windowMs: 7 * 24 * 60 * 60 * 1000, label: "7D" };
 
+export default function Board({
+  summary,
+  latest,
+}: {
+  /** The hub's own aggregates, polled by LandingPage.
+   *
+   * This used to be the whole task list, which the board walked page by
+   * page and re-derived on every poll -- a hundred requests and ten
+   * megabytes to produce a few kilobytes of numbers. The hub sums it
+   * once now (`/board/summary`) and this finishes the presentation
+   * arithmetic in O(buckets). */
+  summary: AsyncState<BoardSummaryDto>;
+  /** The tape's headlines, fetched separately because they are the one
+   * thing on this page that needs actual tasks rather than totals -- and
+   * a dozen of them is two small requests, not a walk of the board. */
+  latest: AsyncState<{ items: TaskDto[] }>;
+}) {
+  const window = useMemo(
+    () => (summary.data ? windowFromSummary(summary.data) : PENDING_WINDOW),
+    [summary.data],
+  );
   const sectors = useMemo(
-    () => summarizeBySector(items, { windowMs: window.windowMs }),
-    [items, window.windowMs],
+    () => (summary.data ? sectorsFromSummary(summary.data) : []),
+    [summary.data],
   );
   const trending = useMemo(
     () =>
-      summarizeByCapability(items, MAX_TRENDING_ROWS, { windowMs: window.windowMs })
-        .slice()
-        .sort((a, b) => Math.abs(b.changePct ?? -Infinity) - Math.abs(a.changePct ?? -Infinity)),
-    [items, window.windowMs],
+      (summary.data ? capabilitiesFromSummary(summary.data, MAX_TRENDING_ROWS) : []).sort(
+        (a, b) => Math.abs(b.changePct ?? -Infinity) - Math.abs(a.changePct ?? -Infinity),
+      ),
+    [summary.data],
   );
-  const latest = useMemo(
-    () =>
-      [...items]
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .slice(0, MAX_UPDATE_ROWS),
-    [items],
+  const updates = useMemo(
+    () => (latest.data?.items ?? []).slice(0, MAX_UPDATE_ROWS),
+    [latest.data],
   );
 
-  const arrivals = useArrivals(latest);
+  const arrivals = useArrivals(updates);
 
   // The row scrolls itself -- see useCarousel and `overflow-x` in the
   // stylesheet. This is only what the browser cannot work out on its
@@ -176,25 +189,14 @@ export default function Board({
       <div className="itx-board-inner">
         <QuoteStrip sectors={sectors} windowLabel={window.label} />
 
-        {/* Said out loud when the client's page walk stopped before the
-         * end of the board (`listAllTasks`'s `maxItems`). Every figure
-         * above and below -- sector sizes, open bounty, every sparkline
-         * -- is a sum over the task list, so a truncated walk does not
-         * show less of the market, it misstates the market. The terminal
-         * overview has said so since it was built; this board took the
-         * flag as a prop and rendered nothing, which is the one outcome
-         * the flag exists to prevent.
-         *
-         * Worth being precise about which end is missing: the hub sorts
-         * oldest-first and the walk slices from the front, so what is
-         * absent is the newest work, not the oldest. */}
-        {tasks.data && !tasks.data.complete && (
-          <p className="itx-board-note itx-board-partial" role="status">
-            showing the oldest {formatCount(items.length)} of{" "}
-            {formatCount(tasks.data.total)} tasks — figures on this board cover only
-            these, and the newest work is missing.
-          </p>
-        )}
+        {/* No truncation notice here any more, and deliberately so. This
+         * board briefly carried one, because walking the task list could
+         * stop at `listAllTasks`'s `maxItems` and leave every figure a
+         * sum over a subset -- silently, and missing the newest work,
+         * since the hub sorts oldest-first. Reading from `/board/summary`
+         * there is no walk to truncate: the hub aggregates the whole
+         * board or answers not at all. The notice still earns its place
+         * on the terminal overview, which still walks. */}
 
         {/* Laid out on the same three columns as the board below, with the
          * heading in the middle one: the title starts where the first
@@ -270,8 +272,8 @@ export default function Board({
                   <SectorPanel
                     sector={s}
                     windowLabel={window.label}
-                    loading={tasks.loading}
-                    error={tasks.error}
+                    loading={summary.loading}
+                    error={summary.error}
                   />
                 </div>
               ))}
@@ -322,10 +324,10 @@ export default function Board({
         <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
           <div className="itx-board-fit" ref={latestFit}>
             <ul className="itx-board-updates">
-              {latest.length === 0 && !tasks.loading && (
+              {updates.length === 0 && !latest.loading && (
                 <li className="itx-board-note">nothing on the tape yet.</li>
               )}
-              {latest.slice(0, latestRows).map((t) => (
+              {updates.slice(0, latestRows).map((t) => (
                 <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
                   <span className="itx-board-dot" aria-hidden="true" />
                   <span className="itx-board-when">{ago(t.created_at)}</span>
