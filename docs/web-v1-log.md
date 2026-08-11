@@ -2724,3 +2724,82 @@ was deliberately left alone. It was never the problem, and the point of
 measuring first was to not spend the effort there.
 
 Gates: 91 dashboard tests (15 new), 117 hub tests, tsc, lint, build.
+
+### Round 38 — the board trades kinds of work, not agents
+
+**What was actually on the board was wrong.** The carousel's panels were
+one market per capability tag, and each panel's *rows were agents* --
+top earners in that tag, with a sparkline of their earnings and a change
+column. So the thing being priced was the worker. That reads as a
+staffing table, not a market: agents are participants, and what a
+marketplace quotes is the work.
+
+So the hierarchy is now sectors of markets. A **sector** is a kind of
+work (coding, creative, conversation, data, research, automation) and
+its rows are the **individual markets** inside it -- python, web-dev,
+machine-learning under coding; image-generation and copywriting under
+creative; therapy, advice, companionship under conversation. Agents did
+not disappear; they moved to the leaderboard beside the carousel, which
+is where a participant belongs.
+
+**Sectors are the site's reading of the board, not the protocol's.** A
+capability is a free-form string on a task and the chain has no notion
+of a sector, so the taxonomy is presentation-layer only
+(`src/lib/sectors.ts`) and anything it has not heard of files under
+`other` rather than vanishing -- which is the case that matters against
+a real hub, where anyone can post any tag. The fixture is deliberately
+ignorant of it too: it posts tags, exactly as the hub does.
+
+**The quote strip changed with it.** It had been the three task *kinds*
+-- hash-match, consensus, disputable -- which describe how a task is
+verified, not what kind of work it is. Left at the top of a board that
+now reads as sectors, it had the headline arguing with everything under
+it. It quotes sectors now; `summarizeByKind` stays for the terminal
+pages, which is where that distinction is the subject.
+
+**No, this did not need more tasks -- it needs fewer per row.** Worth
+recording because it was the question that opened the round. The change
+column is period-over-period and needs activity in both halves of the
+window, which is why Round 2x pushed the backfill to 5000: an
+agent-tag pair had about four paid tasks and 81% of them had exactly
+one, so the column was mostly dashes and coin-flip ±100%. A *market*
+pools every task in its tag. Measured on the reworked fixture: 94-133
+tasks per market and 20-23 of 24 buckets active, for all 35 markets.
+Aggregating one level up bought roughly thirty times the density per
+row at the same task count.
+
+**The fixture grew sideways, not upwards.** Same 5000 tasks and 1000
+agents; the twelve tags became 35 spanning all six sectors, with the
+surging/fading/steady profiles mixed *within* each sector so a sector
+panel shows markets moving both ways instead of whole sectors moving in
+lockstep. Each tag now carries its own job descriptions and its own kind
+weights -- pooled judgment on consensus, checksum work on hash_match,
+anything arguable on disputable -- so the tape stops filing a
+translation job under sql and a detail page stops contradicting its own
+tag.
+
+**One CSS fix the row content forced.** The name column used to hold a
+truncated pubkey, which never wraps. It now holds a hyphenated tag, and
+a hyphen is a break opportunity -- and since the rows are a fixed
+`--row-h` that the panel divides its own height by to decide how many it
+can show, a name wrapping to two lines would have made every capacity
+below it an overestimate rather than merely looking wrong. The link
+clips with an ellipsis instead. Clipping the link and not the cell is
+deliberate: `text-overflow` needs a constrained box, and constraining
+the cell would have meant `table-layout: fixed` on every board table,
+including the two that size themselves fine today.
+
+Not verified in a browser, again, and for a different reason than last
+round: all five dev-server slots for this folder were held by other
+sessions and none was reachable, so the pane could not be opened at all.
+The reformat is covered by six new render tests against the real
+components instead -- that sectors panel the board and markets are the
+rows, that the column heads `market` and no longer `agent`, that a row
+links to that market's tasks, that the rail ranks sectors by the money
+in them, that the strip no longer quotes task kinds, and that an unknown
+tag lands in `other`. What that leaves genuinely unchecked is
+appearance, not structure: how the six panels sit in a row sized for
+twelve, and whether the ellipsis ever actually triggers at the narrowest
+panel step.
+
+Gates: 97 dashboard tests (6 new), tsc, lint, build.
