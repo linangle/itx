@@ -785,22 +785,6 @@ body.itx-landing-body[data-theme="light"] {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* The items carry the swipe's pull, not the carousel: the carousel is
-     the clip, and moving it would slide the whole row out over the nav
-     and the rail instead of past its own edges. `--drag` is 0 unless a
-     finger is on the row, so this is an identity transform the rest of
-     the time. */
-  transform: translate3d(var(--drag, 0px), 0, 0);
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* Under the finger there is nothing to animate towards -- the row is
-   already where the drag says it is, and easing to each new position
-   would put a lag between the panels and the thumb pushing them. The
-   transition is for the release, when the row springs back to zero and
-   the page it turned to is underneath. */
-.itx-board-carousel[data-swiping] .itx-board-market {
-  transition: none;
 }
 
 /* Scoped to the markets row: there the labels share the width so each
@@ -837,56 +821,81 @@ body.itx-landing-body[data-theme="light"] {
   transform: scale(1.25);
 }
 
-/* The next item is deliberately half past the clip: the peek is what
- * tells you the pager has somewhere to go.
+/* A real scroll container, not a clip with a transform driven from JS.
  *
- * It fades out rather than ending on a hard edge. A panel sliced down
- * the middle reads as a rendering fault -- the same rows and the same
- * label as its neighbours, just chopped -- whereas one dissolving into
- * the page reads as the next thing along, not yet arrived. The ramp
- * starts at the peeking panel's own left edge, which lands in the gap
- * between it and the last whole panel, so nothing that is fully on
- * screen is dimmed by it. */
+ * That is the whole gesture story: a trackpad swipe, a finger drag,
+ * momentum, rubber-banding at the ends and shift-scroll all come from
+ * the browser, on every engine, at whatever frame rate the compositor
+ * manages -- none of which a hand-rolled version matched. What is left
+ * in JS (useCarousel) is which market is at the front and where an
+ * arrow should land.
+ *
+ * The scrollbar is hidden because the row is not a scrollbar's kind of
+ * scroll: the peek past the edge and the pager say where you are, and a
+ * gutter under the panels would cut into a box whose height is shared
+ * with the rail beside it. `overscroll-behavior-x: contain` keeps a
+ * flick that runs out of markets from reaching the browser's own
+ * back-swipe, which is what made this feel like it broke the page.
+ *
+ * The next item is deliberately half past the edge: the peek is what
+ * tells you there is more. It fades rather than ending on a hard cut --
+ * a panel sliced down the middle reads as a rendering fault, one
+ * dissolving into the page as the next thing along. */
 .itx-board-carousel {
   /* Where the peeking panel starts: the whole panels before it, each
      with the gap that follows it. */
   --peek-edge: calc(var(--markets-shown) * (var(--market-basis) + var(--sp-7)));
-  /* Zero at rest, when the first panel starts exactly on this edge and
-     there is nothing to soften -- a ramp here would fade a panel that
-     is entirely on screen. See the swiping rule below. */
-  --leaving-edge: 0px;
+  /* The near edge's ramp, once the row has been scrolled and there is a
+     panel passing under it. Zeroed at the start below. */
+  --leading-fade: 64px;
 
   display: flex;
   flex: 1;
   gap: var(--sp-7);
-  overflow: hidden;
-  /* Horizontal drags are the carousel's; vertical ones are the page's.
-     Declaring that here rather than calling preventDefault means the
-     browser never has to wait on a listener to find out whether a
-     scroll may start, so scrolling past the board stays as smooth as
-     anywhere else on it. */
-  touch-action: pan-y;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
   /* The step at --peek-edge is invisible: it falls in the gap, where
      there is nothing painted to step. It buys the peek a uniform dimming
      on top of the dissolve, so the panel reads as inactive from its
      first pixel rather than only towards the clip. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--leading-fade),
+    #000 var(--peek-edge),
+    rgba(0, 0, 0, 0.55) var(--peek-edge),
+    transparent 100%
+  );
   mask-image: linear-gradient(
     to right,
     transparent 0,
-    #000 var(--leaving-edge),
+    #000 var(--leading-fade),
     #000 var(--peek-edge),
     rgba(0, 0, 0, 0.55) var(--peek-edge),
     transparent 100%
   );
 }
 
-/* Under the finger the row moves, so the panel at the front is pushed
-   past the near edge and takes a slice off the same way the peek used
-   to at the far one. It gets the same treatment, and only while the
-   drag lasts: a little wider than the pull can reach, so the edge is
-   soft for the whole of the gesture. */
-.itx-board-carousel[data-swiping] {
-  --leaving-edge: 64px;
+/* Safari's is the one that shows: hidden by hand, since
+   `scrollbar-width` is Firefox's spelling and nothing standard covers
+   WebKit yet. */
+.itx-board-carousel::-webkit-scrollbar {
+  display: none;
+}
+
+/* Against an end, that edge has nothing behind it. The leading one goes
+   flat -- the first panel starts exactly there, and fading it would dim
+   a panel with nothing past it to suggest. The trailing one drops the
+   dissolve back to the peek's own dimming, so the last market is not
+   left half invisible with nowhere further to go. */
+.itx-board-carousel[data-at-start] {
+  --leading-fade: 0px;
+}
+
+.itx-board-carousel[data-at-end] {
+  --peek-edge: 100%;
 }
 
 .itx-board-panel-market {
@@ -1214,13 +1223,24 @@ body.itx-landing-body[data-theme="light"] {
    up a list it had no history in. It now travels the whole tape, from
    under the bottom edge to the top slot, which is far enough to be a
    glide: the eye picks it up at the bottom, follows it, and it arrives
-   somewhere it was already going. Ten pixels of the same motion
-   arrives out of nowhere and is over before it can be read as
-   anything but a flinch.
+   somewhere it was already going.
 
-   The bow stays small next to it -- 12px against a 180px rise. It is
-   there to keep the line from being a lift shaft, not to be seen in
-   its own right.
+   **Speed and colour both build in one direction**, which is what
+   stopped the long version reading as a zoom. `s` is eased *out*
+   rather than in-and-out, so the card is quickest as it leaves the
+   bottom and spends the second half of the climb slowing down; it
+   rebounds three pixels past the slot and settles back, which is what
+   a thing with mass does. Meanwhile the wash comes up from 8% red to
+   30% and the row's contents fade in over the climb, so the card is
+   dimmest and least legible when it is moving fastest and resolves as
+   it lands. A card that is fully lit and readable from the first frame
+   has already arrived and is merely being carried; one that resolves
+   on the way is arriving.
+
+   The bow stays small next to the rise -- 12px against 180 -- and,
+   because the speed is front-loaded, it happens during the rush rather
+   than during the settle. It is there to keep the line from being a
+   lift shaft, not to be seen in its own right.
 
    It bows out to the *right*. Going left, the row's own content is
    what the clip eats -- the bullet and the timestamp vanish and the
@@ -1253,8 +1273,8 @@ body.itx-landing-body[data-theme="light"] {
      which is the kind of cost that never shows in a still and reads as
      "not smooth" in motion. */
   will-change: transform;
-  /* Rise lands at 600ms, glow gone by 1.1s. */
-  animation: itx-arrive 1100ms linear both;
+  /* Rise lands at 800ms, glow gone by 1.4s. */
+  animation: itx-arrive 1400ms linear both;
 }
 
 /* Straight lines between the sampled points, which is what keeps the
@@ -1262,59 +1282,70 @@ body.itx-landing-body[data-theme="light"] {
    and put a hitch at every point. The one eased segment is the fade,
    which is a value rather than a path. */
 @keyframes itx-arrive {
-  /* Below the last row, under the clip. */
+  /* Below the last row, under the clip: moving fastest, barely
+     tinted, its contents not yet faded in. */
   0% {
-    opacity: 0;
-    transform: translate(0, var(--arrive-rise));
-    background: color-mix(in srgb, var(--ld-red) 26%, var(--ld-dark));
-    box-shadow: 0 0 24px color-mix(in srgb, var(--ld-red) 22%, transparent);
+    transform: translate(0px, calc(var(--arrive-rise) * 1.0));
+    background: color-mix(in srgb, var(--ld-red) 8%, var(--ld-dark));
+    box-shadow: 0 0 18px color-mix(in srgb, var(--ld-red) 6%, transparent);
   }
 
-  6% {
-    opacity: 1;
-    transform: translate(1.1px, calc(var(--arrive-rise) * 0.9698));
+  5.5% {
+    transform: translate(6.7px, calc(var(--arrive-rise) * 0.811));
   }
 
-  12% {
-    transform: translate(4.3px, calc(var(--arrive-rise) * 0.883));
+  11% {
+    transform: translate(10.7px, calc(var(--arrive-rise) * 0.65));
   }
 
-  18% {
-    transform: translate(8.5px, calc(var(--arrive-rise) * 0.75));
+  /* Widest point of the bow. It falls early in the *time* because
+     the speed is front-loaded -- the bow happens during the rush
+     and the settle is a straight line, which is the right way
+     round. */
+  16.5% {
+    transform: translate(12px, calc(var(--arrive-rise) * 0.508));
+    background: color-mix(in srgb, var(--ld-red) 14%, var(--ld-dark));
   }
 
-  24% {
-    transform: translate(11.6px, calc(var(--arrive-rise) * 0.587));
+  22% {
+    transform: translate(11.2px, calc(var(--arrive-rise) * 0.383));
   }
 
-  /* Widest point of the bow, halfway up. */
   27.5% {
-    transform: translate(12px, calc(var(--arrive-rise) * 0.5));
-    background: color-mix(in srgb, var(--ld-red) 27%, var(--ld-dark));
+    transform: translate(8.9px, calc(var(--arrive-rise) * 0.267));
+    background: color-mix(in srgb, var(--ld-red) 18%, var(--ld-dark));
   }
 
-  31% {
-    transform: translate(11.6px, calc(var(--arrive-rise) * 0.413));
+  33% {
+    transform: translate(6.3px, calc(var(--arrive-rise) * 0.172));
   }
 
-  37% {
-    transform: translate(8.5px, calc(var(--arrive-rise) * 0.25));
+  38.5% {
+    transform: translate(3.8px, calc(var(--arrive-rise) * 0.1));
   }
 
-  43% {
-    transform: translate(4.3px, calc(var(--arrive-rise) * 0.117));
+  44% {
+    transform: translate(1.8px, calc(var(--arrive-rise) * 0.0478));
+    background: color-mix(in srgb, var(--ld-red) 24%, var(--ld-dark));
   }
 
-  49% {
-    transform: translate(1.1px, calc(var(--arrive-rise) * 0.0302));
+  49.5% {
+    transform: translate(0.5px, calc(var(--arrive-rise) * 0.0128));
   }
 
-  /* Home, and lit. */
-  55% {
-    opacity: 1;
+  /* Three pixels past the slot. The rebound is where the weight
+     is: a thing with mass overshoots its resting place and comes
+     back to it. */
+  52% {
+    transform: translate(0px, calc(var(--arrive-rise) * -0.0167));
+  }
+
+  /* Home, and at its reddest -- the glow arrives with the row
+     rather than announcing it in advance. */
+  57% {
     transform: translate(0, 0);
     background: color-mix(in srgb, var(--ld-red) 30%, var(--ld-dark));
-    box-shadow: 0 0 20px color-mix(in srgb, var(--ld-red) 20%, transparent);
+    box-shadow: 0 0 22px color-mix(in srgb, var(--ld-red) 20%, transparent);
     /* Holds the colour for a beat before it goes, and lands on zero
        gently -- the eye follows a fade far better than it follows a
        drop-off. */
@@ -1322,10 +1353,32 @@ body.itx-landing-body[data-theme="light"] {
   }
 
   100% {
-    opacity: 1;
     transform: translate(0, 0);
     background: var(--ld-dark);
     box-shadow: 0 0 0 transparent;
+  }
+}
+
+/* The line's contents fade in over the climb rather than riding it
+   fully formed. A card that is legible from the first frame has
+   already arrived and is merely being moved; one that resolves as it
+   rises is arriving. Fully in just before it lands, so the row is
+   readable at the moment it stops. */
+.itx-board-updates li.is-new > * {
+  animation: itx-arrive-contents 1400ms linear both;
+}
+
+@keyframes itx-arrive-contents {
+  0% {
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 1;
   }
 }
 

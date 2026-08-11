@@ -2261,3 +2261,37 @@ currently renders nowhere.
 
 Gates: 74 dashboard tests (5 new, covering `AgentLink`'s four states),
 tsc, lint, build clean. Verified against the mock.
+
+### Round 34 — the climb gets a direction, and the glow arrives with it
+
+The long travel was right but it read as a zoom: the row went up at one
+speed, fully lit and fully legible the whole way, and stopped. Three
+changes, all pulling the same way.
+
+**The speed is eased out rather than in-and-out.** The card is quickest
+as it leaves the bottom and spends the second half of the climb slowing
+down -- 43px in the first 100ms, 10 in the last 100 -- then rebounds
+three pixels past the slot and settles back. The rebound is where the
+weight is: a thing with mass overshoots its resting place.
+
+**The glow builds instead of arriving pre-lit.** The wash comes up from
+8% red to 30% across the climb and reaches its fullest as the row
+lands, so the colour settles *with* the card rather than announcing it
+from the bottom of the panel. Then it fades as before.
+
+**The contents fade in over the climb** -- their own animation on the
+row's children, so the wash and the text can be on different clocks. A
+card that is legible from the first frame has already arrived and is
+merely being carried; one that resolves as it rises is arriving.
+
+Measured: y 180 → 137 at 100ms → 45 at 400 → 1 at 700, rebound to -3 at
+730, home at 800. Wash lightness 0.226 → 0.316 over the same span, text
+opacity 0 → 1 by 700ms, everything back to the panel's colour by 1.4s.
+
+  Gates: 63 tests pass, lint clean, and my own files typecheck -- but
+  `tsc -b` and `vite build` do not currently pass on the tree as a
+  whole. `Board.tsx` is mid-refactor in another session (a `useSwipe`
+  hook deleted, `useCarousel.ts` added but not yet wired), which is
+  neither mine to fix nor mine to commit. This round's change is CSS
+  only, and only landing.css and this log went into the commit.
+
