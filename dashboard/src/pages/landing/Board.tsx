@@ -10,7 +10,7 @@ import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
 import { getLeaderboard } from "../../lib/hub";
-import type { BoardSummaryDto, TaskDto } from "../../lib/hub";
+import type { BoardSummaryDto, LeaderboardEntryDto, TaskDto } from "../../lib/hub";
 import {
   directionOf,
   formatCompactItx,
@@ -183,6 +183,20 @@ export default function Board({
   // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
 
+  // Shared by the rail's list and the tape's agent column.
+  const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
+  /** Pubkey to hub-assigned name, for the tape.
+   *
+   * The leaderboard only carries agents that have *earned*, so a poster
+   * who has never been paid is genuinely absent here and the row falls
+   * back to a truncated key. That is the honest rendering: the name is a
+   * label the hub assigns, not something this page may invent, and the
+   * pubkey is the only thing that identifies an agent anyway. */
+  const names = useMemo(
+    () => new Map((leaders.data ?? []).map((l) => [l.pubkey, l.name])),
+    [leaders.data],
+  );
+
   // The row scrolls itself -- see useCarousel and `overflow-x` in the
   // stylesheet. This is only what the browser cannot work out on its
   // own: which sector is at the front, whether either end is reached,
@@ -325,8 +339,30 @@ export default function Board({
                   <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
                     <span className="itx-board-dot" aria-hidden="true" />
                     <span className="itx-board-when">{ago(t.created_at)}</span>
-                    <Link to={`/tasks/${t.id}`}>{t.description}</Link>
+                    <Link className="itx-board-what" to={`/tasks/${t.id}`}>
+                      {t.description}
+                    </Link>
                     <span className="itx-board-amt">{formatCompactItx(t.bounty)} itx</span>
+                    <span className="itx-board-cat">
+                      {/* A task may carry no tag at all -- untagged work
+                          is unrestricted rather than belonging to a
+                          market called "none" -- so the cell holds the
+                          column open rather than collapsing the row's
+                          alignment when there is nothing to name. */}
+                      {t.capabilities[0] ? (
+                        <Link to={`/tasks?capability=${encodeURIComponent(t.capabilities[0])}`}>
+                          {t.capabilities[0]}
+                        </Link>
+                      ) : (
+                        <span className="itx-board-untagged">untagged</span>
+                      )}
+                    </span>
+                    {/* The poster, not the claimant. This is a feed of
+                        work as it is *posted*, and the newest tasks are
+                        open by definition -- a claimant column would be
+                        empty on most rows and would quietly change
+                        meaning on the ones where it wasn't. */}
+                    <TapeAgent pubkey={t.poster} name={names.get(t.poster) ?? null} />
                   </li>
                 ))}
               </ul>
@@ -337,7 +373,7 @@ export default function Board({
           </div>
 
           <div className="itx-board-rail">
-            <LeaderboardRail />
+            <LeaderboardRail leaders={leaders} />
             <span className="itx-board-label">trends</span>
             <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
               <div className="itx-board-fit" ref={trendFit}>
@@ -390,6 +426,30 @@ export default function Board({
         <footer className="itx-board-panel itx-board-footer" aria-label="Footer" />
       </div>
     </section>
+  );
+}
+
+/** The agent at the right of a tape row: their icon and their name.
+ *
+ * The icon needs no lookup -- `ProfileIcon` composes it from the pubkey
+ * itself, so it is available for any key, named or not. The name does,
+ * and comes from the leaderboard `Board` already holds.
+ *
+ * Falls back to a truncated key rather than to nothing. A name is a
+ * label the hub assigns and only to agents it has seen earn; the pubkey
+ * is what actually identifies an agent, so an unnamed one is a normal
+ * state to render, not a gap. The full key stays on the title either
+ * way. */
+function TapeAgent({ pubkey, name }: { pubkey: string; name: string | null }) {
+  return (
+    <Link
+      className="itx-board-agent"
+      to={`/agents/${pubkey}`}
+      title={`posted by ${pubkey}`}
+    >
+      <ProfileIcon pubkey={pubkey} size={20} className="itx-avatar" />
+      <span>{name ?? truncatePubkey(pubkey, 4, 4)}</span>
+    </Link>
   );
 }
 
@@ -493,8 +553,21 @@ function QuoteStrip({
  * 36 measured it). With the state down here, a keystroke re-renders
  * exactly this panel. The leaderboard poll moves down with it, so the
  * board also stops re-rendering when only the leaders answer changed. */
-function LeaderboardRail() {
-  const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
+function LeaderboardRail({
+  leaders,
+}: {
+  /** Fetched by `Board` and handed down, because the tape needs the same
+   * answer to put a name beside each poster and two polls of the same
+   * endpoint would be one too many.
+   *
+   * The *query* stays here, which is the half that mattered: it lived in
+   * `Board` once, so every keystroke re-rendered a dozen sparkline
+   * tables to filter one list (Round 36). Lifting the data back up costs
+   * a re-render of this subtree per poll, which the memoised summaries
+   * and `SectorPanel`'s own `memo` already absorb; lifting the query
+   * would cost one per keystroke, which they would not. */
+  leaders: AsyncState<LeaderboardEntryDto[]>;
+}) {
   const [query, setQuery] = useState("");
   const [fitRef, leaderRows] = useFitRows();
 

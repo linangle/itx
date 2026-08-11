@@ -1736,7 +1736,14 @@ body.itx-landing-body[data-theme="light"] {
   font-size: var(--fs-meta);
 }
 
-.itx-board-updates li > a {
+/* The task's own name is the only cell that flexes; every other column
+   is a fixed width so the columns line up down the panel.
+ *
+ * Fixed widths rather than a grid on the <ul> with `display: contents`
+ * rows, because the row has to stay a box: the arrival animation moves
+ * it, paints a glow behind it and rounds its corners, none of which a
+ * contents-display element can do. */
+.itx-board-what {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1745,10 +1752,65 @@ body.itx-landing-body[data-theme="light"] {
   color: var(--ld-light);
 }
 
+/* Green, and immediately after the task it belongs to -- money is the
+   point of the row, and it was previously stranded at the far right
+   where it read as a footnote to whatever column it had drifted past.
+   Tabular figures and a fixed width so the amounts stack into a column
+   rather than ragging against the text beside them. */
 .itx-board-amt {
   flex: none;
+  width: 96px;
+  color: var(--ld-green);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Which market the work belongs to. Muted: it is context for the task,
+   not the headline, and at full strength three coloured columns in one
+   row compete with each other. */
+.itx-board-cat {
+  flex: none;
+  width: 148px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-meta);
+}
+.itx-board-cat a {
+  color: var(--ld-sub);
+}
+.itx-board-cat a:hover {
+  color: var(--ld-light);
+}
+.itx-board-untagged {
+  color: color-mix(in srgb, var(--ld-sub) 55%, transparent);
+}
+
+/* Who posted it. The icon is composed from the pubkey, so it is there
+   for every agent whether the hub has named them or not. */
+.itx-board-agent {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 164px;
+  min-width: 0;
   color: var(--ld-sub);
   font-size: var(--fs-meta);
+}
+.itx-board-agent span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.itx-board-agent:hover {
+  color: var(--ld-light);
+}
+.itx-board-agent .itx-avatar {
+  flex: none;
 }
 
 .itx-board-footer {

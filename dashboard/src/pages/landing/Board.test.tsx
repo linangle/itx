@@ -141,28 +141,66 @@ describe("Board", () => {
     expect(await carousel.findByRole("link", { name: "haruspicy" })).toBeInTheDocument();
   });
 
-  it("takes the tape's headlines from the task feed, not from the summary", () => {
-    // The summary carries totals and has no task identities in it, so
-    // the "latest" panel is the one thing here that still needs tasks.
-    const feed = {
+  /** A tape row's worth of task. Every field the row reads is set --
+   * `capabilities` especially, which the hub always sends (it is not
+   * optional in `TaskCommon`) and which the rest of `lib/` already
+   * indexes without guarding. */
+  function feedOf(overrides: Partial<TaskDto> = {}) {
+    return {
       data: {
         items: [
           {
             id: "abc",
             description: "Fine-tune a sentiment classifier",
-            bounty: 100,
+            bounty: 250_000_000,
             created_at: new Date().toISOString(),
+            capabilities: ["machine-learning"],
+            poster: "02aa11bb22cc33dd",
+            status: "Open",
+            claimant: null,
+            ...overrides,
           } as TaskDto,
         ],
       },
       loading: false,
       error: null,
     } as AsyncState<{ items: TaskDto[] }>;
+  }
 
-    renderBoard(capabilities, feed);
+  it("takes the tape's headlines from the task feed, not from the summary", () => {
+    // The summary carries totals and has no task identities in it, so
+    // the "latest" panel is the one thing here that still needs tasks.
+    renderBoard(capabilities, feedOf());
     expect(
       screen.getByRole("link", { name: "Fine-tune a sentiment classifier" }),
     ).toHaveAttribute("href", "/tasks/abc");
+  });
+
+  it("carries the value, the market and the poster across the tape row", () => {
+    const { container } = renderBoard(capabilities, feedOf());
+    const row = container.querySelector(".itx-board-updates li") as HTMLElement;
+
+    // Read off the cell rather than by text: the amount and its unit are
+    // separate nodes, and how many decimals `formatItx` keeps is its
+    // business, not this test's.
+    expect(row.querySelector(".itx-board-amt")?.textContent).toMatch(/^2\.5\d*\s*itx$/);
+    // The market it trades in, linked the same way a market row is.
+    expect(within(row).getByRole("link", { name: "machine-learning" })).toHaveAttribute(
+      "href",
+      "/tasks?capability=machine-learning",
+    );
+    // And the agent who posted it, at the end of the row.
+    const agent = within(row).getByTitle(/posted by 02aa11bb22cc33dd/);
+    expect(agent).toHaveAttribute("href", "/agents/02aa11bb22cc33dd");
+  });
+
+  it("holds the market column open for work that carries no tag", () => {
+    // Untagged work is unrestricted rather than belonging to a market
+    // called "none", so the cell says so instead of collapsing and
+    // pulling the columns beside it out of line.
+    const { container } = renderBoard(capabilities, feedOf({ capabilities: [] }));
+    const row = container.querySelector(".itx-board-updates li") as HTMLElement;
+    expect(within(row).getByText("untagged")).toBeInTheDocument();
   });
 });
 
