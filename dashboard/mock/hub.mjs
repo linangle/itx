@@ -8,11 +8,17 @@
 //
 // This serves the same shapes as `hub/src/handlers.rs` (including the
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
-// activity sized like a real marketplace rather than a smoke test:
-// 120 agents with distinct keys, several hundred tasks, every status,
-// and capability tags that trend differently on purpose -- some
+// activity sized like a real marketplace rather than a smoke test: a
+// thousand agents with distinct keys, five thousand tasks, every status,
+// and 35 capability tags that trend differently on purpose -- some
 // surging, some fading, some steady -- so change columns show real ups
 // and downs instead of a wall of identical numbers.
+//
+// Those tags span the six sectors the site groups them into (see
+// `src/lib/sectors.ts`), and the fixture is deliberately ignorant of
+// that grouping: it posts tags, exactly as a real hub does, because
+// sectors are the site's reading of the board rather than anything the
+// protocol stores.
 //
 // It also keeps running. After the backfill it ticks on a timer,
 // posting new tasks and advancing existing ones through their
@@ -74,19 +80,359 @@ const DISPUTE_WORKERS = AGENTS.slice(380, 1000);
 // what makes period-over-period change read as a mix of up, down and
 // flat instead of null everywhere (the old fixture's single weighting
 // left one half of the window nearly empty).
+//
+// The roster spans the site's six sectors (see `src/lib/sectors.ts`) --
+// coding, creative, conversation, data, research, automation -- with the
+// profiles mixed *within* each sector, so every sector panel shows
+// markets moving both ways rather than whole sectors rising or falling
+// in lockstep. The fixture itself knows nothing of sectors: it only
+// posts tags, exactly as a real hub would, and the grouping is the
+// site's business.
+//
+// Each tag brings its own descriptions, so the tape reads like work that
+// belongs to its market instead of a translation job filed under sql.
+// And its own kind weights: labeling rides consensus the way pooled
+// judgment work would, checksum work is hash-matched, subjective work is
+// disputable. Nothing enforces that pairing -- it just keeps a task's
+// detail page from contradicting its own tag.
 const CAPABILITIES = [
-  ["python", "surging"],
-  ["rust", "steady"],
-  ["translation", "fading"],
-  ["ocr", "steady"],
-  ["scraping", "surging"],
-  ["summarization", "fading"],
-  ["geocoding", "steady"],
-  ["labeling", "surging"],
-  ["transcription", "steady"],
-  ["vision", "fading"],
-  ["sql", "steady"],
-  ["prover", "surging"],
+  // coding
+  {
+    tag: "python",
+    profile: "surging",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Fix a failing pandas pipeline in a nightly ETL",
+      "Write property tests for a parser module",
+      "Port a Python 2 scraper to 3.12",
+      "Profile and speed up a slow numpy loop",
+    ],
+  },
+  {
+    tag: "cpp",
+    profile: "fading",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Chase a segfault in a C++ matrix library",
+      "Write fuzz harnesses for a C++ decoder",
+      "Vectorize an image filter with SIMD intrinsics",
+    ],
+  },
+  {
+    tag: "rust",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Write fuzz harnesses for a decoder crate",
+      "Add serde support to a config crate",
+      "Fix a lifetime error blocking an async refactor",
+    ],
+  },
+  {
+    tag: "web-dev",
+    profile: "surging",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Build a responsive pricing page from a Figma file",
+      "Fix a hydration mismatch in a checkout flow",
+      "Migrate a jQuery admin panel to React",
+    ],
+  },
+  {
+    tag: "machine-learning",
+    profile: "surging",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Fine-tune a sentiment classifier on 10k reviews",
+      "Train a churn model on last quarter's exports",
+      "Distill a 7B model for on-device inference",
+    ],
+  },
+  {
+    tag: "sql",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Draft SQL for a churn cohort report",
+      "Optimize a query pinning a Postgres replica",
+      "Design indexes for a slow reporting join",
+    ],
+  },
+  {
+    tag: "computation",
+    profile: "fading",
+    kinds: ["hash_match", "hash_match", "hash_match", "disputable"],
+    jobs: [
+      "Compute SHA256 of the attached dataset manifest",
+      "Compute checksums for a nightly backup set",
+      "Verify a proof-of-work nonce against a target",
+    ],
+  },
+  {
+    tag: "pdf-generation",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Generate branded PDF invoices from CSV rows",
+      "Render 300 certificates to print-ready PDF",
+      "Turn a markdown handbook into a typeset PDF",
+    ],
+  },
+  {
+    tag: "prover",
+    profile: "surging",
+    kinds: ["hash_match", "hash_match", "hash_match", "disputable"],
+    jobs: [
+      "Verify Merkle proofs for a light client",
+      "Check a zk circuit's witness generation",
+    ],
+  },
+  // creative
+  {
+    tag: "image-generation",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Generate 4 hero images for a landing page",
+      "Product shots on white for 40 SKUs",
+      "Illustrate a children's book spread in watercolor",
+    ],
+  },
+  {
+    tag: "content-writing",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Write a 1,200-word post on cold-chain logistics",
+      "Draft release notes from a merged PR list",
+      "Backfill missing alt-text for a docs site",
+    ],
+  },
+  {
+    tag: "copywriting",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Punch up onboarding email subject lines",
+      "Write 20 ad variants for an A/B test",
+      "Name a budgeting app, with a tagline",
+    ],
+  },
+  {
+    tag: "design",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Design a logo for a coffee roaster",
+      "Lay out a one-page media kit",
+      "Redraw a pitch deck's diagrams in a house style",
+    ],
+  },
+  {
+    tag: "video-editing",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Cut a 3-minute demo from raw screen recordings",
+      "Subtitle and trim a webinar into clips",
+    ],
+  },
+  // conversation
+  {
+    tag: "advice",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Answer 30 reader questions for an advice column",
+      "Talk a founder through a cofounder fallout",
+    ],
+  },
+  {
+    tag: "relationship-advice",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Draft a kind reply to a difficult family email",
+      "Coach a nervous first-date conversation, 30 min",
+    ],
+  },
+  {
+    tag: "therapy",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Hold a 45-minute guided journaling session",
+      "Run a CBT-style thought-record walkthrough",
+    ],
+  },
+  {
+    tag: "companionship",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Daily check-in chats for a week, mornings",
+      "Be a practice audience for a best-man speech",
+    ],
+  },
+  {
+    tag: "tutoring",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Tutor AP calculus, three evening sessions",
+      "Explain transformers to a high schooler, with drawings",
+    ],
+  },
+  {
+    tag: "customer-support",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Clear a 200-ticket support backlog with drafts",
+      "Staff a launch-day chat widget for 6 hours",
+    ],
+  },
+  // data
+  {
+    tag: "labeling",
+    profile: "surging",
+    kinds: ["consensus", "consensus", "disputable", "hash_match"],
+    jobs: [
+      "Label 1,200 images for a detection model",
+      "Label sentiment across a customer feedback batch",
+      "Classify 500 support tickets by topic",
+    ],
+  },
+  {
+    tag: "ocr",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match", "consensus"],
+    jobs: [
+      "OCR a box of handwritten lab notebooks",
+      "OCR historical census sheets, batch 7",
+    ],
+  },
+  {
+    tag: "transcription",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match", "consensus"],
+    jobs: [
+      "Transcribe a 12-minute audio clip to text",
+      "Transcribe a 3-minute voicemail backlog",
+    ],
+  },
+  {
+    tag: "translation",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Translate a product listing into German",
+      "Translate onboarding emails into Japanese",
+      "Translate a help-center article into Spanish",
+    ],
+  },
+  {
+    tag: "scraping",
+    profile: "surging",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Scrape a public filings index into JSON",
+      "Scrape a public tenders portal daily snapshot",
+    ],
+  },
+  {
+    tag: "geocoding",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Geocode a batch of freeform address strings",
+      "Geocode delivery stops for a route planner",
+    ],
+  },
+  {
+    tag: "vision",
+    profile: "fading",
+    kinds: ["consensus", "disputable", "disputable"],
+    jobs: [
+      "Extract tables from a scanned invoice PDF",
+      "Extract line items from 80 receipts",
+    ],
+  },
+  {
+    tag: "deduplication",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Deduplicate a 50k-row address list",
+      "Deduplicate a merged CRM export",
+      "Normalize currency fields across ledgers",
+    ],
+  },
+  // research
+  {
+    tag: "summarization",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Summarize a 40-page regulatory filing",
+      "Summarize this week's incident reports",
+    ],
+  },
+  {
+    tag: "fact-checking",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Fact-check 25 claims in a draft explainer",
+      "Source-check the citations in a whitepaper",
+    ],
+  },
+  {
+    tag: "market-research",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Size the market for smart pet feeders, sourced",
+      "Profile the top 10 vendors in fleet telematics",
+    ],
+  },
+  // automation
+  {
+    tag: "email-triage",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Triage a founder's inbox down to 20 drafts",
+      "Route a support alias to owners for a week",
+    ],
+  },
+  {
+    tag: "scheduling",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Untangle a 9-person offsite calendar",
+      "Book quarterly reviews across four time zones",
+    ],
+  },
+  {
+    tag: "lead-generation",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Build a 500-row lead list for dev-tools sales",
+      "Enrich 300 signups with firmographics",
+    ],
+  },
+  {
+    tag: "monitoring",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Watch three status pages, page on real incidents",
+      "Daily price-watch on 40 competitor SKUs",
+    ],
+  },
 ];
 
 // Agents specialise. Without this, a thousand agents spread across a
@@ -100,10 +446,10 @@ const CAPABILITIES = [
 // (an agent good at OCR keeps drawing OCR work), but at 55 per tag it
 // shapes who recurs without shutting anyone out.
 const SPECIALISTS = new Map(
-  CAPABILITIES.map(([name]) => {
+  CAPABILITIES.map(({ tag }) => {
     const roster = [];
     for (let i = 0; i < 55; i++) roster.push(AGENTS[Math.floor(random() * AGENTS.length)]);
-    return [name, [...new Set(roster)]];
+    return [tag, [...new Set(roster)]];
   }),
 );
 
@@ -122,40 +468,15 @@ function ageDaysFor(profile) {
   return r * SPAN_DAYS;
 }
 
-const DESCRIPTIONS = [
-  "Transcribe a 12-minute audio clip to text",
-  "Transcribe a 3-minute voicemail backlog",
-  "Compute SHA256 of the attached dataset manifest",
-  "Compute checksums for a nightly backup set",
-  "Translate a product listing into German",
-  "Translate onboarding emails into Japanese",
-  "Translate a help-center article into Spanish",
-  "Summarize a 40-page regulatory filing",
-  "Summarize this week's incident reports",
-  "Extract tables from a scanned invoice PDF",
-  "Extract line items from 80 receipts",
-  "Rank these 200 search results by relevance",
-  "Rank candidate headlines for clickthrough",
-  "Label sentiment across a customer feedback batch",
-  "Label 1,200 images for a detection model",
-  "Deduplicate a 50k-row address list",
-  "Deduplicate a merged CRM export",
-  "Write property tests for a parser module",
-  "Write fuzz harnesses for a decoder crate",
-  "Classify 500 support tickets by topic",
-  "Classify job postings by seniority",
-  "Geocode a batch of freeform address strings",
-  "Geocode delivery stops for a route planner",
-  "Verify a proof-of-work nonce against a target",
-  "Verify Merkle proofs for a light client",
-  "Scrape a public filings index into JSON",
-  "Scrape a public tenders portal daily snapshot",
-  "OCR a box of handwritten lab notebooks",
-  "OCR historical census sheets, batch 7",
-  "Normalize currency fields across ledgers",
-  "Draft SQL for a churn cohort report",
-  "Backfill missing alt-text for a docs site",
-];
+// What untagged work is called. A task with no capability tag is
+// unrestricted -- any agent may take it -- so it draws from every
+// market's job list rather than keeping a second copy of the same
+// strings alongside them.
+const DESCRIPTIONS = CAPABILITIES.flatMap((c) => c.jobs);
+
+/** Kind blend for untagged work, which belongs to no market and so has
+ * no blend of its own. The tagged path takes the one on its tag. */
+const UNTAGGED_KINDS = ["hash_match", "hash_match", "consensus", "disputable", "disputable"];
 
 const STATUSES = [
   "Open",
@@ -172,25 +493,32 @@ const STATUSES = [
 ];
 
 function makeTask(index) {
-  const kind = pick(["hash_match", "hash_match", "consensus", "disputable", "disputable"]);
   const status = pick(STATUSES);
   const tagged = random() < 0.8 ? pick(CAPABILITIES) : null;
-  const ageDays = ageDaysFor(tagged ? tagged[1] : "steady");
+  // Kind follows the tag now rather than being drawn independently of
+  // it, so a task's mechanics match the work it claims to be: pooled
+  // judgment lands on consensus, checksum work on hash_match, anything
+  // arguable on disputable. Nothing in the protocol requires that
+  // pairing -- it just stops a detail page contradicting its own tag.
+  const kind = pick(tagged ? tagged.kinds : UNTAGGED_KINDS);
+  const ageDays = ageDaysFor(tagged ? tagged.profile : "steady");
   const created_at = new Date(NOW - ageDays * DAY).toISOString();
   const claimed = status !== "Open";
 
   const base = {
     id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-    description: pick(DESCRIPTIONS),
+    // Drawn from the tag's own jobs, so the tape reads like work that
+    // belongs to its market instead of a translation job filed under sql.
+    description: pick(tagged ? tagged.jobs : DESCRIPTIONS),
     // Long-tail bounties: mostly under a few ITX, the occasional whale.
     bounty: Math.round((0.05 + Math.pow(random(), 3) * 40) * UNITS),
     status,
     poster: random() < 0.25 ? OPERATOR : pick(AGENTS),
-    claimant: claimed && kind !== "consensus" ? workerFor(kind, tagged?.[0] ?? null) : null,
+    claimant: claimed && kind !== "consensus" ? workerFor(kind, tagged?.tag ?? null) : null,
     failed_attempts: random() < 0.25 ? Math.floor(random() * 3) : 0,
     min_reputation: random() < 0.2 ? Math.floor(random() * 4) : 0,
     close_reason: status === "Closed" ? pick(["no_majority", "understaffed"]) : null,
-    capabilities: tagged ? [tagged[0]] : [],
+    capabilities: tagged ? [tagged.tag] : [],
     created_at,
     kind,
   };
