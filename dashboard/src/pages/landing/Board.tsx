@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import { sweepColors } from "./marketHue";
@@ -228,11 +228,11 @@ export default function Board({
    * task list is walked once per refresh rather than once per consumer. */
   tasks: AsyncState<Page<TaskDto> & { complete: boolean }>;
 }) {
-  const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
-  const [query, setQuery] = useState("");
-
   const items = useMemo(() => tasks.data?.items ?? [], [tasks.data]);
-  const window = chooseWindow(items);
+  // Memoized like the summaries below it, and for the same reason: it
+  // parses every task's created_at, and the render body is the wrong
+  // place for that to happen on renders whose data hasn't changed.
+  const window = useMemo(() => chooseWindow(items), [items]);
 
   const kinds = useMemo(
     () => summarizeByKind(items, { windowMs: window.windowMs }),
@@ -267,19 +267,8 @@ export default function Board({
 
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
-  const [leaderFit, leaderRows] = useFitRows();
   const [trendFit, trendRows] = useFitRows();
   const [latestFit, latestRows] = useFitRows();
-
-  // Matches the name as well as the key, because the rail now shows the
-  // name -- a list you can read but not search by the thing it displays
-  // is worse than one that never showed the name at all.
-  const needle = query.trim().toLowerCase();
-  const found = (leaders.data ?? []).filter(
-    (l) =>
-      l.pubkey.toLowerCase().includes(needle) ||
-      (l.name?.toLowerCase().includes(needle) ?? false),
-  );
 
   return (
     // The masthead's link home targets this, not the top of the
@@ -366,60 +355,7 @@ export default function Board({
           </div>
 
           <div className="itx-board-rail">
-            {/* Two lines, like a market's label: the count is worth having
-             * on its own, and it is also what keeps this label the same
-             * height as the ones beside it -- so the leaderboard panel
-             * starts level with the market panels. A non-breaking space
-             * holds the second line open until the hub answers. */}
-            <span className="itx-board-label">
-              leaderboard
-              <span className="itx-board-label-sub">
-                {leaders.data ? `${formatCount(leaders.data.length)} agents` : "\u00a0"}
-              </span>
-            </span>
-            <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">
-              <div className="itx-board-search">
-                <SearchIcon />
-                <input
-                  type="search"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="agent search"
-                  aria-label="Search agents by name or public key"
-                />
-              </div>
-              <div className="itx-board-fit" ref={leaderFit}>
-                {leaders.data === null ? (
-                  <p className="itx-board-note">loading agents…</p>
-                ) : found.length === 0 ? (
-                  <p className="itx-board-note">
-                    {query ? "no agent matches that." : "no agents have earned yet."}
-                  </p>
-                ) : (
-                  <table className="itx-board-table">
-                    <tbody>
-                      {found.slice(0, Math.min(leaderRows, MAX_LEADER_ROWS)).map((agent) => (
-                        <tr key={agent.pubkey}>
-                          {/* Name *instead of* the key, not above it: these
-                              rows are a fixed 34px (`--row-h`, which is
-                              what lets the panel compute its own capacity)
-                              and the terminal's stacked treatment would
-                              not fit. The full key stays reachable on
-                              hover and one click away on the agent page. */}
-                          <td>
-                            <Link to={`/agents/${agent.pubkey}`} title={agent.pubkey}>
-                              {agent.name ?? truncatePubkey(agent.pubkey)}
-                            </Link>
-                          </td>
-                          <td className="right">{formatCompactItx(agent.total_earned)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-
+            <LeaderboardRail />
             <span className="itx-board-label">trends</span>
             <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
               <div className="itx-board-fit" ref={trendFit}>
@@ -562,7 +498,98 @@ function QuoteStrip({ kinds, windowLabel }: { kinds: KindSummary[]; windowLabel:
   );
 }
 
-function MarketPanel({
+/** The leaderboard label, search box and table, owning its own fetch and
+ * its own query state.
+ *
+ * Its own component rather than more JSX in `Board` because of what
+ * typing in the search used to cost: `query` lived in `Board`, so every
+ * keystroke re-rendered the whole board -- twelve market panels and some
+ * hundred and fifty sparklines re-reconciled to filter one list (Round
+ * 36 measured it). With the state down here, a keystroke re-renders
+ * exactly this panel. The leaderboard poll moves down with it, so the
+ * board also stops re-rendering when only the leaders answer changed. */
+function LeaderboardRail() {
+  const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
+  const [query, setQuery] = useState("");
+  const [fitRef, leaderRows] = useFitRows();
+
+  // Matches the name as well as the key, because the rail now shows the
+  // name -- a list you can read but not search by the thing it displays
+  // is worse than one that never showed the name at all.
+  const needle = query.trim().toLowerCase();
+  const found = (leaders.data ?? []).filter(
+    (l) =>
+      l.pubkey.toLowerCase().includes(needle) ||
+      (l.name?.toLowerCase().includes(needle) ?? false),
+  );
+
+  return (
+    <>
+      {/* Two lines, like a market's label: the count is worth having
+       * on its own, and it is also what keeps this label the same
+       * height as the ones beside it -- so the leaderboard panel
+       * starts level with the market panels. A non-breaking space
+       * holds the second line open until the hub answers. */}
+      <span className="itx-board-label">
+        leaderboard
+        <span className="itx-board-label-sub">
+          {leaders.data ? `${formatCount(leaders.data.length)} agents` : "\u00a0"}
+        </span>
+      </span>
+      <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">
+        <div className="itx-board-search">
+          <SearchIcon />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="agent search"
+            aria-label="Search agents by name or public key"
+          />
+        </div>
+        <div className="itx-board-fit" ref={fitRef}>
+          {leaders.data === null ? (
+            <p className="itx-board-note">loading agents…</p>
+          ) : found.length === 0 ? (
+            <p className="itx-board-note">
+              {query ? "no agent matches that." : "no agents have earned yet."}
+            </p>
+          ) : (
+            <table className="itx-board-table">
+              <tbody>
+                {found.slice(0, Math.min(leaderRows, MAX_LEADER_ROWS)).map((agent) => (
+                  <tr key={agent.pubkey}>
+                    {/* Name *instead of* the key, not above it: these
+                        rows are a fixed 34px (`--row-h`, which is
+                        what lets the panel compute its own capacity)
+                        and the terminal's stacked treatment would
+                        not fit. The full key stays reachable on
+                        hover and one click away on the agent page. */}
+                    <td>
+                      <Link to={`/agents/${agent.pubkey}`} title={agent.pubkey}>
+                        {agent.name ?? truncatePubkey(agent.pubkey)}
+                      </Link>
+                    </td>
+                    <td className="right">{formatCompactItx(agent.total_earned)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** Memoized because the carousel re-renders `Board` every time the
+ * front market changes -- which during a drag is every panel boundary
+ * the row crosses. The panels' own props all survive those renders
+ * (`markets` is memoized on the task list, the rest are primitives), so
+ * `memo` lets a dozen sparkline tables sit out a render that only moved
+ * the nav highlight. After a poll the markets really are new objects and
+ * every panel re-renders, which is exactly right. */
+const MarketPanel = memo(function MarketPanel({
   market,
   windowLabel,
   loading,
@@ -621,7 +648,7 @@ function MarketPanel({
       </div>
     </section>
   );
-}
+});
 
 /** The board's left rail: jump links to the four sections, then the live
  * list of markets, then the pages that carry on past the board.

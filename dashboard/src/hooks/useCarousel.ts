@@ -121,14 +121,23 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     const fade = Math.max(0, Math.min(into, step - into, cap.current));
     el.style.setProperty("--leading-fade", `${Math.round(fade)}px`);
 
-    setState({
-      index: step > 0 ? Math.round(el.scrollLeft / step) : 0,
-      // A pixel of slack at each end: a scroll that has arrived can sit
-      // a fraction short of its own maximum, and the arrow at that end
-      // must still be the one that is switched off.
-      atStart: el.scrollLeft <= 1,
-      atEnd: el.scrollLeft >= max - 1,
-    });
+    const index = step > 0 ? Math.round(el.scrollLeft / step) : 0;
+    // A pixel of slack at each end: a scroll that has arrived can sit
+    // a fraction short of its own maximum, and the arrow at that end
+    // must still be the one that is switched off.
+    const atStart = el.scrollLeft <= 1;
+    const atEnd = el.scrollLeft >= max - 1;
+    // Handing back the previous object when nothing changed is what
+    // lets React skip the re-render. This runs on every scroll event of
+    // a free-scrolling row -- most frames move the row without moving
+    // the front market -- and an unconditional fresh object here meant
+    // every one of those frames re-rendered the whole board above the
+    // fade it came for.
+    setState((previous) =>
+      previous.index === index && previous.atStart === atStart && previous.atEnd === atEnd
+        ? previous
+        : { index, atStart, atEnd },
+    );
   }, []);
 
   useEffect(read, [read, items]);
