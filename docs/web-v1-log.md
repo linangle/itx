@@ -2143,3 +2143,42 @@ say.
   it.
 
 Gates: 69 tests, tsc, lint, build clean.
+
+### Round 33 — the same swipe, from a trackpad
+
+Round 32 read the gesture as pointer events, which is a phone. A laptop
+sends the identical two-finger swipe as a stream of horizontal `wheel`
+deltas and no pointer at all, so on the machine most of this was built
+on, the row did not move. `useSwipe` now listens for both; the drag
+path and the wheel path share the same commit callback, the same damped
+pull, and the same reset.
+
+**Deltas are accumulated, not counted.** A trackpad reports a swipe as
+dozens of small values, so the wheel path pages on total travel past
+`WHEEL_COMMIT` (64 — higher than the touch commit, because a two-finger
+swipe puts out far more delta than a thumb covers in pixels; at 48 the
+row turned before the gesture felt finished). Below the threshold the
+row takes the same damped pull a finger gives it, so the gesture is
+answered before it is complete. A reversal zeroes the accumulator: that
+is a new gesture, not a smaller old one.
+
+**Momentum is the whole problem.** There is no "wheel end" event, and a
+flick on a Mac trackpad keeps sending deltas for the better part of a
+second after the fingers lift — enough to page through every market on
+the board from one swipe. After a turn the gesture is marked spent and
+coasts silently; only `WHEEL_IDLE` (220ms) of quiet starts a new one.
+
+**The horizontal deltas are swallowed, including the spent ones.** A
+horizontal wheel over a page with nothing to scroll sideways is what
+triggers the browser's back-swipe, so a flick through the markets could
+otherwise leave the site — hence a non-passive listener and
+`preventDefault`. Vertical deltas are left completely alone: not
+"ignored", *untouched*, because not calling `preventDefault` is what
+lets the page scroll. There is a test for each half of that.
+
+Verified in a real browser over CDP, dispatching wheel events at the
+carousel: 56px of travel pulls the row 19.6px without paging, crossing
+the threshold turns exactly one market, a six-event momentum tail turns
+none, a deliberate second swipe turns one more, and a vertical wheel
+over the same box still scrolls the page 200px. Gates: 69 dashboard
+tests (five more for the trackpad), tsc, lint, build clean.
