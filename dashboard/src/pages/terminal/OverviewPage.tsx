@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
 import Sparkline from "../../components/Sparkline";
-import { Delta, PubkeyLink, StatusBadge } from "../../components/Badges";
+import { AgentLink, Delta, StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getLeaderboard, listAllTasks } from "../../lib/hub";
 import type { LeaderboardEntryDto, TaskDto } from "../../lib/hub";
@@ -310,10 +310,11 @@ function Rail({
               return (
                 <tr key={agent.pubkey}>
                   <td>
-                    <PubkeyLink pubkey={agent.pubkey} />
-                    <div className="flat" style={{ fontSize: 11 }}>
-                      {formatCount(agent.completed)} done
-                    </div>
+                    <AgentLink
+                      pubkey={agent.pubkey}
+                      name={agent.name}
+                      meta={`${formatCount(agent.completed)} done`}
+                    />
                   </td>
                   <td style={{ width: 64 }}>
                     <Sparkline

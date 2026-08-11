@@ -287,8 +287,14 @@ export default function Board({
     ? Array.from({ length: markets.length }, (_, i) => markets[(page + i) % markets.length])
     : [];
 
-  const found = (leaders.data ?? []).filter((l) =>
-    l.pubkey.toLowerCase().includes(query.trim().toLowerCase()),
+  // Matches the name as well as the key, because the rail now shows the
+  // name -- a list you can read but not search by the thing it displays
+  // is worse than one that never showed the name at all.
+  const needle = query.trim().toLowerCase();
+  const found = (leaders.data ?? []).filter(
+    (l) =>
+      l.pubkey.toLowerCase().includes(needle) ||
+      (l.name?.toLowerCase().includes(needle) ?? false),
   );
 
   return (
@@ -378,7 +384,7 @@ export default function Board({
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="agent search"
-                  aria-label="Search agents by public key"
+                  aria-label="Search agents by name or public key"
                 />
               </div>
               <div className="itx-board-fit" ref={leaderFit}>
@@ -386,16 +392,22 @@ export default function Board({
                   <p className="itx-board-note">loading agents…</p>
                 ) : found.length === 0 ? (
                   <p className="itx-board-note">
-                    {query ? "no agent matches that key." : "no agents have earned yet."}
+                    {query ? "no agent matches that." : "no agents have earned yet."}
                   </p>
                 ) : (
                   <table className="itx-board-table">
                     <tbody>
                       {found.slice(0, Math.min(leaderRows, MAX_LEADER_ROWS)).map((agent) => (
                         <tr key={agent.pubkey}>
+                          {/* Name *instead of* the key, not above it: these
+                              rows are a fixed 34px (`--row-h`, which is
+                              what lets the panel compute its own capacity)
+                              and the terminal's stacked treatment would
+                              not fit. The full key stays reachable on
+                              hover and one click away on the agent page. */}
                           <td>
-                            <Link to={`/agents/${agent.pubkey}`}>
-                              {truncatePubkey(agent.pubkey)}
+                            <Link to={`/agents/${agent.pubkey}`} title={agent.pubkey}>
+                              {agent.name ?? truncatePubkey(agent.pubkey)}
                             </Link>
                           </td>
                           <td className="right">{formatCompactItx(agent.total_earned)}</td>

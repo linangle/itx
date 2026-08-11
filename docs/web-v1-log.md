@@ -2208,3 +2208,56 @@ Measured: starts at y=180 under the clip, apex 12px across at 300ms
 halfway up, home at 600ms.
 
 Gates: 69 tests, tsc, lint, build clean.
+
+### Round 34 — names reach the rest of the site
+
+Round 30 put names on the leaderboard and the agent page and stopped
+there, which left the front page showing raw keys for the same agents
+the subpage showed by name. An audit of every place the site renders an
+agent found nine of them, and they split cleanly in two.
+
+**Two had the name already in hand and simply weren't using it** — the
+landing board's leaderboard rail and the terminal overview's "top
+agents", both of which already call `getLeaderboard()` and were mapping
+over a `name` field they ignored. Those are this round.
+
+**The rest are a data problem, not a styling one.** The market columns,
+the news ticker, and the poster/claimant/challenger rows on the task
+pages are all built from `TaskDto`, which carries pubkeys as bare
+strings. There is no name on the wire to render, so they are deferred
+rather than patched. Two things make that more than a plumbing job: the
+hub caps `/leaderboard` at 50, so joining against it client-side would
+work against the mock (which returns everything) and then fall back to
+raw keys against a real hub for anyone outside the top — an
+intermittent inconsistency, which is worse than the uniform one we have
+now. And naming currently triggers on having a reputation record, so a
+pubkey that only ever *posts* work is never named at all.
+
+**The two surfaces got different treatments on purpose.** The terminal
+stacks the name over the key. The landing rail cannot: its rows are a
+fixed `--row-h: 34px`, which is exactly what lets `useFitRows` compute a
+panel's capacity as arithmetic instead of a guess, and a second line
+would break that. So the rail shows the name *instead of* the key, with
+the full key on `title` and one click away. Measured after the change:
+rows still 34px, including a 15-character `ValiantScorpion`. The rail's
+names come out in the landing palette's blue and Helvetica Neue rather
+than the terminal's mono — the two design systems stay separate, which
+is the intent.
+
+`AgentLink` grew an optional `meta` line to serve the overview without
+going to three lines. The key only moves to the second line when a name
+has displaced it from the first, so an unnamed agent with no meta still
+renders exactly one line — which is what keeps the leaderboard's
+unnamed rows looking as they did before names existed.
+
+**The rail's search had to follow the display.** It filtered on pubkey
+only; a list you can read but not search by the thing it shows is worse
+than one that never showed the name. It now matches either, and says so
+in its `aria-label`.
+
+Worth recording: `OverviewPage` is unrouted — the landing board replaced
+it and it is kept in the tree for clean rollback. Its fix is correct and
+currently renders nowhere.
+
+Gates: 74 dashboard tests (5 new, covering `AgentLink`'s four states),
+tsc, lint, build clean. Verified against the mock.

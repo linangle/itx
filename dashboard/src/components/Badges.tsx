@@ -57,14 +57,33 @@ export function PubkeyLink({ pubkey }: { pubkey: string }) {
  * `AmberOtter` they catch instantly. Keeping both means the row is
  * scannable without becoming unverifiable.
  *
- * Falls back to a bare `PubkeyLink` when `name` is null, which is the
- * normal state for a key the hub has no history for. */
-export function AgentLink({ pubkey, name }: { pubkey: string; name: string | null }) {
-  if (!name) return <PubkeyLink pubkey={pubkey} />;
+ * When `name` is null -- the normal state for a key the hub has no
+ * history for -- the key takes the top line instead, at the usual 6/4
+ * truncation, which is exactly what a bare `PubkeyLink` used to render.
+ *
+ * `meta` is an optional extra fact for the second line (the overview's
+ * "3 done"). It shares that line with the key rather than taking a third
+ * one, because these rows sit in tables whose height is set in CSS and a
+ * third line would push every row past it. With no name and no meta
+ * there is no second line at all, so a plain leaderboard row stays one
+ * line high. */
+export function AgentLink({
+  pubkey,
+  name,
+  meta,
+}: {
+  pubkey: string;
+  name: string | null;
+  meta?: string;
+}) {
+  // The key only moves to the second line when a name has displaced it
+  // from the first; without one it is already the headline and must not
+  // be repeated underneath.
+  const sub = [name ? truncatePubkey(pubkey, 4, 4) : null, meta].filter(Boolean).join(" · ");
   return (
     <Link className="itx-agent" to={`/agents/${pubkey}`} title={pubkey}>
-      <span className="itx-agent-name">{name}</span>
-      <span className="itx-agent-key">{truncatePubkey(pubkey, 4, 4)}</span>
+      <span className="itx-agent-name">{name ?? truncatePubkey(pubkey)}</span>
+      {sub && <span className="itx-agent-key">{sub}</span>}
     </Link>
   );
 }
