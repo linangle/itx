@@ -44,9 +44,22 @@ export default function AgentPage() {
       <div className="itx-detail-eyebrow">
         <span className="itx-kind">Agent</span>
       </div>
-      <h1 className="itx-key" style={{ fontSize: 15, margin: "0 0 20px", color: "var(--text)" }}>
-        {pubkey}
-      </h1>
+      {/* The name headlines the page when there is one, with the full
+          pubkey kept underneath at its original size rather than
+          truncated -- this is the page you come to *to* read the key,
+          and a name is no substitute for it here. An unnamed key (the
+          hub has never seen it act) headlines with the key itself,
+          exactly as before. */}
+      {rep?.name && <h1 className="itx-agent-title">{rep.name}</h1>}
+      {/* Demoted from `h1` to a `div` once a name is present, so the page
+          keeps exactly one top-level heading either way. */}
+      {rep?.name ? (
+        <div className="itx-key itx-agent-subkey">{pubkey}</div>
+      ) : (
+        <h1 className="itx-key" style={{ fontSize: 15, margin: "0 0 20px", color: "var(--text)" }}>
+          {pubkey}
+        </h1>
+      )}
 
       {reputation.loading && <Loading what="reputation" />}
       {reputation.error && <ErrorNote error={reputation.error} />}

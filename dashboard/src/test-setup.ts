@@ -11,3 +11,25 @@ import { afterEach } from "vitest";
 afterEach(() => {
   cleanup();
 });
+
+// jsdom implements no CSS media query engine and so ships no
+// `matchMedia` at all. `Shell` calls it on first render to pick a
+// starting theme, which makes every test that mounts a terminal page
+// (all of them go through `Shell`) throw before it renders anything.
+// Stubbed rather than mocked per-file: it's a gap in the environment,
+// not behaviour under test. `matches: false` means the components see
+// "no preference expressed", which is the same branch a real browser
+// takes when the user has never set one.
+if (!window.matchMedia) {
+  window.matchMedia = (query: string) =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }) as MediaQueryList;
+}

@@ -27,6 +27,8 @@
 // enforces state transitions, or accepts writes.
 
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT ?? 9101);
 const UNITS = 100_000_000;
@@ -246,6 +248,72 @@ const TASKS = Array.from({ length: BACKFILL }, (_, i) => makeTask(i)).sort((a, b
   a.created_at.localeCompare(b.created_at),
 );
 
+// ------------------------------------------------------------- names
+//
+// Mirrors `hub/src/names.rs`: same wordlist files, same 15-character
+// cap, same CamelCase rendering, same uniqueness guarantee. Read off
+// disk rather than copied inline so the two can't drift -- if a word is
+// added to `wordlist/`, both the hub and this fixture pick it up.
+//
+// The real registry assigns randomly and persists; this one assigns
+// deterministically from the same LCG, because a fixture whose agents
+// were renamed on every restart would break screenshot diffs for no
+// benefit.
+
+const MAX_NAME_LEN = 15;
+const wordlist = (path) =>
+  readFileSync(fileURLToPath(new URL(`../../wordlist/${path}`, import.meta.url)), "utf8")
+    .split("\n")
+    .map((w) => w.trim())
+    .filter(Boolean);
+
+// Deduplicated because the subject files overlap on purpose (`vampire`
+// is in both creatures and edgy_creatures) -- the same reason
+// `names::words` dedupes.
+const DESCRIPTORS = [
+  ...new Set([...wordlist("descriptors/curated.txt"), ...wordlist("descriptors/colors.txt")]),
+].sort();
+const SUBJECTS = [
+  ...new Set(
+    [
+      "astronomy",
+      "birds",
+      "creatures",
+      "edgy_creatures",
+      "insects_misc",
+      "landscapes",
+      "mammals",
+      "reptiles",
+      "sea",
+      "water",
+      "weather",
+    ].flatMap((file) => wordlist(`subjects/${file}.txt`)),
+  ),
+].sort();
+
+const capitalize = (w) => w[0].toUpperCase() + w.slice(1);
+const NAME_POOL = [];
+for (const d of DESCRIPTORS) {
+  for (const s of SUBJECTS) {
+    if (d.length + s.length <= MAX_NAME_LEN) NAME_POOL.push(capitalize(d) + capitalize(s));
+  }
+}
+
+// Drawn the same way the hub draws: probe at random until an unused name
+// turns up. With ~79k names and 1000 agents the pool is far larger than
+// the demand, so collisions are rare and the loop is short.
+const takenNames = new Set();
+function nextName() {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const name = pick(NAME_POOL);
+    if (!takenNames.has(name)) {
+      takenNames.add(name);
+      return name;
+    }
+  }
+  return null; // pool exhausted -- the UI falls back to the pubkey
+}
+
 // Per-agent figures the task list cannot derive. Fixed once so they do
 // not jitter on every poll -- only `completed` and `total_earned` move,
 // and those move because the tasks behind them actually changed.
@@ -257,6 +325,10 @@ const AGENT_FACTS = new Map(
       // One agent's node lookup deliberately fails, so the null
       // net_worth path gets exercised on every load rather than in prod.
       net_worth: i === 3 ? null : Math.round(random() * 40 * UNITS),
+      // One agent is deliberately left unnamed so the pubkey-fallback
+      // path is exercised on every load too -- the real hub leaves any
+      // key with no board history unnamed, which the UI must handle.
+      name: i === 5 ? null : nextName(),
     },
   ]),
 );
@@ -279,6 +351,7 @@ function leaderboard() {
       failed: facts.failed,
       total_earned: row.total,
       net_worth: facts.net_worth,
+      name: facts.name,
     };
   })
     .filter((a) => a.completed > 0 || a.total_earned > 0)
@@ -462,8 +535,17 @@ createServer((req, res) => {
       res,
       200,
       entry
-        ? { completed: entry.completed, failed: entry.failed, total_earned: entry.total_earned, net_worth: entry.net_worth }
-        : { completed: 0, failed: 0, total_earned: 0, net_worth: 0 },
+        ? {
+            completed: entry.completed,
+            failed: entry.failed,
+            total_earned: entry.total_earned,
+            net_worth: entry.net_worth,
+            name: entry.name,
+          }
+        : // A key with no board history: named nowhere, exactly as the
+          // real hub reports it (see `handlers::get_reputation`, which
+          // looks a name up but never mints one).
+          { completed: 0, failed: 0, total_earned: 0, net_worth: 0, name: null },
     );
   }
 

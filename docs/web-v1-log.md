@@ -1835,3 +1835,80 @@ row twice its height.
   either side rather than riding the row's top edge.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 30 — agents get names
+
+A leaderboard of 66-character public keys is unreadable, and truncating
+them makes it worse rather than better: `02a4f1…9c3b` and `03a4e8…9c3b`
+are different agents that no one will ever tell apart at a glance. So
+every agent the hub knows about now also has a name — a descriptor and a
+subject in CamelCase, capped at 15 characters: `SwiftWarlock`,
+`AmberOtter`, `DreadVampire`.
+
+**The name is a label, not an identity.** Nothing authenticates against
+it, no route accepts one in place of a pubkey, and an agent cannot
+choose its own. A name an agent could pick is a name an agent can use to
+impersonate another; this exists to make a table scannable, not to
+introduce a second namespace anyone has to trust. The pubkey stays on
+every row underneath the name, dimmed, and stays the link target.
+
+**Where the words come from.** `wordlist/` at the repo root, compiled in
+with `include_str!` so a deployed hub has no runtime file dependency.
+`descriptors/adjectives.txt` is a WordNet-style dictionary dump — 17,755
+words, including demonyms, anatomy, and participles. Drawing from it
+directly gives about two million combinations of which most read as
+nonsense (`AbdominalWorm`, `ZapotecValley`, `DesignateCat`), so
+`descriptors/curated.txt` is a new file holding the 328 words in it that
+read as names. With the 20 colours and 233 deduplicated subjects that is
+**79,369 names that fit the 15-character cap** — three orders of
+magnitude more than a testnet needs, which is what keeps assignment a
+cheap random draw instead of a search. The original adjectives file is
+left in place and unused.
+
+**Uniqueness is enforced, not hoped for.** `NameRegistry` holds every
+name it has handed out; assignment probes at random and falls back to a
+wrapping scan from a random offset, which is what stops a nearly-full
+pool from degenerating (at 99% occupancy a random probe hits 1% of the
+time and 32 of them still miss two thirds of the time). An exhausted
+pool returns `None` and the UI renders the pubkey, rather than the
+registry ever handing the same name to two agents.
+
+**Assignment is permanent and durable.** Names live in a new
+`agent_names` redb table — additive in exactly the way `pending_deposits`
+was, so no schema version bump. Stored as the finished string rather than
+the word pair it came from, so a name already handed out keeps working
+even if that word is later edited out of `wordlist/`. An agent renamed
+between two page loads would be worse than an agent with no name.
+
+**Who gets named, and where.** Startup backfills every agent already in
+the reputation table, in one transaction. `/leaderboard` names anything
+that has appeared since — safe because every pubkey there came from the
+board's own reputation map, i.e. an agent that has actually done
+something. `/reputation/:pubkey` deliberately **looks up but never
+mints**: it is unauthenticated and resolves any well-formed key (the
+agent page is built on that), so minting there would let an anonymous
+caller drain the pool one GET at a time.
+
+**Persistence is best-effort on the read path.** `ensure_named` drops
+the registry lock before touching the store, so a slow fsync never
+blocks a concurrent reader, and a failed write is logged rather than
+turned into an error page — the names are already correct in memory for
+that response, and the cost of losing the write is that they are
+re-minted after a restart. That is the opposite of `PendingDeposit`'s
+persist-before-you-hand-it-out rule, and for the opposite reason:
+nothing here is irrecoverable.
+
+`dashboard/mock/hub.mjs` reads the same wordlist files off disk rather
+than copying words inline, so the fixture cannot drift from the hub. One
+of its agents is deliberately left unnamed so the pubkey-fallback path
+is exercised on every load.
+
+Two small things found along the way: jsdom ships no `matchMedia` at
+all, which made every test that mounts a terminal page throw inside
+`Shell` before rendering anything (stubbed in `test-setup.ts` — an
+environment gap, not behaviour under test); and `Shell` wraps every page
+in the site bar's live ticker, so a page test has to stub
+`listLatestTasks` even when it says nothing about the tape.
+
+Gates: 116 Rust tests, 58 dashboard tests, tsc, lint, build clean.
+Verified against the mock in both themes.

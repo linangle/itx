@@ -1,6 +1,6 @@
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
 import Sparkline from "../../components/Sparkline";
-import { PubkeyLink } from "../../components/Badges";
+import { AgentLink } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getLeaderboard, listAllTasks } from "../../lib/hub";
 import { formatCount, formatItx } from "../../lib/format";
@@ -42,7 +42,7 @@ export default function LeaderboardPage() {
                 <tr key={agent.pubkey}>
                   <td className="num flat">{index + 1}</td>
                   <td>
-                    <PubkeyLink pubkey={agent.pubkey} />
+                    <AgentLink pubkey={agent.pubkey} name={agent.name} />
                   </td>
                   <td style={{ width: 70 }}>
                     <Sparkline

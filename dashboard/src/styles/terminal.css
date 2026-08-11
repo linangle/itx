@@ -535,6 +535,50 @@ body.itx-body[data-theme="light"] {
   color: var(--accent-text);
 }
 
+/* --------------------------------------------------------- agent naming */
+
+/* An agent cell: name over key. Stacked rather than inline because the
+   name is the thing being scanned down the column and a trailing key on
+   the same line would push every name's right edge to a different place,
+   which is exactly what makes a column stop reading as a column. */
+.itx-agent {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.25;
+  text-decoration: none;
+}
+
+/* The names are capped at 15 characters by the hub, so the column has a
+   hard width and never needs truncating here. Mono keeps it aligned with
+   the key beneath it and with the numeric columns beside it. */
+.itx-agent-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--accent-text);
+  letter-spacing: 0.01em;
+}
+
+/* Dimmed to the same weight as any other secondary metadata: present for
+   verification, not competing with the name for attention. */
+.itx-agent-key {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-faint);
+}
+
+.itx-agent-title {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  margin: 0 0 4px;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.itx-agent-subkey {
+  margin: 0 0 20px;
+}
+
 /* ------------------------------------------------------------- sparkline */
 
 .itx-spark {
