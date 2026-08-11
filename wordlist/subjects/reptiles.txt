@@ -14,3 +14,9 @@ salamander
 newt
 crocodile
 alligator
+boa
+mamba
+anaconda
+axolotl
+tadpole
+bullfrog

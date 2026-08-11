@@ -18,3 +18,10 @@ slug
 snail
 jellyfish
 starfish
+firefly
+mantis
+cicada
+hornet
+termite
+caterpillar
+tarantula

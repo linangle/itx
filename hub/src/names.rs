@@ -94,8 +94,8 @@ fn words(sources: &[&'static str]) -> Vec<&'static str> {
 
 /// Every descriptor/subject pair that fits inside `MAX_NAME_LEN`.
 ///
-/// Built once and shared. At the wordlist's current size this is 347
-/// descriptors against 233 subjects, of which 79,369 pairs fit -- far
+/// Built once and shared. At the wordlist's current size this is 448
+/// descriptors against 375 subjects, of which 164,771 pairs fit -- far
 /// more than a testnet will ever need, which is the point: assignment
 /// stays a cheap random draw rather than a search, right up until the
 /// pool is nearly exhausted.
@@ -155,7 +155,7 @@ pub struct NameRegistry {
     taken: HashSet<String>,
     /// The candidate pairs this registry draws from. Always `pool()` in
     /// production; tests substitute a deliberately tiny one to exercise
-    /// the exhaustion path, which is unreachable against 79,369 names.
+    /// the exhaustion path, which is unreachable against 164,771 names.
     candidates: &'static [(&'static str, &'static str)],
 }
 
@@ -197,7 +197,7 @@ impl NameRegistry {
     /// Idempotent: the same pubkey always gets the same name back, for
     /// the lifetime of the store. Returns `None` only if every name in
     /// the pool is taken, which at the current wordlist size means
-    /// 79,369 agents have been named -- the caller renders the pubkey
+    /// 164,771 agents have been named -- the caller renders the pubkey
     /// alone in that case rather than failing the request.
     ///
     /// The bool is whether this call is what created the name, so the

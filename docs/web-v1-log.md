@@ -2559,3 +2559,40 @@ stretch -- that is what keeps the strip full -- but their contents stop
 spreading at 260.
 
 Gates: 68 tests, tsc, lint, build clean.
+
+### Round 35 — the wordlist grows
+
+A scan of both halves of the wordlist, with additions where a common
+word was simply missing. The curated descriptors had a visible seam:
+the hand-picking that produced them thinned out after the letter H, so
+`hushed` and `husky` made the cut while `majestic`, `radiant`, and
+`sneaky` never got considered. 101 new descriptors fill that gap —
+every one verified present in `adjectives.txt` first, because
+`curated.txt`'s documented contract is that it is a subset of that
+file, and an unverified addition would quietly break it. (`ivory` was
+the one candidate rejected: not in the dump.)
+
+The subjects had gaps of the other kind — categories missing their
+obvious members. `landscapes` had no `desert`; the `sea` file was all
+fish and shellfish with no marine mammals (`whale`, `orca`, `narwhal`);
+`weather` had every named storm system but not `thunder`, `lightning`,
+or `frost`; `mammals` had fifty entries and no `panda`, `koala`, or
+`giraffe`. 142 new subjects across all eleven files, each checked
+against the union of every file so nothing landed twice.
+
+The pool goes from 79,369 names to **164,771** (448 descriptors × 375
+subjects, 98.1% of pairs inside the 15-character cap; no word in either
+list pairs with nothing). Nothing else moved: the files are read the
+same way, the hub's pool test re-verified every pair fits and renders
+as plain ASCII CamelCase, and names already assigned are stored as
+strings, so existing agents keep theirs regardless of what the list
+does. The stale pool-size figures in `names.rs`'s comments and the
+mock's were updated to match.
+
+One mechanical trap worth recording: `weather.txt` shipped without a
+trailing newline, so a blind append would have fused its last word and
+the first addition into `sunthunder`. The append normalizes the ending
+first.
+
+Gates: 117 hub tests. The dashboard is untouched apart from a comment
+in the mock; the restarted mock serves 630 unique names, cap holding.

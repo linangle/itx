@@ -23,3 +23,16 @@ demon
 angel
 nymph
 satyr
+golem
+sphinx
+wyvern
+basilisk
+pegasus
+cyclops
+titan
+genie
+imp
+gnome
+yeti
+behemoth
+leviathan

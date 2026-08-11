@@ -13,3 +13,13 @@ dew
 breeze
 wind
 sun
+thunder
+lightning
+frost
+drizzle
+sleet
+gale
+monsoon
+squall
+tempest
+flurry

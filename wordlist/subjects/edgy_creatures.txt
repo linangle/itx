@@ -13,3 +13,8 @@ gargoyle
 skeleton
 phantom
 revenant
+wraith
+specter
+reaper
+mummy
+lich

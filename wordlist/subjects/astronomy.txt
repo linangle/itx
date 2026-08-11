@@ -8,3 +8,10 @@ aurora
 eclipse
 rainbow
 cloud
+nova
+nebula
+galaxy
+asteroid
+pulsar
+quasar
+zenith
