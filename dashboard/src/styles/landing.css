@@ -1209,6 +1209,26 @@ body.itx-landing-body[data-theme="light"] {
 .itx-board-cell-spark {
   width: 68px;
 }
+/* A market's name, which is a capability tag and so can be long and
+   hyphenated (`relationship-advice`, `machine-learning`) where this
+   column used to hold a truncated pubkey that never wrapped.
+
+   Rows are a fixed --row-h and the panel divides its height by that to
+   decide how many it can show, so a name wrapping to a second line does
+   not just look wrong -- it makes every capacity below it an
+   overestimate. A hyphen is a break opportunity, so this is one
+   `overflow-wrap` away at any width. Clipping the link rather than the
+   cell keeps it out of the table's column sizing: `text-overflow` needs
+   a constrained box, and constraining the cell would mean
+   `table-layout: fixed` on every board table, including the two that
+   size themselves fine today. */
+.itx-board-cell-market a {
+  display: block;
+  max-width: 22ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 
 /* latest + footer */
 
