@@ -3068,3 +3068,65 @@ gates below only cover the two files this round actually touched.
 Gates: tsc and lint clean on `MarketLine.tsx` and `landing.css`; 112
 tests pass (none exercise this pixel relationship directly -- checked
 by measuring the rendered gap in both themes instead, 24px in each).
+
+### Round 41 — markets get a price, and the columns sort
+
+**A fourth column, after the Yahoo reference:** market, sparkline,
+value, change. The sparkline's heading is gone and the column left
+`aria-hidden` -- it draws the same quantity `value` names, and labelling
+it separately implied a third figure that does not exist.
+
+**Which quantity to quote was the whole decision.** The obvious
+candidate was `openBounty`, what a market has on offer right now, and it
+is the truer "level" in the stock sense -- it is also what the sectors
+are ranked by. It is not what the column shows, because there is no
+honest change to pair it with. A task carries its current status and no
+record of when it reached it, so how open bounty moved over the window
+cannot be derived at all (the note at the top of `series.ts` has said so
+since it was written). Quoting one quantity beside another quantity's
+percentage is a pairing no reader would think to question and every
+reader would misread.
+
+  So `value` is bounty posted into the market across the window, which
+  makes all three columns one quantity: the sparkline is its running
+  total, so the line ends exactly at the number beside it, and the
+  change is that flow's period-over-period movement. The default order
+  is by that column, largest first, so the ordering explains itself
+  rather than looking arbitrary against a number it doesn't match.
+
+**Sorting is board-wide, not per panel.** Clicking `value` or `change`
+on any panel reorders every sector's panel. Per-panel state was the
+other option and it is worse: two panels side by side sorted by
+different columns stop being comparable, which is the one thing a row of
+panels is for. Clicking the active column flips it; clicking the other
+takes it over descending, because "most" is what anyone means the first
+time they sort by a number. `aria-sort` carries the same fact the caret
+does.
+
+**The `null` change was the sharp edge.** A dash means "too little
+activity to compare halves of the window", not zero. Sorted as zero it
+files among the genuinely flat markets; sorted as -Infinity the
+emptiest markets head an ascending sort, which is the opposite of what
+sorting by change is for. Dashes sink to the bottom in *both*
+directions, ties break on the market name so the order cannot wobble
+between polls, and `sortMarkets` copies rather than sorting in place --
+the summaries are memoized and shared across panels, so an in-place sort
+would make the order depend on how many times it had been read.
+
+**The fourth column cost the other three some width.** At the narrowest
+carousel step the panel is ~337px, so the market name's cap came down
+from 22ch to 18ch and the sparkline from 68 to 52 inside these panels --
+the sparkline carries shape rather than figures and reads the same
+narrower. `relationship-advice` clips by a character at that width,
+which is why the full tag is now on the link's `title`. Values are
+tabular-figure so the column reads as a column.
+
+Verified against the live 20000-task fixture through the real
+components: headers render `market / ▼value / change`, the default is
+value-descending (web-dev 5.2K, sql 5.1K, cpp 4.9K), value-ascending
+inverts it, change-descending runs +391% to +188% and change-ascending
+-62% to +3%. Plus 16 new tests -- five on `sortMarkets` including the
+dash and stability cases, six driving the headers through the rendered
+board.
+
+Gates: 123 dashboard tests (16 new), tsc, lint, build.
