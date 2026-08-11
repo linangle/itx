@@ -1603,3 +1603,42 @@ it is new, it just doesn't move to say so.
   reads it at zero.
 
 Gates: 55 tests, tsc, lint, build clean.
+
+### Round 25 — the board's columns now agree on where they start
+
+**The pager has moved up to the heading line.** It sat at the right end
+of the label row, where it shared space with whichever category name
+the carousel was clipping -- an arrow overlapping "prov…" is exactly
+the clutter it looked like. It is now centred on "market overview",
+over the same right edge. Down there it had to be floated out of the
+flow, since as a row item it would have eaten width the panels do not
+and the labels would have stopped lining up with them; up here it is
+just a grid item.
+
+**"navigate" is gone from the left rail.** Four section names under a
+heading that says "navigate" is a label explaining a list that already
+explains itself. What the column did need was the *height* the label
+took, or its panel would have started above the panels beside it, so an
+aria-hidden two-line spacer stands in -- matching a market's name and
+size, not a guessed pixel value.
+
+**The heading starts where the first market panel starts.** It ran from
+the page's left edge, over the nav column, so the eye had two different
+left edges to reconcile. The heading line is now laid out on the same
+three columns as the board below it, with the title and the pager both
+in the middle one. Measured at 1280: title left 244, first panel left
+244, pager right 976, markets column right 976.
+
+  Which meant naming the column widths. `--col-nav` and `--col-rail`
+  live on the board's inner box and both rows resolve against them, so
+  the heading cannot drift from the columns it sits over the next time
+  one is retuned.
+
+**The leaderboard says how many agents there are.** Two lines now, like
+a market's label -- the count is worth having, and it is also what
+makes this label the same height as the ones beside it, so the
+leaderboard panel starts level with the market panels rather than a
+line above them. A non-breaking space holds the second line open until
+the hub answers, so the panel does not jump when it does.
+
+Gates: 55 tests, tsc, lint, build clean.
