@@ -1061,3 +1061,40 @@ glyphs on a light ground.
 
 Verified all four pages plus both themes. Gates: 55 tests, tsc, lint,
 build clean.
+
+### Round 13 — standards, and the misalignment they explain
+
+The user spotted the consensus panel's note sitting a few pixels left
+of the agent table beside it, and asked for standards across the board:
+radii, type, spacing.
+
+**The misalignment was the symptom, not the bug.** Table cells carried
+their own `padding: 6px 5px`, which stacked on the panel's 16px inset
+and pushed the first column to 21px while a paragraph in the sibling
+panel started at 16px. Outer cells are now flush with the panel's
+padding box (`th/td:first-child { padding-left: 0 }` and the mirror for
+last-child), which also squares the last column against the right edge.
+
+**What the audit found.** The board had accumulated seven font sizes,
+four radii, and three different panel paddings (14/16, 12/13, 6/20);
+`terminal.css` had **fourteen** font sizes including 12.5, 11.5 and
+10.5 -- half-pixel steps that read as identical to their neighbours but
+still have to be maintained separately, which is precisely how a file
+gets to fourteen.
+
+Both now declare a token set. Two radii and a six-step type scale on
+the board (title / label / lead / body / meta / micro, each with a
+stated job), the same vocabulary plus two display sizes on the inner
+pages, and a single `--pad-panel-x/y` used by every panel. The single
+inset is the part that actually does the work: content lines up across
+panels because they share one number, not because each was nudged into
+place.
+
+Verified by measurement rather than by eye -- walked every
+`.itx-board-panel`, computed its padding box, and confirmed its first
+child starts at offset 0 regardless of whether that child is a table
+header, a paragraph, a search field or a list row. Latest keeps a
+smaller vertical padding on purpose and says so in a comment: its rows
+carry their own, and doubling them left a visible gap.
+
+Gates: 55 tests, tsc, lint, build clean.
