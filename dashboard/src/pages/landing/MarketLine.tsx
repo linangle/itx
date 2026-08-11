@@ -221,20 +221,45 @@ export default function MarketLine() {
 
     let raf = 0;
     let last = performance.now();
+
+    const loop = (ts: number) => {
+      const dt = Math.min(0.05, (ts - last) / 1000);
+      last = ts;
+      draw(ts / 1000, dt);
+      raf = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      if (raf !== 0) return;
+      // Reset the clock, or the first frame after resuming carries the
+      // whole paused interval as one delta and the tape lurches sideways.
+      // (The `dt` clamp in the loop would blunt it, not prevent it.)
+      last = performance.now();
+      raf = requestAnimationFrame(loop);
+    };
+
+    const stop = () => {
+      if (raf === 0) return;
+      cancelAnimationFrame(raf);
+      raf = 0;
+    };
+
+    // Same reasoning as the globe: once the board is on screen this is
+    // redrawing for nobody, and it is competing with the board's polling
+    // for the main thread.
+    const visibility = new IntersectionObserver(([entry]) => (entry.isIntersecting ? start() : stop()), {
+      threshold: 0,
+    });
+
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       draw(2, 0);
     } else {
-      const loop = (ts: number) => {
-        const dt = Math.min(0.05, (ts - last) / 1000);
-        last = ts;
-        draw(ts / 1000, dt);
-        raf = requestAnimationFrame(loop);
-      };
-      raf = requestAnimationFrame(loop);
+      visibility.observe(parent);
     }
 
     return () => {
       cancelAnimationFrame(raf);
+      visibility.disconnect();
       observer.disconnect();
     };
   }, []);

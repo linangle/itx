@@ -500,6 +500,17 @@ body.itx-landing-body {
   margin-bottom: 0;
 }
 
+/* The market's size, sitting under its name. Normal weight and muted so
+   the tag stays the thing you read first. */
+.itx-board-label-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--ld-sub);
+}
+
 .itx-board-labels-latest {
   margin-top: var(--gap-section);
 }

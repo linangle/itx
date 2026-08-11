@@ -179,10 +179,17 @@ export async function listTasks(params: ListTasksParams = {}): Promise<Page<Task
  * honest fix is a server-side aggregate endpoint rather than a bigger
  * number here. `complete` reports whether we actually saw everything, so
  * the UI can say so instead of quietly presenting a partial total as a
- * whole one. */
+ * whole one.
+ *
+ * It was raised to 4000 so a board of a couple of thousand tasks totals
+ * honestly rather than silently summing its most recent slice. That is a
+ * stopgap and it does not scale: at this size a page load is already
+ * pulling a megabyte or so of JSON, and every client recomputes
+ * aggregates the hub could have summed once. The server-side endpoint is
+ * the actual answer, not the next bump of this number. */
 export async function listAllTasks(
   params: Omit<ListTasksParams, "offset" | "limit"> = {},
-  maxItems = 1000,
+  maxItems = 7000,
 ): Promise<Page<TaskDto> & { complete: boolean }> {
   const pageSize = 200;
   const items: TaskDto[] = [];

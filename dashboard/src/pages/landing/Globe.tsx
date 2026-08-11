@@ -346,9 +346,13 @@ export default function Globe() {
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const clock = new THREE.Clock();
     let raf = 0;
+    // Accumulated from per-frame deltas rather than read from the clock's
+    // own elapsed time, so the loop can stop and restart without the
+    // scene jumping: time spent paused simply never gets added.
+    let elapsed = 0;
 
     const renderFrame = () => {
-      const elapsed = clock.getElapsedTime();
+      elapsed += clock.getDelta();
       // Positive rotation.y spins the front face left-to-right on
       // screen: west->east, the diagram's "direction of spin".
       globe.rotation.y = elapsed * 0.14;
@@ -358,20 +362,50 @@ export default function Globe() {
       renderer.render(scene, camera);
     };
 
+    // Only runs while the globe is actually on screen. This is the most
+    // expensive thing on the page -- a WebGL scene redrawing every frame
+    // -- and once you have scrolled to the board it is drawing to nobody.
+    // The board polls the hub on a timer, so those two were competing for
+    // the same main thread for no reason.
+    const visibility = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) start();
+        else stop();
+      },
+      { threshold: 0 },
+    );
+
+    const loop = () => {
+      renderFrame();
+      raf = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      if (raf !== 0) return;
+      // Throw away the gap spent paused; otherwise the first delta after
+      // resuming is however long you were reading the board, and the
+      // globe would snap forward by it.
+      clock.getDelta();
+      raf = requestAnimationFrame(loop);
+    };
+
+    const stop = () => {
+      if (raf === 0) return;
+      cancelAnimationFrame(raf);
+      raf = 0;
+    };
+
     if (reduceMotion) {
       clock.stop();
       onTextureReady = renderFrame;
       renderFrame();
     } else {
-      const loop = () => {
-        renderFrame();
-        raf = requestAnimationFrame(loop);
-      };
-      loop();
+      visibility.observe(mount);
     }
 
     return () => {
       cancelAnimationFrame(raf);
+      visibility.disconnect();
       observer.disconnect();
       scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {

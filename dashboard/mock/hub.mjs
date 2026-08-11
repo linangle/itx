@@ -56,14 +56,14 @@ function hex(length) {
 // truncated pubkeys read as one agent cloned -- realistic filler needs
 // the first six and last four characters to differ. Generated before
 // anything else so the key material is stable in the LCG stream.
-const AGENTS = Array.from({ length: 120 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
+const AGENTS = Array.from({ length: 1000 }, () => (random() < 0.5 ? "02" : "03") + hex(64));
 const OPERATOR = "02" + hex(64);
 
 // Which agents work which kind. Overlapping pools rather than one big
 // one, so each market's ticker table has its own cast with familiar
 // faces recurring, the way a real marketplace has specialists.
-const HASH_WORKERS = AGENTS.slice(0, 70);
-const DISPUTE_WORKERS = AGENTS.slice(50, 120);
+const HASH_WORKERS = AGENTS.slice(0, 620);
+const DISPUTE_WORKERS = AGENTS.slice(380, 1000);
 
 // Each tag carries an activity profile that shapes *when* its tasks
 // happened: "surging" masses them into the recent half of the window,
@@ -85,6 +85,31 @@ const CAPABILITIES = [
   ["sql", "steady"],
   ["prover", "surging"],
 ];
+
+// Agents specialise. Without this, a thousand agents spread across a
+// dozen tags leaves almost everyone with a single paid task per market,
+// which is not just thin -- it makes the change column meaningless,
+// since one data point in one half of the window is either +100% or
+// -100% and never a trend. Rosters are kept wide on purpose -- the point
+// of a thousand agents is that a thousand of them are working, so the
+// density comes from the volume of tasks rather than from narrowing the
+// field. Specialisation stays because it is true of real marketplaces
+// (an agent good at OCR keeps drawing OCR work), but at 55 per tag it
+// shapes who recurs without shutting anyone out.
+const SPECIALISTS = new Map(
+  CAPABILITIES.map(([name]) => {
+    const roster = [];
+    for (let i = 0; i < 55; i++) roster.push(AGENTS[Math.floor(random() * AGENTS.length)]);
+    return [name, [...new Set(roster)]];
+  }),
+);
+
+function workerFor(kind, capability) {
+  const regulars = capability ? SPECIALISTS.get(capability) : null;
+  if (regulars && regulars.length > 0 && random() < 0.85) return pick(regulars);
+  // Untagged work, and the occasional outsider taking a job.
+  return pick(kind === "hash_match" ? HASH_WORKERS : DISPUTE_WORKERS);
+}
 
 const SPAN_DAYS = 6.5;
 function ageDaysFor(profile) {
@@ -150,7 +175,6 @@ function makeTask(index) {
   const ageDays = ageDaysFor(tagged ? tagged[1] : "steady");
   const created_at = new Date(NOW - ageDays * DAY).toISOString();
   const claimed = status !== "Open";
-  const workers = kind === "hash_match" ? HASH_WORKERS : DISPUTE_WORKERS;
 
   const base = {
     id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -159,7 +183,7 @@ function makeTask(index) {
     bounty: Math.round((0.05 + Math.pow(random(), 3) * 40) * UNITS),
     status,
     poster: random() < 0.25 ? OPERATOR : pick(AGENTS),
-    claimant: claimed && kind !== "consensus" ? pick(workers) : null,
+    claimant: claimed && kind !== "consensus" ? workerFor(kind, tagged?.[0] ?? null) : null,
     failed_attempts: random() < 0.25 ? Math.floor(random() * 3) : 0,
     min_reputation: random() < 0.2 ? Math.floor(random() * 4) : 0,
     close_reason: status === "Closed" ? pick(["no_majority", "understaffed"]) : null,
@@ -211,11 +235,13 @@ function makeTask(index) {
   return base;
 }
 
-// Sized so the leaderboard opens with 100+ earning agents rather than
-// filling in over the first few minutes of ticking. Stays under the
-// client's 1000-item walk, so `complete` is true and the board never
-// shows its partial-totals caveat.
-const BACKFILL = 800;
+// Sized for density rather than just presence. The change column is
+// period-over-period, so an agent needs paid work in *both* halves of
+// the window for it to say anything -- and at 2000 tasks, 81% of
+// agent-tag pairs had exactly one payout, which is either a misleading
+// -100% or an empty dash. Volume is what fixes that without narrowing
+// the field to a handful of specialists.
+const BACKFILL = 5000;
 const TASKS = Array.from({ length: BACKFILL }, (_, i) => makeTask(i)).sort((a, b) =>
   a.created_at.localeCompare(b.created_at),
 );
@@ -274,9 +300,11 @@ function leaderboard() {
 
 const LIVE = process.env.STATIC !== "1";
 const TICK_MS = Number(process.env.TICK_MS ?? 2500);
-/** Oldest tasks are dropped past this, so a long-running session does not
- * grow without bound (and stays under the client's 1000-item walk). */
-const MAX_TASKS = 900;
+/** Oldest tasks are dropped past this, so a long-running session does
+ * not grow without bound. Kept under the client's walk limit so the
+ * board always sees the whole board and never quietly totals a
+ * subset. */
+const MAX_TASKS = 5600;
 
 let nextIndex = BACKFILL;
 
@@ -301,7 +329,7 @@ function advance(task) {
         return false;
       }
       task.status = "Claimed";
-      task.claimant = pick(task.kind === "hash_match" ? HASH_WORKERS : DISPUTE_WORKERS);
+      task.claimant = workerFor(task.kind, task.capabilities[0] ?? null);
       return true;
 
     case "Claimed":

@@ -3,11 +3,13 @@ import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
-import { getLeaderboard, listAllTasks } from "../../lib/hub";
-import type { TaskDto } from "../../lib/hub";
+import type { AsyncState } from "../../hooks/useAsync";
+import { getLeaderboard } from "../../lib/hub";
+import type { Page, TaskDto } from "../../lib/hub";
 import {
   directionOf,
   formatCompactItx,
+  formatCount,
   formatKind,
   formatPct,
   formatRelative,
@@ -23,7 +25,6 @@ import {
 } from "../../lib/series";
 import type { KindSummary } from "../../lib/series";
 
-const KIND_COUNT = 3;
 const AGENT_ROWS = 10;
 const TRENDING_ROWS = 6;
 const UPDATE_ROWS = 5;
@@ -67,28 +68,94 @@ interface AgentRow {
   changePct: number | null;
 }
 
-/** Agents paid for work of one kind, as that market's tickers. */
-function agentsForKind(tasks: TaskDto[], kind: TaskDto["kind"], windowMs: number): AgentRow[] {
-  const ofKind = tasks.filter((t) => t.kind === kind);
-  const paid = ofKind.filter((t) => t.status === "Paid" && t.claimant !== null);
-  const earnedBy = new Map<string, number>();
-  for (const t of paid) earnedBy.set(t.claimant!, (earnedBy.get(t.claimant!) ?? 0) + t.bounty);
+interface Market {
+  /** The capability tag this market trades in. */
+  name: string;
+  /** Open tasks and the bounty on offer across them -- how the markets
+   * are ranked, so the biggest sit at the front of the carousel. */
+  open: number;
+  openBounty: number;
+  agents: AgentRow[];
+}
 
-  return [...earnedBy.entries()]
-    .map(([pubkey, earned]) => {
-      const theirs = paid.filter((t) => t.claimant === pubkey);
+/** Top earners in a set of tasks, as that market's tickers.
+ *
+ * Written as one grouping pass plus work proportional to the rows
+ * actually shown. The previous version filtered the whole task list once
+ * per agent, which was fine against a few dozen agents and is not
+ * against a thousand -- and this runs on every poll. */
+function topAgents(tasks: TaskDto[], windowMs: number): AgentRow[] {
+  const earnedBy = new Map<string, number>();
+  for (const t of tasks) {
+    if (t.status !== "Paid" || !t.claimant) continue;
+    earnedBy.set(t.claimant, (earnedBy.get(t.claimant) ?? 0) + t.bounty);
+  }
+
+  const top = [...earnedBy.entries()].sort((a, b) => b[1] - a[1]).slice(0, AGENT_ROWS);
+  if (top.length === 0) return [];
+
+  // Only the rows that will be rendered get a curve.
+  const wanted = new Set(top.map(([pubkey]) => pubkey));
+  const paidByAgent = new Map<string, TaskDto[]>();
+  for (const t of tasks) {
+    if (t.status !== "Paid" || !t.claimant || !wanted.has(t.claimant)) continue;
+    const list = paidByAgent.get(t.claimant);
+    if (list) list.push(t);
+    else paidByAgent.set(t.claimant, [t]);
+  }
+
+  return top.map(([pubkey, earned]) => {
+    const buckets = sumByCreatedAt(paidByAgent.get(pubkey) ?? [], (t) => t.bounty, { windowMs });
+    // A single bucket of activity is not a trend. Left to itself the
+    // period-over-period maths turns one payout into +100% or -100%
+    // depending only on which half of the window it landed in, which
+    // filled the column with confident-looking noise. Below two active
+    // buckets there is nothing to compare, and "—" says so.
+    const active = buckets.filter((v) => v > 0).length;
+    return {
+      pubkey,
+      earned,
+      // Cumulative curve for shape; change from the per-bucket sums,
+      // since a cumulative series only rises and would read every agent
+      // as permanently up.
+      series: agentEarningsSeries(tasks, pubkey, { windowMs }),
+      changePct: active >= 2 ? periodChangePct(buckets) : null,
+    };
+  });
+}
+
+/** One market per capability tag currently on the board, biggest first.
+ *
+ * Ranked by open bounty rather than task count, so a market is "big"
+ * when there is real money on offer in it. The order is recomputed from
+ * whatever the hub last returned, so markets genuinely move around as
+ * work is posted and settled.
+ *
+ * Consensus tasks count here. They have no visible claimant -- the hub
+ * hides who joined -- so they never contribute an agent row, but they do
+ * carry bounty, and excluding them would have understated exactly the
+ * markets where the biggest pooled work sits. */
+function marketsByCapability(tasks: TaskDto[], windowMs: number): Market[] {
+  const byCapability = new Map<string, TaskDto[]>();
+  for (const t of tasks) {
+    for (const capability of t.capabilities) {
+      const list = byCapability.get(capability);
+      if (list) list.push(t);
+      else byCapability.set(capability, [t]);
+    }
+  }
+
+  return [...byCapability.entries()]
+    .map(([name, ofCapability]) => {
+      const open = ofCapability.filter((t) => t.status === "Open");
       return {
-        pubkey,
-        earned,
-        // Cumulative curve for shape; change from the per-bucket sums,
-        // since a cumulative series only rises and would read every
-        // agent as permanently up.
-        series: agentEarningsSeries(ofKind, pubkey, { windowMs }),
-        changePct: periodChangePct(sumByCreatedAt(theirs, (t) => t.bounty, { windowMs })),
+        name,
+        open: open.length,
+        openBounty: open.reduce((sum, t) => sum + t.bounty, 0),
+        agents: topAgents(ofCapability, windowMs),
       };
     })
-    .sort((a, b) => b.earned - a.earned)
-    .slice(0, AGENT_ROWS);
+    .sort((a, b) => b.openBounty - a.openBounty || b.open - a.open);
 }
 
 /** The board below the hero, laid out from the user's mockup: a quote
@@ -98,10 +165,13 @@ function agentsForKind(tasks: TaskDto[], kind: TaskDto["kind"], windowMs: number
  *
  * Panel *labels sit outside their panels* here, above the outline,
  * which is the main structural difference from the previous version. */
-export default function Board() {
-  // Polled: the board carries a "live" pill, and the hub has no realtime
-  // channel, so the only way to honour that is to go and ask.
-  const tasks = useAsync(() => listAllTasks({ status: "all" }), [], REFRESH_MS);
+export default function Board({
+  tasks,
+}: {
+  /** Fetched and polled by LandingPage and shared with the tape, so the
+   * task list is walked once per refresh rather than once per consumer. */
+  tasks: AsyncState<Page<TaskDto> & { complete: boolean }>;
+}) {
   const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState("");
@@ -111,6 +181,10 @@ export default function Board() {
 
   const kinds = useMemo(
     () => summarizeByKind(items, { windowMs: window.windowMs }),
+    [items, window.windowMs],
+  );
+  const markets = useMemo(
+    () => marketsByCapability(items, window.windowMs),
     [items, window.windowMs],
   );
   const trending = useMemo(
@@ -126,12 +200,13 @@ export default function Board() {
     [items],
   );
 
-  // All three kinds stay mounted and the pager rotates the order, so the
-  // third is always half-visible past the clip -- the peek in the mockup
-  // that signals there is more to page to.
-  const ordered = Array.from({ length: KIND_COUNT }, (_, i) => kinds[(page + i) % KIND_COUNT]).filter(
-    Boolean,
-  );
+  // Rotated rather than sliced, so there is always one more item past
+  // the clip -- the peek from the mockup that says the pager has
+  // somewhere to go. Markets re-sort as the board moves, so `page` is an
+  // offset into a list whose order is not fixed; that is the point.
+  const ordered = markets.length
+    ? Array.from({ length: markets.length }, (_, i) => markets[(page + i) % markets.length])
+    : [];
 
   const found = (leaders.data ?? []).filter((l) =>
     l.pubkey.toLowerCase().includes(query.trim().toLowerCase()),
@@ -154,7 +229,7 @@ export default function Board() {
                 <button
                   type="button"
                   aria-label="Previous category"
-                  onClick={() => setPage((p) => (p + KIND_COUNT - 1) % KIND_COUNT)}
+                  onClick={() => setPage((p) => (p + markets.length - 1) % Math.max(1, markets.length))}
                 >
                   <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
                     <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
@@ -163,7 +238,7 @@ export default function Board() {
                 <button
                   type="button"
                   aria-label="Next category"
-                  onClick={() => setPage((p) => (p + 1) % KIND_COUNT)}
+                  onClick={() => setPage((p) => (p + 1) % Math.max(1, markets.length))}
                 >
                   <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
                     <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
@@ -172,14 +247,18 @@ export default function Board() {
             </div>
 
             <div className="itx-board-carousel">
-              {ordered.map((k) => (
+              {ordered.map((m) => (
                 // Label and panel are one item, so the label cannot drift
                 // from the panel it names at any width.
-                <div className="itx-board-market" key={k.kind}>
-                  <span className="itx-board-label">{formatKind(k.kind).toLowerCase()}</span>
-                  <KindPanel
-                    summary={k}
-                    agents={agentsForKind(items, k.kind, window.windowMs)}
+                <div className="itx-board-market" key={m.name}>
+                  <span className="itx-board-label">
+                    {m.name}
+                    <span className="itx-board-label-sub">
+                      {formatCount(m.open)} open · {formatCompactItx(m.openBounty)} itx
+                    </span>
+                  </span>
+                  <MarketPanel
+                    market={m}
                     windowLabel={window.label}
                     loading={tasks.loading}
                     error={tasks.error}
@@ -362,19 +441,18 @@ function QuoteStrip({ kinds, windowLabel }: { kinds: KindSummary[]; windowLabel:
   );
 }
 
-function KindPanel({
-  summary,
-  agents,
+function MarketPanel({
+  market,
   windowLabel,
   loading,
   error,
 }: {
-  summary: KindSummary;
-  agents: AgentRow[];
+  market: Market;
   windowLabel: string;
   loading: boolean;
   error: Error | null;
 }) {
+  const agents = market.agents;
   return (
     <section className="itx-board-panel itx-board-panel-market">
       {loading ? (
@@ -383,11 +461,7 @@ function KindPanel({
         <p className="itx-board-note">couldn&apos;t reach the hub. {error.message}</p>
       ) : agents.length === 0 ? (
         <p className="itx-board-note">
-          {summary.kind === "consensus"
-            ? // Not a data gap: the hub hides consensus winners by
-              // design, so this market can never list agent tickers.
-              "consensus winners are never exposed, so no agents can be listed here."
-            : "no settled work in this category yet."}
+          nothing settled in {market.name} yet — open work here has not been paid out.
         </p>
       ) : (
         <table className="itx-board-table">

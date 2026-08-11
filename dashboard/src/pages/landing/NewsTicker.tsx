@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
-import { useAsync } from "../../hooks/useAsync";
-import { listAllTasks } from "../../lib/hub";
-import type { TaskDto } from "../../lib/hub";
+import type { AsyncState } from "../../hooks/useAsync";
+import type { Page, TaskDto } from "../../lib/hub";
 import { formatCompactItx, formatKind, truncatePubkey } from "../../lib/format";
 
 /** What scrolls while the hub is loading, unreachable, or empty -- the
@@ -49,12 +48,13 @@ function headline(task: TaskDto): string {
  * Dismissing unmounts the tape entirely -- the hero grows into the
  * freed space on its own, since its height is `100svh` minus the tape
  * via a CSS variable that the wrapper drops when closed. */
-export default function NewsTicker() {
-  // Slower than the board's poll on purpose. The tape and the board both
-  // walk the whole task list, so they are the two most expensive things
-  // on the page; headlines do not need five-second freshness, and this
-  // halves the traffic that decision costs.
-  const tasks = useAsync(() => listAllTasks({ status: "all" }), [], 15000);
+export default function NewsTicker({
+  tasks,
+}: {
+  /** Shared with the board rather than fetched here: one walk of the
+   * task list per poll, not two. */
+  tasks: AsyncState<Page<TaskDto> & { complete: boolean }>;
+}) {
   const [open, setOpen] = useState(true);
 
   const items = useMemo(() => {

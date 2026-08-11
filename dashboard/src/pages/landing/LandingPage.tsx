@@ -1,6 +1,8 @@
 import { Suspense, lazy, useEffect } from "react";
 import NewsTicker from "./NewsTicker";
 import MarketLine from "./MarketLine";
+import { useAsync } from "../../hooks/useAsync";
+import { listAllTasks } from "../../lib/hub";
 
 /** three.js is ~170 KB gzipped and only the landing hero uses it, so the
  * globe loads as its own chunk -- a deep link straight to /tasks or
@@ -20,7 +22,18 @@ import "../../styles/landing.css";
  * as the visitor scrolls down into the board. The board below is the
  * hand-drawn `Board` (per the user's sketch); the previous terminal
  * `OverviewPage` remains in the tree, unrouted, for clean rollback. */
+/** How often the page re-asks the hub. Slow enough to be cheap, quick
+ * enough that a settling task shows up while you are still looking. */
+const REFRESH_MS = 5000;
+
 export default function LandingPage() {
+  // Fetched once here and handed down, rather than the tape and the board
+  // each walking the whole task list on their own timers. That was
+  // already wasteful when it was flagged as a known trade-off; with a
+  // board of a couple of thousand tasks and a poll every few seconds it
+  // is the single most expensive thing the page does, and halving it is
+  // free.
+  const tasks = useAsync(() => listAllTasks({ status: "all" }), [], REFRESH_MS);
   // `index.css` gives `body` a 16px margin for the three legacy pages,
   // which on a full-bleed dark page shows as a white frame around the
   // whole viewport. Rather than change that global rule -- the legacy
@@ -44,7 +57,7 @@ export default function LandingPage() {
        * simply gets shorter, and the CSS reads its own height back off
        * whether .itx-news is present. */}
       <div className="itx-landing-bar">
-        <NewsTicker />
+        <NewsTicker tasks={tasks} />
 
         <header className="itx-hero-brand">
           <span className="itx-hero-mark">
@@ -80,7 +93,7 @@ export default function LandingPage() {
         </section>
       </div>
 
-      <Board />
+      <Board tasks={tasks} />
     </div>
   );
 }
