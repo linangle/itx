@@ -373,6 +373,25 @@ body.itx-landing-body {
      bluer-white set of outlines. */
   --bd-line: #3f4351;
 
+  /* One scale for the board, so radii, type and panel padding are
+     decisions made once rather than per rule. Each type step has a job:
+     title, panel label, the leading number in a quote, body copy and
+     table cells, secondary meta, and column headers. */
+  --r-field: 10px;
+  --r-panel: 14px;
+
+  --fs-title: 25px;
+  --fs-label: 16px;
+  --fs-lead: 14px;
+  --fs-body: 13px;
+  --fs-meta: 12px;
+  --fs-micro: 11px;
+
+  /* Every panel insets its content by the same amount, which is what
+     lets content in different panels line up across the row. */
+  --pad-panel-y: 14px;
+  --pad-panel-x: 16px;
+
   position: relative;
   isolation: isolate;
   padding: 0 0 70px;
@@ -413,7 +432,7 @@ body.itx-landing-body {
 
 .itx-board-title {
   margin: 34px 0 20px;
-  font-size: 25px;
+  font-size: var(--fs-title);
   font-weight: 700;
   letter-spacing: -0.012em;
 }
@@ -429,7 +448,7 @@ body.itx-landing-body {
 .itx-board-label {
   display: block;
   margin-bottom: 9px;
-  font-size: 16px;
+  font-size: var(--fs-label);
   font-weight: 700;
   letter-spacing: -0.004em;
   color: var(--ld-light);
@@ -458,7 +477,7 @@ body.itx-landing-body {
 .itx-board-panel {
   box-sizing: border-box;
   border: 1px solid var(--bd-line);
-  border-radius: 14px;
+  border-radius: var(--r-panel);
   background: var(--ld-dark);
 }
 
@@ -491,7 +510,7 @@ body.itx-landing-body {
 .itx-board-note {
   margin: 2px 0;
   color: var(--ld-sub);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.5;
 }
 
@@ -522,7 +541,9 @@ body.itx-landing-body {
   position: relative;
   margin-top: calc(-1 * var(--bd-overlap));
   padding: 1px;
-  border-radius: 15px;
+  /* One ring wider than the panel radius it wraps, so the outer curve
+     stays concentric with the inner one. */
+  border-radius: calc(var(--r-panel) + 1px);
   /* Two layers, not one gradient: a grey painted *over* a horizontal
      sweep, transparent at the top so the sweep shows through and opaque
      by the bottom. One gradient cannot vary colour horizontally and
@@ -538,7 +559,7 @@ body.itx-landing-body {
   gap: 10px;
   overflow-x: auto;
   padding: 11px 22px;
-  border-radius: 14px;
+  border-radius: var(--r-panel);
   background: var(--ld-dark);
   scrollbar-width: none;
 }
@@ -555,7 +576,7 @@ body.itx-landing-body {
 
 .itx-board-quote-name {
   margin-bottom: 3px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 700;
   color: var(--ld-light);
 }
@@ -568,12 +589,12 @@ body.itx-landing-body {
 }
 
 .itx-board-quote-value {
-  font-size: 14px;
+  font-size: var(--fs-lead);
   color: var(--ld-light);
 }
 
 .itx-board-quote-change {
-  font-size: 11px;
+  font-size: var(--fs-micro);
 }
 
 /* markets + rail */
@@ -629,7 +650,7 @@ body.itx-landing-body {
 .itx-board-panel-market {
   flex: 0 0 calc(44% - 4px);
   min-height: 430px;
-  padding: 14px 16px;
+  padding: var(--pad-panel-y) var(--pad-panel-x);
 }
 
 .itx-board-rail {
@@ -638,13 +659,13 @@ body.itx-landing-body {
 
 .itx-board-panel-leaders {
   min-height: 300px;
-  padding: 12px 13px;
+  padding: var(--pad-panel-y) var(--pad-panel-x);
 }
 
 .itx-board-panel-trends {
   min-height: 244px;
   margin-bottom: 0;
-  padding: 12px 13px;
+  padding: var(--pad-panel-y) var(--pad-panel-x);
 }
 
 .itx-board-rail .itx-board-label:nth-of-type(2) {
@@ -660,7 +681,7 @@ body.itx-landing-body {
   margin-bottom: 10px;
   padding: 6px 11px;
   border: 1px solid var(--bd-line);
-  border-radius: 9px;
+  border-radius: var(--r-field);
 }
 
 .itx-board-search:focus-within {
@@ -681,7 +702,7 @@ body.itx-landing-body {
   background: none;
   color: var(--ld-light);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .itx-board-search input:focus {
@@ -699,7 +720,7 @@ body.itx-landing-body {
 .itx-board-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .itx-board-table th,
@@ -713,7 +734,7 @@ body.itx-landing-body {
   text-align: left;
   color: var(--ld-sub);
   font-weight: 400;
-  font-size: 11px;
+  font-size: var(--fs-micro);
   letter-spacing: 0.02em;
 }
 
@@ -724,6 +745,21 @@ body.itx-landing-body {
 
 .itx-board-table tr:last-child td {
   border-bottom: 0;
+}
+
+/* Outer cells sit flush with the panel's padding box. Without this the
+   cell's own side padding inset the first column a further 5px, so a
+   table and a paragraph in sibling panels -- the agent rows against the
+   "consensus winners are never exposed" note -- started on different
+   vertical lines. */
+.itx-board-table th:first-child,
+.itx-board-table td:first-child {
+  padding-left: 0;
+}
+
+.itx-board-table th:last-child,
+.itx-board-table td:last-child {
+  padding-right: 0;
 }
 
 .itx-board-table .right {
@@ -737,7 +773,9 @@ body.itx-landing-body {
 /* latest + footer */
 
 .itx-board-panel-latest {
-  padding: 6px 20px;
+  /* Less vertical padding than the other panels on purpose: the rows
+     inside carry their own, and doubling them left a visible gap. */
+  padding: 6px var(--pad-panel-x);
   min-height: 128px;
 }
 
@@ -752,7 +790,7 @@ body.itx-landing-body {
   align-items: baseline;
   gap: 14px;
   padding: 7px 0;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .itx-board-dot {
@@ -768,7 +806,7 @@ body.itx-landing-body {
   flex: none;
   width: 76px;
   color: var(--ld-sub);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .itx-board-updates li > a {
@@ -783,7 +821,7 @@ body.itx-landing-body {
 .itx-board-amt {
   flex: none;
   color: var(--ld-sub);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .itx-board-footer {
@@ -819,6 +857,6 @@ body.itx-landing-body {
   }
 
   .itx-board-title {
-    font-size: 21px;
+    font-size: 21px; /* one step down from --fs-title on narrow screens */
   }
 }
