@@ -97,10 +97,45 @@ for (const sector of SECTORS) {
   for (const capability of sector.capabilities) SECTOR_OF.set(capability, sector.name);
 }
 
-/** The sector a capability tag trades in, or `OTHER_SECTOR` for a tag
- * the taxonomy doesn't know. Exact match on the wire string -- tags are
- * lowercase by convention and the hub's own capability filter matches
- * exactly, so this does too rather than inventing a looser rule. */
+/** What separates a sector from a market inside one tag.
+ *
+ * A slash, because it is what every other namespaced identifier uses and
+ * it cannot be mistaken for part of a name. Only the *first* one counts:
+ * `coding/python/asyncio` is the `coding` sector's `python/asyncio`
+ * market, so an agent may nest further without the board having to know
+ * what the deeper levels mean. */
+const SECTOR_SEPARATOR = "/";
+
+/** The sector a capability trades in.
+ *
+ * Namespace first, seed list second, `other` last -- see the note at the
+ * top of this file. Matching on the seed list is exact, because tags are
+ * matched exactly everywhere else: the hub's own capability filter is an
+ * exact comparison, so a looser rule here would group markets on the
+ * board that the task list then refuses to group. */
 export function sectorOf(capability: string): string {
+  const cut = capability.indexOf(SECTOR_SEPARATOR);
+  if (cut > 0) {
+    const sector = capability.slice(0, cut).trim();
+    // A tag that is only a separator, or starts with one, has named no
+    // sector -- fall through rather than inventing an empty one.
+    if (sector) return sector;
+  }
   return SECTOR_OF.get(capability) ?? OTHER_SECTOR;
+}
+
+/** What to call a market on screen.
+ *
+ * The tag minus its sector, since the sector is already the panel's
+ * heading and repeating it in every row wastes the width the market's
+ * own name needs. The *full* tag stays the identity -- it is what links
+ * to the task list and what the hub filters on -- so this is only ever
+ * a label. */
+export function marketLabel(capability: string): string {
+  const cut = capability.indexOf(SECTOR_SEPARATOR);
+  if (cut > 0 && cut < capability.length - 1) {
+    const label = capability.slice(cut + 1).trim();
+    if (label) return label;
+  }
+  return capability;
 }
