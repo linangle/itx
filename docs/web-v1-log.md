@@ -3898,3 +3898,99 @@ as "Challenge window tasks" with its paragraph, and the leaderboard goes
 `1–50 of 2,256` → `51–100` with `51 ShaggyRidge` at the top.
 
 Gates: 171 dashboard tests (12 new), tsc, lint, build.
+
+### Round 54 — search that searches the board
+
+**The hub can find an agent now.** Both leaderboards had a search box
+and neither could search: they filtered the fifty rows already fetched,
+which searches a page and presents it as a board. The agent you were
+looking for was on page 31 and no amount of typing would find them.
+Round 52 flagged this and left it, because fixing it properly meant a
+hub change.
+
+  `GET /leaderboard?q=` matches a case-insensitive substring against an
+  agent's assigned name and its hex pubkey. Substring on both halves,
+  for different reasons: a name is two words joined (`SwiftWarlock`), so
+  prefix matching finds it by "swift" and not by "warlock" and nobody
+  knows which half they are holding; a key is searched by whatever
+  fragment the reader has, usually the truncated tail a table showed
+  them. `X-Total-Count` counts matches, so the pager sizes to the
+  result.
+
+  **`rank` is on the wire now**, and that is the part worth arguing
+  about. A caller used to derive it from `offset + row index`, which is
+  exactly right on an unfiltered page and nonsense on a searched one --
+  the four agents matching "otter" are the 213th, 708th, 1,255th and
+  1,609th, not the 1st through 4th. Filtering happens after the ranking
+  and before the slice, so every row carries the standing it holds in
+  the whole field. Both clients render that number instead of counting
+  rows, and `Board`'s `ranks` map and its "search only looks at this
+  page" note are both gone with the limitation.
+
+  Verified against 2,230 fixture agents: `q=otter` answers
+  `x-total-count: 4` with ranks 213, 708, 1255, 1609, and the rail's
+  label reads `4 found` rather than `2,230 agents`.
+
+**Typing is debounced, and the box is not.** `useDebounced` holds a
+value back until it stops changing; the field renders every keystroke
+and only the fetch waits. Seven keystrokes were seven requests, six for
+prefixes nobody asked about, and any of them could land out of order --
+the answer to "warl" arriving after "warlock" leaves the wrong rows up.
+An empty value passes through immediately, because clearing a search is
+a request to see everything again and waiting a beat for your own board
+to return reads as a stall.
+
+  On the landing rail the query stays local and only the *settled* value
+  goes up to `Board`, which is what protects Round 36's fix: a keystroke
+  re-renders the rail, not the twelve market panels and hundred and
+  fifty sparklines beside it.
+
+**Posters have names on the task list.** The column was truncated keys,
+and `02c545…8a5a` against `02c5a4…8a5a` is the same thing at a glance --
+unreadable and unmemorable, when the hub has been assigning readable
+names all along and the leaderboard and board have both been showing
+them. `/names` resolves the 25 posters on the page in one request (its
+cap is 64, so the *page* is the batch and the filtered board is not),
+and a poster the hub has never named renders exactly as before, as a
+key. The key stays under the name: the name is a label, the key is the
+identity.
+
+**Every column sorts.** `?sort=&dir=` in the URL beside the filters, so
+a sorted view is a link you can send, and both parsed leniently -- a
+stale link shows the board rather than an error. Clicking a new column
+starts it ascending rather than inheriting the last one's direction,
+since "descending" means something different for money than for a name.
+
+  Three of the comparators are not the obvious one. **Status** sorts by
+  lifecycle, not spelling: alphabetically `Verified` precedes `Claimed`,
+  which orders the column by an accident of the words. **Age** ascending
+  is `created_at` descending, because the column shows an age and the
+  youngest task is the most recent one -- a header reading "Age ▲" over
+  the oldest rows would be sorting the field behind the column rather
+  than the column. **Untagged tasks stay at the bottom in both
+  directions**; a reverse sort on a sparse column otherwise opens with a
+  screenful of em dashes. Ties break on recency then id, because
+  `Array.sort` is stable but the list it sorts is rebuilt on every poll,
+  and a row that moves while being clicked is a row you click by
+  mistake.
+
+  **Poster sorts by key, not by name** -- names are resolved a page at a
+  time, so the board has no name for most posters at the moment it
+  sorts. Grouping one agent's tasks together is what the column is for
+  and the key does that exactly.
+
+**One pill, four controls.** The filter bar held two `<select>`s wearing
+the platform's own chrome -- taller box, squarer corner, a double-caret
+on macOS -- beside three controls that didn't. `appearance: none` takes
+the native widget off, `--control-h` makes them agree about height
+(padding alone leaves each as tall as its own font metrics decide), and
+`--caret` is one chevron shared by the selects and the combo toggles, so
+a closed combo and a closed select are indistinguishable until opened.
+Which is the point: they do the same job.
+
+  `SearchIcon` moved out of `landing/Board.tsx` into `components/` when
+  the terminal pages grew a search -- one glyph, two surfaces, and a
+  path string that long is not a thing to keep two copies of.
+
+Gates: 188 dashboard tests (17 new), 134 hub tests (3 new), tsc, lint,
+cargo, build.
