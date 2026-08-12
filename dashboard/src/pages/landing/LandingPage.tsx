@@ -29,10 +29,10 @@ import "../../styles/landing.css";
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
 
-/** How many headlines the tape and the board's "latest" feed share. The
- * board shows at most `MAX_UPDATE_ROWS` (24) of them, so this is sized
- * to fill a tall panel without asking for a page of the board. */
-const LATEST_HEADLINES = 24;
+/** How many headlines the tape and the board's "latest" feed share.
+ * Matches `MAX_UPDATE_ROWS`: the feed scrolls to exactly this depth, so
+ * asking for more would be fetching rows nothing can reach. */
+const LATEST_HEADLINES = 20;
 
 export default function LandingPage() {
   // Two small requests where this page used to walk the entire board.

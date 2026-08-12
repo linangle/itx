@@ -1678,16 +1678,34 @@ body.itx-landing-body[data-theme="light"] {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+  /* The scrollbar sat on top of the earnings column -- an overlay
+     scrollbar takes no layout width, so it was drawn over the last
+     digit of a four-figure number. Widening the box past the content
+     and padding the content back in moves the bar into the panel's own
+     side padding, where it has nothing to cover. The rows keep their
+     width, so the separators still line up with everything above. */
+  margin-right: calc(-1 * var(--sp-5));
+  padding-right: var(--sp-5);
   /* Firefox; the WebKit equivalent is below. */
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--bd-line) 80%, transparent) transparent;
+  scrollbar-color: var(--ld-sub) color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
+/* Dressed as the carousel's slider rather than as a scrollbar: same
+   track wash, same `--ld-sub` thumb, same 2px radius. They are the same
+   idea one panel apart -- how far through a row of things you are --
+   and were drawn as two different objects. 4px rather than the
+   slider's 3, because this one has to be grabbable and that one is
+   only ever read. */
 .itx-board-scroll::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
+}
+.itx-board-scroll::-webkit-scrollbar-track {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
 .itx-board-scroll::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--bd-line) 80%, transparent);
+  border-radius: 2px;
+  background: var(--ld-sub);
 }
 
 /* The standings' pager, under the list. Small and quiet: it is a
@@ -1817,11 +1835,16 @@ body.itx-landing-body[data-theme="light"] {
   /* Less vertical padding than the other panels on purpose: the rows
      inside carry their own, and doubling them left a visible gap.
 
-     A fixed height rather than a minimum, so the tape fills the panel
-     exactly: six rows plus the padding, and `useFitRows` drops in as
-     many updates as that leaves room for. */
-  padding: 6px var(--pad-panel-x);
-  height: calc(var(--row-h) * 6 + 12px + 2px); /* six rows, the padding, and the outline */
+     Five rows tall, and it *scrolls* rather than being filled to fit.
+     It used to be six rows with `useFitRows` dropping in exactly as
+     many updates as the box had room for, which meant the tape was
+     only ever as deep as the panel -- and the panel's depth was a
+     layout decision, not an editorial one. Now the panel shows five and
+     holds twenty (`MAX_UPDATE_ROWS`), so what is on screen is the front
+     of a feed rather than the whole of a short one. */
+  --pad-panel-y-latest: 6px;
+  padding: var(--pad-panel-y-latest) var(--pad-panel-x);
+  height: calc(var(--row-h) * 5 + var(--pad-panel-y-latest) * 2 + 2px);
   display: flex;
   flex-direction: column;
 }
@@ -1849,14 +1872,46 @@ body.itx-landing-body[data-theme="light"] {
   margin: 0 calc(-1 * var(--sp-5));
 }
 
-/* The box that measures the tape also clips it, and the rows now hang
-   12px past it on each side. Widened by exactly that much -- and
-   pulled back by the same, so the content stays where it was -- or the
-   clip would shear the glow's rounded corners straight off again.
-   There is room: the panel's own padding is twice this. */
+/* The box that measures the tape now *clips* it, where before it
+   overflowed freely -- so what hangs outside a row has to be accounted
+   for. Two things do: the row's own 12px padding-out/margin-back (see
+   `li` above), which is what gives the arrival wash its rounded corners
+   somewhere to sit, and that wash's 22px halo on top of it.
+
+   The bleed is the panel's full padding, in both axes, which is as far
+   as it can go while staying inside the outline. That clears the row's
+   12px overhang with room to spare, so the corners -- the thing these
+   negative margins have always been for -- are never sheared; only the
+   last few pixels of a 20%-alpha shadow tail fall outside. Taking the
+   vertical padding in too means the scrollport is exactly five rows,
+   and the scrollbar lands at the panel's inner edge, clear of the row
+   content. */
 .itx-board-panel-latest .itx-board-fit {
-  margin: 0 calc(-1 * var(--sp-5));
-  padding: 0 var(--sp-5);
+  margin: calc(-1 * var(--pad-panel-y-latest)) calc(-1 * var(--pad-panel-x));
+  padding: var(--pad-panel-y-latest) var(--pad-panel-x);
+  /* The tape is taller than its panel now. `flex: 1` with `min-height:
+     0` is what actually lets it scroll: without the zero minimum a flex
+     item refuses to shrink below its content, so the box grows past the
+     panel instead of overflowing inside it. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ld-sub) color-mix(in srgb, var(--bd-line) 62%, transparent);
+}
+
+.itx-board-panel-latest .itx-board-fit::-webkit-scrollbar {
+  width: 4px;
+}
+
+.itx-board-panel-latest .itx-board-fit::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--bd-line) 62%, transparent);
+  border-radius: 2px;
+}
+
+.itx-board-panel-latest .itx-board-fit::-webkit-scrollbar-thumb {
+  background: var(--ld-sub);
+  border-radius: 2px;
 }
 
 /* A row that landed on the last poll: it rises the length of the tape
@@ -2038,12 +2093,22 @@ body.itx-landing-body[data-theme="light"] {
  * rows, because the row has to stay a box: the arrival animation moves
  * it, paints a glow behind it and rounds its corners, none of which a
  * contents-display element can do. */
-.itx-board-what {
+/* Grey, not the link blue -- and the selector needs the element to say
+   so, since `.itx-board a` is a class *and* an element and out-specifies
+   a lone class. The tape has two links per row and they were both blue,
+   which made the row read as two equal offers when only one of them is
+   the thing you click to go somewhere new. The task is the row's
+   subject and sits in body ink; the agent keeps the blue. */
+a.itx-board-what {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--ld-sub);
+}
+
+a.itx-board-what:hover {
   color: var(--ld-light);
 }
 
@@ -2098,7 +2163,11 @@ body.itx-landing-body[data-theme="light"] {
   gap: var(--sp-4);
   width: 164px;
   min-width: 0;
-  color: var(--ld-sub);
+  /* The link colour, where this used to be grey. The row now reads
+     task-in-body-ink, agent-in-blue, which is the way round that
+     matches what each one is: the description is the row's subject,
+     the agent is a name you follow. */
+  color: var(--ld-blue);
   font-size: var(--fs-meta);
 }
 .itx-board-updates .itx-board-agent span {

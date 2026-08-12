@@ -50,7 +50,10 @@ import type {
  * today -- coding, the widest, has nine. */
 const MAX_MARKET_ROWS = 12;
 const MAX_TRENDING_ROWS = 24;
-const MAX_UPDATE_ROWS = 24;
+/** How deep the tape goes. Not "what fits" -- the panel shows five and
+ * scrolls the rest, so this is how much feed is worth carrying rather
+ * than how tall the box is. */
+const MAX_UPDATE_ROWS = 20;
 /** How deep the standings go. The panel scrolls now, so this is not
  * "what fits" but how much of the board's field is worth carrying into
  * one rail -- and the real hub only serves the top fifty anyway. */
@@ -290,7 +293,6 @@ export default function Board({
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
   const [trendFit, trendRows] = useFitRows();
-  const [latestFit, latestRows] = useFitRows();
 
   return (
     // The masthead's link home targets this, not the top of the
@@ -413,12 +415,12 @@ export default function Board({
             <span className="itx-board-live-dot" aria-label="live" title="live" />
           </div>
           <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
-            <div className="itx-board-fit" ref={latestFit}>
+            <div className="itx-board-fit">
               <ul className="itx-board-updates">
                 {updates.length === 0 && !latest.loading && (
                   <li className="itx-board-note">nothing on the tape yet.</li>
                 )}
-                {updates.slice(0, latestRows).map((t) => (
+                {updates.map((t) => (
                   <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
                     <span className="itx-board-dot" aria-hidden="true" />
                     <span className="itx-board-when">{ago(t.created_at)}</span>
