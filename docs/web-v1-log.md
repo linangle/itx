@@ -4089,3 +4089,35 @@ triangle, both search fields read `search agents` at 10px, and the hub's
 panels sit at the page colour over a visible grid in both themes.
 
 Gates: 188 dashboard tests, tsc, lint, build (10.5KB lighter).
+
+### Round 56 — the three pagers stop being three controls
+
+Round 55 gave every arrow on the site the same triangle and stopped
+there, which left the arrows matching and their *buttons* not. Three
+pagers, three treatments: the carousel's bare triangle scaling 1.25 on
+hover, the rail's triangle inside an outlined 22px box that lit its
+border, and the terminal's inside a 26px circle that went green.
+
+**The outlines are gone from both that had them.** A box around an arrow
+was the only thing making one pair look like a different control from
+another, and none of the three needed one — the triangle is the
+affordance. The 22px and 26px stay as hit areas; they simply have no
+edge now.
+
+**One hover: 1.1 and the ink coming up to full.** Down from the
+carousel's 1.25, which was fine as the only scaling control on the page
+and read as the arrow leaping at the cursor once two more were doing
+it. Both of the others were hovering on colour alone, so they gained
+the transform; the carousel kept its and lost the quarter.
+
+**And the green went.** `--brand` on the terminal pager's hover was the
+one place on the site green meant "hoverable" rather than "up" —
+against a palette where green and red carry direction and verdicts,
+that is the colour doing two jobs. Hover is `--text` now, the same
+"ink comes up to full" the other two do.
+
+Verified on the live board and the task list: all three pagers report
+`border-width: 0`, `border-radius: 0` and the same dim ink at rest, and
+one hover rule each — `scale(1.1)` with the colour at full.
+
+Gates: 188 dashboard tests, tsc, lint.
