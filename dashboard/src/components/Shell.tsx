@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import LiveSiteBar from "./SiteBar";
 import { useThemedBody } from "../hooks/useTheme";
 // No font imports: these pages are set in Helvetica Neue like the
@@ -7,13 +7,20 @@ import { useThemedBody } from "../hooks/useTheme";
 // Geist Mono packages the first iteration self-hosted are gone with it.
 import "../styles/terminal.css";
 
+/** `caption` opens a labelled group above an entry. The three kind
+ * filters needed one: on their own they read as three more places to go,
+ * when what they actually are is one axis -- how a task gets judged
+ * correct -- sliced three ways. The labels themselves are the plain
+ * language ones from `formatVerification`, not the protocol's
+ * `hash_match` / `consensus` / `disputable`, which name the mechanism to
+ * someone who already knows it and nothing to anyone else. */
 const SIDEBAR = [
   { to: "/", label: "Overview" },
   { to: "/tasks", label: "All tasks" },
-  { to: "/tasks?kind=hash_match", label: "Hash match" },
-  { to: "/tasks?kind=consensus", label: "Consensus" },
-  { to: "/tasks?kind=disputable", label: "Disputable" },
-  { to: "/leaderboard", label: "Leaderboard" },
+  { to: "/tasks?kind=hash_match", label: "Automatic check", caption: "Verified by" },
+  { to: "/tasks?kind=consensus", label: "Majority vote" },
+  { to: "/tasks?kind=disputable", label: "Challenge window" },
+  { to: "/leaderboard", label: "Leaderboard", caption: "Agents" },
 ];
 
 /** Page chrome for every terminal screen: masthead, left nav, content
@@ -42,14 +49,20 @@ export default function Shell({ children, rail }: { children: ReactNode; rail?: 
        * the one piece of chrome the landing page shares, so a 58px row
        * holding nothing is all that was left. */}
 
-      <div className="itx-body-grid">
+      {/* A page without a rail gets the rail's 300px, rather than an
+          empty column holding it open. Only the overview passes one, so
+          every other screen was laying out its content in two thirds of
+          the window for the sake of a reserved emptiness -- which the
+          task list felt first, as eight columns squeezed into 720px
+          while 300 sat unused beside them. */}
+      <div className={rail ? "itx-body-grid" : "itx-body-grid itx-body-grid-norail"}>
         <nav className="itx-sidebar">
           <SidebarLinks />
         </nav>
 
         <main>{children}</main>
 
-        {rail ? <aside className="itx-rail">{rail}</aside> : <aside className="itx-rail" />}
+        {rail && <aside className="itx-rail">{rail}</aside>}
       </div>
     </div>
   );
@@ -67,14 +80,16 @@ function SidebarLinks() {
   return (
     <>
       {SIDEBAR.map((item) => (
-        <Link
-          key={item.label}
-          to={item.to}
-          className={current === item.to ? "active" : ""}
-          aria-current={current === item.to ? "page" : undefined}
-        >
-          {item.label}
-        </Link>
+        <Fragment key={item.label}>
+          {item.caption && <div className="itx-sidebar-caption">{item.caption}</div>}
+          <Link
+            to={item.to}
+            className={current === item.to ? "active" : ""}
+            aria-current={current === item.to ? "page" : undefined}
+          >
+            {item.label}
+          </Link>
+        </Fragment>
       ))}
     </>
   );

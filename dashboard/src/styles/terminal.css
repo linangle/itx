@@ -258,6 +258,12 @@ body.itx-body[data-theme="light"] {
   max-width: 1600px;
 }
 
+/* See `Shell`: the third column exists for the overview's rail, and
+   every other page was reserving it for nothing. */
+.itx-body-grid-norail {
+  grid-template-columns: 170px minmax(0, 1fr);
+}
+
 @media (max-width: 1200px) {
   .itx-body-grid {
     grid-template-columns: 170px minmax(0, 1fr);
@@ -306,6 +312,21 @@ body.itx-body[data-theme="light"] {
   font-weight: 600;
 }
 
+/* The heading over a group of nav entries. Set like a table header --
+   micro, uppercase, faint -- so it reads as a label for what follows
+   rather than as another destination in the list. The top margin is
+   what separates one group from the entries above it; the first group
+   sits below `All tasks`, so there is always something to separate. */
+.itx-sidebar-caption {
+  font-size: var(--fs-micro);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-faint);
+  padding: var(--sp-2) var(--sp-5);
+  margin-top: var(--sp-5);
+}
+
 .itx h1 {
   font-size: var(--fs-display);
   font-weight: 650;
@@ -317,6 +338,19 @@ body.itx-body[data-theme="light"] {
   font-size: var(--fs-h2);
   margin: 0 0 var(--sp-5);
   letter-spacing: -0.2px;
+}
+
+/* The paragraph under a page title that says what the page is. Held to
+   a measure rather than the column's full width -- a single sentence
+   set across 1000px is read as a banner and skipped. The negative top
+   margin pulls it up under the h1's own bottom margin, which is sized
+   for a heading sitting directly on content. */
+.itx-page-lede {
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  color: var(--text-dim);
+  max-width: 76ch;
+  margin: calc(-1 * var(--sp-5)) 0 var(--sp-7);
 }
 
 .itx h3 {
@@ -450,6 +484,18 @@ body.itx-body[data-theme="light"] {
   border-bottom: none;
 }
 
+/* Every cell is `nowrap`, so a table with enough columns has a minimum
+   width the panel can't always give it -- and the panel clips
+   (`overflow: hidden`, for its rounded corners) rather than scrolling,
+   so the overflow is silently invisible. The task list crossed that line
+   at eight columns: at a 1280px window it wants 749px inside a 720px
+   panel, and Age simply wasn't there. Scrolling the table inside its own
+   box keeps the panel's corners and the pager where they are, and does
+   nothing at all on a wide window, where the columns fit. */
+.itx-table-scroll {
+  overflow-x: auto;
+}
+
 .itx-table tbody tr:hover {
   background: var(--panel-hover);
 }
@@ -464,6 +510,14 @@ body.itx-body[data-theme="light"] {
 .itx-table .grow {
   width: 100%;
   max-width: 0;
+  /* A floor, not a width. `max-width: 0` makes this column surrender
+     space to every other one, which is right while there is space to
+     surrender and wrong once there isn't -- at a narrow window the task
+     list's eight columns took the lot and left the descriptions as
+     "Tri…", "La…", a column of ellipses. Below this the table stops
+     shrinking and scrolls sideways inside `.itx-table-scroll` instead,
+     which costs a swipe and keeps the rows readable. */
+  min-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -667,6 +721,98 @@ body.itx-body[data-theme="light"] {
   align-items: center;
   margin-bottom: var(--sp-5);
   flex-wrap: wrap;
+}
+
+/* A line under the filters explaining an axis they don't explain
+   themselves -- see `TasksPage`. Sits at meta size so it reads as a
+   footnote to the controls rather than as page copy. */
+.itx-filter-note {
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  margin: calc(-1 * var(--sp-2)) 0 var(--sp-6);
+  max-width: 68ch;
+}
+
+/* --------------------------------------------------------- combo filter */
+
+.itx-combo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Room on the right for the caret to sit inside the pill. */
+.itx-combo-input {
+  padding-right: calc(var(--sp-6) + 16px);
+}
+
+.itx-combo-toggle {
+  position: absolute;
+  right: var(--sp-4);
+  background: none;
+  border: none;
+  padding: 0 var(--sp-2);
+  color: var(--text-faint);
+  font-size: var(--fs-meta);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.itx-combo-toggle:hover {
+  color: var(--text);
+}
+
+.itx-combo-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--sp-2);
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 22%);
+}
+
+.itx-combo-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: calc(var(--radius) - 4px);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-meta);
+  padding: var(--sp-3) var(--sp-5);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.itx-combo-option:hover,
+.itx-combo-option.highlight {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.itx-combo-option.selected {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.itx-combo-clear {
+  font-style: italic;
+}
+
+.itx-combo-empty {
+  padding: var(--sp-3) var(--sp-5);
+  color: var(--text-faint);
+  font-size: var(--fs-meta);
 }
 
 /* ----------------------------------------------------------------- chips */

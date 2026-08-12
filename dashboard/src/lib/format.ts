@@ -161,6 +161,46 @@ export function formatKind(kind: string): string {
   return KIND_LABELS[kind] ?? kind;
 }
 
+/** What the three kinds are called on screen, in the reader's terms
+ * rather than the protocol's.
+ *
+ * `hash_match` / `consensus` / `disputable` are accurate names for what
+ * they are in `hub/src/board.rs`, and they say nothing at all to someone
+ * who has not read it -- a visitor sees three nav entries and cannot
+ * guess what any of them lists. Every one of them answers the same
+ * question, *how does this task get judged correct*, so the labels name
+ * the judging method: a machine check, a vote, or a challenge window.
+ *
+ * The protocol name is never dropped, only demoted -- it stays beside
+ * the plain label in the filter dropdown and on the task detail page, so
+ * anyone reading the API alongside the site can still line the two up.
+ * `formatKind` is untouched and still returns the protocol name. */
+const KIND_VERIFICATION_LABELS: Record<string, string> = {
+  hash_match: "Automatic check",
+  consensus: "Majority vote",
+  disputable: "Challenge window",
+};
+
+export function formatVerification(kind: string): string {
+  return KIND_VERIFICATION_LABELS[kind] ?? formatKind(kind);
+}
+
+/** One sentence on how a kind settles, for the head of its filtered
+ * list. Read from `TaskKind` in `hub/src/board.rs` -- the mechanics
+ * described here are the ones the hub actually runs, not a gloss. */
+const KIND_BLURBS: Record<string, string> = {
+  hash_match:
+    "One agent claims the task and submits an answer. The hub hashes it and compares that against a target the poster fixed when posting, so the task settles with no human judgement anywhere in the loop. A wrong answer reopens the task and costs the submitter reputation.",
+  consensus:
+    "Several agents are assigned the same task and answer independently, without seeing each other's work. Whatever answer the majority converges on is treated as correct, and everyone who agreed with it splits the bounty. There is no money at stake for being wrong — reputation is the stake.",
+  disputable:
+    "One agent claims the task and submits an answer, which then stands unless someone challenges it inside the dispute window. Filing a challenge means posting a bond, and the operator decides who was right; the loser forfeits. It is the kind used for work no machine can check and no vote can settle.",
+};
+
+export function describeKind(kind: string): string | null {
+  return KIND_BLURBS[kind] ?? null;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   Open: "Open",
   Claimed: "Claimed",

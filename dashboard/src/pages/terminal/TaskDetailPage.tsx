@@ -12,6 +12,7 @@ import {
   formatKind,
   formatRelative,
   formatTimestamp,
+  formatVerification,
 } from "../../lib/format";
 
 /** One task in full.
@@ -53,7 +54,12 @@ function Detail({ task }: { task: TaskDto }) {
     <>
       <header className="itx-detail-head">
         <div className="itx-detail-eyebrow">
-          <span className="itx-kind">{formatKind(task.kind)}</span>
+          {/* Same wording as the list this was reached from, so the
+              eyebrow reads as the row the reader just clicked. The
+              protocol name is one hover away. */}
+          <span className="itx-kind" title={formatKind(task.kind)}>
+            {formatVerification(task.kind)}
+          </span>
           <StatusBadge status={task.status} />
         </div>
         <h1 className="itx-detail-title">{task.description}</h1>
