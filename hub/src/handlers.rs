@@ -1742,6 +1742,58 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>) -> Json<Vec<Leaderb
     )
 }
 
+/// How many pubkeys one `names` request may ask about. Sized for a
+/// screenful of rows rather than for bulk export -- a caller wanting the
+/// whole registry wants `leaderboard`, and an unbounded list here would
+/// let one request walk the map.
+const MAX_NAMES_LOOKUP: usize = 64;
+
+#[derive(Deserialize)]
+pub struct NamesQuery {
+    /// Comma-separated hex pubkeys.
+    pub pubkeys: String,
+}
+
+/// Resolves display names for a batch of pubkeys in one request.
+///
+/// The dashboard's tape shows who posted each task, and the answer for
+/// twenty rows was previously either twenty `reputation` requests or the
+/// `leaderboard`, which only carries the top earners -- so anyone who
+/// had posted work without yet being paid for it, the operator
+/// included, showed as a truncated key.
+///
+/// **Read-only, and deliberately non-minting**, for exactly the reason
+/// `get_reputation` is: this route is unauthenticated and resolves any
+/// well-formed pubkey, so assigning names here would let an anonymous
+/// caller drain the pool a request at a time. A key the registry has
+/// never seen comes back `null`, which is a normal answer and the one
+/// the client already renders a pubkey for.
+pub async fn names(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<NamesQuery>,
+) -> Result<Json<HashMap<String, Option<String>>>, ApiError> {
+    let registry = state.names.read().await;
+    Ok(Json(lookup_names(&registry, &query.pubkeys)))
+}
+
+/// The lookup itself, against a registry rather than the whole app
+/// state, so it can be tested without standing a hub up.
+fn lookup_names(
+    registry: &crate::names::NameRegistry,
+    pubkeys: &str,
+) -> HashMap<String, Option<String>> {
+    let mut out = HashMap::new();
+    for hex in pubkeys.split(',').filter(|s| !s.trim().is_empty()).take(MAX_NAMES_LOOKUP) {
+        let hex = hex.trim();
+        // A malformed key is skipped rather than failing the batch: the
+        // caller asked about a set of rows, and one bad entry should not
+        // cost it the names for all the others.
+        let Ok(pubkey) = parse_hex_pubkey(hex) else { continue };
+        out.insert(hex.to_string(), registry.get(&pubkey).map(str::to_string));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------
 // Board summary
 // ---------------------------------------------------------------------
@@ -2446,6 +2498,11 @@ mod summary_tests {
         }
     }
 
+    /// The same hex `Display` produces, which is what the API speaks.
+    fn hex_of(pubkey: &PublicKey) -> String {
+        pubkey.to_string()
+    }
+
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-08-11T12:00:00Z").unwrap().with_timezone(&Utc)
     }
@@ -2582,6 +2639,44 @@ mod summary_tests {
         assert_eq!(summary.capabilities.len(), 1);
         assert_eq!(summary.capabilities[0].posted, 1);
         assert_eq!(summary.capabilities[0].open_bounty, 250);
+    }
+
+    #[test]
+    fn names_resolves_a_batch_and_answers_null_for_keys_it_has_never_seen() {
+        let known = PrivateKey::new_key().public_key();
+        let stranger = PrivateKey::new_key().public_key();
+        let mut registry = crate::names::NameRegistry::new();
+        registry.restore(known.clone(), "SwiftWarlock".to_string());
+
+        let out = lookup_names(
+            &registry,
+            &format!("{},{}", hex_of(&known), hex_of(&stranger)),
+        );
+        assert_eq!(out.get(&hex_of(&known)).unwrap().as_deref(), Some("SwiftWarlock"));
+        // Present as a key, with no name -- distinct from absent, which
+        // is what a malformed entry gets.
+        assert!(out.contains_key(&hex_of(&stranger)));
+        assert_eq!(out.get(&hex_of(&stranger)).unwrap().as_deref(), None);
+    }
+
+    #[test]
+    fn names_skips_a_malformed_key_rather_than_failing_the_whole_batch() {
+        let known = PrivateKey::new_key().public_key();
+        let mut registry = crate::names::NameRegistry::new();
+        registry.restore(known.clone(), "AmberOtter".to_string());
+
+        let out = lookup_names(&registry, &format!("nonsense,{},,zz", hex_of(&known)));
+        assert_eq!(out.len(), 1, "one good key answered, the rubbish dropped");
+        assert_eq!(out.get(&hex_of(&known)).unwrap().as_deref(), Some("AmberOtter"));
+    }
+
+    #[test]
+    fn names_stops_at_the_batch_ceiling() {
+        let registry = crate::names::NameRegistry::new();
+        let keys: Vec<String> = (0..MAX_NAMES_LOOKUP + 20)
+            .map(|_| hex_of(&PrivateKey::new_key().public_key()))
+            .collect();
+        assert_eq!(lookup_names(&registry, &keys.join(",")).len(), MAX_NAMES_LOOKUP);
     }
 
     #[test]

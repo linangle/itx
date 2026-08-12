@@ -414,6 +414,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         // `board_summary`). Read-only and unauthenticated, like the rest
         // of the board's read surface.
         .route("/board/summary", get(handlers::board_summary))
+        // Batch display-name lookup, so a list of rows costs one request
+        // rather than one per row. Read-only and never mints a name --
+        // see `handlers::names`.
+        .route("/names", get(handlers::names))
         .route("/llms.txt", get(handlers::llms_txt))
         .layer(cors)
         // Gzip for any client that asks (every browser does). The task
