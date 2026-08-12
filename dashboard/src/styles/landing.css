@@ -926,17 +926,39 @@ body.itx-landing-body[data-theme="light"] {
   align-items: start;
 }
 
-/* The two columns that stay put.
+/* The two columns that stay put -- or rather, the columns that hold
+ * something that stays put.
  *
- * Pinned just under the sticky masthead, and exactly as tall as what is
- * left of the viewport under it, so the leaderboard and trends are
- * always fully on screen rather than scrolling half out of view. A
- * definite height is also what the panels inside need: the trends panel
- * takes the rail's slack with `flex: 1`, and `useFitRows` divides a real
- * height to decide how many rows to draw -- against `height: auto` both
- * resolve to nothing and the panels come up empty. */
+ * **The column itself is an ordinary grid item and the sticky box is
+ * inside it.** It used to be the other way round: the column was the
+ * sticky element. That works in this browser, but it puts the two
+ * hardest cases in CSS -- a sticky element that is also a grid item,
+ * and one whose height is a `min-height` fighting a `max-height` --
+ * into the same box, and it is where the trends panel could be seen
+ * painted over the footer. A sticky box inside a plain block is the
+ * well-defined case everywhere: it cannot travel past its parent's
+ * bottom edge, and that parent now ends exactly where the board's
+ * columns end, a section's gap above the footer.
+ *
+ * `align-self: stretch` is what gives it that parent: with the grid's
+ * `align-items: start` these columns were as tall as their contents, so
+ * there was nothing to travel *within*. Stretched, the column spans the
+ * row -- which is as tall as the middle column -- and the pinned box
+ * inside it slides down that length and stops. */
 .itx-board-nav,
 .itx-board-rail {
+  align-self: stretch;
+}
+
+/* What actually pins: the panels, held just under the masthead and
+ * exactly as tall as what is left of the viewport under it, so the
+ * leaderboard and trends are always fully on screen rather than
+ * scrolling half out of view. A definite height is also what the panels
+ * inside need: the trends panel takes the rail's slack with `flex: 1`,
+ * and `useFitRows` divides a real height to decide how many rows to
+ * draw -- against `height: auto` both resolve to nothing and the panels
+ * come up empty. */
+.itx-board-pin {
   position: sticky;
   top: calc(var(--ld-bar-h) + var(--sp-6));
   /* As tall as the market panels beside them, so all three columns
@@ -960,6 +982,8 @@ body.itx-landing-body[data-theme="light"] {
      taller than the viewport scrolls with the page, which is a smaller
      problem than a panel painted over the footer. */
   min-height: min-content;
+  display: flex;
+  flex-direction: column;
 }
 
 /* The column that actually scrolls: the carousel at a screen's height,
@@ -1215,10 +1239,10 @@ body.itx-landing-body[data-theme="light"] {
   flex-direction: column;
 }
 
+/* The column is a plain block now -- what stacks its panels is the
+   pinned box inside it (`.itx-board-pin`). */
 .itx-board-rail {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
 }
 
 .itx-board-panel-leaders {
@@ -1243,8 +1267,6 @@ body.itx-landing-body[data-theme="light"] {
 
 .itx-board-nav {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
 }
 
 .itx-board-panel-nav {
@@ -2257,10 +2279,10 @@ a.itx-board-what:hover {
      under another, each a viewport tall and two of them sticky, would
      mean scrolling a screen's worth of nav before reaching a market.
      They go back to being ordinary blocks, sized by their contents. */
-  .itx-board-nav,
-  .itx-board-rail {
+  .itx-board-pin {
     position: static;
     height: auto;
+    max-height: none;
   }
 
   /* Stacked, there is no nav column to clear, so the heading goes back

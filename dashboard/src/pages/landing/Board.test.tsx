@@ -160,13 +160,54 @@ describe("Board", () => {
     ).toHaveAttribute("href", "/predictions");
     expect(within(section).getByText(`1 of ${SAMPLES.length}`)).toBeInTheDocument();
 
-    // Above the tape, below the markets: the row sits between the
-    // carousel and the latest feed in the column that scrolls.
+    // Last in the middle column, after the tape and the breakdown: the
+    // board's own market comes first, and the section that is not yet
+    // real comes last.
     const latest = container.querySelector("#itx-board-latest");
     expect(
       // eslint-disable-next-line no-bitwise
-      section.compareDocumentPosition(latest!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      latest!.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("orders the middle column, and the rail's links with it", () => {
+    const { container } = renderBoard(capabilities);
+
+    // The order the owner asked for. Asserted against the DOM rather
+    // than eyeballed because three of these are anchors the nav jumps
+    // to -- a rail that lists them in a different order than the page
+    // holds them is a map of somewhere else.
+    const sections = [...container.querySelectorAll(".itx-board-mid > *")].map((e) => e.id);
+    expect(sections).toEqual([
+      "",
+      "itx-board-latest",
+      "itx-board-sectors",
+      "itx-board-predictions",
+    ]);
+
+    const nav = screen.getByRole("navigation", { name: /board sections/i });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((a) => a.getAttribute("href"))
+        .filter((href) => href?.startsWith("#")),
+    ).toEqual([
+      "#itx-board-overview",
+      "#itx-board-latest",
+      "#itx-board-sectors",
+      "#itx-board-predictions",
+    ]);
+  });
+
+  it("anchors the tape at its label, not at the panel under it", () => {
+    // The id was on the panel, so the nav's "latest" link parked that
+    // panel's top edge under the sticky masthead and left the word
+    // "latest" behind the bar. A jump link has to land on the label as
+    // well as on the thing it labels.
+    const { container } = renderBoard(capabilities);
+    const anchor = container.querySelector("#itx-board-latest")!;
+    expect(anchor.querySelector(".itx-board-label")?.textContent).toBe("latest");
+    expect(anchor.querySelector(".itx-board-panel-latest")).toBeInTheDocument();
   });
 
   it("keeps the samples' odds pills quiet: spans, not trade buttons", () => {

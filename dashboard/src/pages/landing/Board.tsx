@@ -489,18 +489,17 @@ export default function Board({
           )}
           </div>
 
-          {/* One sample market in the Kalshi format, above the tape --
-            * all authored data, and the section's own comment says why.
-            * In the middle column because that is the column that
-            * scrolls: the pinned nav and rail stay beside it, the same
-            * arrangement every other section here gets. */}
-          <PredictionMarket />
-
+          {/* The anchor is on the section, not on the panel inside it.
+            * It was on the panel, and the nav's "latest" link put that
+            * panel's top edge just under the masthead -- which left the
+            * word "latest" above it, behind the bar. A jump link has to
+            * land on the label as well as the thing it labels. */}
+          <section id="itx-board-latest" aria-label="Latest">
           <div className="itx-board-labels itx-board-labels-latest">
             <span className="itx-board-label">latest</span>
             <span className="itx-board-live-dot" aria-label="live" title="live" />
           </div>
-          <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
+          <div className="itx-board-panel itx-board-panel-latest">
             <div className="itx-board-fit">
               <ul className="itx-board-updates">
                 {updates.length === 0 && !latest.loading && (
@@ -542,11 +541,28 @@ export default function Board({
               </ul>
             </div>
           </div>
+          </section>
 
           <SectorBreakdown sectors={sectors} />
+
+          {/* Last in the column, per the owner's ordering: the board's
+            * own market first, then what just happened on it, then how
+            * it breaks down -- and only then the prediction market,
+            * which is the one section here that is not yet real.
+            *
+            * In the middle column because that is the column that
+            * scrolls: the pinned nav and rail stay beside it, the same
+            * arrangement every other section here gets. */}
+          <PredictionMarket />
           </div>
 
+          {/* The column is an ordinary grid item; what pins is the box
+            * inside it. See `.itx-board-pin` -- a sticky element that
+            * is also a grid item is the case engines disagree about,
+            * and the column's bottom is what has to stop the rail
+            * short of the footer. */}
           <div className="itx-board-rail">
+            <div className="itx-board-pin">
             <LeaderboardRail
               leaders={leaders}
               page={leaderPage}
@@ -601,6 +617,7 @@ export default function Board({
                   </table>
                 )}
               </div>
+            </div>
             </div>
           </div>
         </div>
@@ -1111,6 +1128,8 @@ function BoardNav({
 }) {
   return (
     <nav className="itx-board-nav" aria-label="Board sections">
+      {/* The pinned box, not the column -- see `.itx-board-pin`. */}
+      <div className="itx-board-pin">
       {/* Where the other columns have a label. A list of section names
        * needs no heading -- but it does need the height one takes, or
        * this panel would start above the panels it sits beside. Two
@@ -1178,11 +1197,9 @@ function BoardNav({
               a section you are no longer looking at, and holding a list
               of them open under a nav entry for somewhere else is the
               rail describing two places at once. */}
-          <li>
-            <a href="#itx-board-predictions" onClick={() => setExpanded(false)}>
-              predictions
-            </a>
-          </li>
+          {/* In the order the sections actually appear below. A rail
+              that lists them in a different order than the page holds
+              them is a map of somewhere else. */}
           <li>
             <a href="#itx-board-latest" onClick={() => setExpanded(false)}>
               latest
@@ -1191,6 +1208,11 @@ function BoardNav({
           <li>
             <a href="#itx-board-sectors" onClick={() => setExpanded(false)}>
               breakdown
+            </a>
+          </li>
+          <li>
+            <a href="#itx-board-predictions" onClick={() => setExpanded(false)}>
+              predictions
             </a>
           </li>
         </ul>
@@ -1203,6 +1225,7 @@ function BoardNav({
             <Link to="/leaderboard">full leaderboard</Link>
           </li>
         </ul>
+      </div>
       </div>
     </nav>
   );

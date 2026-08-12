@@ -4486,3 +4486,58 @@ legible. No console errors.
   arrows landing correctly.
 
 Gates: 233 dashboard tests (4 new), tsc, lint, build.
+
+### Round 61 — the column order, and a rail that cannot reach the footer
+
+Three fixes from the owner's read of the board.
+
+**The middle column is reordered**: market overview, then latest, then
+the sector breakdown, then the prediction market. The rail's jump links
+are reordered with it — a nav that lists sections in a different order
+than the page holds them is a map of somewhere else. Putting the
+prediction market last also says something true about it: everything
+above it is measured, and it is the one section that is not yet real.
+
+**"latest" was anchored on the wrong element.** `#itx-board-latest` sat
+on the panel, so the nav's link parked the *panel's* top edge under the
+sticky masthead and left the word "latest" above it, behind the bar. The
+id now sits on a section wrapping the label and the panel together, so
+the jump lands on both. The breakdown and the prediction market already
+did this correctly, which is why only this one clipped.
+
+**The rail could paint over the footer, and the fix is structural.**
+Worth writing down carefully, because the reported symptom could not be
+reproduced here: measured at 1120, 1280, 1440 and 1900 wide, at every
+scroll position, and with the middle column artificially shortened to
+force the case the CSS comments already warned about, the trends panel
+finished exactly `--gap-section` above the footer every time.
+
+  What *was* true is that the arrangement had the two hardest cases in
+  CSS in one box: the pinned column was a **sticky grid item**, and its
+  height was a `min-height: min-content` fighting a `max-height`. Sticky
+  grid items are a known place for engines to disagree about what the
+  clamping rectangle is, and the owner is not necessarily reading this
+  in the same browser the preview runs.
+
+  So the sticky moved off the column and onto a box inside it
+  (`.itx-board-pin`), with the column itself an ordinary grid item at
+  `align-self: stretch`. The column now spans the whole row — as tall as
+  the middle column, ending a section's gap above the footer — and the
+  pinned box slides down inside it and stops at its parent's bottom
+  edge. That is the plain, well-defined case rather than the clever one,
+  and it makes the overlap impossible by construction instead of by
+  arithmetic that happens to work out.
+
+  `align-self: stretch` is the load-bearing half: under the grid's
+  `align-items: start` these columns were only as tall as their
+  contents, so a sticky box inside would have had nothing to travel
+  within and would simply have sat still.
+
+Verified live at 1440×860: the middle column reads overview → latest →
+breakdown → prediction market, the rail's links match, all three jump
+links land clear of the masthead (20–52px below it, where the label was
+previously behind it), and across eleven scroll positions the trends
+panel's bottom stays 32px above the footer's top. The stacked layout
+under 1080px still un-pins correctly.
+
+Gates: 235 dashboard tests (2 new), tsc, lint, build.
