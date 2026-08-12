@@ -4152,3 +4152,55 @@ original steep one, and the overlap needs the covered stretch lit.
 Gates: 188 tests, tsc and lint clean on the touched files. Measured the
 band flat at 40% alpha across eight positions from x=2% to x=98%, which
 is the wave being gone; checked in both themes.
+
+### Round 57 — the tape gets a depth, and two scrollbars get out of the way
+
+**The tape's two links were both blue.** A row is a task and the agent
+who posted it, and colouring both the same made it read as two equal
+offers when only one of them is the row's subject. The description is
+body ink now (`--ld-sub`) and the agent keeps the link blue -- which is
+also the right way round semantically: the description describes, the
+name is a person you go and look at.
+
+  The selector needed the element on it (`a.itx-board-what`). `.itx-board
+  a` is a class *and* an element, so it out-specifies a lone class, and
+  the rule that had been setting the description's colour all along was
+  losing to it silently.
+
+**Five rows, twenty deep, scrolling.** The panel was six rows with
+`useFitRows` dropping in exactly as many updates as the box had room
+for -- so the tape was only ever as deep as the panel, and the panel's
+depth was a layout accident rather than an editorial decision. It shows
+five now and holds twenty. `LATEST_HEADLINES` came down from 24 to
+match `MAX_UPDATE_ROWS`: fetching rows nothing can scroll to is just
+fetching.
+
+  **The clip is the part that needed care.** That box did not clip
+  before, and two things hang outside a row: its own 12px
+  padding-out/margin-back, which is what gives the arrival wash rounded
+  corners to sit in, and the 22px halo on top of that. The bleed is now
+  the panel's full padding in both axes -- as far as it can go while
+  staying inside the outline -- which clears the 12px overhang with room
+  to spare, so the corners are never sheared and only the last pixels of
+  a 20%-alpha shadow tail fall outside. Taking the vertical padding in
+  too makes the scrollport exactly five rows: 182px of a 184px panel.
+
+**The standings' scrollbar was sitting on the earnings.** An overlay
+scrollbar takes no layout width, so it was drawn straight over the last
+digit of a four-figure number. Widening the scroll box past the content
+and padding the content back in moves the bar into the panel's own side
+padding, where it has nothing to cover -- and the rows keep their width,
+so the separators still line up with everything above them.
+
+**And both scrollbars are dressed as the carousel's slider.** Same
+track wash, same `--ld-sub` thumb, same 2px radius. They are the same
+idea one panel apart -- how far through a row of things you are -- and
+were drawn as two unrelated objects. 4px rather than the slider's 3,
+because a scrollbar has to be grabbable where a slider is only read.
+
+Verified live: the tape renders 20 rows in a 182px scrollport at
+exactly five visible, descriptions at #b3b4bf and agents at #91c4f2,
+the row's wash clearing the clip by 4px, and the standings' bar 12px
+clear of the numbers.
+
+Gates: 188 dashboard tests, tsc, lint, build.
