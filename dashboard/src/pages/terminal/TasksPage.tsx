@@ -3,11 +3,19 @@ import { Link, useSearchParams } from "react-router-dom";
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
 import Pager from "../../components/Pager";
 import ComboFilter from "../../components/ComboFilter";
-import { PubkeyText, StatusBadge } from "../../components/Badges";
+import { AgentLink, StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
-import { getBoardSummary, listAllTasks } from "../../lib/hub";
+import { getBoardSummary, getNames, listAllTasks } from "../../lib/hub";
 import type { TaskDto, TaskKind, TaskStatus } from "../../lib/hub";
 import { marketLabel, sectorOf } from "../../lib/sectors";
+import {
+  DEFAULT_SORT,
+  parseSortDirection,
+  parseSortKey,
+  sortTasks,
+  type SortDirection,
+  type SortKey,
+} from "../../lib/taskSort";
 import {
   describeKind,
   formatCount,
@@ -31,6 +39,68 @@ const STATUSES: (TaskStatus | "all")[] = [
 ];
 
 const PAGE_SIZE = 25;
+
+/** The table's columns, in order, each sortable by its own key.
+ *
+ * Two of the labels are shorter than the thing they name, and
+ * deliberately: headers are `nowrap`, so every one of them sets its
+ * column's minimum width. "Task" over "Description" saves 65px on the
+ * column that gives its width away to all the others (`.grow`), and
+ * "Verified by" over "Verification" saves 20 more while matching the
+ * wording the sidebar already uses for that axis. Together they are the
+ * difference between the row fitting a 1280px window and not. */
+const COLUMNS: { key: SortKey; label: string; right?: boolean }[] = [
+  { key: "task", label: "Task" },
+  { key: "kind", label: "Verified by" },
+  { key: "status", label: "Status" },
+  { key: "poster", label: "Poster" },
+  { key: "sector", label: "Sector" },
+  { key: "market", label: "Market" },
+  { key: "bounty", label: "Bounty", right: true },
+  { key: "age", label: "Age", right: true },
+];
+
+/** A column header that sorts. Module-level rather than nested in the
+ * page: a component redeclared on every render is a new type each time,
+ * so React unmounts and remounts it -- which would take keyboard focus
+ * off the very header that was just activated. */
+function SortHeader({
+  column,
+  label,
+  right,
+  sortKey,
+  direction,
+  onSort,
+}: {
+  column: SortKey;
+  label: string;
+  right?: boolean;
+  sortKey: SortKey;
+  direction: SortDirection;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = column === sortKey;
+  return (
+    <th
+      className={right ? "right" : undefined}
+      // What the arrow tells a sighted reader: which column orders the
+      // table, and which way. `none` marks the rest as sortable but not
+      // currently sorted, which is a different claim from silence.
+      aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        className={active ? "itx-sort active" : "itx-sort"}
+        onClick={() => onSort(column)}
+      >
+        {label}
+        <span className="itx-sort-arrow" aria-hidden="true">
+          {active ? (direction === "asc" ? "▲" : "▼") : ""}
+        </span>
+      </button>
+    </th>
+  );
+}
 
 /** Every sector a task trades in -- one tag, usually, but a task may
  * carry several capabilities and they need not agree. Deduplicated so a
@@ -68,6 +138,11 @@ export default function TasksPage() {
   const capability = params.get("capability") ?? "";
   const sector = params.get("sector") ?? "";
   const status = (params.get("status") ?? "all") as TaskStatus | "all";
+  // Ordering lives in the URL beside the filters, so a sorted view is a
+  // link someone can send. Both are parsed leniently -- a stale or
+  // hand-edited value falls back to the default rather than erroring.
+  const sortKey = parseSortKey(params.get("sort"));
+  const sortDirection = parseSortDirection(params.get("dir"));
   const [page, setPage] = useState(0);
 
   const tasks = useAsync(
@@ -129,12 +204,56 @@ export default function TasksPage() {
     setParams(next);
   }
 
+  /** Clicking a header sorts by it; clicking the column already sorted
+   * flips the direction. A fresh column always starts ascending rather
+   * than inheriting the last column's direction -- "descending" means
+   * something different for money than it does for a name, and carrying
+   * it over surprises more often than it saves a click.
+   *
+   * The default (age, ascending -- newest first) is written out of the
+   * URL rather than into it, so the plain `/tasks` link stays plain. */
+  function sortBy(key: SortKey) {
+    const direction: SortDirection =
+      key === sortKey && sortDirection === "asc" ? "desc" : "asc";
+    const next = new URLSearchParams(params);
+    if (key === DEFAULT_SORT && direction === "asc") {
+      next.delete("sort");
+      next.delete("dir");
+    } else {
+      next.set("sort", key);
+      next.set("dir", direction);
+    }
+    setParams(next);
+  }
+
+
   const anyFilter = Boolean(kind || sector || capability) || status !== "all";
-  const matched: TaskDto[] = (tasks.data?.items ?? [])
-    .filter((task) => (kind ? task.kind === kind : true))
-    .filter((task) => (sector ? task.capabilities.some((c) => sectorOf(c) === sector) : true))
-    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const matched: TaskDto[] = useMemo(
+    () =>
+      sortTasks(
+        (tasks.data?.items ?? [])
+          .filter((task) => (kind ? task.kind === kind : true))
+          .filter((task) =>
+            sector ? task.capabilities.some((c) => sectorOf(c) === sector) : true,
+          ),
+        sortKey,
+        sortDirection,
+      ),
+    [tasks.data, kind, sector, sortKey, sortDirection],
+  );
   const visible = matched.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  /** Display names for the posters on **this page**, resolved in one
+   * request. Not for the whole filtered board: `/names` caps a lookup at
+   * 64 keys, and a board of twenty thousand tasks is not a batch. A page
+   * of 25 is one request, re-issued when the page or the ordering
+   * changes, and a poster whose name hasn't landed yet renders exactly
+   * as it did before names existed -- as a truncated key. */
+  const posterKeys = visible.map((task) => task.poster).join(",");
+  const names = useAsync(
+    () => getNames(posterKeys ? posterKeys.split(",") : []),
+    [posterKeys],
+  );
 
   const blurb = kind ? describeKind(kind) : null;
 
@@ -198,7 +317,17 @@ export default function TasksPage() {
           <button
             type="button"
             className="itx-button itx-button-ghost"
-            onClick={() => setParams(new URLSearchParams())}
+            // Clears the filters and leaves the ordering alone. Sorting
+            // is not a filter -- it hides nothing -- and resetting it
+            // here would undo a choice the button doesn't mention.
+            onClick={() => {
+              const kept = new URLSearchParams();
+              const sort = params.get("sort");
+              const dir = params.get("dir");
+              if (sort) kept.set("sort", sort);
+              if (dir) kept.set("dir", dir);
+              setParams(kept);
+            }}
           >
             Clear filters
           </button>
@@ -226,26 +355,17 @@ export default function TasksPage() {
               <table className="itx-table">
                 <thead>
                   <tr>
-                    {/* Headers are `nowrap`, so each one sets its
-                        column's minimum width -- and this column is the
-                        one that gives its width away to the others
-                        (`.grow`), so its header being long costs the
-                        whole table. "Task" over "Description" is 65px
-                        of that, which is the difference between the row
-                        fitting a 1280px window and not. */}
-                    <th>Task</th>
-                    {/* "Verified by", not "Verification": every header
-                        here is `nowrap`, so a header sets its column's
-                        minimum width, and the shorter phrasing is both
-                        20px narrower and the same wording the sidebar
-                        already uses for this axis. */}
-                    <th>Verified by</th>
-                    <th>Status</th>
-                    <th>Poster</th>
-                    <th>Sector</th>
-                    <th>Market</th>
-                    <th className="right">Bounty</th>
-                    <th className="right">Age</th>
+                    {COLUMNS.map((column) => (
+                      <SortHeader
+                        key={column.key}
+                        column={column.key}
+                        label={column.label}
+                        right={column.right}
+                        sortKey={sortKey}
+                        direction={sortDirection}
+                        onSort={sortBy}
+                      />
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -264,8 +384,19 @@ export default function TasksPage() {
                       <td>
                         <StatusBadge status={task.status} />
                       </td>
+                      {/* Named where the hub has named them. A column of
+                        truncated keys is unreadable and unmemorable --
+                        `02c545…8a5a` and `02c5a4…8a5a` are the same
+                        thing at a glance -- and the name is the hub's
+                        own label for the agent, already shown on the
+                        leaderboard and the board. The key stays on the
+                        row underneath it, because the key is the
+                        identity. */}
                       <td>
-                        <PubkeyText pubkey={task.poster} />
+                        <AgentLink
+                          pubkey={task.poster}
+                          name={names.data?.get(task.poster) ?? null}
+                        />
                       </td>
                       <td className="itx-kind">{sectorsOf(task).join(", ") || "—"}</td>
                       {/* Market labels drop the sector prefix, same as the

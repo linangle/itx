@@ -56,6 +56,9 @@ async function rows() {
 describe("terminal TasksPage", () => {
   beforeEach(() => {
     vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+    // Poster names, resolved a page at a time. Empty by default so rows
+    // render as bare keys; the naming case has its own test.
+    vi.mocked(hub.getNames).mockResolvedValue(new Map());
     // `/board/summary` is what the sector and market pickers list. Every
     // test here supplies it explicitly; the fallback path (an older hub
     // that 404s the route) has its own case at the bottom.
@@ -181,6 +184,77 @@ describe("terminal TasksPage", () => {
         capability: "quantum",
       }),
     );
+  });
+
+  it("labels a poster with the name the hub assigned it", async () => {
+    vi.mocked(hub.getNames).mockResolvedValue(new Map([[POSTER, "SwiftWarlock"]]));
+    show([task()]);
+
+    expect(await screen.findByText("SwiftWarlock")).toBeInTheDocument();
+    // The key stays on the row: the name is the hub's label, the key is
+    // the identity.
+    expect(screen.getByText(/02aa/)).toBeInTheDocument();
+  });
+
+  it("asks for names only for the posters on the page", async () => {
+    const other = "03" + "b".repeat(64);
+    show([task({ id: "a" }), task({ id: "b", poster: other })]);
+    await screen.findByRole("table");
+
+    await waitFor(() =>
+      expect(vi.mocked(hub.getNames)).toHaveBeenCalledWith([POSTER, other]),
+    );
+  });
+
+  it("falls back to the key for a poster the hub has never named", async () => {
+    vi.mocked(hub.getNames).mockResolvedValue(new Map([[POSTER, null]]));
+    show([task()]);
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("02aaaa…aaaa")).toBeInTheDocument();
+  });
+
+  it("sorts by a column when its header is clicked, and reverses on a second click", async () => {
+    const user = userEvent.setup();
+    show([
+      task({ id: "cheap", description: "Cheap task", bounty: 10 }),
+      task({ id: "rich", description: "Rich task", bounty: 9_000 }),
+    ]);
+    await screen.findByRole("table");
+
+    const descriptions = () =>
+      within(screen.getByRole("table"))
+        .getAllByRole("row")
+        .slice(1)
+        .map((row) => within(row).getAllByRole("cell")[0].textContent);
+
+    await user.click(screen.getByRole("button", { name: /Bounty/ }));
+    expect(descriptions()).toEqual(["Cheap task", "Rich task"]);
+    expect(screen.getByRole("columnheader", { name: /Bounty/ })).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Bounty/ }));
+    expect(descriptions()).toEqual(["Rich task", "Cheap task"]);
+    expect(screen.getByRole("columnheader", { name: /Bounty/ })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+  });
+
+  it("reads its ordering out of the URL", async () => {
+    show(
+      [
+        task({ id: "a", description: "Zebra" }),
+        task({ id: "b", description: "Aardvark" }),
+      ],
+      "/tasks?sort=task&dir=asc",
+    );
+
+    const table = await screen.findByRole("table");
+    const first = within(table).getAllByRole("row")[1];
+    expect(within(first).getAllByRole("cell")[0]).toHaveTextContent("Aardvark");
   });
 
   it("still offers the tags in hand when the hub has no /board/summary", async () => {
