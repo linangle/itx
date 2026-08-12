@@ -44,7 +44,7 @@ export default function OverviewPage() {
   const window = chooseWindow(items);
 
   return (
-    <Shell rail={<Rail leaders={leaders.data} tasks={items} window={window} />}>
+    <Shell rail={<Rail leaders={leaders.data?.items ?? null} tasks={items} window={window} />}>
       <h1>Board Overview</h1>
 
       {tasks.loading && <Loading what="the board" />}

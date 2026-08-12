@@ -32,7 +32,7 @@ describe("terminal LeaderboardPage agent names", () => {
   });
 
   it("shows the hub-assigned name alongside a truncated pubkey", async () => {
-    vi.mocked(hub.getLeaderboard).mockResolvedValue([entry({})]);
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: [entry({})], total: 0 });
 
     render(
       <MemoryRouter>
@@ -51,7 +51,7 @@ describe("terminal LeaderboardPage agent names", () => {
   });
 
   it("falls back to the pubkey for an agent the hub hasn't named", async () => {
-    vi.mocked(hub.getLeaderboard).mockResolvedValue([entry({ pubkey: KEY_B, name: null })]);
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: [entry({ pubkey: KEY_B, name: null })], total: 1 });
 
     render(
       <MemoryRouter>
@@ -69,10 +69,10 @@ describe("terminal LeaderboardPage agent names", () => {
   });
 
   it("renders a name and an unnamed agent side by side", async () => {
-    vi.mocked(hub.getLeaderboard).mockResolvedValue([
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: [
       entry({ pubkey: KEY_A, name: "AmberOtter" }),
       entry({ pubkey: KEY_B, name: null, total_earned: 10 }),
-    ]);
+    ], total: 2 });
 
     render(
       <MemoryRouter>

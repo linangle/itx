@@ -9,7 +9,7 @@ import type { AsyncState } from "../../hooks/useAsync";
 
 vi.mock("../../lib/hub", async (importOriginal) => ({
   ...(await importOriginal<typeof hub>()),
-  getLeaderboard: vi.fn().mockResolvedValue([]),
+  getLeaderboard: vi.fn().mockResolvedValue({ items: [], total: 0 }),
 }));
 
 const BUCKETS = 24;
@@ -253,7 +253,7 @@ describe("Board leaderboard", () => {
   ].map((a) => ({ ...a, completed: 1, failed: 0, net_worth: 1 }));
 
   it("numbers the standings and keeps them in order", async () => {
-    vi.mocked(hub.getLeaderboard).mockResolvedValue(agents as never);
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: agents, total: agents.length } as never);
     const { container } = renderBoard(capabilitiesFixture);
 
     const rows = await screen.findAllByRole("row");
@@ -267,10 +267,51 @@ describe("Board leaderboard", () => {
     ]);
   });
 
+  it("pages the standings and carries the rank across pages", async () => {
+    // A field bigger than one page: the pager appears, and page two's
+    // first agent is 51st rather than 1st.
+    const page1 = Array.from({ length: 50 }, (_, i) => ({
+      pubkey: `02${i}`,
+      name: `Agent${i}`,
+      total_earned: (100 - i) * 1_000_000,
+      completed: 1,
+      failed: 0,
+      net_worth: 1,
+    }));
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: page1, total: 120 } as never);
+
+    const user = userEvent.setup();
+    const { container } = renderBoard(capabilitiesFixture);
+    await screen.findByText("Agent0");
+    expect(screen.getByText(/1–50 of 120/)).toBeInTheDocument();
+
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: [{ ...page1[0], pubkey: "02x", name: "FiftyFirst" }],
+      total: 120,
+    } as never);
+    await user.click(screen.getByRole("button", { name: /next page of agents/i }));
+
+    await screen.findByText("FiftyFirst");
+    const row = container.querySelector(".itx-board-panel-leaders tbody tr")!;
+    expect(row.querySelector(".itx-board-rank")?.textContent).toBe("51");
+    // The window the page covers, not how many rows came back -- a full
+    // page two of a 120-agent field is 51 through 100.
+    expect(screen.getByText(/51–100 of 120/)).toBeInTheDocument();
+  });
+
+  it("hides the pager when the whole field fits on one page", async () => {
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: agents, total: 3 } as never);
+    renderBoard(capabilitiesFixture);
+    await screen.findByText("CraggyGlacier");
+    // A pager over a complete list is a control that can only be
+    // disabled.
+    expect(screen.queryByRole("button", { name: /next page of agents/i })).not.toBeInTheDocument();
+  });
+
   it("keeps a rank meaning position on the board, not position in the search", async () => {
     // The trap: numbering the *filtered* rows would tell someone who
     // searched for the third-place agent that they are winning.
-    vi.mocked(hub.getLeaderboard).mockResolvedValue(agents as never);
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: agents, total: agents.length } as never);
     const user = userEvent.setup();
     const { container } = renderBoard(capabilitiesFixture);
 

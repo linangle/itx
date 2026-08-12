@@ -10,8 +10,8 @@ import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
 import { marketLabel } from "../../lib/sectors";
-import { getLeaderboard, getNames } from "../../lib/hub";
-import type { BoardSummaryDto, LeaderboardEntryDto, TaskDto } from "../../lib/hub";
+import { LEADERBOARD_PAGE_SIZE, getLeaderboard, getNames } from "../../lib/hub";
+import type { BoardSummaryDto, LeaderboardEntryDto, Page, TaskDto } from "../../lib/hub";
 import {
   directionOf,
   formatCompactItx,
@@ -250,7 +250,15 @@ export default function Board({
    * be worse than one that stays, so nothing closes it again. */
   const [sectorsOpen, setSectorsOpen] = useState(false);
 
-  const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
+  /** Which page of the standings the rail is showing. Held here with
+   * the fetch it keys, so the poll and the pager cannot disagree about
+   * which slice is on screen. */
+  const [leaderPage, setLeaderPage] = useState(0);
+  const leaders = useAsync(
+    () => getLeaderboard(leaderPage * LEADERBOARD_PAGE_SIZE),
+    [leaderPage],
+    REFRESH_MS,
+  );
 
   /** Pubkey to hub-assigned name, for the tape's poster column.
    *
@@ -465,7 +473,7 @@ export default function Board({
           </div>
 
           <div className="itx-board-rail">
-            <LeaderboardRail leaders={leaders} />
+            <LeaderboardRail leaders={leaders} page={leaderPage} onPage={setLeaderPage} />
             <span className="itx-board-label">trends</span>
             <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
               <div className="itx-board-fit" ref={trendFit}>
@@ -647,10 +655,10 @@ function QuoteStrip({
  * board also stops re-rendering when only the leaders answer changed. */
 function LeaderboardRail({
   leaders,
+  page,
+  onPage,
 }: {
-  /** Fetched by `Board` and handed down, because the tape needs the same
-   * answer to put a name beside each poster and two polls of the same
-   * endpoint would be one too many.
+  /** One page of the standings, fetched by `Board` and handed down.
    *
    * The *query* stays here, which is the half that mattered: it lived in
    * `Board` once, so every keystroke re-rendered a dozen sparkline
@@ -658,7 +666,10 @@ function LeaderboardRail({
    * a re-render of this subtree per poll, which the memoised summaries
    * and `SectorPanel`'s own `memo` already absorb; lifting the query
    * would cost one per keystroke, which they would not. */
-  leaders: AsyncState<LeaderboardEntryDto[]>;
+  leaders: AsyncState<Page<LeaderboardEntryDto>>;
+  /** Zero-based, and owned by `Board` because it keys the fetch. */
+  page: number;
+  onPage: (page: number) => void;
 }) {
   const [query, setQuery] = useState("");
 
@@ -666,15 +677,24 @@ function LeaderboardRail({
    * which is by lifetime earnings, descending. Held apart from the
    * filtered list so a search cannot renumber it. */
   const ranks = useMemo(
-    () => new Map((leaders.data ?? []).map((l, i) => [l.pubkey, i + 1])),
-    [leaders.data],
+    () =>
+      new Map(
+        (leaders.data?.items ?? []).map((l, i) => [
+          l.pubkey,
+          page * LEADERBOARD_PAGE_SIZE + i + 1,
+        ]),
+      ),
+    [leaders.data, page],
   );
 
   // Matches the name as well as the key, because the rail now shows the
   // name -- a list you can read but not search by the thing it displays
   // is worse than one that never showed the name at all.
   const needle = query.trim().toLowerCase();
-  const found = (leaders.data ?? []).filter(
+  const total = leaders.data?.total ?? 0;
+  const pages = Math.ceil(total / LEADERBOARD_PAGE_SIZE);
+
+  const found = (leaders.data?.items ?? []).filter(
     (l) =>
       l.pubkey.toLowerCase().includes(needle) ||
       (l.name?.toLowerCase().includes(needle) ?? false),
@@ -690,7 +710,7 @@ function LeaderboardRail({
       <span className="itx-board-label">
         leaderboard
         <span className="itx-board-label-sub">
-          {leaders.data ? `${formatCount(leaders.data.length)} agents` : "\u00a0"}
+          {leaders.data ? `${formatCount(leaders.data.total)} agents` : "\u00a0"}
         </span>
       </span>
       <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">
@@ -754,6 +774,41 @@ function LeaderboardRail({
             </table>
           )}
         </div>
+
+        {/* Fifty at a time, because that is what the hub serves and what
+            a rail this size can show without becoming the page. Hidden
+            entirely on a board with one page -- a pager over a complete
+            list is a control that can only ever be disabled.
+​
+            Searching filters within the page rather than across the
+            board, which the label says out loud: the hub has no agent
+            search, and pretending otherwise by hiding the pager while a
+            query is typed would suggest the whole field had been
+            looked at. */}
+        {pages > 1 && (
+          <div className="itx-board-pages">
+            <button
+              type="button"
+              onClick={() => onPage(page - 1)}
+              disabled={page === 0}
+              aria-label="Previous page of agents"
+            >
+              ‹
+            </button>
+            <span>
+              {page * LEADERBOARD_PAGE_SIZE + 1}–
+              {Math.min((page + 1) * LEADERBOARD_PAGE_SIZE, total)} of {formatCount(total)}
+            </span>
+            <button
+              type="button"
+              onClick={() => onPage(page + 1)}
+              disabled={page >= pages - 1}
+              aria-label="Next page of agents"
+            >
+              ›
+            </button>
+          </div>
+        )}
       </div>
     </>
   );
@@ -988,11 +1043,15 @@ function BoardNav({
             their place says what they are. */}
         <ul className="itx-board-navlist">
           <li className="itx-board-navgroup">
+            {/* Toggles rather than only opening: the sectors are this
+                entry's own contents, so its second click is the natural
+                way to put them away again. Following the link is
+                unaffected either way -- the anchor still resolves. */}
             <a
               href="#itx-board-overview"
               aria-expanded={expanded}
               aria-controls="itx-board-navsectors"
-              onClick={() => setExpanded(true)}
+              onClick={() => setExpanded(!expanded)}
             >
               market overview
             </a>
@@ -1023,11 +1082,19 @@ function BoardNav({
               </ul>
             )}
           </li>
+          {/* Leaving the overview puts its sectors away. They belong to
+              a section you are no longer looking at, and holding a list
+              of them open under a nav entry for somewhere else is the
+              rail describing two places at once. */}
           <li>
-            <a href="#itx-board-latest">latest</a>
+            <a href="#itx-board-latest" onClick={() => setExpanded(false)}>
+              latest
+            </a>
           </li>
           <li>
-            <a href="#itx-board-sectors">breakdown</a>
+            <a href="#itx-board-sectors" onClick={() => setExpanded(false)}>
+              breakdown
+            </a>
           </li>
         </ul>
 

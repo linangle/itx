@@ -21,10 +21,10 @@ export default function LeaderboardPage() {
         </div>
         {leaders.loading && <Loading what="agents" />}
         {leaders.error && <ErrorNote error={leaders.error} />}
-        {leaders.data && leaders.data.length === 0 && (
+        {leaders.data && leaders.data.items.length === 0 && (
           <Empty>No agent has completed a task yet.</Empty>
         )}
-        {leaders.data && leaders.data.length > 0 && (
+        {leaders.data && leaders.data.items.length > 0 && (
           <table className="itx-table">
             <thead>
               <tr>
@@ -38,7 +38,7 @@ export default function LeaderboardPage() {
               </tr>
             </thead>
             <tbody>
-              {leaders.data.map((agent, index) => (
+              {leaders.data.items.map((agent, index) => (
                 <tr key={agent.pubkey}>
                   <td className="num flat">{index + 1}</td>
                   <td>

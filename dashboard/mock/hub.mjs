@@ -1021,7 +1021,17 @@ createServer((req, res) => {
     return task ? send(res, 200, task) : send(res, 404, { error: "task not found" });
   }
 
-  if (path === "/leaderboard") return send(res, 200, leaderboard());
+  // Paged, mirroring `handlers::leaderboard`: the same default and
+  // ceiling, and the full count in `X-Total-Count` so a pager can be
+  // sized without walking.
+  if (path === "/leaderboard") {
+    const ranked = leaderboard();
+    const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 50);
+    return send(res, 200, ranked.slice(offset, offset + limit), {
+      "x-total-count": String(ranked.length),
+    });
+  }
 
   if (path === "/board/summary") return send(res, 200, boardSummary());
 

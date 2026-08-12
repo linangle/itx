@@ -301,8 +301,30 @@ export function getReputation(pubkey: string): Promise<ReputationDto> {
   return getJson<ReputationDto>(`/reputation/${encodeURIComponent(pubkey)}`);
 }
 
-export function getLeaderboard(): Promise<LeaderboardEntryDto[]> {
-  return getJson<LeaderboardEntryDto[]>("/leaderboard");
+/** How many agents a leaderboard page holds. Matches the hub's own
+ * ceiling -- asking for more returns fifty anyway. */
+export const LEADERBOARD_PAGE_SIZE = 50;
+
+/** A page of the standings, plus the size of the whole field.
+ *
+ * Paged rather than a flat list because the hub now serves it that way:
+ * fifty is the whole board on a small hub and the first page of it on a
+ * real one, and the difference has to be visible or the ranking quietly
+ * stops at fiftieth place. `total` comes from `X-Total-Count`, the same
+ * header the task list uses. */
+export async function getLeaderboard(
+  offset = 0,
+  limit = LEADERBOARD_PAGE_SIZE,
+): Promise<Page<LeaderboardEntryDto>> {
+  const { body, response } = await get<LeaderboardEntryDto[]>(
+    `/leaderboard${query({ offset: offset || undefined, limit })}`,
+  );
+  const header = response.headers.get("x-total-count");
+  const parsed = header === null ? Number.NaN : Number(header);
+  return {
+    items: body,
+    total: Number.isFinite(parsed) ? parsed : body.length,
+  };
 }
 
 // ------------------------------------------------------- board summary
