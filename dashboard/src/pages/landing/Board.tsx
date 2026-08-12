@@ -733,14 +733,18 @@ function LeaderboardRail({
                         terminal's stacked treatment would not fit. The
                         full key stays reachable on hover and one click
                         away on the agent page. */}
-                    <td>
+                    <td className="itx-board-cell-agent">
                       <Link
                         className="itx-board-agent"
                         to={`/agents/${agent.pubkey}`}
                         title={agent.pubkey}
                       >
                         <ProfileIcon pubkey={agent.pubkey} size={22} className="itx-board-avatar" />
-                        {agent.name ?? truncatePubkey(agent.pubkey)}
+                        {/* The name in its own box, because the link is
+                            a flex row: `text-overflow` needs a block to
+                            clip, and on the flex container itself it has
+                            nothing to act on. */}
+                        <span>{agent.name ?? truncatePubkey(agent.pubkey)}</span>
                       </Link>
                     </td>
                     <td className="right">{formatCompactItx(agent.total_earned)}</td>
@@ -983,7 +987,7 @@ function BoardNav({
             under the thing they belong to, they need no label at all:
             their place says what they are. */}
         <ul className="itx-board-navlist">
-          <li>
+          <li className="itx-board-navgroup">
             <a
               href="#itx-board-overview"
               aria-expanded={expanded}

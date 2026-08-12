@@ -1248,6 +1248,28 @@ body.itx-landing-body[data-theme="light"] {
  * left of the group says "these belong to the entry above" in a way
  * whitespace on its own does not, at the width this rail has to work
  * in. */
+/* The entry that owns the sector list.
+ *
+ * Every other nav entry is a flex row with a fixed `--row-h`, which
+ * centres its single link. This one has a *list* after the link as well,
+ * and under those rules the list became a second flex item -- it laid
+ * out to the right of "market overview", squeezed the label to
+ * "marke...", and overflowed the panel because the row is only 34px
+ * tall. So this item stacks and takes its height from its contents, and
+ * the link keeps the row rhythm on its own. */
+/* Qualified with the list, because `.itx-board-navlist li` above is a
+   class *and* an element and would otherwise out-specify a bare class
+   here -- the row would stay flex and the list beside the link. */
+.itx-board-navlist li.itx-board-navgroup {
+  display: block;
+  height: auto;
+}
+.itx-board-navgroup > a {
+  display: flex;
+  align-items: center;
+  height: var(--row-h);
+}
+
 .itx-board-navlist-sectors {
   margin: var(--sp-2) 0 var(--sp-3);
   padding-left: var(--sp-5);
@@ -1621,8 +1643,8 @@ body.itx-landing-body[data-theme="light"] {
    three-digit ranks stay on one axis instead of stepping in and out as
    the list scrolls past ten and a hundred. */
 .itx-board-rank {
-  width: 30px;
-  padding-right: var(--sp-3);
+  width: 22px;
+  padding-right: var(--sp-2);
   color: var(--ld-sub);
   font-size: var(--fs-meta);
   font-variant-numeric: tabular-nums;
@@ -1636,14 +1658,24 @@ body.itx-landing-body[data-theme="light"] {
   width: 100%;
 }
 .itx-board-panel-leaders td:last-child {
-  width: 72px;
+  width: 66px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.itx-board-panel-leaders .itx-board-agent {
+/* The agent cell, by name rather than by position. It was
+   `td:first-child` -- correct until the rank column arrived in front of
+   it, at which point the rule quietly started clipping the *number*
+   instead and the name ran straight into the earnings beside it with
+   nothing to stop it. */
+.itx-board-cell-agent {
+  min-width: 0;
+  padding-right: var(--sp-3);
+}
+.itx-board-cell-agent .itx-board-agent {
   min-width: 0;
 }
-.itx-board-panel-leaders td:first-child a {
+.itx-board-cell-agent .itx-board-agent span {
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
