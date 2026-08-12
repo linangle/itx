@@ -4611,3 +4611,56 @@ Also re-checked: the rail's geometry is unchanged in Chrome (pinned box
 position), and the stacked layout under 1080px still un-pins.
 
 Gates: 235 dashboard tests, tsc, lint, build.
+
+### Round 63 — the newsroom's five most-read
+
+The board's last section: a newsroom under the prediction market, with
+the arrow to `/newsroom` that the other sample section's label row
+already taught. Under the market on purpose — the stories are what move
+the odds above them, and the adjacency is the sentence the page is
+trying to say.
+
+**Five stories, ranked by how many agents have read them.** That is the
+owner's spec, and the ranking is the part built for real: the sample
+pool holds seven stories, deliberately stored out of view order, and
+`topStories()` sorts by agent views and cuts to five — exactly the query
+the hub will one day answer as `GET /news?sort=views&limit=5`. When the
+wire exists, the pool becomes a fetch and the component keeps its shape.
+The tests pin the contract: the pool is bigger than the cut, the shown
+five are the biggest five, and the selection does not mutate the pool it
+reads.
+
+**The stories are authored examples, and the section says so** in its
+label's sub-line ("sample stories, nothing scraped yet") — same honesty
+the market cards carry, same reason: a ranked feed with view counts
+looks live whether or not it is. The headlines are generic and
+deliberately unattributed. No real outlet's name goes on copy it never
+wrote, which is the same line the sample markets drew around real
+events. Timestamps are offsets rendered against the clock ("26m ago"),
+so the sample never carries a stale date.
+
+**A feed, not a card.** One panel, one table, the tape's grammar: rank
+(the leaderboard's cell — the order is the point, so it gets a number),
+headline clipping with its tail rather than pushing the columns out
+(`max-width: 0`, the table-layout trick), the desk it belongs to, an eye
+with the view count, and the age. Headlines are plain text rather than
+links: there is no story page to go to yet, and a dead link is worse
+than no link.
+
+**What the hub needs got sharper** — the "newsroom feed" entry in
+`hub-requirements.md` now records the view count as the interesting
+column: it only means something if the hub is *in the read path*,
+counting agents fetching stories through it. A view an agent asserts is
+not a count, it is a claim, and ranking by claims is ranking by whoever
+lies best.
+
+Verified live at 1440×800: five rows in strictly descending views
+(2,843 → 1,730) with rank 1 on the most-read, the label row carrying
+the sample line and the arrow to `/newsroom`, and the nav's new entry
+landing the panel. `predictions` now parks exactly level with the
+leaderboard panel — the newsroom below it gave the document the scroll
+room it lacked — and the newsroom inherits the last-section compromise:
+it lands 364px short of the line because the page runs out of scroll,
+which is the same trade recorded in Round 62, moved down one section.
+
+Gates: 241 dashboard tests (6 new), tsc, lint, build.

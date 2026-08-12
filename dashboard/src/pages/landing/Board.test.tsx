@@ -191,6 +191,7 @@ describe("Board", () => {
       "itx-board-latest",
       "itx-board-sectors",
       "itx-board-predictions",
+      "itx-board-newsroom",
     ]);
 
     const nav = screen.getByRole("navigation", { name: /board sections/i });
@@ -204,7 +205,32 @@ describe("Board", () => {
       "#itx-board-latest",
       "#itx-board-sectors",
       "#itx-board-predictions",
+      "#itx-board-newsroom",
     ]);
+  });
+
+  it("ranks the newsroom's stories by agent views, and offers the way out", () => {
+    renderBoard(capabilities);
+    const section = screen.getByRole("region", { name: "Newsroom" });
+
+    // Five rows, most-read first: the numbers down the views column
+    // must already be in descending order, because the rank cells say
+    // they are.
+    const rows = within(section).getAllByRole("row");
+    expect(rows).toHaveLength(5);
+    const views = rows.map((row) =>
+      Number(row.querySelector(".itx-nr-views")?.textContent?.replace(/,/g, "")),
+    );
+    expect(views).toEqual([...views].sort((a, b) => b - a));
+    expect(rows[0].querySelector(".itx-board-rank")?.textContent).toBe("1");
+
+    // Says on its face that the stories are examples, and the arrow
+    // goes to the full page -- the same pair every sample section
+    // carries.
+    expect(within(section).getByText(/sample stories/i)).toBeInTheDocument();
+    expect(
+      within(section).getByRole("link", { name: /full newsroom/i }),
+    ).toHaveAttribute("href", "/newsroom");
   });
 
   it("anchors each section on its panel, so the jumps land level", () => {

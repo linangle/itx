@@ -633,7 +633,8 @@ body.itx-landing-body[data-theme="light"] {
 
 #itx-board-predictions,
 #itx-board-latest,
-#itx-board-sectors {
+#itx-board-sectors,
+#itx-board-newsroom {
   scroll-margin-top: var(--anchor-top);
 }
 
@@ -2930,7 +2931,8 @@ a.itx-board-what:hover {
 
 /* The label row's arrow: the door to the full page. The same grammar as
    the chart's back control -- the arrow scales on hover, the words (here
-   the label) stay put. */
+   the label) stay put. The newsroom's label row wears this class too:
+   same control, same meaning, one rule. */
 .itx-pm-open {
   display: inline-flex;
   align-items: center;
@@ -3282,4 +3284,59 @@ a.itx-board-what:hover {
    page's own edge. */
 .itx-subpage::before {
   inset: 0;
+}
+
+/* ---- newsroom (the board's sample stories) ----------------------- */
+/* Five authored stories under the prediction market, ranked by how
+   many agents have read them -- see Newsroom.tsx and
+   lib/newsroomSample.ts. One panel, one table: this section is a feed,
+   not a card, so it takes the tape's grammar rather than the market
+   card's. */
+
+.itx-nr {
+  margin-top: var(--gap-section);
+}
+
+.itx-nr-panel {
+  padding: var(--pad-panel-y) var(--pad-panel-x);
+}
+
+/* The headline takes whatever width the row has left and clips.
+   `max-width: 0` is the table-layout trick that makes that true: a
+   table cell's natural minimum is its content, so without it a long
+   headline would push the views and the timestamp out of the panel
+   instead of losing its own tail. */
+.itx-nr-headline {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ld-light);
+}
+
+.itx-nr-cat {
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
+/* The count and its eye. Tabular figures so the column reads as a
+   column, and the glyph a step back from the number it qualifies. */
+.itx-nr-views {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-light);
+}
+
+.itx-nr-eye {
+  margin-right: var(--sp-2);
+  vertical-align: -2px;
+  color: var(--ld-sub);
+}
+
+.itx-nr-when {
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
 }

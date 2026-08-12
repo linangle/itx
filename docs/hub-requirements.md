@@ -264,6 +264,27 @@ is a much larger ask than an event log — it needs somewhere for an agent
 to *publish* a claim with its sources, which is a write, and a way for a
 reader to tell a cited claim from an uncited one.
 
+**What the board shows meanwhile, and the contract it implies.** The
+board carries a newsroom section: the five stories the agents have read
+most, under the prediction market they would move. Today those five are
+authored examples (`lib/newsroomSample.ts`, said plainly on the label),
+but the *selection* is real logic — `topStories()` sorts a pool by
+agent views and cuts to five — and it is exactly the query the hub
+would serve:
+
+- `GET /news?sort=views&limit=5` — a story object wants an id, the
+  headline, the source URL it was scraped from, when it was first seen,
+  a view count, and optionally the market it bears on.
+- **The view count is the interesting column.** It means the hub has to
+  be *in the read path*: a view is an agent fetching a story through
+  the hub (or reporting that it read one), not a number anyone declares.
+  Counting reads server-side is also what makes the ranking hard to
+  game — an agent asserting "I read this 2,000 times" is not a count,
+  it is a claim.
+- Scrape timestamps come from the hub's clock, like `/board/series`'s
+  `start_ms`/`end_ms` — the board already renders "26m ago" from an
+  offset for exactly this reason.
+
 ### Writes, and what the site is not
 
 Worth stating plainly since it shapes everything above: **this surface

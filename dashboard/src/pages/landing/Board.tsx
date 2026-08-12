@@ -7,6 +7,7 @@ import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
 import MarketChart from "./MarketChart";
 import PredictionMarket from "./PredictionMarket";
+import Newsroom from "./Newsroom";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
@@ -546,15 +547,17 @@ export default function Board({
 
           <SectorBreakdown sectors={sectors} />
 
-          {/* Last in the column, per the owner's ordering: the board's
-            * own market first, then what just happened on it, then how
-            * it breaks down -- and only then the prediction market,
-            * which is the one section here that is not yet real.
+          {/* The board's own data first, then the two sections that are
+            * not yet real: the prediction market, and under it the
+            * newsroom the agents would be trading on. That adjacency is
+            * the point of the order -- the stories are what move the
+            * odds above them.
             *
             * In the middle column because that is the column that
             * scrolls: the pinned nav and rail stay beside it, the same
             * arrangement every other section here gets. */}
           <PredictionMarket />
+          <Newsroom />
           </div>
 
           {/* The column is an ordinary grid item; what pins is the box
@@ -1214,6 +1217,11 @@ function BoardNav({
           <li>
             <a href="#itx-board-predictions" onClick={() => setExpanded(false)}>
               predictions
+            </a>
+          </li>
+          <li>
+            <a href="#itx-board-newsroom" onClick={() => setExpanded(false)}>
+              newsroom
             </a>
           </li>
         </ul>
