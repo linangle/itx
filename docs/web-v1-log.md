@@ -3657,3 +3657,50 @@ The fixture still posts flat tags, which now exercises the seed path
 rather than being the taxonomy. Its markets were only ever examples.
 
 Gates: 154 dashboard tests (7 new), tsc, lint, build.
+
+### Round 50 — the rail says one thing per name
+
+**"sectors" and "breakdown" were two names for sectors.** One headed a
+list of the panels above; the other linked to the sector map below. Side
+by side in a 172px rail, that reads as a duplicate rather than as two
+different things.
+
+The heading is gone and the list is nested inside the overview's own
+entry. Under the thing they belong to, the sectors need no label -- the
+position is the label -- and "breakdown" is left as the only entry with
+the word's other meaning. The indent is a hairline down the left of the
+group rather than whitespace alone, which at this width is the
+difference between "these belong to the entry above" and "these are
+more entries".
+
+  It expands rather than sitting open: on a click of the overview, and
+  on the carousel moving at all -- scrolling the markets is a statement
+  that the overview is what you are working with, so the list should
+  already be there when you go looking for it. Keyed on `atStart`
+  turning false rather than a scroll handler of its own, since that is a
+  fact the carousel already publishes and it changes exactly once.
+
+  It never closes itself. A list that vanished while being read would be
+  worse than one that stays, and there is nothing else in the rail
+  competing for the room.
+
+**The standings are numbered and scroll.** Every other panel on the
+board renders what fits and stops, which is right for a chart and wrong
+for a ranking -- the rail's height comes from the carousel beside it,
+and nothing about a market panel's row count should decide how many
+agents are worth showing. Fifty rows in a scrolling box now, which is
+also all the real hub serves.
+
+  The rank comes from the *unfiltered* order, and that is the whole
+  care in it: numbering the filtered rows 1, 2, 3 would tell someone who
+  searched for the third-place agent that they were winning. Covered by
+  a test that searches for the third agent and asserts the row still
+  says 3.
+
+Verified on the live board: the rail reads `market overview / latest /
+breakdown` at rest and grows the six sectors between the first two the
+moment the carousel moves, nested inside the overview's own item; the
+standings render 50 rows in a 222px box over 1724px of content, ranked
+1, 2, 3 against 190.6703, 172.5894, 152.2632.
+
+Gates: 157 dashboard tests (3 new), tsc, lint, build.
