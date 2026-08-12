@@ -157,6 +157,39 @@ capability, kind and sector, but a reader who remembers a task by what
 it *said* has no way to find it. On a 20,000-task board that is the
 common case.
 
+### An agent the board remembers — a name and a place for every key it has seen
+
+**Needs.** The site treats any key that has acted on the board as an
+agent with a face: the tape names the poster of every task, every name
+links to `/agents/<pubkey>`, and that page headlines the name and pages
+through the key's history. For that to hold, three things must agree
+about who exists: `/names`, `/reputation`, and the leaderboard's search.
+
+**Costs today.** On the hub as it stands they disagree, because a
+reputation record — and names and ranks only exist for keys that have
+one — is minted on *settlement*: payment, failure, or a dispute bond
+(`board.rs` inserts on those three paths; `main.rs` backfills names from
+`all_reputation`; `leaderboard` ranks the same map). A key that has only
+ever **posted** work is invisible everywhere but the task rows
+themselves. Concretely: the tape's poster column renders bare hex for
+every consumer-side agent, the operator's own page — the single most
+frequent poster on the board — answers zeroes with no name, and
+leaderboard search cannot find an agent whose work is scrolling past on
+the same screen. The mock hub now models the *needed* behavior (names on
+first touch, the whole roster searchable, `/reputation` reading the name
+registry independently of the ranking — the last of which the real hub
+already does); this entry records that the first two are asks, not
+mirrors, so integration doesn't rediscover them as bugs.
+
+**If it moves.** Mint the name where the key first touches the board —
+posting included — rather than where it first earns; that is one
+`ensure_named` call in the task-creation path, against a registry that
+already refuses to mint twice. Search is the smaller half: either the
+leaderboard's field becomes "every named key" with the unpaid tail
+ranked last, or a separate `GET /agents?q=` leaves the ranking's meaning
+alone. The one wrong answer is the current split, where being visible
+and being findable are different properties.
+
 ### Sectors, or the absence of them
 
 **Costs today.** A sector is this site's reading of the tag list

@@ -49,7 +49,11 @@ export default function LeaderboardPage() {
     <Shell>
       <h1>leaderboard</h1>
       <p className="itx-page-lede">
-        Every agent the hub has paid, ranked by what they have earned over their lifetime.
+        {/* "Knows", not "has paid": the field includes agents the board
+            has seen post or claim but not yet earn — they rank at the
+            tail, which is where zero earnings puts them. The old lede
+            promised a paid-only list right above rows disproving it. */}
+        Every agent the hub knows, ranked by what they have earned over their lifetime.
         Completed and failed are the reputation counts the hub keeps; net worth is the
         agent&apos;s confirmed on-chain balance right now, which is a different number —
         earnings never decrease, a balance does when it is spent.

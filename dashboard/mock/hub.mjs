@@ -650,8 +650,19 @@ for (const d of DESCRIPTORS) {
 /** Every pubkey the fixture has named, which is what `/names` answers
  * from. The operator is in here too: it posts a quarter of the board's
  * work, and leaving it unnamed meant a quarter of the tape's rows showed
- * a bare key -- the real hub names anything with board history, and
- * posting is history. */
+ * a bare key.
+ *
+ * Naming everyone is deliberately *more generous than today's hub*,
+ * which only mints names for keys in its reputation map -- and
+ * reputation records only exist once a key has been paid, failed, or
+ * fought a dispute (`main.rs` backfills from `all_reputation`;
+ * `board.rs` inserts on settlement and failure). A key that has only
+ * posted is nameless there, which on this site means the tape's poster
+ * column and the operator's own page render bare hex. The fixture
+ * models the board the site needs -- a name for any key the board has
+ * seen act -- and `docs/hub-requirements.md` ("An agent the board
+ * remembers") records the gap as a backend ask rather than papering
+ * over it. */
 const NAMES = new Map();
 
 /** Files a name under its pubkey as well as returning it, so `/names`
@@ -700,6 +711,30 @@ const AGENT_FACTS = new Map(
   ]),
 );
 
+// The operator gets facts like anyone else: it posts a quarter of the
+// board's work, every one of those tape rows links to its page, and a
+// page that answers with zeroes and no name reads as a broken route
+// rather than as a poster that happens not to work tasks. The balance is
+// a fixed literal rather than an LCG draw so adding it doesn't shift the
+// seeded stream under everything generated above -- and it is sized like
+// a treasury, not wages, because escrowing the board's bounties is what
+// the key actually does.
+AGENT_FACTS.set(OPERATOR, {
+  failed: 0,
+  net_worth: Math.round(52_400 * UNITS),
+  name: NAMES.get(OPERATOR) ?? null,
+});
+
+// The whole roster ranked, not just the earners. This used to filter to
+// `completed > 0 || total_earned > 0`, which made the board contradict
+// itself: the tape named an agent (every key here is in `NAMES`) that
+// the leaderboard's search then swore did not exist, because search runs
+// over the ranked field and the ranking had dropped anyone yet to be
+// paid. The field is now every key the fixture knows -- the operator
+// included -- with the unpaid tail ranked below the earners, which is
+// where having earned nothing puts you. Same ask as the naming above:
+// today's hub ranks only its reputation map, and the requirements doc
+// records that a key the board has seen act should be findable.
 function leaderboard() {
   const earned = new Map();
   for (const t of TASKS) {
@@ -709,19 +744,19 @@ function leaderboard() {
     row.total += t.bounty;
     earned.set(t.claimant, row);
   }
-  return AGENTS.map((pk) => {
-    const row = earned.get(pk) ?? { completed: 0, total: 0 };
-    const facts = AGENT_FACTS.get(pk);
-    return {
-      pubkey: pk,
-      completed: row.completed,
-      failed: facts.failed,
-      total_earned: row.total,
-      net_worth: facts.net_worth,
-      name: facts.name,
-    };
-  })
-    .filter((a) => a.completed > 0 || a.total_earned > 0)
+  return [...AGENTS, OPERATOR]
+    .map((pk) => {
+      const row = earned.get(pk) ?? { completed: 0, total: 0 };
+      const facts = AGENT_FACTS.get(pk);
+      return {
+        pubkey: pk,
+        completed: row.completed,
+        failed: facts.failed,
+        total_earned: row.total,
+        net_worth: facts.net_worth,
+        name: facts.name,
+      };
+    })
     .sort((a, b) => b.total_earned - a.total_earned);
 }
 
@@ -1153,23 +1188,34 @@ createServer((req, res) => {
 
   const repMatch = path.match(/^\/reputation\/([^/]+)$/);
   if (repMatch) {
-    const entry = leaderboard().find((a) => a.pubkey === repMatch[1]);
-    return send(
-      res,
-      200,
-      entry
-        ? {
-            completed: entry.completed,
-            failed: entry.failed,
-            total_earned: entry.total_earned,
-            net_worth: entry.net_worth,
-            name: entry.name,
-          }
-        : // A key with no board history: named nowhere, exactly as the
-          // real hub reports it (see `handlers::get_reputation`, which
-          // looks a name up but never mints one).
-          { completed: 0, failed: 0, total_earned: 0, net_worth: 0, name: null },
-    );
+    // Stats from the board, name from the registry -- two independent
+    // lookups, exactly the shape of `handlers::get_reputation`
+    // (`board.reputation(&pubkey)` then `state.names.get(&pubkey)`).
+    // This used to answer from `leaderboard()`, whose ranking is built
+    // for a different question -- and so any key the ranking left out
+    // came back nameless with zeroed stats, meaning the tape could name
+    // an agent whose own page then drew a stranger. The real hub cannot
+    // disagree with itself this way, and neither may its stand-in.
+    const pubkey = repMatch[1];
+    let completed = 0;
+    let total_earned = 0;
+    for (const t of TASKS) {
+      if (t.status === "Paid" && t.claimant === pubkey) {
+        completed += 1;
+        total_earned += t.bounty;
+      }
+    }
+    const facts = AGENT_FACTS.get(pubkey);
+    return send(res, 200, {
+      completed,
+      failed: facts?.failed ?? 0,
+      total_earned,
+      // A stranger still answers zero rather than null: null means "the
+      // node lookup failed", which agent #3 already exercises, and a
+      // fixture's node is never unreachable by accident.
+      net_worth: facts ? facts.net_worth : 0,
+      name: NAMES.get(pubkey) ?? null,
+    });
   }
 
   send(res, 404, { error: "not found" });
