@@ -71,6 +71,13 @@
   --radius-small: 9px;
   --row-height: 34px;
 
+  /* The one caret on these pages. Two gradients painting the halves of
+     a chevron in `currentColor`, so a `<select>` (which cannot hold a
+     child to draw one with) and the combo boxes' toggle button can wear
+     the same mark. Positioned per use; sized 5px in both. */
+  --caret: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+
   /* One type scale, shared in spirit with the board's: display sizes for
      page and detail headings, then label / lead / body / meta / micro.
      The first iteration had fourteen distinct sizes here including
@@ -484,6 +491,47 @@ body.itx-body[data-theme="light"] {
   border-bottom: none;
 }
 
+/* A sortable header. The button carries the header's own type so the
+   column looks unchanged until hovered -- a table where every heading
+   announces itself as a control is a table of eight buttons rather than
+   a set of columns. */
+.itx-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.itx-sort:hover {
+  color: var(--text);
+}
+
+.itx-sort.active {
+  color: var(--text);
+}
+
+/* Holds its width whether or not an arrow is in it, so the header row
+   doesn't shift sideways as the sorted column changes. */
+.itx-sort-arrow {
+  display: inline-block;
+  min-width: 7px;
+  font-size: 7px;
+  color: var(--brand);
+}
+
+/* A right-aligned column's header aligns with its figures, so the
+   button has to end at the cell's edge rather than start at it. */
+.itx-table th.right .itx-sort {
+  flex-direction: row-reverse;
+}
+
 /* Every cell is `nowrap`, so a table with enough columns has a minimum
    width the panel can't always give it -- and the panel clips
    (`overflow: hidden`, for its rounded corners) rather than scrolling,
@@ -676,21 +724,110 @@ body.itx-body[data-theme="light"] {
 
 /* ------------------------------------------------- controls (v2 headroom) */
 
+/* One pill, four controls. The filter bar holds two `<select>`s, two
+   combo boxes and (on the leaderboard) a search field, and until these
+   were unified the selects wore the platform's own chrome -- a taller
+   box, a squarer corner, a double-caret on macOS -- beside three pills
+   that didn't. `appearance: none` takes the native widget off the
+   select so it can be given the same border, radius, height and caret
+   as everything else; the caret is drawn as a background image because
+   a select cannot hold a child element to draw one with.
+
+   `--control-h` is what actually makes them line up: padding alone
+   leaves each control as tall as its own font metrics decide, and an
+   input and a select disagree about that by a pixel or two. */
 .itx-input,
-.itx-select {
+.itx-select,
+.itx-search {
+  --control-h: 34px;
   background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   color: var(--text);
   font: inherit;
   font-size: var(--fs-body);
-  padding: var(--sp-3) var(--sp-6);
+  height: var(--control-h);
+  padding: 0 var(--sp-6);
+  box-sizing: border-box;
+}
+
+.itx-select {
+  appearance: none;
+  /* Room for the caret, then the caret -- the shared one, at the same
+     distance from the edge as the combo boxes put theirs. */
+  padding-right: calc(var(--sp-6) + 14px);
+  background-image: var(--caret);
+  background-position:
+    right calc(var(--sp-6) + 4px) center,
+    right var(--sp-6) center;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+  color: var(--text-dim);
+}
+
+/* The open menu is drawn by the platform and inherits nothing, so its
+   options need colours of their own or a dark theme gets black text on
+   a black list in some browsers. */
+.itx-select option {
+  background: var(--panel);
+  color: var(--text);
 }
 
 .itx-input:focus,
-.itx-select:focus {
+.itx-select:focus,
+.itx-search:focus-within {
   outline: none;
   border-color: var(--brand);
+}
+
+/* ------------------------------------------------------------- search */
+
+.itx-search {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-faint);
+}
+
+.itx-search-input {
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-body);
+  padding: 0;
+  min-width: 180px;
+}
+
+.itx-search-input:focus {
+  outline: none;
+}
+
+.itx-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Browsers draw their own clear button on `type="search"`, in their own
+   shape and position; ours is beside it, and two would read as a
+   mistake. */
+.itx-search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.itx-search-clear {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+
+.itx-search-clear:hover {
+  color: var(--text);
 }
 
 .itx-button {
@@ -741,20 +878,33 @@ body.itx-body[data-theme="light"] {
   align-items: center;
 }
 
-/* Room on the right for the caret to sit inside the pill. */
+/* Room on the right for the caret to sit inside the pill, matching the
+   `<select>`'s own reserve. */
 .itx-combo-input {
-  padding-right: calc(var(--sp-6) + 16px);
+  padding-right: calc(var(--sp-6) + 14px);
 }
 
+/* The same mark a `<select>` wears, in the same place, so a closed
+   combo box and a closed select are indistinguishable until opened --
+   which is the point, since they do the same job. The button is empty:
+   the caret is painted, and the accessible name is on `aria-label`. */
 .itx-combo-toggle {
   position: absolute;
-  right: var(--sp-4);
+  right: var(--sp-6);
+  width: 9px;
+  height: var(--control-h);
   background: none;
+  background-image: var(--caret);
+  background-position:
+    left 0 center,
+    left 4px center;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
   border: none;
-  padding: 0 var(--sp-2);
-  color: var(--text-faint);
-  font-size: var(--fs-meta);
-  line-height: 1;
+  padding: 0;
+  color: var(--text-dim);
   cursor: pointer;
 }
 

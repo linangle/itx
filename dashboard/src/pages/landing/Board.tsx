@@ -2,10 +2,12 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import ProfileIcon from "../../components/ProfileIcon";
+import SearchIcon from "../../components/SearchIcon";
 import SectorBreakdown from "./SectorBreakdown";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
+import { useDebounced } from "../../hooks/useDebounced";
 import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
@@ -55,28 +57,6 @@ const MAX_LEADER_ROWS = 50;
 /** How often the board re-asks the hub. Slow enough to be cheap, quick
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
-
-/** The supplied search glyph (`assets/search_icon.svg`), inlined.
- *
- * Two changes from the file as exported. It ships as a *white plate
- * with a dark magnifier*, which on these dark panels renders as a light
- * blob -- so the plate is dropped and the glyph takes `currentColor`,
- * letting CSS colour it. And the lens is already a second subpath of
- * the same path, punched in the export by laying a white circle over
- * it; `fill-rule: evenodd` makes it a real hole instead, so the ring is
- * transparent in the middle rather than painted with a background
- * colour that would have to be kept in sync with the panel. */
-function SearchIcon() {
-  return (
-    <svg viewBox="1703 1453 1440 1440" width="13" height="13" aria-hidden="true">
-      <path
-        fill="currentColor"
-        fillRule="evenodd"
-        d="M2623.4,2271.99l113.55,157.33c21.1,29.23,18.55,68.17-10.72,90.24s-67.87,14.28-88.75-14.9l-112.75-157.51c-140.53,71.5-311.67,35.57-412.75-82.72-101.65-118.96-108.93-293.97-16.89-420.92,90.78-125.22,256.91-175.28,402.97-116.29,42.46,16.45,81.15,42.65,113.18,74.47,129.02,128.13,134.42,335.62,12.16,470.31ZM2587.59,2043.22c0-119.56-96.92-216.48-216.48-216.48s-216.48,96.92-216.48,216.48,96.92,216.48,216.48,216.48,216.48-96.92,216.48-216.48Z"
-      />
-    </svg>
-  );
-}
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
 function ago(iso: string): string {
@@ -254,9 +234,18 @@ export default function Board({
    * the fetch it keys, so the poll and the pager cannot disagree about
    * which slice is on screen. */
   const [leaderPage, setLeaderPage] = useState(0);
+  /** The *committed* agent search -- what the hub is being asked for,
+   * not what is in the box.
+   *
+   * It lives up here because it keys the fetch, and the fetch lives up
+   * here. What deliberately stays down in the rail is the box's own
+   * text: this state changes once per search, after the debounce, so a
+   * keystroke re-renders the rail and not the twelve market panels
+   * beside it (Round 36 measured what that cost). */
+  const [leaderQuery, setLeaderQuery] = useState("");
   const leaders = useAsync(
-    () => getLeaderboard(leaderPage * LEADERBOARD_PAGE_SIZE),
-    [leaderPage],
+    () => getLeaderboard(leaderPage * LEADERBOARD_PAGE_SIZE, LEADERBOARD_PAGE_SIZE, leaderQuery),
+    [leaderPage, leaderQuery],
     REFRESH_MS,
   );
 
@@ -473,7 +462,18 @@ export default function Board({
           </div>
 
           <div className="itx-board-rail">
-            <LeaderboardRail leaders={leaders} page={leaderPage} onPage={setLeaderPage} />
+            <LeaderboardRail
+              leaders={leaders}
+              page={leaderPage}
+              onPage={setLeaderPage}
+              onQuery={(q) => {
+                // A new search has no page 4. Resetting here rather than
+                // in an effect keeps the two in one state update, so the
+                // hub is never asked for page 4 of a three-row result.
+                setLeaderPage(0);
+                setLeaderQuery(q);
+              }}
+            />
             <span className="itx-board-label">trends</span>
             <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
               <div className="itx-board-fit" ref={trendFit}>
@@ -657,6 +657,7 @@ function LeaderboardRail({
   leaders,
   page,
   onPage,
+  onQuery,
 }: {
   /** One page of the standings, fetched by `Board` and handed down.
    *
@@ -670,35 +671,29 @@ function LeaderboardRail({
   /** Zero-based, and owned by `Board` because it keys the fetch. */
   page: number;
   onPage: (page: number) => void;
+  /** The committed search, handed up once the typing settles. `Board`
+   * owns it for the same reason it owns the page: it keys the fetch. */
+  onQuery: (query: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  // The box updates on every keystroke, the hub hears about it once the
+  // typing stops. Reported through an effect rather than from the
+  // change handler because the *debounced* value is what `Board` wants,
+  // and that value settles on a timer, not on an event.
+  const settled = useDebounced(query);
+  useEffect(() => {
+    onQuery(settled);
+    // `onQuery` is an inline closure in `Board` and so a new function
+    // every render; depending on it would fire this on every poll.
+  }, [settled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Each agent's standing, taken once from the order the hub sent --
-   * which is by lifetime earnings, descending. Held apart from the
-   * filtered list so a search cannot renumber it. */
-  const ranks = useMemo(
-    () =>
-      new Map(
-        (leaders.data?.items ?? []).map((l, i) => [
-          l.pubkey,
-          page * LEADERBOARD_PAGE_SIZE + i + 1,
-        ]),
-      ),
-    [leaders.data, page],
-  );
-
-  // Matches the name as well as the key, because the rail now shows the
-  // name -- a list you can read but not search by the thing it displays
-  // is worse than one that never showed the name at all.
-  const needle = query.trim().toLowerCase();
   const total = leaders.data?.total ?? 0;
   const pages = Math.ceil(total / LEADERBOARD_PAGE_SIZE);
-
-  const found = (leaders.data?.items ?? []).filter(
-    (l) =>
-      l.pubkey.toLowerCase().includes(needle) ||
-      (l.name?.toLowerCase().includes(needle) ?? false),
-  );
+  // No client-side filter left: the hub searches the whole field and
+  // sends back the matches, with each row carrying the rank it holds
+  // among all agents. Filtering the fifty rows in hand -- what this did
+  // until the hub grew a `q` -- searched a page and called it a board.
+  const found = leaders.data?.items ?? [];
 
   return (
     <>
@@ -710,7 +705,11 @@ function LeaderboardRail({
       <span className="itx-board-label">
         leaderboard
         <span className="itx-board-label-sub">
-          {leaders.data ? `${formatCount(leaders.data.total)} agents` : "\u00a0"}
+          {/* Under a search the total counts matches, not the field, so
+              the label has to say which it is reporting. */}
+          {leaders.data
+            ? `${formatCount(leaders.data.total)} ${settled ? "found" : "agents"}`
+            : "\u00a0"}
         </span>
       </span>
       <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">
@@ -742,12 +741,13 @@ function LeaderboardRail({
               <tbody>
                 {found.slice(0, MAX_LEADER_ROWS).map((agent) => (
                   <tr key={agent.pubkey}>
-                    {/* Standing, from the *unfiltered* order. A rank is
-                        a position in the leaderboard, not a position in
-                        whatever the search happened to match -- numbering
-                        the filtered rows 1, 2, 3 would tell a searcher
-                        that the agent they looked up is winning. */}
-                    <td className="itx-board-rank">{ranks.get(agent.pubkey)}</td>
+                    {/* Standing in the whole field, computed by the hub
+                        before it filtered. A rank is a position in the
+                        leaderboard, not a position in whatever the
+                        search matched -- numbering the matches 1, 2, 3
+                        would tell a searcher the agent they looked up
+                        is winning. */}
+                    <td className="itx-board-rank">{agent.rank}</td>
                     {/* Name *instead of* the key, not above it: these
                         rows are a fixed 34px (`--row-h`) and the
                         terminal's stacked treatment would not fit. The
@@ -777,14 +777,14 @@ function LeaderboardRail({
 
         {/* Fifty at a time, because that is what the hub serves and what
             a rail this size can show without becoming the page. Hidden
-            entirely on a board with one page -- a pager over a complete
-            list is a control that can only ever be disabled.
+            entirely on a one-page board -- a pager over a complete list
+            is a control that can only ever be disabled.
 ​
-            Searching filters within the page rather than across the
-            board, which the label says out loud: the hub has no agent
-            search, and pretending otherwise by hiding the pager while a
-            query is typed would suggest the whole field had been
-            looked at. */}
+            A search pages too, now that the hub does the searching:
+            `total` is the number of matches, so a query with sixty hits
+            has two pages of them and says so. This used to carry a note
+            explaining that search only looked at the page in hand; the
+            note is gone because the limitation is. */}
         {pages > 1 && (
           <div className="itx-board-pages">
             <button

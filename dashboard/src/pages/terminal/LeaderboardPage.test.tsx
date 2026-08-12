@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ const KEY_B = "03" + "b".repeat(64);
 function entry(overrides: Partial<hub.LeaderboardEntryDto>): hub.LeaderboardEntryDto {
   return {
     pubkey: KEY_A,
+    rank: 1,
     completed: 3,
     failed: 0,
     total_earned: 3_000,
@@ -100,6 +101,9 @@ describe("terminal LeaderboardPage paging", () => {
       const n = from + i;
       return entry({
         pubkey: "02" + String(n).padStart(64, "0"),
+        // The hub's rank, which is what the row renders -- page two
+        // arrives already numbered 51 upward.
+        rank: n + 1,
         name: `Agent${n}`,
         total_earned: 100_000 - n,
       });
@@ -152,7 +156,11 @@ describe("terminal LeaderboardPage paging", () => {
 
     await screen.findByRole("table");
     expect(screen.getByText("1–50 of 120")).toBeInTheDocument();
-    expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(0);
+    expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+      0,
+      hub.LEADERBOARD_PAGE_SIZE,
+      "",
+    );
 
     vi.mocked(hub.getLeaderboard).mockResolvedValue({
       items: field(hub.LEADERBOARD_PAGE_SIZE, hub.LEADERBOARD_PAGE_SIZE),
@@ -162,12 +170,87 @@ describe("terminal LeaderboardPage paging", () => {
 
     // A page is a request, not a slice of something already fetched --
     // the hub ranks the whole field and serves fifty of it.
-    expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(hub.LEADERBOARD_PAGE_SIZE);
+    expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+      hub.LEADERBOARD_PAGE_SIZE,
+      hub.LEADERBOARD_PAGE_SIZE,
+      "",
+    );
     expect(await screen.findByText("51–100 of 120")).toBeInTheDocument();
 
     // and the first row of page two is 51st, not 1st. Numbering each
     // page from one would report fifty agents as leading the board.
     const body = within(screen.getByRole("table")).getAllByRole("row")[1];
     expect(within(body).getAllByRole("cell")[0]).toHaveTextContent("51");
+  });
+});
+
+describe("terminal LeaderboardPage search", () => {
+  beforeEach(() => {
+    vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [], total: 0, complete: true });
+    vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: [entry({ name: "SwiftWarlock", rank: 1 })],
+      total: 1,
+    });
+  });
+
+  it("asks the hub rather than filtering the page it happens to hold", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("table");
+
+    await user.type(screen.getByRole("searchbox", { name: /Search agents/ }), "otter");
+
+    // Debounced, so this is one request for the word and not five for
+    // its prefixes -- and it goes to the hub, which is the only party
+    // that can see past the fifty rows in hand.
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "otter",
+      ),
+    );
+  });
+
+  it("keeps an agent's real standing in a search result", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("table");
+
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: [entry({ name: "AmberOtter", rank: 1908, pubkey: KEY_B })],
+      total: 1,
+    });
+    await user.type(screen.getByRole("searchbox", { name: /Search agents/ }), "otter");
+
+    expect(await screen.findByText("AmberOtter")).toBeInTheDocument();
+    // The only match on screen is the 1,908th agent, not the 1st. A rank
+    // is a position in the leaderboard, not in the search result.
+    const row = within(screen.getByRole("table")).getAllByRole("row")[1];
+    expect(within(row).getAllByRole("cell")[0]).toHaveTextContent("1,908");
+  });
+
+  it("says nothing matched rather than that nobody has earned", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("table");
+
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: [], total: 0 });
+    await user.type(screen.getByRole("searchbox", { name: /Search agents/ }), "zzz");
+
+    expect(await screen.findByText(/No agent's name or key matches/)).toBeInTheDocument();
   });
 });

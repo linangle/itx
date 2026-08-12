@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
 import Sparkline from "../../components/Sparkline";
 import Pager from "../../components/Pager";
+import SearchField from "../../components/SearchField";
 import { AgentLink } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
+import { useDebounced } from "../../hooks/useDebounced";
 import { LEADERBOARD_PAGE_SIZE, getLeaderboard, listAllTasks } from "../../lib/hub";
 import { formatCount, formatItx } from "../../lib/format";
 import { agentEarningsSeries, chooseWindow } from "../../lib/series";
@@ -17,16 +19,31 @@ import { agentEarningsSeries, chooseWindow } from "../../lib/series";
  * lookup per agent for the balance column, and that fan-out is what the
  * ceiling exists to bound.
  *
- * The rank is computed from the page offset rather than from the row's
- * position, so page two starts at 51. Numbering each page from 1 would
- * report five hundred agents as being in first place. */
+ * Search is the hub's too, and that is the point of it: filtering the
+ * fifty rows in hand searches a page and calls it a board. Each row
+ * carries the `rank` the hub computed over the unfiltered field, so a
+ * search reports where an agent actually stands rather than renumbering
+ * the matches 1, 2, 3. */
 export default function LeaderboardPage() {
   const [page, setPage] = useState(0);
-  const leaders = useAsync(() => getLeaderboard(page * LEADERBOARD_PAGE_SIZE), [page]);
+  const [search, setSearch] = useState("");
+  // The field updates on every keystroke; the request waits for a pause.
+  const query = useDebounced(search);
+  const leaders = useAsync(
+    () => getLeaderboard(page * LEADERBOARD_PAGE_SIZE, LEADERBOARD_PAGE_SIZE, query),
+    [page, query],
+  );
   const tasks = useAsync(() => listAllTasks({ status: "all" }), []);
   const items = tasks.data?.items ?? [];
   const window = chooseWindow(items);
   const total = leaders.data?.total ?? 0;
+
+  // A new search invalidates the page number: three matches don't have a
+  // page 7, and staying there would show an empty table that reads as
+  // "no such agent".
+  useEffect(() => {
+    setPage(0);
+  }, [query]);
 
   return (
     <Shell>
@@ -37,11 +54,29 @@ export default function LeaderboardPage() {
         agent&apos;s confirmed on-chain balance right now, which is a different number —
         earnings never decrease, a balance does when it is spent.
       </p>
+
+      <div className="itx-filters">
+        <SearchField
+          value={search}
+          onChange={setSearch}
+          placeholder="Search agents"
+          label="Search agents by name or public key"
+        />
+      </div>
+
       <section className="itx-panel">
         <div className="itx-panel-head">
           <span>
             Ranked by lifetime earnings
-            {total > 0 && <> · {formatCount(total)} agents</>}
+            {/* Whatever the count is counting: the field, or the matches
+                within it. Saying "2,256 agents" over three search
+                results would be describing a different list. */}
+            {total > 0 && (
+              <>
+                {" · "}
+                {formatCount(total)} {query ? "matching" : ""} agents
+              </>
+            )}
           </span>
         </div>
         {/* Only on a cold load. Paging keeps the previous page's rows on
@@ -50,7 +85,11 @@ export default function LeaderboardPage() {
         {leaders.loading && !leaders.data && <Loading what="agents" />}
         {leaders.error && <ErrorNote error={leaders.error} />}
         {leaders.data && leaders.data.items.length === 0 && (
-          <Empty>No agent has completed a task yet.</Empty>
+          <Empty>
+            {query
+              ? `No agent's name or key matches “${query}”.`
+              : "No agent has completed a task yet."}
+          </Empty>
         )}
         {leaders.data && leaders.data.items.length > 0 && (
           <table className="itx-table">
@@ -66,9 +105,12 @@ export default function LeaderboardPage() {
               </tr>
             </thead>
             <tbody>
-              {leaders.data.items.map((agent, index) => (
+              {leaders.data.items.map((agent) => (
                 <tr key={agent.pubkey}>
-                  <td className="num flat">{page * LEADERBOARD_PAGE_SIZE + index + 1}</td>
+                  {/* The hub's rank, not the row's position. On a search
+                      those are wildly different numbers, and only one of
+                      them is the agent's standing. */}
+                  <td className="num flat">{formatCount(agent.rank)}</td>
                   <td>
                     <AgentLink pubkey={agent.pubkey} name={agent.name} />
                   </td>

@@ -134,9 +134,8 @@ export default function ComboFilter({
           setOpen((was) => !was);
           setHighlight(-1);
         }}
-      >
-        ▾
-      </button>
+      />
+
       {open && (
         <ul className="itx-combo-list" id={listId} role="listbox" aria-label={label}>
           {matches.length === 0 && (

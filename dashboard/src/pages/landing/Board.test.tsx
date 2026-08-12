@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -246,11 +246,13 @@ describe("Board", () => {
 });
 
 describe("Board leaderboard", () => {
+  // `rank` is the hub's, computed over the unfiltered field -- see
+  // `LeaderboardEntryDto`. The rail renders it rather than counting rows.
   const agents = [
     { pubkey: "02aa", name: "CraggyGlacier", total_earned: 19_000_000_000 },
     { pubkey: "02bb", name: "RareAntelope", total_earned: 17_000_000_000 },
     { pubkey: "02cc", name: "SmoothMoth", total_earned: 15_000_000_000 },
-  ].map((a) => ({ ...a, completed: 1, failed: 0, net_worth: 1 }));
+  ].map((a, i) => ({ ...a, rank: i + 1, completed: 1, failed: 0, net_worth: 1 }));
 
   it("numbers the standings and keeps them in order", async () => {
     vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: agents, total: agents.length } as never);
@@ -273,6 +275,7 @@ describe("Board leaderboard", () => {
     const page1 = Array.from({ length: 50 }, (_, i) => ({
       pubkey: `02${i}`,
       name: `Agent${i}`,
+      rank: i + 1,
       total_earned: (100 - i) * 1_000_000,
       completed: 1,
       failed: 0,
@@ -286,7 +289,7 @@ describe("Board leaderboard", () => {
     expect(screen.getByText(/1–50 of 120/)).toBeInTheDocument();
 
     vi.mocked(hub.getLeaderboard).mockResolvedValue({
-      items: [{ ...page1[0], pubkey: "02x", name: "FiftyFirst" }],
+      items: [{ ...page1[0], pubkey: "02x", name: "FiftyFirst", rank: 51 }],
       total: 120,
     } as never);
     await user.click(screen.getByRole("button", { name: /next page of agents/i }));
@@ -308,20 +311,27 @@ describe("Board leaderboard", () => {
     expect(screen.queryByRole("button", { name: /next page of agents/i })).not.toBeInTheDocument();
   });
 
-  it("keeps a rank meaning position on the board, not position in the search", async () => {
-    // The trap: numbering the *filtered* rows would tell someone who
-    // searched for the third-place agent that they are winning.
+  it("searches at the hub rather than filtering the page in hand", async () => {
     vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: agents, total: agents.length } as never);
     const user = userEvent.setup();
     const { container } = renderBoard(capabilitiesFixture);
-
     await screen.findByText("SmoothMoth");
+
+    // The hub answers with the matches and their true ranks. The trap
+    // this guards: numbering the rows that came back would tell someone
+    // who searched for the third-place agent that they are winning.
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: [agents[2]], total: 1 } as never);
     await user.type(screen.getByLabelText(/search agents/i), "moth");
 
-    const leaders = [...container.querySelectorAll(".itx-board-panel-leaders tbody tr")];
-    expect(leaders).toHaveLength(1);
-    expect(leaders[0].textContent).toContain("SmoothMoth");
-    expect(leaders[0].querySelector(".itx-board-rank")?.textContent).toBe("3");
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(0, 50, "moth"),
+    );
+    await waitFor(() => {
+      const leaders = [...container.querySelectorAll(".itx-board-panel-leaders tbody tr")];
+      expect(leaders).toHaveLength(1);
+      expect(leaders[0].textContent).toContain("SmoothMoth");
+      expect(leaders[0].querySelector(".itx-board-rank")?.textContent).toBe("3");
+    });
   });
 });
 

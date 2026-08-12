@@ -104,7 +104,14 @@ export interface ReputationDto {
   name: string | null;
 }
 
-export type LeaderboardEntryDto = ReputationDto & { pubkey: string };
+export type LeaderboardEntryDto = ReputationDto & {
+  pubkey: string;
+  /** Standing in the whole field, one-based, computed by the hub before
+   * it filtered or sliced. Not derivable from the row's position once a
+   * search is involved -- see `LeaderboardEntryDto::rank` in
+   * `hub/src/handlers.rs`. */
+  rank: number;
+};
 
 const DEFAULT_HUB_URL = "http://127.0.0.1:9100";
 
@@ -311,13 +318,21 @@ export const LEADERBOARD_PAGE_SIZE = 50;
  * fifty is the whole board on a small hub and the first page of it on a
  * real one, and the difference has to be visible or the ranking quietly
  * stops at fiftieth place. `total` comes from `X-Total-Count`, the same
- * header the task list uses. */
+ * header the task list uses.
+ *
+ * `q` searches by name or pubkey **across the whole field**, server-side.
+ * Both leaderboards used to filter the fifty rows they had in hand,
+ * which searches a page and presents it as a board -- the agent you are
+ * looking for is on page 31 and no amount of typing will find them.
+ * With the hub doing it, `total` is the number of matches and each
+ * entry's `rank` is still its standing among all agents. */
 export async function getLeaderboard(
   offset = 0,
   limit = LEADERBOARD_PAGE_SIZE,
+  q?: string,
 ): Promise<Page<LeaderboardEntryDto>> {
   const { body, response } = await get<LeaderboardEntryDto[]>(
-    `/leaderboard${query({ offset: offset || undefined, limit })}`,
+    `/leaderboard${query({ offset: offset || undefined, limit, q: q?.trim() })}`,
   );
   const header = response.headers.get("x-total-count");
   const parsed = header === null ? Number.NaN : Number(header);
