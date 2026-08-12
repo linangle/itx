@@ -123,7 +123,7 @@ describe("terminal TasksPage", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "Challenge window tasks" }),
+      await screen.findByRole("heading", { name: "challenge window tasks" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/stands unless someone challenges it/)).toBeInTheDocument();
     // The protocol name is demoted, not hidden -- someone reading the

@@ -1,3 +1,4 @@
+import Triangle from "./Triangle";
 import { formatCount } from "../lib/format";
 
 interface Props {
@@ -42,18 +43,29 @@ export default function Pager({ page, pageSize, total, onPageChange }: Props) {
         {formatCount(first)}–{formatCount(last)} of {formatCount(total)}
       </span>
       <span className="itx-pager-spacer" />
-      <button type="button" onClick={() => onPageChange(page - 1)} disabled={page === 0}>
-        ← Prev
+      {/* Round icon buttons carrying the site's one triangle, the same
+          pair the board's rail and its carousel use. They were "← Prev"
+          and "Next →" -- a third arrow style on a page that already had
+          two, and words that the page number beside them makes
+          redundant. The label survives on `aria-label`. */}
+      <button
+        type="button"
+        aria-label="Previous page"
+        onClick={() => onPageChange(page - 1)}
+        disabled={page === 0}
+      >
+        <Triangle direction="left" />
       </button>
       <span className="num">
         {page + 1} / {pageCount}
       </span>
       <button
         type="button"
+        aria-label="Next page"
         onClick={() => onPageChange(page + 1)}
         disabled={page >= pageCount - 1}
       >
-        Next →
+        <Triangle direction="right" />
       </button>
     </div>
   );

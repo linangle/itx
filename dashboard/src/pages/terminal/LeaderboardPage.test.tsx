@@ -115,7 +115,7 @@ describe("terminal LeaderboardPage paging", () => {
     vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
   });
 
-  it("is titled Leaderboard, not Agents", async () => {
+  it("is titled leaderboard, not agents", async () => {
     vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: field(2), total: 2 });
 
     render(
@@ -124,8 +124,9 @@ describe("terminal LeaderboardPage paging", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("heading", { name: "Leaderboard" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "leaderboard" })).toBeInTheDocument();
+    // The heading and the nav entry pointing at it say the same word.
+    expect(screen.queryByRole("heading", { name: /agents/i })).toBeNull();
   });
 
   it("hides the pager when the whole field fits on one page", async () => {
@@ -251,6 +252,6 @@ describe("terminal LeaderboardPage search", () => {
     vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: [], total: 0 });
     await user.type(screen.getByRole("searchbox", { name: /Search agents/ }), "zzz");
 
-    expect(await screen.findByText(/No agent's name or key matches/)).toBeInTheDocument();
+    expect(await screen.findByText(/no agent's name or key matches/)).toBeInTheDocument();
   });
 });

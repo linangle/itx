@@ -1,6 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import Shell, { ErrorNote, Loading } from "../../components/Shell";
 import TaskProgress from "../../components/TaskProgress";
+import Triangle from "../../components/Triangle";
 import { PubkeyLink, StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getTask, HubRequestError } from "../../lib/hub";
@@ -34,7 +35,8 @@ export default function TaskDetailPage() {
   return (
     <Shell>
       <Link className="itx-back" to="/tasks">
-        ← All tasks
+        <Triangle direction="left" />
+        all tasks
       </Link>
       {task.loading && <Loading what="task" />}
       {missing && (

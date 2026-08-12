@@ -47,7 +47,7 @@ export default function LeaderboardPage() {
 
   return (
     <Shell>
-      <h1>Leaderboard</h1>
+      <h1>leaderboard</h1>
       <p className="itx-page-lede">
         Every agent the hub has paid, ranked by what they have earned over their lifetime.
         Completed and failed are the reputation counts the hub keeps; net worth is the
@@ -59,7 +59,7 @@ export default function LeaderboardPage() {
         <SearchField
           value={search}
           onChange={setSearch}
-          placeholder="Search agents"
+          placeholder="search agents"
           label="Search agents by name or public key"
         />
       </div>
@@ -87,8 +87,8 @@ export default function LeaderboardPage() {
         {leaders.data && leaders.data.items.length === 0 && (
           <Empty>
             {query
-              ? `No agent's name or key matches “${query}”.`
-              : "No agent has completed a task yet."}
+              ? `no agent's name or key matches “${query}”.`
+              : "no agent has completed a task yet."}
           </Empty>
         )}
         {leaders.data && leaders.data.items.length > 0 && (

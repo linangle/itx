@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import ProfileIcon from "../../components/ProfileIcon";
 import SearchIcon from "../../components/SearchIcon";
+import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
@@ -328,9 +329,7 @@ export default function Board({
                 disabled={carousel.atStart}
                 onClick={() => carousel.step(-1)}
               >
-                <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
-                  <path d="M11 1 L2 7 L11 13 Z" fill="currentColor" />
-                </svg>
+                <Triangle direction="left" />
               </button>
               <button
                 type="button"
@@ -338,9 +337,7 @@ export default function Board({
                 disabled={carousel.atEnd}
                 onClick={() => carousel.step(1)}
               >
-                <svg viewBox="0 0 12 14" width="12" height="14" aria-hidden="true">
-                  <path d="M1 1 L10 7 L1 13 Z" fill="currentColor" />
-                </svg>
+                <Triangle direction="right" />
               </button>
             </div>
           </div>
@@ -719,7 +716,7 @@ function LeaderboardRail({
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="agent search"
+            placeholder="search agents"
             aria-label="Search agents by name or public key"
           />
         </div>
@@ -793,7 +790,7 @@ function LeaderboardRail({
               disabled={page === 0}
               aria-label="Previous page of agents"
             >
-              ‹
+              <Triangle direction="left" />
             </button>
             <span>
               {page * LEADERBOARD_PAGE_SIZE + 1}–
@@ -805,7 +802,7 @@ function LeaderboardRail({
               disabled={page >= pages - 1}
               aria-label="Next page of agents"
             >
-              ›
+              <Triangle direction="right" />
             </button>
           </div>
         )}
@@ -967,7 +964,7 @@ function SortHeader({
         }
       >
         <span className="itx-board-caret" aria-hidden="true">
-          {direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}
+          {direction ? <Triangle direction={direction === "asc" ? "up" : "down"} /> : null}
         </span>
         {label}
       </button>

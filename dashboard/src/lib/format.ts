@@ -151,10 +151,15 @@ export function formatTimestamp(iso: string): string {
   });
 }
 
+/* Lowercase at the source, like every other label on the site. The
+ * micro-labels that read as small caps (table headers, panel titles,
+ * fact terms) get there through `text-transform` in CSS, so authoring
+ * these in sentence case only meant every caller having to
+ * `.toLowerCase()` them back. */
 const KIND_LABELS: Record<string, string> = {
-  hash_match: "Hash match",
-  consensus: "Consensus",
-  disputable: "Disputable",
+  hash_match: "hash match",
+  consensus: "consensus",
+  disputable: "disputable",
 };
 
 export function formatKind(kind: string): string {
@@ -176,9 +181,9 @@ export function formatKind(kind: string): string {
  * anyone reading the API alongside the site can still line the two up.
  * `formatKind` is untouched and still returns the protocol name. */
 const KIND_VERIFICATION_LABELS: Record<string, string> = {
-  hash_match: "Automatic check",
-  consensus: "Majority vote",
-  disputable: "Challenge window",
+  hash_match: "automatic check",
+  consensus: "majority vote",
+  disputable: "challenge window",
 };
 
 export function formatVerification(kind: string): string {

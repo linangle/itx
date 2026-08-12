@@ -2,6 +2,7 @@ import { Link, useParams } from "react-router-dom";
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
 import ProfileIcon from "../../components/ProfileIcon";
 import Sparkline from "../../components/Sparkline";
+import Triangle from "../../components/Triangle";
 import { StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getReputation, listAllTasks } from "../../lib/hub";
@@ -39,11 +40,12 @@ export default function AgentPage() {
   return (
     <Shell>
       <Link className="itx-back" to="/leaderboard">
-        ← All agents
+        <Triangle direction="left" />
+        all agents
       </Link>
 
       <div className="itx-detail-eyebrow">
-        <span className="itx-kind">Agent</span>
+        <span className="itx-kind">agent</span>
       </div>
       {/* The portrait is derived from the key alone, so every profile
           has one -- including a stranger's. The name headlines the page
@@ -127,12 +129,12 @@ export default function AgentPage() {
 
           <div className="itx-columns">
             <TaskPanel
-              title="Claimed work"
+              title="claimed work"
               tasks={claimed}
               empty="Hasn't claimed a task yet."
               note="Consensus assignments never appear here — the hub hides who joined."
             />
-            <TaskPanel title="Posted work" tasks={posted} empty="Hasn't posted a task yet." />
+            <TaskPanel title="posted work" tasks={posted} empty="Hasn't posted a task yet." />
           </div>
         </>
       )}

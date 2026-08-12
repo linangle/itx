@@ -15,12 +15,12 @@ import "../styles/terminal.css";
  * `hash_match` / `consensus` / `disputable`, which name the mechanism to
  * someone who already knows it and nothing to anyone else. */
 const SIDEBAR = [
-  { to: "/", label: "Overview" },
-  { to: "/tasks", label: "All tasks" },
-  { to: "/tasks?kind=hash_match", label: "Automatic check", caption: "Verified by" },
-  { to: "/tasks?kind=consensus", label: "Majority vote" },
-  { to: "/tasks?kind=disputable", label: "Challenge window" },
-  { to: "/leaderboard", label: "Leaderboard", caption: "Agents" },
+  { to: "/", label: "overview" },
+  { to: "/tasks", label: "all tasks" },
+  { to: "/tasks?kind=hash_match", label: "automatic check", caption: "verified by" },
+  { to: "/tasks?kind=consensus", label: "majority vote" },
+  { to: "/tasks?kind=disputable", label: "challenge window" },
+  { to: "/leaderboard", label: "leaderboard", caption: "agents" },
 ];
 
 /** Page chrome for every terminal screen: masthead, left nav, content
@@ -101,13 +101,13 @@ function SidebarLinks() {
  * development, so the error case names that possibility explicitly
  * instead of showing a bare stack trace. */
 export function Loading({ what = "data" }: { what?: string }) {
-  return <div className="itx-empty">Loading {what}…</div>;
+  return <div className="itx-empty">loading {what}…</div>;
 }
 
 export function ErrorNote({ error }: { error: Error }) {
   return (
     <div className="itx-empty">
-      <div className="down">Couldn&apos;t reach the hub.</div>
+      <div className="down">couldn&apos;t reach the hub.</div>
       <div style={{ marginTop: 6 }}>{error.message}</div>
     </div>
   );

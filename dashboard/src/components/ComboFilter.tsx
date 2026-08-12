@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import Triangle from "./Triangle";
 
 interface Props {
   /** The committed filter value, i.e. what the URL says. */
@@ -134,8 +135,9 @@ export default function ComboFilter({
           setOpen((was) => !was);
           setHighlight(-1);
         }}
-      />
-
+      >
+        <Triangle direction="down" />
+      </button>
       {open && (
         <ul className="itx-combo-list" id={listId} role="listbox" aria-label={label}>
           {matches.length === 0 && (

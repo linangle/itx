@@ -3,6 +3,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
 import Pager from "../../components/Pager";
 import ComboFilter from "../../components/ComboFilter";
+import SelectField from "../../components/SelectField";
+import Triangle from "../../components/Triangle";
 import { AgentLink, StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getBoardSummary, getNames, listAllTasks } from "../../lib/hub";
@@ -95,7 +97,7 @@ function SortHeader({
       >
         {label}
         <span className="itx-sort-arrow" aria-hidden="true">
-          {active ? (direction === "asc" ? "▲" : "▼") : ""}
+          {active ? <Triangle direction={direction === "asc" ? "up" : "down"} /> : null}
         </span>
       </button>
     </th>
@@ -259,7 +261,7 @@ export default function TasksPage() {
 
   return (
     <Shell>
-      <h1>{kind ? `${formatVerification(kind)} tasks` : "Tasks"}</h1>
+      <h1>{kind ? `${formatVerification(kind)} tasks` : "tasks"}</h1>
       {blurb && (
         <p className="itx-page-lede">
           {blurb}{" "}
@@ -270,36 +272,36 @@ export default function TasksPage() {
       )}
 
       <div className="itx-filters">
-        <select
-          className="itx-select"
+        <SelectField
           value={kind}
-          onChange={(e) => update("kind", e.target.value)}
-          aria-label="Filter by verification"
+          onChange={(value) => update("kind", value)}
+          label="Filter by verification"
         >
           {KINDS.map((k) => (
             <option key={k || "any"} value={k}>
-              {k ? `${formatVerification(k)} (${formatKind(k).toLowerCase()})` : "Any verification"}
+              {k
+                ? `${formatVerification(k)} (${formatKind(k)})`
+                : "any verification"}
             </option>
           ))}
-        </select>
+        </SelectField>
 
-        <select
-          className="itx-select"
+        <SelectField
           value={status}
-          onChange={(e) => update("status", e.target.value)}
-          aria-label="Filter by status"
+          onChange={(value) => update("status", value)}
+          label="Filter by status"
         >
           {STATUSES.map((s) => (
             <option key={s} value={s}>
-              {s === "all" ? "Any status" : formatStatus(s)}
+              {s === "all" ? "any status" : formatStatus(s).toLowerCase()}
             </option>
           ))}
-        </select>
+        </SelectField>
 
         <ComboFilter
           value={sector}
           options={sectorOptions}
-          placeholder="Sector"
+          placeholder="sector"
           label="Filter by sector"
           onChange={(value) => update("sector", value)}
         />
@@ -307,7 +309,7 @@ export default function TasksPage() {
         <ComboFilter
           value={capability}
           options={marketOptions}
-          placeholder="Market (capability tag)"
+          placeholder="market (capability tag)"
           label="Filter by market"
           renderOption={marketLabel}
           onChange={(value) => update("capability", value)}
@@ -329,7 +331,7 @@ export default function TasksPage() {
               setParams(kept);
             }}
           >
-            Clear filters
+            clear filters
           </button>
         )}
       </div>
@@ -348,7 +350,7 @@ export default function TasksPage() {
       <section className="itx-panel">
         {tasks.loading && <Loading what="tasks" />}
         {tasks.error && <ErrorNote error={tasks.error} />}
-        {tasks.data && matched.length === 0 && <Empty>No tasks match these filters.</Empty>}
+        {tasks.data && matched.length === 0 && <Empty>no tasks match these filters.</Empty>}
         {tasks.data && matched.length > 0 && (
           <>
             <div className="itx-table-scroll">

@@ -39,12 +39,31 @@
  */
 
 .itx {
-  /* Page ground, then progressively lifted surfaces. Panels sit a hair
-     above the ground rather than as a distinct slab, matching the
-     board. */
+  /* Page ground, and panels **on** it rather than above it.
+     `--panel` used to be #1b191f, a hair lighter than the ground, which
+     is how a panel announced itself. It is the ground's own colour now
+     for the same reason the board's panels are: with a grid printed
+     behind everything, what sets a panel apart is that it is *opaque*
+     and hides the grid, not that it is a paler slab. A lifted fill on
+     top of a grid reads as a third surface. `--panel-hover` stays
+     lifted, since a row under the cursor still has to answer. */
   --bg: #161418;
-  --panel: #1b191f;
+  --panel: #161418;
   --panel-hover: #221f26;
+
+  /* The grid behind it all -- same ink, pitch and weight as the board's,
+     so scrolling from the landing page into these ones does not cross a
+     seam. `landing.css` explains where the numbers come from (they are
+     measured off the `grid.svg` both surfaces used to load).
+
+     The board keeps ink and opacity apart because its grid is a separate
+     layer with an offset; here it is a background on the page element
+     itself, which has no opacity of its own to set -- so the two are
+     pre-multiplied: 0.417 ink x 0.3 layer = 0.125. Redeclared rather
+     than imported because the two stylesheets are independent scopes;
+     they are checked against each other, not derived. */
+  --grid-step: 16.812px;
+  --grid-line: rgba(62, 67, 82, 0.125);
   --border: #3f4351;
   --border-strong: #4d5265;
 
@@ -71,12 +90,11 @@
   --radius-small: 9px;
   --row-height: 34px;
 
-  /* The one caret on these pages. Two gradients painting the halves of
-     a chevron in `currentColor`, so a `<select>` (which cannot hold a
-     child to draw one with) and the combo boxes' toggle button can wear
-     the same mark. Positioned per use; sized 5px in both. */
-  --caret: linear-gradient(45deg, transparent 50%, currentColor 50%),
-    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  /* Field radius, taken from the landing surface's `--r-field` so a
+     search box on the board and one on these pages are the same shape.
+     These controls were 999px pills, which was a third rounding on a
+     site that already had 10px fields and 14px panels. */
+  --radius-field: 10px;
 
   /* One type scale, shared in spirit with the board's: display sizes for
      page and detail headings, then label / lead / body / meta / micro.
@@ -122,7 +140,23 @@
   --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
 
-  background: var(--bg);
+  /* The grid rides on the page element itself rather than on a layer of
+     its own -- there is nothing to offset it from here, unlike the
+     board, so a second box would only be a second box. Panels sit over
+     it and hide it, which is now the only thing that distinguishes one:
+     see `--panel`. */
+  background-color: var(--bg);
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      var(--grid-line) 0 1px,
+      transparent 1px var(--grid-step)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      var(--grid-line) 0 1px,
+      transparent 1px var(--grid-step)
+    );
   color: var(--text);
   font-family: var(--font);
   font-size: var(--fs-lead);
@@ -151,8 +185,13 @@
  * a 13px figure on both the ground and a panel. */
 .itx[data-theme="light"] {
   --bg: #e9f2ed;
-  --panel: #f1f7f4;
+  --panel: #e9f2ed;
   --panel-hover: #f8fbf9;
+  /* 0.417 x 0.22, the board's light-theme grid opacity. Dialled back
+     from the dark theme's 30% for the reason `landing.css` gives: the
+     ink is one fixed dark blue-grey, so the same value on a light
+     ground draws a mid-grey mesh at four times the contrast. */
+  --grid-line: rgba(62, 67, 82, 0.092);
   --border: #a9b0c0;
   --border-strong: #969db0;
 
@@ -724,14 +763,18 @@ body.itx-body[data-theme="light"] {
 
 /* ------------------------------------------------- controls (v2 headroom) */
 
-/* One pill, four controls. The filter bar holds two `<select>`s, two
+/* One field, four controls. The filter bar holds two `<select>`s, two
    combo boxes and (on the leaderboard) a search field, and until these
    were unified the selects wore the platform's own chrome -- a taller
-   box, a squarer corner, a double-caret on macOS -- beside three pills
-   that didn't. `appearance: none` takes the native widget off the
-   select so it can be given the same border, radius, height and caret
-   as everything else; the caret is drawn as a background image because
-   a select cannot hold a child element to draw one with.
+   box, a squarer corner, a double-caret on macOS -- beside three
+   controls that didn't. `appearance: none` takes the native widget off
+   the select so it can be given the same border, radius, height and
+   caret as everything else.
+
+   The radius is the landing surface's `--r-field`, not the 999px pill
+   these started as: the board's own search box is a 10px field, and two
+   search boxes on one site being different shapes was the thing that
+   gave the split away.
 
    `--control-h` is what actually makes them line up: padding alone
    leaves each control as tall as its own font metrics decide, and an
@@ -742,7 +785,7 @@ body.itx-body[data-theme="light"] {
   --control-h: 34px;
   background: var(--panel);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-field);
   color: var(--text);
   font: inherit;
   font-size: var(--fs-body);
@@ -753,18 +796,31 @@ body.itx-body[data-theme="light"] {
 
 .itx-select {
   appearance: none;
-  /* Room for the caret, then the caret -- the shared one, at the same
-     distance from the edge as the combo boxes put theirs. */
+  /* Room on the right for the caret its wrapper draws. */
   padding-right: calc(var(--sp-6) + 14px);
-  background-image: var(--caret);
-  background-position:
-    right calc(var(--sp-6) + 4px) center,
-    right var(--sp-6) center;
-  background-size:
-    5px 5px,
-    5px 5px;
-  background-repeat: no-repeat;
   color: var(--text-dim);
+}
+
+/* A `<select>` cannot hold a child to draw a caret with, and a
+   background image cannot see `currentColor` -- so the caret sits on a
+   wrapper instead and is the same `<Triangle>` component every other
+   arrow on the site is. Which is the whole point: one mark, one file,
+   no data-URI copy of the path to keep in step. */
+.itx-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.itx-select-caret {
+  position: absolute;
+  right: var(--sp-6);
+  display: flex;
+  font-size: 9px;
+  color: var(--text-dim);
+  /* The caret is over the select's own hit area; clicks have to reach
+     the control underneath it. */
+  pointer-events: none;
 }
 
 /* The open menu is drawn by the platform and inherits nothing, so its
@@ -886,24 +942,17 @@ body.itx-body[data-theme="light"] {
 
 /* The same mark a `<select>` wears, in the same place, so a closed
    combo box and a closed select are indistinguishable until opened --
-   which is the point, since they do the same job. The button is empty:
-   the caret is painted, and the accessible name is on `aria-label`. */
+   which is the point, since they do the same job. */
 .itx-combo-toggle {
   position: absolute;
   right: var(--sp-6);
-  width: 9px;
+  display: flex;
+  align-items: center;
   height: var(--control-h);
   background: none;
-  background-image: var(--caret);
-  background-position:
-    left 0 center,
-    left 4px center;
-  background-size:
-    5px 5px,
-    5px 5px;
-  background-repeat: no-repeat;
   border: none;
   padding: 0;
+  font-size: 9px;
   color: var(--text-dim);
   cursor: pointer;
 }
@@ -1001,14 +1050,22 @@ a.itx-chip:hover {
   margin-left: auto;
 }
 
+/* Round icon buttons, the same 26px circle the board's rail pager and
+   its carousel use, so the three pagers on the site are one control.
+   A circle is the one place 999px is still right: it is a round button,
+   not a field pretending to be a pill. */
 .itx-pager button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   color: var(--text);
-  font: inherit;
-  font-size: var(--fs-meta);
-  padding: var(--sp-2) var(--sp-6);
+  font-size: 10px;
+  padding: 0;
   cursor: pointer;
 }
 
@@ -1059,12 +1116,21 @@ a.itx-chip:hover {
   letter-spacing: 0;
 }
 
+/* Flex, because the `←` it used to be typed is now the site's triangle
+   and needs a gap of its own; the arrow is sized down from the label so
+   it reads as a mark beside the words rather than a second word. */
 .itx-back {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   color: var(--text-dim);
   margin-bottom: var(--sp-6);
+}
+
+.itx-back svg {
+  font-size: 8px;
 }
 
 .itx-back:hover {
