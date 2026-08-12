@@ -3404,3 +3404,46 @@ omitted `capabilities`, which the hub always sends and which the rest of
 adding a defensive read, since the wire contract is not optional here.
 
 Gates: 146 dashboard tests (2 new), tsc, lint, build.
+
+### Round 45 — the sector panels size themselves
+
+**Nine rows in a 772px box.** The panels took their height from the
+markets column, which Round 42 pinned to the viewport so it would finish
+level with the rail beside it. The result was a nine-row table adrift in
+six hundred pixels of empty panel, and every sector below coding worse
+than that.
+
+The relationship is inverted now: the panels are sized *by* their rows
+rather than measured for how many rows they can hold. `SectorPanel` is
+the only panel on the board without `useFitRows`, and the markets column
+has no height of its own -- the carousel takes it from the tallest
+sector, and the rail is simply the taller of the two columns.
+
+  Measured at 1440x900, six sectors of 9/8/6/5/4/3 markets: every panel
+  394px (nine rows, the header and the padding) where all six were 772
+  before, and the last row of each inside its own box. They still finish
+  level with each other, which is the flex row doing it -- items stretch
+  to the tallest, so the row stays tidy while the *whole* row shrinks
+  when no sector has many markets.
+
+**One trap on the way.** The inner `div` carried `itx-board-fit`, which
+is `flex: 1 1 0` with `overflow: hidden` -- precisely what a measured
+panel needs, since rendering more rows into it can never make it taller
+and `useFitRows` can then divide a stable height. Here the rows are
+meant to set the height, so that box clamped every panel to its floor
+(136px) and clipped nine rows down to four. It is a plain block now, and
+the class stays what it is for the panels that do measure.
+
+**Capped at twelve.** A real limit rather than the ceilings the
+measured panels carry: it is how long the longest panel may get before
+it would start driving the carousel's box rather than fitting in it.
+Nothing reaches it today -- coding, the widest sector in the taxonomy,
+has nine -- which is exactly why it is covered by a test rather than an
+eyeball. The test builds one oversized panel out of fourteen unknown
+tags, since those all file into `other` and so need no invented sector.
+
+The floors that remain are only for the panels with no table in them at
+all -- loading, an unreachable hub, a sector with nothing on the board --
+where a one-line panel would make the row jump the moment data arrived.
+
+Gates: 147 dashboard tests (1 new), tsc, lint, build.
