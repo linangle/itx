@@ -503,12 +503,33 @@ body.itx-landing-body[data-theme="light"] {
      bluer-white set of outlines. */
   --bd-line: #3f4351;
 
-  /* How hard the grid behind the board prints. The asset is one fixed
+  /* How hard the grid behind the board prints. The ink is one fixed
      dark blue-grey, so on a light ground the same 30% would draw a mid
      grey mesh -- about four times the contrast against its ground that
      it has against the dark one. The light theme dials it to 22%, which
      lands the lines at the same 1.24:1 they sit at in the dark. */
   --bd-grid-opacity: 0.3;
+
+  /* The grid itself, measured off the `grid.svg` this replaced -- see
+     `.itx-board::before`. Deliberately *not* themed: the asset's stroke
+     was a hardcoded #3e4352 in both themes and the light one is right
+     as it stands, so the colour is held and only the opacity above
+     moves. Declared here so the board and the inner pages
+     (`terminal.css`) draw one grid rather than two that drift.
+
+     **The line is 1px at 41.7% rather than 0.417px at full ink**, which
+     is the same quantity of ink and the only version that survives. A
+     sub-pixel gradient stop is snapped away by the compositor -- the
+     first port used `0 0.417px` and rendered a near-empty layer with a
+     stray line every few cells, where the SVG's 0.417px *stroke* was
+     antialiased into a hairline as intended. Trading the width for
+     alpha (0.417 coverage of a pixel, or a whole pixel at 0.417 alpha,
+     come to the same 0.125 effective alpha through the layer's 30%)
+     lands on the same density and always paints. Checked against the
+     asset side by side, seam invisible. */
+  --bd-grid-ink: rgba(62, 67, 82, 0.417);
+  --bd-grid-step: 16.812px;
+  --bd-grid-w: 1px;
 
   /* One scale for the board, so radii, type and panel padding are
      decisions made once rather than per rule. Each type step has a job:
@@ -584,10 +605,28 @@ body.itx-landing-body[data-theme="light"] {
 
 /* The grid is a separate layer rather than a background on .itx-board
  * itself, because it needs its own opacity without fading the content
- * on top of it. `public/grid.svg` is the supplied asset with its
- * viewBox cropped to exactly one grid period so the repeat is
- * seamless -- the artboard padding around the original would have shown
- * as a wider gutter at every tile seam. */
+ * on top of it.
+ *
+ * **Drawn in CSS, ported from the supplied `grid.svg`.** The asset was
+ * 140 `<line>` elements in a viewBox holding exactly 69 periods,
+ * rasterised as a 1160px tile -- so the browser cached a 1160x1160
+ * bitmap (2320x2320 at DPR 2, about 21MB of image cache) to paint a
+ * pattern whose actual repeating unit is 16.8px. It also carried its
+ * stroke colour baked in at #3e4352, which is why the light theme had
+ * to reach it through `opacity` rather than by changing the colour.
+ *
+ * The values are measured off that file, not re-chosen: 5569.94 viewBox
+ * units rendered at 1160px is a scale of 0.2083, so its 80.72u line
+ * pitch is 16.812px and its 2u stroke is 0.417px of ink. The colour
+ * stays #3e4352 in both themes, exactly as the asset was, so nothing
+ * about how this looks changes -- only what it costs to paint. How the
+ * 0.417px became 1px at 41.7% alpha is worth reading before touching
+ * it: see `--bd-grid-ink`.
+ *
+ * `repeating-linear-gradient` with no `background-size` rather than a
+ * one-cell tile: the stops are then computed once across the whole
+ * layer at full precision, where a 16.812px tile would round each
+ * repeat to the device grid and leave the pitch visibly uneven. */
 .itx-board::before {
   content: "";
   position: absolute;
@@ -596,9 +635,17 @@ body.itx-landing-body[data-theme="light"] {
   inset: calc(-1 * (var(--bd-overlap) + var(--bd-lift))) 0 0 0;
   z-index: -1;
   opacity: var(--bd-grid-opacity);
-  background-image: url("/grid.svg");
-  background-repeat: repeat;
-  background-size: 1160px 1160px;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      var(--bd-grid-ink) 0 var(--bd-grid-w),
+      transparent var(--bd-grid-w) var(--bd-grid-step)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      var(--bd-grid-ink) 0 var(--bd-grid-w),
+      transparent var(--bd-grid-w) var(--bd-grid-step)
+    );
   pointer-events: none;
 }
 
