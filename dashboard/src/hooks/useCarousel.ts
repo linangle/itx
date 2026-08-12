@@ -43,6 +43,19 @@ export function snapTarget(
 export interface Carousel {
   /** Index of the item nearest the row's leading edge. */
   index: number;
+  /** The items actually on screen, as an inclusive index range.
+   *
+   * `index` alone could not answer "which sector am I looking at",
+   * because the row shows two to four panels at once and the *last* one
+   * can never reach the leading edge -- the row runs out of scroll
+   * first. So the final panel was never current, its entry in the rail
+   * never lit, and clicking it looked like it did nothing: the row was
+   * already as far along as it goes.
+   *
+   * A range says what is true instead of approximating it. At the far
+   * end every panel still on screen is marked, the last one included. */
+  firstVisible: number;
+  lastVisible: number;
   /** Whether either end has been reached, for the arrows and the edge
    * fades -- a fade over a row that cannot move further is a lie. */
   atStart: boolean;
@@ -63,7 +76,13 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
   items: number,
 ) {
   const ref = useRef<T | null>(null);
-  const [state, setState] = useState({ index: 0, atStart: true, atEnd: false });
+  const [state, setState] = useState({
+    index: 0,
+    firstVisible: 0,
+    lastVisible: 0,
+    atStart: true,
+    atEnd: false,
+  });
 
   /** Where a smooth scroll that is still running is headed, so that a
    * second arrow click steps on from there rather than from wherever
@@ -142,6 +161,27 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     }
 
     const index = step > 0 ? Math.round(el.scrollLeft / step) : 0;
+
+    // Which items are substantially on screen. "Substantially" is the
+    // whole point: the row deliberately leaves a sliver of the next
+    // panel showing past its right edge (the peek, which the mask fades
+    // out), and a panel that is mostly cut off is not one you are
+    // looking at. Two thirds visible is the bar.
+    const box = el.getBoundingClientRect();
+    let firstVisible = index;
+    let lastVisible = index;
+    let seen = false;
+    for (let i = 0; i < el.children.length; i++) {
+      const r = el.children[i].getBoundingClientRect();
+      if (r.width === 0) continue;
+      const shown = Math.min(r.right, box.right) - Math.max(r.left, box.left);
+      if (shown / r.width < 0.66) continue;
+      if (!seen) {
+        firstVisible = i;
+        seen = true;
+      }
+      lastVisible = i;
+    }
     // A pixel of slack at each end: a scroll that has arrived can sit
     // a fraction short of its own maximum, and the arrow at that end
     // must still be the one that is switched off.
@@ -154,9 +194,13 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     // every one of those frames re-rendered the whole board above the
     // fade it came for.
     setState((previous) =>
-      previous.index === index && previous.atStart === atStart && previous.atEnd === atEnd
+      previous.index === index &&
+      previous.firstVisible === firstVisible &&
+      previous.lastVisible === lastVisible &&
+      previous.atStart === atStart &&
+      previous.atEnd === atEnd
         ? previous
-        : { index, atStart, atEnd },
+        : { index, firstVisible, lastVisible, atStart, atEnd },
     );
   }, []);
 

@@ -9,6 +9,7 @@ import type { AsyncState } from "../../hooks/useAsync";
 import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
+import { marketLabel } from "../../lib/sectors";
 import { getLeaderboard, getNames } from "../../lib/hub";
 import type { BoardSummaryDto, LeaderboardEntryDto, TaskDto } from "../../lib/hub";
 import {
@@ -330,7 +331,8 @@ export default function Board({
         <div className="itx-board-cols" ref={colsRef}>
           <BoardNav
             sectors={sectors}
-            current={sectors[carousel.index]?.name}
+            firstVisible={carousel.firstVisible}
+            lastVisible={carousel.lastVisible}
             onSelect={carousel.to}
           />
 
@@ -414,8 +416,11 @@ export default function Board({
                           column open rather than collapsing the row's
                           alignment when there is nothing to name. */}
                       {t.capabilities[0] ? (
-                        <Link to={`/tasks?capability=${encodeURIComponent(t.capabilities[0])}`}>
-                          {t.capabilities[0]}
+                        <Link
+                          to={`/tasks?capability=${encodeURIComponent(t.capabilities[0])}`}
+                          title={t.capabilities[0]}
+                        >
+                          {marketLabel(t.capabilities[0])}
                         </Link>
                       ) : (
                         <span className="itx-board-untagged">untagged</span>
@@ -460,7 +465,7 @@ export default function Board({
                               to={`/tasks?capability=${encodeURIComponent(row.capability)}`}
                               title={row.capability}
                             >
-                              {row.capability}
+                              {marketLabel(row.capability)}
                             </Link>
                           </td>
                           <td className="itx-board-cell-spark">
@@ -802,7 +807,7 @@ const SectorPanel = memo(function SectorPanel({
                       to={`/tasks?capability=${encodeURIComponent(m.capability)}`}
                       title={m.capability}
                     >
-                      {m.capability}
+                      {marketLabel(m.capability)}
                     </Link>
                   </td>
                   <td className="itx-board-cell-spark">
@@ -884,14 +889,21 @@ function SortHeader({
  * ran past the fold. */
 function BoardNav({
   sectors,
-  current,
+  firstVisible,
+  lastVisible,
   onSelect,
 }: {
   sectors: SectorSummary[];
-  /** Name of the sector at the front of the carousel, or none while the
-   * board is still empty. Passed by name rather than index because that
-   * is what the list matches on, and the list re-sorts under it. */
-  current: string | undefined;
+  /** The sectors on screen, as an inclusive index range.
+   *
+   * A range rather than a single name, because the row shows two to four
+   * panels at once -- so "the current sector" was never one sector, and
+   * the last one could never be it at all: the row runs out of scroll
+   * before the final panel reaches the leading edge, so its entry never
+   * lit and clicking it read as broken. Marking everything visible is
+   * both simpler and true. */
+  firstVisible: number;
+  lastVisible: number;
   onSelect: (index: number) => void;
 }) {
   return (
@@ -931,18 +943,21 @@ function BoardNav({
             a column sized for a nine-row panel and there is nothing for
             a fit box to decide. */}
         <ul className="itx-board-navlist itx-board-navlist-sectors">
-          {sectors.map((s, index) => (
-            <li key={s.name}>
-              <button
-                type="button"
-                className={s.name === current ? "is-active" : undefined}
-                aria-current={s.name === current ? "true" : undefined}
-                onClick={() => onSelect(index)}
-              >
-                {s.name}
-              </button>
-            </li>
-          ))}
+          {sectors.map((s, index) => {
+            const showing = index >= firstVisible && index <= lastVisible;
+            return (
+              <li key={s.name}>
+                <button
+                  type="button"
+                  className={showing ? "is-active" : undefined}
+                  aria-current={showing ? "true" : undefined}
+                  onClick={() => onSelect(index)}
+                >
+                  {s.name}
+                </button>
+              </li>
+            );
+          })}
         </ul>
 
         <ul className="itx-board-navlist itx-board-navlist-pages">
