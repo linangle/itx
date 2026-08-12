@@ -364,3 +364,29 @@ export interface BoardSummaryDto {
 export function getBoardSummary(): Promise<BoardSummaryDto> {
   return getJson<BoardSummaryDto>("/board/summary");
 }
+
+/** How many keys one request asks about. Matches the hub's own ceiling
+ * (`MAX_NAMES_LOOKUP`); asking for more would silently drop the tail. */
+const MAX_NAMES_PER_REQUEST = 64;
+
+/** Display names for a set of pubkeys, in one request.
+ *
+ * The alternative for a list of rows was the leaderboard, which only
+ * carries agents that have *earned* -- so anyone who had posted work
+ * without being paid for it yet showed as a bare key. This resolves any
+ * well-formed pubkey the hub's registry knows, and answers `null` for
+ * one it does not, which is a normal state rather than an error: a name
+ * is a label the hub assigns, and the pubkey is what identifies an
+ * agent.
+ *
+ * Duplicates are collapsed before the request goes out -- a tape of
+ * twenty rows is often a handful of distinct posters -- and an empty set
+ * short-circuits rather than asking the hub about nothing. */
+export async function getNames(pubkeys: string[]): Promise<Map<string, string | null>> {
+  const unique = [...new Set(pubkeys.filter(Boolean))].slice(0, MAX_NAMES_PER_REQUEST);
+  if (unique.length === 0) return new Map();
+  const body = await getJson<Record<string, string | null>>(
+    `/names${query({ pubkeys: unique.join(",") })}`,
+  );
+  return new Map(Object.entries(body));
+}

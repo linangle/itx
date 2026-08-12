@@ -647,6 +647,20 @@ for (const d of DESCRIPTORS) {
 // Drawn the same way the hub draws: probe at random until an unused name
 // turns up. With ~165k names and 1000 agents the pool is far larger than
 // the demand, so collisions are rare and the loop is short.
+/** Every pubkey the fixture has named, which is what `/names` answers
+ * from. The operator is in here too: it posts a quarter of the board's
+ * work, and leaving it unnamed meant a quarter of the tape's rows showed
+ * a bare key -- the real hub names anything with board history, and
+ * posting is history. */
+const NAMES = new Map();
+
+/** Files a name under its pubkey as well as returning it, so `/names`
+ * and `/leaderboard` can never disagree about what an agent is called. */
+function remember(pubkey, name) {
+  if (name) NAMES.set(pubkey, name);
+  return name;
+}
+
 const takenNames = new Set();
 function nextName() {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -658,6 +672,11 @@ function nextName() {
   }
   return null; // pool exhausted -- the UI falls back to the pubkey
 }
+
+// The operator posts a quarter of the board's work, so it needs a name
+// like anyone else -- the real hub names any key with board history.
+// Registered before the agents so it cannot lose a race for a name.
+remember(OPERATOR, nextName());
 
 // Per-agent figures the task list cannot derive. Fixed once so they do
 // not jitter on every poll -- only `completed` and `total_earned` move,
@@ -673,7 +692,10 @@ const AGENT_FACTS = new Map(
       // One agent is deliberately left unnamed so the pubkey-fallback
       // path is exercised on every load too -- the real hub leaves any
       // key with no board history unnamed, which the UI must handle.
-      name: i === 5 ? null : nextName(),
+      // One agent is deliberately left unnamed (see below), and that
+      // one is absent from NAMES too -- the pubkey-fallback path has to
+      // stay reachable from both directions.
+      name: i === 5 ? null : remember(pk, nextName()),
     },
   ]),
 );
@@ -1002,6 +1024,20 @@ createServer((req, res) => {
   if (path === "/leaderboard") return send(res, 200, leaderboard());
 
   if (path === "/board/summary") return send(res, 200, boardSummary());
+
+  // Batch display-name lookup, mirroring `handlers::names`: read-only,
+  // never mints, and a key the registry has never seen answers `null`
+  // rather than 404ing the whole batch.
+  if (path === "/names") {
+    const asked = (url.searchParams.get("pubkeys") ?? "")
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean)
+      .slice(0, 64);
+    const out = {};
+    for (const key of asked) out[key] = NAMES.get(key) ?? null;
+    return send(res, 200, out);
+  }
 
   const repMatch = path.match(/^\/reputation\/([^/]+)$/);
   if (repMatch) {

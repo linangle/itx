@@ -9,7 +9,7 @@ import type { AsyncState } from "../../hooks/useAsync";
 import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
 import { BOARD_ANCHOR } from "../../components/siteNav";
-import { getLeaderboard } from "../../lib/hub";
+import { getLeaderboard, getNames } from "../../lib/hub";
 import type { BoardSummaryDto, LeaderboardEntryDto, TaskDto } from "../../lib/hub";
 import {
   directionOf,
@@ -180,28 +180,85 @@ export default function Board({
       ),
     [summary.data],
   );
+  /** Newest first.
+   *
+   * The sort is not decoration and was lost in the move to
+   * `listLatestTasks` (Round 40). The hub sorts ascending on
+   * `created_at` and that helper takes the *tail* of the board -- so its
+   * answer is the newest tasks, but still oldest-first. Rendered as it
+   * came back, the tape read bottom-up, and an arriving task appeared on
+   * the last row: `useArrivals` still marked it, but the animation lifts
+   * a row up into the list, so playing it on the bottom row is what made
+   * it look like the animation had gone away. */
   const updates = useMemo(
-    () => (latest.data?.items ?? []).slice(0, MAX_UPDATE_ROWS),
+    () =>
+      [...(latest.data?.items ?? [])]
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, MAX_UPDATE_ROWS),
     [latest.data],
   );
 
   const arrivals = useArrivals(updates);
 
+  /** Ends the two pinned columns level with the market panels.
+   *
+   * They were a viewport tall, which was right while the carousel was
+   * too. Now the carousel is as tall as its rows (Round 45) and the rail
+   * ran on past it down the page. CSS cannot read a sibling's height, so
+   * the markets column is measured and its height published as a
+   * property the stylesheet uses -- one number, written on the grid,
+   * read by both columns.
+   *
+   * An observer rather than a one-off read: the height changes with the
+   * widest sector, which changes as work is posted, and with the
+   * breakpoint that changes how many panels are shown. */
+  const colsRef = useRef<HTMLDivElement | null>(null);
+  const marketsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const cols = colsRef.current;
+    const markets = marketsRef.current;
+    if (!cols || !markets || typeof ResizeObserver === "undefined") return;
+    const sync = () =>
+      cols.style.setProperty(
+        "--board-col-h",
+        `${Math.round(markets.getBoundingClientRect().height)}px`,
+      );
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(markets);
+    return () => observer.disconnect();
+    // Re-measured when the sectors change, not only when the box is
+    // resized. On the first paint the board has no data, so the column
+    // is a few pixels tall and that is what the observer recorded; the
+    // growth that follows is a *content* change, and leaving this on an
+    // empty dependency list left both pinned columns stuck at 15px.
+  }, [sectors]);
+
   // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
 
-  // Shared by the rail's list and the tape's agent column.
   const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
-  /** Pubkey to hub-assigned name, for the tape.
+
+  /** Pubkey to hub-assigned name, for the tape's poster column.
    *
-   * The leaderboard only carries agents that have *earned*, so a poster
-   * who has never been paid is genuinely absent here and the row falls
-   * back to a truncated key. That is the honest rendering: the name is a
-   * label the hub assigns, not something this page may invent, and the
-   * pubkey is the only thing that identifies an agent anyway. */
-  const names = useMemo(
-    () => new Map((leaders.data ?? []).map((l) => [l.pubkey, l.name])),
-    [leaders.data],
+   * Asked for by key rather than read off the leaderboard, which was the
+   * first attempt and was wrong in a way the fixture hid: the
+   * leaderboard only carries agents that have *earned* -- and only the
+   * top fifty of them, against a real hub -- so every poster who had not
+   * yet been paid, the operator included, rendered as a bare key. The
+   * batch endpoint resolves any key the registry knows.
+   *
+   * Keyed on the posters actually on screen, so it re-asks when the tape
+   * turns over and not on every poll. `null` for a key the hub has never
+   * named is a normal answer, and `TapeAgent` renders the pubkey for it.
+   */
+  const posters = useMemo(
+    () => [...new Set(updates.map((t) => t.poster))].sort().join(","),
+    [updates],
+  );
+  const names = useAsync(
+    () => getNames(posters ? posters.split(",") : []),
+    [posters],
   );
 
   // The row scrolls itself -- see useCarousel and `overflow-x` in the
@@ -270,7 +327,7 @@ export default function Board({
           </div>
         </div>
 
-        <div className="itx-board-cols">
+        <div className="itx-board-cols" ref={colsRef}>
           <BoardNav
             sectors={sectors}
             current={sectors[carousel.index]?.name}
@@ -283,7 +340,7 @@ export default function Board({
             * it belongs in the one column that actually scrolls, and
             * within the same bounds as the markets above it. */}
           <div className="itx-board-mid">
-          <div className="itx-board-markets" id="itx-board-markets">
+          <div className="itx-board-markets" id="itx-board-markets" ref={marketsRef}>
             {/* Which end the row is against is handed to CSS as a pair
              * of flags: whether an edge is fading, and how, is the
              * stylesheet's business. */}
@@ -369,7 +426,7 @@ export default function Board({
                         open by definition -- a claimant column would be
                         empty on most rows and would quietly change
                         meaning on the ones where it wasn't. */}
-                    <TapeAgent pubkey={t.poster} name={names.get(t.poster) ?? null} />
+                    <TapeAgent pubkey={t.poster} name={names.data?.get(t.poster) ?? null} />
                   </li>
                 ))}
               </ul>
