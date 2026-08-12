@@ -3994,3 +3994,98 @@ Which is the point: they do the same job.
 
 Gates: 188 dashboard tests (17 new), 134 hub tests (3 new), tsc, lint,
 cargo, build.
+
+### Round 55 — one arrow, one field, one case, one grid
+
+Four inconsistencies the owner spotted between the landing surface and
+the inner pages, and one question about the grid asset.
+
+**The grid is drawn in CSS now, on both surfaces.** The asset was 140
+`<line>` elements in a viewBox holding exactly 69 periods, tiled at
+1160px -- so the browser cached a 1160x1160 bitmap (2320 square at DPR 2,
+about 21MB of image cache) to paint a pattern whose repeating unit is
+16.8px. Its stroke was also baked in at #3e4352, which is why the light
+theme had to reach it through `opacity` rather than by changing the
+colour. And it never contained the fades that motivated it: every line
+is the same `st0` class, so the fade was always going to be a CSS mask,
+which works the same over a gradient.
+
+  Everything is measured off the file rather than re-chosen: 5569.94
+  viewBox units at 1160px is a scale of 0.2083, so the 80.72u pitch is
+  16.812px and the 2u stroke is 0.417px of ink. Both themes keep the
+  colour and the opacities they had.
+
+  **The first port rendered almost nothing, and that is the interesting
+  part.** `repeating-linear-gradient(... 0 0.417px, transparent ...)` is
+  the literal translation and it is wrong: a sub-pixel gradient stop is
+  snapped away by the compositor, so the layer came out near-empty with
+  a stray line every few cells, where the SVG's 0.417px *stroke* was
+  antialiased into a hairline as intended. Trading width for alpha
+  fixes it -- 0.417 of a pixel of ink, or a whole pixel at 0.417 alpha,
+  are the same 0.125 effective alpha through the layer's 30% -- and
+  always paints. Checked against the asset side by side at DPR 2, seam
+  invisible. `grid.svg` has moved out of `public/` to `assets/`, so the
+  build no longer ships it and the source stays in the repo.
+
+  No `background-size`: a 16.812px tile rounds each repeat to the device
+  grid and leaves the pitch visibly uneven, where one repeating gradient
+  across the whole layer computes its stops once at full precision.
+
+**And the hub pages have it too, with panels sitting on it.** `--panel`
+was #1b191f, a hair lighter than the ground, which is how a panel
+announced itself. It is the ground's own colour now, exactly as the
+board's panels are: with a grid printed behind everything, what sets a
+panel apart is that it is *opaque* and hides the grid, not that it is a
+paler slab. A lifted fill over a grid reads as a third surface. Only
+`--panel-hover` stays lifted -- a row under the cursor still has to
+answer.
+
+  On these pages the grid is a background on the page element rather
+  than a layer of its own: there is nothing to offset it from, unlike
+  the board, so a second box would only be a second box. Ink and
+  opacity are pre-multiplied because a background has no opacity of its
+  own to set.
+
+**One triangle, everywhere.** Every arrow used to be whatever its author
+reached for: the carousel drew a sharp SVG triangle, the rail's pager
+typed `‹` and `›`, the terminal's pager used `←` and `→` with words,
+sort headers used `▲`/`▼`, and the dropdowns wore a CSS chevron. Five
+marks for one idea. `Triangle` is the carousel's -- the one that was
+actually drawn rather than typed -- with its corners taken off, and it
+is now all five.
+
+  The rounding is a stroke, not a path: painting the triangle with a
+  round `linejoin` and letting the stroke stand proud of the fill does
+  in one attribute what three arcs and six recomputed tangent points
+  would do per direction. Sized in `em`, so it takes the type size of
+  whatever it sits in -- 12px in a pager, 7px beside a table header.
+
+  A `<select>` cannot hold a child to draw a caret with, and a
+  background image cannot see `currentColor`, so `SelectField` puts the
+  caret on a wrapping span. The alternative was a `data:` URI holding a
+  second copy of the path -- a mask, so it could still take the ink --
+  and two copies of one mark is the thing this round is about. The
+  terminal pager's "← Prev"/"Next →" became the same round 26px icon
+  buttons the board's rail uses; the words went with them, since the
+  page number beside them says the same thing.
+
+**The two search boxes are one search box.** Different radius (999px
+pill against the board's 10px field) and different words ("Search
+agents" against "agent search"). The board's shape wins -- `--r-field`
+is a real token there and the pill was a third rounding on a site that
+already had 10px fields and 14px panels -- and both say `search agents`.
+
+**Everything on the hub pages is lowercase**, matching the landing's
+convention: headings, nav, filter options, placeholders, buttons, empty
+states. The kind labels are lowercase *at source* now rather than
+`.toLowerCase()`d at each of five call sites. What did **not** change is
+the small-caps treatment -- table headers, panel titles, fact terms,
+status badges -- because that is `text-transform` in CSS, a typographic
+decision rather than a casing one, and the same as it was.
+
+Verified live at 1280: the board's grid renders from CSS with zero
+requests for `grid.svg`, all five arrow sites carry the rounded
+triangle, both search fields read `search agents` at 10px, and the hub's
+panels sit at the page colour over a visible grid in both themes.
+
+Gates: 188 dashboard tests, tsc, lint, build (10.5KB lighter).
