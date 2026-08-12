@@ -203,6 +203,45 @@ export default function Board({
    * breakpoint that changes how many panels are shown. */
   const colsRef = useRef<HTMLDivElement | null>(null);
   const marketsRef = useRef<HTMLDivElement | null>(null);
+  /** Which market's chart is open, and at what range — in the URL, so a
+   * chart is a link someone can send and a reload lands back on it.
+   *
+   * It is a *search param on this page*, not a route: opening a market
+   * must not unmount the board around it. The left nav and the
+   * leaderboard/trends rail stay exactly where they are; only the
+   * middle column's contents change. */
+  const [params, setParams] = useSearchParams();
+  const openCapability = params.get("market");
+
+  const openMarket = useCallback(
+    (capability: string) => {
+      const next = new URLSearchParams(params);
+      next.set("market", capability);
+      // A range carried over from the last market is meaningless for
+      // this one -- markets have different ages, so `5d` may not even be
+      // on offer here. Let the chart pick its own default.
+      next.delete("range");
+      setParams(next);
+    },
+    [params, setParams],
+  );
+
+  const closeMarket = useCallback(() => {
+    const next = new URLSearchParams(params);
+    next.delete("market");
+    next.delete("range");
+    setParams(next);
+  }, [params, setParams]);
+
+  const setRange = useCallback(
+    (key: string) => {
+      const next = new URLSearchParams(params);
+      next.set("range", key);
+      setParams(next);
+    },
+    [params, setParams],
+  );
+
   useEffect(() => {
     const cols = colsRef.current;
     const markets = marketsRef.current;
@@ -221,7 +260,11 @@ export default function Board({
     // is a few pixels tall and that is what the observer recorded; the
     // growth that follows is a *content* change, and leaving this on an
     // empty dependency list left both pinned columns stuck at 15px.
-  }, [sectors]);
+    //
+    // `openCapability` for the same reason: opening a market swaps what
+    // is inside the measured box, and the observer alone would not
+    // re-attach if the box itself were replaced.
+  }, [sectors, openCapability]);
 
   // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
@@ -295,44 +338,6 @@ export default function Board({
   // rows it has room for, and the table renders that many.
   const [trendFit, trendRows] = useFitRows();
 
-  /** Which market's chart is open, and at what range — in the URL, so a
-   * chart is a link someone can send and a reload lands back on it.
-   *
-   * It is a *search param on this page*, not a route: opening a market
-   * must not unmount the board around it. The left nav and the
-   * leaderboard/trends rail stay exactly where they are; only the
-   * middle column's contents change. */
-  const [params, setParams] = useSearchParams();
-  const openCapability = params.get("market");
-
-  const openMarket = useCallback(
-    (capability: string) => {
-      const next = new URLSearchParams(params);
-      next.set("market", capability);
-      // A range carried over from the last market is meaningless for
-      // this one -- markets have different ages, so `5d` may not even be
-      // on offer here. Let the chart pick its own default.
-      next.delete("range");
-      setParams(next);
-    },
-    [params, setParams],
-  );
-
-  const closeMarket = useCallback(() => {
-    const next = new URLSearchParams(params);
-    next.delete("market");
-    next.delete("range");
-    setParams(next);
-  }, [params, setParams]);
-
-  const setRange = useCallback(
-    (key: string) => {
-      const next = new URLSearchParams(params);
-      next.set("range", key);
-      setParams(next);
-    },
-    [params, setParams],
-  );
 
   return (
     // The masthead's link home targets this, not the top of the
@@ -357,13 +362,21 @@ export default function Board({
          * was easy to miss, and nothing tied it to the thing it moves.
          * Keeping it up here rather than on the label line is what stops
          * it colliding with the category names it used to sit among. */}
-        {/* The heading line belongs to the carousel -- its title names
-            what the carousel shows and its pager moves it -- so it goes
-            when the carousel does. The chart brings its own header, with
-            the back arrow where the pager was. */}
-        {!openCapability && (
+        {/* The heading line stays in both modes, and that is the point
+            of it: it carries the section's top margin, so hiding it when
+            a market opened pulled the whole board up by 71px and left
+            the three columns starting on three different lines. Only its
+            contents swap -- the title and pager belong to the carousel,
+            the way back belongs to the chart. */}
         <div className="itx-board-head" id="itx-board-overview">
           <div className="itx-board-headline">
+            {openCapability ? (
+              <button type="button" className="itx-chart-back" onClick={closeMarket}>
+                <Triangle direction="left" />
+                market overview
+              </button>
+            ) : (
+            <>
             <h2 className="itx-board-title">market overview</h2>
 
             {/* Disabled at the ends rather than wrapping. The row is a
@@ -387,9 +400,10 @@ export default function Board({
                 <Triangle direction="right" />
               </button>
             </div>
+            </>
+            )}
           </div>
         </div>
-        )}
 
         <div className="itx-board-cols" ref={colsRef}>
           <BoardNav
@@ -407,15 +421,22 @@ export default function Board({
             * it belongs in the one column that actually scrolls, and
             * within the same bounds as the markets above it. */}
           <div className="itx-board-mid">
+          {/* `marketsRef` measures *whichever* of the two is showing, not
+              the carousel -- it publishes `--board-col-h`, which is how
+              the pinned columns either side know how tall to be. On the
+              carousel it used to sit on `#itx-board-markets`, which
+              unmounts when a chart opens: the measurement then went
+              stale, the rail fell back to a viewport-height guess, and
+              the columns stopped finishing on the same line. */}
+          <div className="itx-board-feature" ref={marketsRef}>
           {openCapability ? (
             <MarketChart
               capability={openCapability}
               range={params.get("range")}
               onRange={setRange}
-              onClose={closeMarket}
             />
           ) : (
-          <div className="itx-board-markets" id="itx-board-markets" ref={marketsRef}>
+          <div className="itx-board-markets" id="itx-board-markets">
             {/* Which end the row is against is handed to CSS as a pair
              * of flags: whether an edge is fading, and how, is the
              * stylesheet's business. */}
@@ -465,6 +486,7 @@ export default function Board({
             </div>
           </div>
           )}
+          </div>
 
           <div className="itx-board-labels itx-board-labels-latest">
             <span className="itx-board-label">latest</span>

@@ -695,6 +695,12 @@ body.itx-landing-body[data-theme="light"] {
   display: flex;
   align-items: center;
   gap: var(--sp-6);
+  /* The title's own line box, held whatever is in the row. The heading
+     line carries the section's top margin, and the back control that
+     replaces the title when a market opens is a good deal shorter --
+     without a floor the whole board below shifted up 16px on opening a
+     market and back down on closing one. */
+  min-height: calc(var(--fs-title) * 1.2);
 }
 
 .itx-board-title {
@@ -941,6 +947,18 @@ body.itx-landing-body[data-theme="light"] {
      screen has parts that can never be scrolled to. */
   height: var(--board-col-h, calc(100vh - var(--ld-bar-h) - var(--sp-9)));
   max-height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
+  /* ...but never shorter than the panels inside it actually need.
+     `height` here is a *request*, taken from the middle column so the
+     three finish level; it was being honoured even when the two panels
+     plus their labels could not fit in it, and the rail does not clip --
+     so the trends panel simply drew on past the bottom of its own
+     column and, on a short middle column, over the footer.
+
+     `min-height` beats `max-height` in the cascade, so on a genuinely
+     cramped board the rail wins the argument and grows. A rail slightly
+     taller than the viewport scrolls with the page, which is a smaller
+     problem than a panel painted over the footer. */
+  min-height: min-content;
 }
 
 /* The column that actually scrolls: the carousel at a screen's height,
@@ -2512,26 +2530,32 @@ a.itx-board-what:hover {
   text-decoration: underline;
 }
 
+/* Carries `.itx-board-panel` as well, so the outline, radius and fill
+   come from the one place every other panel gets them. Only what is
+   particular to a chart is here. */
+/* An `<h3>`, so the market's name is a heading rather than a styled
+   span -- which means clearing the UA's top margin that a `span` never
+   had. Left in place it pushed the whole middle column 16px below the
+   rail beside it. */
+.itx-chart-label {
+  margin-top: 0;
+}
+
 .itx-chart-panel {
   box-sizing: border-box;
-  border: 1px solid var(--bd-line);
-  border-radius: var(--r-panel);
-  background: var(--ld-dark);
   padding: var(--sp-6) var(--pad-panel-x);
-  /* Matches the carousel it replaces, so the tape below does not jump up
-     the page when a market is opened and back down when it is closed. */
-  min-height: 452px;
+  /* Matches the height of a sector panel, so the tape below does not
+     jump up the page when a market is opened and back down when it is
+     closed -- and so the rail, which sizes itself from this column,
+     does not resize either. */
+  min-height: 394px;
   display: flex;
   flex-direction: column;
 }
 
-.itx-chart-head {
-  margin-bottom: var(--sp-5);
-}
-
-/* The back arrow sits where the carousel's pager was, and says where it
-   goes rather than just pointing: "back" alone would leave the reader to
-   remember what they came from. */
+/* Sits in the heading line, exactly where the carousel's pager was, and
+   says where it goes rather than just pointing -- "back" alone would
+   leave the reader to remember what they came from. */
 .itx-chart-back {
   display: inline-flex;
   align-items: center;
@@ -2563,20 +2587,16 @@ a.itx-board-what:hover {
   transform: scale(1.1);
 }
 
-.itx-chart-title {
+/* The market's name moved out to a label above the panel, where every
+   other panel on the board keeps its name -- so the panel opens on its
+   figure, and the figure sits where a quote belongs: top right. */
+.itx-chart-figure {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-6);
-  margin-bottom: var(--sp-6);
-}
-
-.itx-chart-title h3 {
-  margin: 0;
-  font-size: var(--fs-title, 22px);
-  font-weight: 650;
-  letter-spacing: -0.3px;
-  color: var(--ld-light);
+  align-items: baseline;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-4);
+  margin-bottom: var(--sp-5);
 }
 
 .itx-chart-sub {
@@ -2586,13 +2606,6 @@ a.itx-board-what:hover {
   color: var(--ld-sub);
 }
 
-/* The figure block reads as one quote: value, then its change, then the
-   counts under both. Right-aligned so the numbers stack on one axis. */
-.itx-chart-figure {
-  text-align: right;
-  flex: none;
-}
-
 .itx-chart-value {
   font-size: 20px;
   font-variant-numeric: tabular-nums;
@@ -2600,7 +2613,6 @@ a.itx-board-what:hover {
 }
 
 .itx-chart-change {
-  margin-left: var(--sp-4);
   font-size: var(--fs-body);
   font-variant-numeric: tabular-nums;
 }

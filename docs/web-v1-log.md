@@ -4284,3 +4284,54 @@ clock times.
 
 Gates: 216 dashboard tests (26 new), 141 hub tests (7 new), tsc, lint,
 cargo, build.
+
+### Round 59 — two alignment bugs the chart exposed
+
+Both reported against the market chart; only one of them was actually
+its fault.
+
+**Opening a market pulled the board up.** Three separate losses, which
+is why it looked so wrong: the heading line was unmounted with the
+carousel (it carries the section's top margin, so the whole board rose
+by it), the chart had no *label row* where every other panel on the
+board has one (so its panel started 44px above the leaderboard beside
+it), and the `<h3>` the market's name became brought a UA top margin a
+`<span>` never had (16px more).
+
+  Fixed by making the chart structurally the same shape as the thing it
+  replaces: a label above a panel, in a middle column whose heading line
+  stays mounted in both modes and only swaps its contents — title and
+  pager for the carousel, the way back for the chart. The heading row
+  now holds a floor of the title's own line box, since the back control
+  is shorter than an `h2` and the board would otherwise shift 16px on
+  every open and close.
+
+  Measured before and after, which is the only reason this was fixable
+  rather than nudgeable. Both modes now: heading `1007–1037`, label row
+  `1057–1093`, panel top `1101` — against the rail's identical
+  `1057–1093` and `1101`.
+
+**And `--board-col-h` went stale.** It is published from a
+`ResizeObserver` on the markets column and read by both pinned columns,
+so they finish level with the middle one — but the ref sat on
+`#itx-board-markets`, which unmounts when a chart opens. The measurement
+then stopped updating and the rail fell back to a viewport-height guess.
+The ref moved to a wrapper that holds *whichever* of the two is
+showing, and the effect re-runs on the mode as well as on the sectors.
+
+**The rail overflowing into the footer was not the chart's doing.** The
+rail's `height` is that measured request, and it was being honoured even
+when the two panels plus their labels could not fit inside it — the rail
+does not clip, so trends simply drew on past the bottom of its own
+column. It was overflowing by 128px on the plain board too, and had been
+for several rounds; the chart only moved the footer close enough to
+notice.
+
+  `min-height: min-content` makes the request a request. It beats
+  `max-height` in the cascade, so on a genuinely cramped board the rail
+  grows past the viewport rather than painting over what is below it —
+  a sticky column slightly taller than the screen scrolls with the page,
+  which is the smaller of the two problems. Overflow measured at 0 in
+  both modes now, where the carousel view was 128.
+
+Gates: 216 dashboard tests, tsc, lint, build.

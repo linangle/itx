@@ -143,8 +143,10 @@ describe("Board", () => {
 
     await user.click(await carousel.findByRole("button", { name: "python" }));
 
-    // The chart takes the middle column and the carousel goes with it...
-    expect(await screen.findByRole("heading", { name: "python" })).toBeInTheDocument();
+    // The chart takes the middle column and the carousel goes with it.
+    // The heading's accessible name carries its sub-line too ("python
+    // coding"), same as a sector panel's label does.
+    expect(await screen.findByRole("heading", { name: /^python/ })).toBeInTheDocument();
     expect(document.querySelector("#itx-board-markets")).toBeNull();
     // ...while the rail either side stays exactly where it was. That is
     // the whole point of doing this in place rather than as a route.

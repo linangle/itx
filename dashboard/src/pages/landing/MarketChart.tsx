@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import Triangle from "../../components/Triangle";
 import TimeSeriesChart from "../../components/TimeSeriesChart";
 import { useAsync } from "../../hooks/useAsync";
 import { useElementWidth } from "../../hooks/useElementWidth";
@@ -18,7 +17,6 @@ interface Props {
    * chart someone is looking at is a link they can send. */
   range: string | null;
   onRange: (key: string) => void;
-  onClose: () => void;
 }
 
 /** One market's history, opened in place of the carousel.
@@ -35,7 +33,7 @@ interface Props {
  * `6h`, `1d` and `all`; the same page six months into a real run offers
  * `6m` as well, without anyone adding it. See `chartRanges`.
  */
-export default function MarketChart({ capability, range, onRange, onClose }: Props) {
+export default function MarketChart({ capability, range, onRange }: Props) {
   const [box, width] = useElementWidth<HTMLDivElement>();
 
   /** The market's age, and so which ranges it can offer, comes from the
@@ -73,26 +71,23 @@ export default function MarketChart({ capability, range, onRange, onClose }: Pro
   );
 
   return (
-    <div className="itx-chart-panel" ref={box}>
-      <div className="itx-chart-head">
-        <button type="button" className="itx-chart-back" onClick={onClose}>
-          <Triangle direction="left" />
-          market overview
-        </button>
-      </div>
+    <>
+      {/* The same label a sector's panel wears, on the same line. Not
+          decoration: the rail's own label sits on that line and the
+          panels below both start where their labels end, so a chart
+          rendered without one pulled its panel 44px above the
+          leaderboard beside it. */}
+      <h3 className="itx-board-label itx-chart-label">
+        {marketLabel(capability)}
+        <span className="itx-board-label-sub">
+          {sectorOf(capability)}
+          {/* The full tag as well, since the label drops the sector
+              prefix and the tag is what the hub knows this market by. */}
+          {marketLabel(capability) !== capability && ` · ${capability}`}
+        </span>
+      </h3>
 
-      <div className="itx-chart-title">
-        <div>
-          <h3>{marketLabel(capability)}</h3>
-          {/* The full tag under the label, since the label drops the
-              sector prefix and the tag is what the hub knows this market
-              by. */}
-          <span className="itx-chart-sub">
-            {sectorOf(capability)}
-            {marketLabel(capability) !== capability && ` · ${capability}`}
-          </span>
-        </div>
-
+      <div className="itx-board-panel itx-chart-panel" ref={box}>
         <div className="itx-chart-figure">
           <span className="itx-chart-value">
             {data ? `${formatCompactItx(data.bounty)} itx` : "—"}
@@ -101,10 +96,9 @@ export default function MarketChart({ capability, range, onRange, onClose }: Pro
             {formatPct(changePct)}
           </span>
           <span className="itx-chart-sub">
-            {data ? `${formatCount(data.posted)} posted · ${formatCount(data.open)} open` : " "}
+            {data ? `${formatCount(data.posted)} posted · ${formatCount(data.open)} open` : " "}
           </span>
         </div>
-      </div>
 
       <div className="itx-chart-ranges" role="group" aria-label="Chart range">
         {ranges.map((r) => (
@@ -137,6 +131,7 @@ export default function MarketChart({ capability, range, onRange, onClose }: Pro
         )}
         {!series.error && !data && <div className="itx-chart-empty">loading history…</div>}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
