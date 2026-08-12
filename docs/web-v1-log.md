@@ -6,6 +6,13 @@ bottom of each section.
 
 **Branch:** `v1-web-terminal` (nothing lands on `main`)
 
+**See also:** [`hub-requirements.md`](hub-requirements.md) — the same
+build looked at from the other side. This log is retrospective (what was
+built, in what order, why); that one is prospective (what the site needs
+from the hub and the protocol, what exists, and what each gap costs in
+correctness while it doesn't). When a round runs into something the API
+cannot serve, the round goes here and the capability goes there.
+
 ---
 
 ## Ground rules for this build

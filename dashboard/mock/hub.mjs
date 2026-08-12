@@ -738,6 +738,77 @@ const SUMMARY_BUCKETS = 24;
 const SUMMARY_WINDOWS_MS = [3_600_000, 21_600_000, 86_400_000, 604_800_000, 2_592_000_000, 7_776_000_000];
 const SUMMARY_DEFAULT_WINDOW_MS = 604_800_000;
 
+/** One market's history at a caller-chosen window and resolution,
+ * mirroring `handlers::series_for` field for field -- including the
+ * clamps, which is where a fixture most easily drifts from the thing it
+ * stands in for. See that function for why each rule is the way it is. */
+const MAX_SERIES_BUCKETS = 240;
+const DEFAULT_SERIES_BUCKETS = 96;
+const MIN_SERIES_WINDOW_MS = 60_000;
+
+function boardSeries({ capability, windowMs, buckets }) {
+  const now = Date.now();
+  const tag = capability && capability.trim() ? capability.trim() : null;
+  const matching = tag ? TASKS.filter((t) => t.capabilities.includes(tag)) : TASKS;
+
+  let oldest = Infinity;
+  for (const t of matching) {
+    const at = Date.parse(t.created_at);
+    if (Number.isFinite(at) && at < oldest) oldest = at;
+  }
+
+  const window_ms = Number.isFinite(windowMs)
+    ? Math.max(windowMs, MIN_SERIES_WINDOW_MS)
+    : !Number.isFinite(oldest)
+      ? SUMMARY_DEFAULT_WINDOW_MS
+      : (SUMMARY_WINDOWS_MS.find((w) => w >= Math.max(0, now - oldest)) ??
+        SUMMARY_WINDOWS_MS[SUMMARY_WINDOWS_MS.length - 1]);
+
+  const n = Math.min(
+    MAX_SERIES_BUCKETS,
+    Math.max(1, Number.isFinite(buckets) ? buckets : DEFAULT_SERIES_BUCKETS),
+  );
+  const end_ms = now;
+  const start_ms = now - window_ms;
+  const bucketMs = window_ms / n;
+
+  const posted_series = new Array(n).fill(0);
+  const bounty_series = new Array(n).fill(0);
+  let posted = 0;
+  let bounty = 0;
+  let open = 0;
+  let open_bounty = 0;
+
+  for (const t of matching) {
+    if (t.status === "Open") {
+      open += 1;
+      open_bounty += t.bounty;
+    }
+    const at = Date.parse(t.created_at);
+    if (!Number.isFinite(at) || at < start_ms || at > end_ms) continue;
+    const b = Math.min(n - 1, Math.floor((at - start_ms) / bucketMs));
+    posted_series[b] += 1;
+    bounty_series[b] += t.bounty;
+    posted += 1;
+    bounty += t.bounty;
+  }
+
+  return {
+    capability: tag,
+    window_ms,
+    buckets: n,
+    start_ms,
+    end_ms,
+    posted_series,
+    bounty_series,
+    posted,
+    bounty,
+    open,
+    open_bounty,
+    first_task_at: Number.isFinite(oldest) ? new Date(oldest).toISOString() : null,
+  };
+}
+
 function boardSummary() {
   const now = Date.now();
   const zeros = () => new Array(SUMMARY_BUCKETS).fill(0);
@@ -825,6 +896,7 @@ function boardSummary() {
   }
 
   return {
+    first_task_at: Number.isFinite(oldest) ? new Date(oldest).toISOString() : null,
     window_ms,
     buckets: SUMMARY_BUCKETS,
     total_tasks: TASKS.length,
@@ -1046,6 +1118,24 @@ createServer((req, res) => {
   }
 
   if (path === "/board/summary") return send(res, 200, boardSummary());
+
+  if (path === "/board/series") {
+    const num = (key) => {
+      const raw = url.searchParams.get(key);
+      if (raw === null || raw.trim() === "") return undefined;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    return send(
+      res,
+      200,
+      boardSeries({
+        capability: url.searchParams.get("capability"),
+        windowMs: num("window_ms"),
+        buckets: num("buckets"),
+      }),
+    );
+  }
 
   // Batch display-name lookup, mirroring `handlers::names`: read-only,
   // never mints, and a key the registry has never seen answers `null`

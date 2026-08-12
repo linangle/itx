@@ -414,6 +414,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         // `board_summary`). Read-only and unauthenticated, like the rest
         // of the board's read surface.
         .route("/board/summary", get(handlers::board_summary))
+        // One market's history at a window and resolution the caller
+        // picks -- what a chart with range tabs needs, and what the
+        // summary's fixed window and 24 buckets deliberately cannot
+        // serve. See `handlers::board_series`.
+        .route("/board/series", get(handlers::board_series))
         // Batch display-name lookup, so a list of rows costs one request
         // rather than one per row. Read-only and never mints a name --
         // see `handlers::names`.

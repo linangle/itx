@@ -1951,6 +1951,17 @@ const SUMMARY_DEFAULT_WINDOW_MS: u64 = 604_800_000;
 
 #[derive(Serialize)]
 pub struct BoardSummaryDto {
+    /// When the oldest task on the board was created, RFC3339, or `None`
+    /// on an empty board.
+    ///
+    /// The board's *age*, in other words -- which is what a client needs
+    /// to decide how far back it is meaningful to chart. `window_ms`
+    /// below cannot answer that: it is a preset rounded up from the age,
+    /// so a board eight days old and one twenty-nine days old both
+    /// report 30D. A chart offering a "6M" range on a board that has
+    /// been running an afternoon would be offering to draw six months of
+    /// nothing.
+    pub first_task_at: Option<String>,
     /// How far back the series reach from the moment of this request.
     pub window_ms: u64,
     /// Length of every series below.
@@ -2021,12 +2032,13 @@ pub async fn board_summary(State(state): State<Arc<AppState>>) -> Json<BoardSumm
 /// clock -- same discipline `TaskBoard` follows, and what lets the tests
 /// pin a bucket boundary instead of racing one.
 fn summarize_board(tasks: &[&Task], now: DateTime<Utc>) -> BoardSummaryDto {
+    let first_task_at = tasks.iter().map(|t| t.created_at).min();
     // Widest span the board actually covers, then the smallest preset
     // that holds it -- the same rule `chooseWindow` follows client-side.
     // Clamped at zero so a task timestamped in the future (clock skew
     // between a client and this host) cannot produce a negative span and
     // collapse the axis.
-    let window_ms = match tasks.iter().map(|t| t.created_at).min() {
+    let window_ms = match first_task_at {
         None => SUMMARY_DEFAULT_WINDOW_MS,
         Some(oldest) => {
             let span = (now - oldest).num_milliseconds().max(0) as u64;
@@ -2150,12 +2162,177 @@ fn summarize_board(tasks: &[&Task], now: DateTime<Utc>) -> BoardSummaryDto {
     });
 
     BoardSummaryDto {
+        first_task_at: first_task_at.map(|t| t.to_rfc3339()),
         window_ms,
         buckets: SUMMARY_BUCKETS,
         total_tasks: tasks.len(),
         totals,
         kinds,
         capabilities,
+    }
+}
+
+// ---------------------------------------------------------------------
+// Market series
+// ---------------------------------------------------------------------
+//
+// `board_summary` answers "what does the board look like right now" at
+// one window the hub picks. This answers "what has *this* market done
+// over a window the caller picks", which is a different question and the
+// one a chart asks.
+//
+// It exists because the summary cannot be made to do it. Its window is
+// derived from the board's age and its resolution is fixed at 24
+// buckets, both deliberately -- it is a dashboard's worth of numbers in
+// one small response. A chart with range tabs needs the same market at
+// six different spans and rather more than 24 points, and asking for the
+// whole board six times to read one column out of it is the page-walk
+// this endpoint family was built to end.
+
+/// How many points one series request may ask for. A chart is a few
+/// hundred pixels wide, so past this the extra buckets are sub-pixel and
+/// only cost the hub a longer pass and the client a bigger parse.
+const MAX_SERIES_BUCKETS: usize = 240;
+const DEFAULT_SERIES_BUCKETS: usize = 96;
+
+/// Shortest window a series may cover. A window of zero would divide by
+/// zero working out the bucket width; a window of a millisecond is not
+/// wrong so much as useless, and this keeps the axis labellable.
+const MIN_SERIES_WINDOW_MS: u64 = 60_000;
+
+#[derive(Deserialize)]
+pub struct SeriesQuery {
+    /// Which market. Omitted means the whole board, which is what the
+    /// overview's own chart wants.
+    pub capability: Option<String>,
+    /// How far back to reach. Defaults to the same preset ladder
+    /// `board_summary` uses, so an unparameterised request agrees with
+    /// the summary rather than quietly disagreeing with it.
+    pub window_ms: Option<u64>,
+    pub buckets: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct MarketSeriesDto {
+    /// Echoed back, so a response that arrives after the user has
+    /// clicked another market can be recognised as stale.
+    pub capability: Option<String>,
+    pub window_ms: u64,
+    pub buckets: usize,
+    /// Epoch millis of the first bucket's left edge and the last one's
+    /// right edge. The client needs real instants to label a time axis,
+    /// and deriving them from "now minus the window" on the client would
+    /// use the *client's* clock -- which is not the clock that bucketed
+    /// the data.
+    pub start_ms: i64,
+    pub end_ms: i64,
+    /// Tasks posted per bucket, oldest first.
+    pub posted_series: Vec<u64>,
+    /// Bounty posted per bucket, oldest first.
+    pub bounty_series: Vec<u64>,
+    /// Totals over the window, so a header can be drawn without summing
+    /// the arrays client-side and disagreeing about rounding.
+    pub posted: u64,
+    pub bounty: u64,
+    /// Open right now, which is a fact about the present rather than
+    /// about the window -- an open task posted before the window still
+    /// counts, because it is still on offer.
+    pub open: u64,
+    pub open_bounty: u64,
+    /// When this market first traded, RFC3339. `None` if the tag has
+    /// never appeared on a task.
+    pub first_task_at: Option<String>,
+}
+
+/// One market's history, at a window and resolution the caller chooses.
+pub async fn board_series(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SeriesQuery>,
+) -> Json<MarketSeriesDto> {
+    let board = state.board.read().await;
+    let tasks: Vec<&Task> = board.all_tasks().collect();
+    Json(series_for(&tasks, Utc::now(), &query))
+}
+
+/// The aggregation, with `now` injected rather than read from the clock
+/// -- same discipline `summarize_board` follows, and what lets a test
+/// pin a bucket boundary instead of racing one.
+fn series_for(tasks: &[&Task], now: DateTime<Utc>, query: &SeriesQuery) -> MarketSeriesDto {
+    let capability = query.capability.as_deref().filter(|c| !c.trim().is_empty());
+
+    // Only tasks in this market, and only their timestamps, decide the
+    // default window -- charting `python` against the age of the whole
+    // board would open on a flat run of nothing until the tag first
+    // appears.
+    let matching: Vec<&&Task> = tasks
+        .iter()
+        .filter(|t| match capability {
+            None => true,
+            Some(tag) => t.capabilities.iter().any(|c| c == tag),
+        })
+        .collect();
+
+    let first_task_at = matching.iter().map(|t| t.created_at).min();
+
+    let window_ms = match query.window_ms {
+        Some(requested) => requested.max(MIN_SERIES_WINDOW_MS),
+        None => match first_task_at {
+            None => SUMMARY_DEFAULT_WINDOW_MS,
+            Some(oldest) => {
+                let span = (now - oldest).num_milliseconds().max(0) as u64;
+                SUMMARY_WINDOWS_MS
+                    .iter()
+                    .copied()
+                    .find(|w| *w >= span)
+                    .unwrap_or(SUMMARY_WINDOWS_MS[SUMMARY_WINDOWS_MS.len() - 1])
+            }
+        },
+    };
+
+    let buckets = query.buckets.unwrap_or(DEFAULT_SERIES_BUCKETS).clamp(1, MAX_SERIES_BUCKETS);
+    let end_ms = now.timestamp_millis();
+    let start_ms = end_ms - window_ms as i64;
+    let bucket_ms = window_ms as f64 / buckets as f64;
+
+    let mut posted_series = vec![0u64; buckets];
+    let mut bounty_series = vec![0u64; buckets];
+    let (mut posted, mut bounty, mut open, mut open_bounty) = (0u64, 0u64, 0u64, 0u64);
+
+    for task in &matching {
+        // Open is a fact about now, not about the window: a task posted
+        // last month and still unclaimed is still on offer today.
+        if task.status == TaskStatus::Open {
+            open += 1;
+            open_bounty += task.bounty;
+        }
+
+        let at = task.created_at.timestamp_millis();
+        if at < start_ms || at > end_ms {
+            continue;
+        }
+        // Tasks outside the window are dropped rather than piled into
+        // bucket zero, where a leading spike of everything older would
+        // flatten the window's own shape into a baseline.
+        let bucket = (((at - start_ms) as f64 / bucket_ms) as usize).min(buckets - 1);
+        posted_series[bucket] += 1;
+        bounty_series[bucket] += task.bounty;
+        posted += 1;
+        bounty += task.bounty;
+    }
+
+    MarketSeriesDto {
+        capability: capability.map(str::to_string),
+        window_ms,
+        buckets,
+        start_ms,
+        end_ms,
+        posted_series,
+        bounty_series,
+        posted,
+        bounty,
+        open,
+        open_bounty,
+        first_task_at: first_task_at.map(|t| t.to_rfc3339()),
     }
 }
 
@@ -2614,6 +2791,131 @@ mod summary_tests {
     fn summarize(tasks: &[Task]) -> BoardSummaryDto {
         let refs: Vec<&Task> = tasks.iter().collect();
         summarize_board(&refs, now())
+    }
+
+    fn series(tasks: &[Task], query: SeriesQuery) -> MarketSeriesDto {
+        let refs: Vec<&Task> = tasks.iter().collect();
+        series_for(&refs, now(), &query)
+    }
+
+    fn ask(capability: Option<&str>, window_ms: Option<u64>, buckets: Option<usize>) -> SeriesQuery {
+        SeriesQuery {
+            capability: capability.map(str::to_string),
+            window_ms,
+            buckets,
+        }
+    }
+
+    #[test]
+    fn the_summary_reports_the_boards_age_so_a_chart_can_size_its_ranges() {
+        let oldest = now() - Duration::days(3);
+        let tasks = [
+            task(oldest, 1, TaskStatus::Open, &[]),
+            task(now() - Duration::hours(1), 1, TaskStatus::Open, &[]),
+        ];
+        assert_eq!(summarize(&tasks).first_task_at.as_deref(), Some(oldest.to_rfc3339()).as_deref());
+        // An empty board has no age, which is distinct from an age of
+        // zero -- a client offering ranges has nothing to offer.
+        assert!(summarize(&[]).first_task_at.is_none());
+    }
+
+    #[test]
+    fn a_series_buckets_one_market_over_the_window_it_was_asked_for() {
+        // Placed mid-bucket rather than on an edge: 23h30m ago is half
+        // an hour into the window, and 30m ago is half an hour from its
+        // end, so neither assertion turns on which side of a boundary a
+        // task on the boundary lands.
+        let tasks = [
+            task(now() - Duration::minutes(23 * 60 + 30), 100, TaskStatus::Open, &["python"]),
+            task(now() - Duration::minutes(30), 250, TaskStatus::Open, &["python"]),
+            // Another market entirely, and a third with no tags: neither
+            // may reach the python series.
+            task(now() - Duration::hours(2), 999, TaskStatus::Open, &["rust"]),
+            task(now() - Duration::hours(2), 999, TaskStatus::Open, &[]),
+        ];
+        let out = series(&tasks, ask(Some("python"), Some(86_400_000), Some(24)));
+
+        assert_eq!(out.buckets, 24);
+        assert_eq!(out.posted, 2);
+        assert_eq!(out.bounty, 350);
+        assert_eq!(out.bounty_series.iter().sum::<u64>(), 350);
+        // One bucket an hour over a day: the older task lands in the
+        // first, the newer one in the last.
+        assert_eq!(out.bounty_series[0], 100);
+        assert_eq!(out.bounty_series[23], 250);
+        assert_eq!(out.end_ms - out.start_ms, 86_400_000);
+    }
+
+    #[test]
+    fn a_window_shorter_than_the_market_drops_what_falls_outside_it() {
+        let tasks = [
+            task(now() - Duration::days(10), 500, TaskStatus::Open, &["ocr"]),
+            task(now() - Duration::hours(2), 70, TaskStatus::Open, &["ocr"]),
+        ];
+        // A day's window sees only the recent one. The old task is
+        // dropped rather than piled into bucket zero, where it would
+        // flatten the day's own shape.
+        let day = series(&tasks, ask(Some("ocr"), Some(86_400_000), Some(24)));
+        assert_eq!(day.posted, 1);
+        assert_eq!(day.bounty, 70);
+        // ...but it is still counted as open, because being on offer is
+        // a fact about now rather than about the window.
+        assert_eq!(day.open, 2);
+        assert_eq!(day.open_bounty, 570);
+    }
+
+    #[test]
+    fn a_series_defaults_its_window_to_the_market_not_the_board() {
+        // The board is old; this market is an hour old. Charting it
+        // against the board's age would open on a flat run of nothing.
+        let tasks = [
+            task(now() - Duration::days(60), 1, TaskStatus::Open, &["labeling"]),
+            task(now() - Duration::minutes(30), 1, TaskStatus::Open, &["vision"]),
+        ];
+        assert_eq!(series(&tasks, ask(Some("vision"), None, None)).window_ms, 3_600_000, "1H");
+        assert_eq!(
+            series(&tasks, ask(Some("labeling"), None, None)).window_ms,
+            7_776_000_000,
+            "90D"
+        );
+    }
+
+    #[test]
+    fn an_untagged_request_charts_the_whole_board() {
+        let tasks = [
+            task(now() - Duration::hours(2), 10, TaskStatus::Open, &["python"]),
+            task(now() - Duration::hours(2), 20, TaskStatus::Open, &[]),
+        ];
+        let out = series(&tasks, ask(None, Some(86_400_000), Some(24)));
+        assert_eq!(out.posted, 2, "an untagged task is still a task on the board");
+        assert_eq!(out.bounty, 30);
+        assert!(out.capability.is_none());
+    }
+
+    #[test]
+    fn series_bounds_are_clamped_rather_than_trusted() {
+        let tasks = [task(now() - Duration::hours(1), 1, TaskStatus::Open, &["python"])];
+        // A caller asking for a bucket per pixel of a wall display, and
+        // one asking for none at all.
+        assert_eq!(
+            series(&tasks, ask(Some("python"), Some(86_400_000), Some(100_000))).buckets,
+            MAX_SERIES_BUCKETS
+        );
+        assert_eq!(series(&tasks, ask(Some("python"), Some(86_400_000), Some(0))).buckets, 1);
+        // A zero window would divide by zero working out a bucket width.
+        assert_eq!(
+            series(&tasks, ask(Some("python"), Some(0), Some(24))).window_ms,
+            MIN_SERIES_WINDOW_MS
+        );
+    }
+
+    #[test]
+    fn a_market_that_has_never_traded_answers_empty_rather_than_failing() {
+        let tasks = [task(now() - Duration::hours(1), 5, TaskStatus::Open, &["python"])];
+        let out = series(&tasks, ask(Some("nonesuch"), Some(86_400_000), Some(12)));
+        assert_eq!(out.posted, 0);
+        assert_eq!(out.bounty_series, vec![0; 12], "a flat line, not a missing one");
+        assert!(out.first_task_at.is_none());
     }
 
     #[test]
