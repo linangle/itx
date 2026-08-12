@@ -1,20 +1,22 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import Triangle from "../../components/Triangle";
+import { useCarousel } from "../../hooks/useCarousel";
 import { useElementWidth } from "../../hooks/useElementWidth";
 import { formatCount } from "../../lib/format";
 import {
-  SAMPLE,
-  YES_SERIES,
-  YES_STEPS,
+  SAMPLES,
+  STEPS,
   axisDates,
   paysOut,
   quoteAt,
   snapIndex,
+  type SampleMarket,
 } from "../../lib/predictionSample";
 
 /** The board's prediction market section: a label row with the way to
- * the full page, and one sample market card after the Kalshi reference.
+ * the full page, then a row of sample market cards after the Kalshi
+ * reference.
  *
  * **Everything in it is authored.** The protocol has no outcome
  * markets, no odds and no settlement, so this section is the shape of
@@ -23,10 +25,16 @@ import {
  * arithmetic are in `lib/predictionSample.ts`; what the hub and the
  * chain would need to make it real is in `docs/hub-requirements.md`.
  *
- * One card, deliberately. A row of fabricated markets would read as a
- * live surface; a single sample with its own pager chrome reads as a
- * format being shown. */
+ * The row scrolls exactly like the market overview's does, and for the
+ * same reasons -- see `.itx-pm-track` in the stylesheet and
+ * `useCarousel`: a real scroll container so a finger, a trackpad and
+ * momentum all come from the browser, with the arrows left as the
+ * deliberate one-card step. The next card peeks past the edge and
+ * dissolves rather than being cut, and the slider underneath says how
+ * far along the row is. */
 export default function PredictionMarket() {
+  const [trackRef, carousel] = useCarousel<HTMLDivElement>(SAMPLES.length);
+
   return (
     <section
       className="itx-pm"
@@ -34,8 +42,10 @@ export default function PredictionMarket() {
       aria-label="Prediction market"
     >
       {/* The same label row every board section wears. The arrow is the
-          section's own door: the card below is one sample, and the full
-          market -- however empty today -- is a page of its own. */}
+          section's own door: these cards are samples, and the full
+          market -- however empty today -- is a page of its own.
+          The pager sits beside it, where the carousel's own pager sits
+          on the heading line above. */}
       <div className="itx-board-labels itx-board-labels-predictions">
         <span className="itx-board-label">prediction market</span>
         <Link
@@ -55,103 +65,144 @@ export default function PredictionMarket() {
             />
           </svg>
         </Link>
-      </div>
 
-      <div className="itx-board-panel itx-pm-card">
-        {/* Chrome for flipping between markets, per the reference. With
-            one sample there is nowhere to flip, so both ends are
-            disabled -- but the control renders, because it is part of
-            the format being shown. */}
+        {/* Disabled at the ends rather than wrapping, like the market
+            carousel's: the row is a scroll, and a control that jumped
+            the whole way back would contradict what dragging it does. */}
         <div className="itx-pm-pager">
-          <button type="button" disabled aria-label="Previous market">
+          <button
+            type="button"
+            aria-label="Previous market"
+            disabled={carousel.atStart}
+            onClick={() => carousel.step(-1)}
+          >
             <Triangle direction="left" />
           </button>
-          <span>1 of 1</span>
-          <button type="button" disabled aria-label="Next market">
+          <span>
+            {carousel.index + 1} of {SAMPLES.length}
+          </span>
+          <button
+            type="button"
+            aria-label="Next market"
+            disabled={carousel.atEnd}
+            onClick={() => carousel.step(1)}
+          >
             <Triangle direction="right" />
           </button>
         </div>
+      </div>
 
-        <div className="itx-pm-info">
-          <span className="itx-pm-cat">
-            {/* A stand-in for the reference's category tile: two bars in
-                the outcome colours, which is what this market is about. */}
-            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
-              <rect x="1" y="1" width="18" height="18" rx="4" fill="none" stroke="currentColor" strokeOpacity="0.5" />
-              <rect x="5" y="7" width="3.4" height="8" rx="1" fill="var(--ld-green)" />
-              <rect x="11.6" y="10" width="3.4" height="5" rx="1" fill="var(--ld-blue)" />
-            </svg>
-            {SAMPLE.category}
-          </span>
-
-          <h3 className="itx-pm-title">{SAMPLE.title}</h3>
-
-          {/* Said plainly on the card, not only in a comment nobody
-              reading the page can see. A card quoting a price and a
-              volume looks exactly like a live one, and this is the only
-              thing that says it is not. */}
-          <p className="itx-pm-sample">
-            sample market — authored odds, nothing on the wire yet
-          </p>
-
-          <table className="itx-board-table itx-pm-outcomes">
-            <thead>
-              <tr>
-                <th>market</th>
-                <th className="right">pays out</th>
-                <th className="right">odds</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                { outcome: SAMPLE.yes, tone: "is-yes" },
-                { outcome: SAMPLE.no, tone: "is-no" },
-              ].map(({ outcome, tone }) => (
-                <tr key={outcome.label}>
-                  <td>
-                    <span className={`itx-pm-outcome ${tone}`}>{outcome.label}</span>
-                  </td>
-                  <td className="right itx-pm-pays">{paysOut(outcome.pct)}</td>
-                  <td className="right">
-                    {/* A span, not a button: on Kalshi this is where a
-                        trade starts, and until the protocol can take
-                        one, drawing it clickable would be a lie. */}
-                    <span className="itx-pm-pill">{outcome.pct}%</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <div className="itx-pm-meta">
-            <span>{formatCount(SAMPLE.volumeItx)} itx vol</span>
-            <span>{SAMPLE.settles}</span>
-          </div>
-
-          <p className="itx-pm-news">
-            <strong>news</strong> · {SAMPLE.news}
-          </p>
+      <div className="itx-pm-row">
+        {/* Which end the row is against is handed to CSS as a pair of
+            flags, exactly as the market carousel does it: whether an
+            edge is fading, and how, is the stylesheet's business. */}
+        <div
+          className="itx-pm-track"
+          ref={trackRef}
+          data-at-start={carousel.atStart || undefined}
+          data-at-end={carousel.atEnd || undefined}
+        >
+          {SAMPLES.map((market) => (
+            <MarketCard key={market.key} market={market} />
+          ))}
         </div>
 
-        <div className="itx-pm-chartcol">
-          <div className="itx-pm-legend">
-            <span className="itx-pm-key is-yes">
-              <span className="itx-pm-key-dot" aria-hidden="true" />
-              {SAMPLE.yes.label} <strong>{SAMPLE.yes.pct}%</strong>
-            </span>
-            <span className="itx-pm-key is-no">
-              <span className="itx-pm-key-dot" aria-hidden="true" />
-              {SAMPLE.no.label} <strong>{SAMPLE.no.pct}%</strong>
-            </span>
-          </div>
-          <SampleChart />
+        {/* Where the row sits, driven from the custom properties
+            `useCarousel` writes on this element's parent every scroll
+            frame -- the same arrangement, and the same reason, as the
+            market carousel's slider. */}
+        <div className="itx-board-slider itx-pm-slider" aria-hidden="true">
+          <span />
         </div>
       </div>
     </section>
   );
 }
 
-/** The two odds lines over the sample's week, after the reference: both
+/** One sample market, in the reference's format: the odds table and its
+ * news on the left, both outcomes' history on the right. */
+function MarketCard({ market }: { market: SampleMarket }) {
+  return (
+    <article className="itx-board-panel itx-pm-card">
+      <div className="itx-pm-info">
+        <span className="itx-pm-cat">
+          {/* A stand-in for the reference's category tile: two bars in
+              the outcome colours, which is what the card is about. */}
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+            <rect x="1" y="1" width="18" height="18" rx="4" fill="none" stroke="currentColor" strokeOpacity="0.5" />
+            <rect x="5" y="7" width="3.4" height="8" rx="1" fill="var(--ld-green)" />
+            <rect x="11.6" y="10" width="3.4" height="5" rx="1" fill="var(--ld-blue)" />
+          </svg>
+          {market.category}
+        </span>
+
+        <h3 className="itx-pm-title">{market.title}</h3>
+
+        {/* Said plainly on the card, not only in a comment nobody
+            reading the page can see. A card quoting a price and a
+            volume looks exactly like a live one, and this is the only
+            thing that says it is not. */}
+        <p className="itx-pm-sample">
+          sample market — authored odds, nothing on the wire yet
+        </p>
+
+        <table className="itx-board-table itx-pm-outcomes">
+          <thead>
+            <tr>
+              <th>market</th>
+              <th className="right">pays out</th>
+              <th className="right">odds</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { outcome: market.yes, tone: "is-yes" },
+              { outcome: market.no, tone: "is-no" },
+            ].map(({ outcome, tone }) => (
+              <tr key={outcome.label}>
+                <td>
+                  <span className={`itx-pm-outcome ${tone}`}>{outcome.label}</span>
+                </td>
+                <td className="right itx-pm-pays">{paysOut(outcome.pct)}</td>
+                <td className="right">
+                  {/* A span, not a button: on the reference this is
+                      where a trade starts, and until the protocol can
+                      take one, drawing it clickable would be a lie. */}
+                  <span className="itx-pm-pill">{outcome.pct}%</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="itx-pm-meta">
+          <span>{formatCount(market.volumeItx)} itx vol</span>
+          <span>{market.settles}</span>
+        </div>
+
+        <p className="itx-pm-news">
+          <strong>news</strong> · {market.news}
+        </p>
+      </div>
+
+      <div className="itx-pm-chartcol">
+        <div className="itx-pm-legend">
+          <span className="itx-pm-key is-yes">
+            <span className="itx-pm-key-dot" aria-hidden="true" />
+            {market.yes.label} <strong>{market.yes.pct}%</strong>
+          </span>
+          <span className="itx-pm-key is-no">
+            <span className="itx-pm-key-dot" aria-hidden="true" />
+            {market.no.label} <strong>{market.no.pct}%</strong>
+          </span>
+        </div>
+        <OddsChart market={market} />
+      </div>
+    </article>
+  );
+}
+
+/** The two odds lines over a market's week, after the reference: both
  * outcomes on one plot, dotted gridlines with the percentages down the
  * right edge, dates along the bottom, and a haloed dot on each line's
  * last price.
@@ -179,15 +230,35 @@ const PAD_RIGHT = 44;
 /** Gridlines land on multiples of this, like the reference's
  * 15/30/45/60/75 ladder. */
 const GRID_STEP_PCT = 15;
-/** About how wide a hover label runs ("15 or more 28%"). Used only to
- * decide which side of the rule it goes on -- measuring the text would
- * cost a layout read per pointer move to save nothing. */
-const READOUT_W = 118;
 
-function SampleChart() {
+/** Roughly how wide the readout's text runs, per character, at its 13px
+ * bold. Estimated rather than measured: `getComputedTextLength` forces a
+ * layout read, and this runs on every pointer move to place a plate
+ * whose edges are 60%-opaque and a few pixels from any glyph. Generous
+ * on purpose -- a plate slightly too wide reads as padding, one too
+ * narrow reads as a clipped label. */
+const CHAR_W = 6.9;
+const PLATE_PAD = 7;
+
+function readoutWidth(text: string): number {
+  return text.length * CHAR_W + PLATE_PAD * 2;
+}
+
+/** How close the two readouts may sit before they are parted.
+ *
+ * They are pinned to their own lines, and the lines cross -- at a
+ * crossing the two labels land on top of each other and neither can be
+ * read, which is exactly the moment the chart is most worth reading.
+ * When that happens the *labels* separate about the midpoint while the
+ * dots stay on their lines, so nothing misreports where a price is. */
+const MIN_LABEL_GAP = 22;
+
+function OddsChart({ market }: { market: SampleMarket }) {
   const [box, width] = useElementWidth<HTMLDivElement>();
   /** Which point the pointer is over, or `null` when it is not. */
   const [hover, setHover] = useState<number | null>(null);
+
+  const series = market.series;
 
   const chart = useMemo(() => {
     if (width <= 0) return null;
@@ -199,17 +270,17 @@ function SampleChart() {
     // than spanning 0-100: gridlines at the first step-multiples that
     // clear the lines' extremes, so two lines at 72/28 use the plot's
     // height instead of its middle half.
-    const values = YES_SERIES.flatMap((v) => [v, 100 - v]);
+    const values = series.flatMap((v) => [v, 100 - v]);
     const lo = Math.max(0, Math.floor((Math.min(...values) - 4) / GRID_STEP_PCT) * GRID_STEP_PCT);
     const hi = Math.min(100, Math.ceil((Math.max(...values) + 4) / GRID_STEP_PCT) * GRID_STEP_PCT);
 
-    const x = (i: number) => PAD_LEFT + (i / (YES_STEPS - 1)) * plotW;
+    const x = (i: number) => PAD_LEFT + (i / (STEPS - 1)) * plotW;
     const y = (v: number) => PAD_TOP + (1 - (v - lo) / (hi - lo)) * plotH;
 
-    const stepPath = (series: number[]) => {
-      let d = `M${x(0).toFixed(1)} ${y(series[0]).toFixed(1)}`;
-      for (let i = 1; i < series.length; i++) {
-        d += `H${x(i).toFixed(1)}V${y(series[i]).toFixed(1)}`;
+    const stepPath = (points: number[]) => {
+      let d = `M${x(0).toFixed(1)} ${y(points[0]).toFixed(1)}`;
+      for (let i = 1; i < points.length; i++) {
+        d += `H${x(i).toFixed(1)}V${y(points[i]).toFixed(1)}`;
       }
       return d;
     };
@@ -217,22 +288,22 @@ function SampleChart() {
     const grid: number[] = [];
     for (let pct = lo; pct <= hi; pct += GRID_STEP_PCT) grid.push(pct);
 
-    const no = YES_SERIES.map((v) => 100 - v);
+    const no = series.map((v) => 100 - v);
     return {
       grid: grid.map((pct) => ({ y: y(pct), label: `${pct}%` })),
-      yes: { d: stepPath(YES_SERIES), endX: x(YES_STEPS - 1), endY: y(YES_SERIES[YES_STEPS - 1]) },
-      no: { d: stepPath(no), endX: x(YES_STEPS - 1), endY: y(no[no.length - 1]) },
+      yes: { d: stepPath(series), endX: x(STEPS - 1), endY: y(series[STEPS - 1]) },
+      no: { d: stepPath(no), endX: x(STEPS - 1), endY: y(no[no.length - 1]) },
       ticks: axisDates().map((t) => ({ x: x(t.index), label: t.label })),
       plotW,
       plotH,
       x,
       y,
     };
-  }, [width]);
+  }, [width, series]);
 
   /** Snaps the pointer to the nearest point. The rect is read per move
-   * rather than cached: the board scrolls, and a cached rect offsets
-   * the whole readout after the first scroll. */
+   * rather than cached: the row scrolls under the pointer, and a cached
+   * rect offsets the whole readout as soon as it does. */
   function onMove(e: React.PointerEvent<SVGSVGElement>) {
     if (!chart) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -241,19 +312,31 @@ function SampleChart() {
 
   const cursor = useMemo(() => {
     if (hover === null || !chart) return null;
-    const quote = quoteAt(hover);
-    return {
-      ...quote,
-      x: chart.x(hover),
-      yesY: chart.y(quote.yesExact),
-      noY: chart.y(100 - quote.yesExact),
-    };
-  }, [hover, chart]);
+    const quote = quoteAt(series, hover);
+    const rows = [
+      { pct: quote.yesPct, label: market.yes.label, tone: "is-yes", y: chart.y(quote.yesExact) },
+      { pct: quote.noPct, label: market.no.label, tone: "is-no", y: chart.y(100 - quote.yesExact) },
+    ].map((row) => ({ ...row, text: `${row.label} ${row.pct}%`, labelY: row.y }));
 
-  /** Which side of the rule the readouts sit on. They follow the
-   * reference and sit to the right, until the rule is close enough to
-   * the end that they would run past the plot. */
-  const flip = !!cursor && chart !== null && cursor.x + READOUT_W > PAD_LEFT + chart.plotW;
+    // Part the labels at a crossing -- see MIN_LABEL_GAP. Ordered by
+    // height rather than by outcome, so the upper line keeps the upper
+    // label and the pair never swaps sides as the pointer moves through
+    // the crossing.
+    if (Math.abs(rows[0].y - rows[1].y) < MIN_LABEL_GAP) {
+      const middle = (rows[0].y + rows[1].y) / 2;
+      const [above, below] = rows[0].y <= rows[1].y ? [rows[0], rows[1]] : [rows[1], rows[0]];
+      above.labelY = middle - MIN_LABEL_GAP / 2;
+      below.labelY = middle + MIN_LABEL_GAP / 2;
+    }
+
+    const x = chart.x(hover);
+    // One side for both readouts, chosen by the wider of the two: the
+    // pair reads as one legend, and splitting them either side of the
+    // rule when only one would overflow looks like a fault.
+    const widest = Math.max(...rows.map((r) => readoutWidth(r.text)));
+    const flip = x + 10 + widest > PAD_LEFT + chart.plotW;
+    return { ...quote, x, rows, flip, widest };
+  }, [hover, chart, series, market.yes.label, market.no.label]);
 
   return (
     <div className="itx-pm-plot" ref={box}>
@@ -264,8 +347,8 @@ function SampleChart() {
           className="itx-pm-svg"
           role="img"
           aria-label={
-            `sample odds over the last week: ${SAMPLE.yes.label} at ` +
-            `${SAMPLE.yes.pct}%, ${SAMPLE.no.label} at ${SAMPLE.no.pct}%`
+            `sample odds over the last week: ${market.yes.label} at ` +
+            `${market.yes.pct}%, ${market.no.label} at ${market.no.pct}%`
           }
           // Pointer events rather than mouse: the same handlers then
           // cover a finger drag across the chart on a touch screen,
@@ -294,8 +377,7 @@ function SampleChart() {
 
           {/* The last price on each line. Hidden while a hover is being
               read: the cursor marks two dots of its own, and four dots
-              on a chart with two lines is one pair too many to
-              interpret. */}
+              on a two-line chart is one pair too many to interpret. */}
           {!cursor &&
             [chart.yes, chart.no].map((line, i) => (
               <g key={i} className={i === 0 ? "itx-pm-end is-yes" : "itx-pm-end is-no"}>
@@ -338,22 +420,33 @@ function SampleChart() {
                 {cursor.when}
               </text>
 
-              {[
-                { y: cursor.yesY, pct: cursor.yesPct, label: SAMPLE.yes.label, tone: "is-yes" },
-                { y: cursor.noY, pct: cursor.noPct, label: SAMPLE.no.label, tone: "is-no" },
-              ].map((row) => (
-                <g key={row.tone} className={`itx-pm-end ${row.tone}`}>
-                  <circle className="itx-pm-dot" cx={cursor.x} cy={row.y} r={4} />
-                  <text
-                    className="itx-pm-readout"
-                    x={cursor.x + (flip ? -10 : 10)}
-                    y={row.y + 5}
-                    textAnchor={flip ? "end" : "start"}
-                  >
-                    {row.label} {row.pct}%
-                  </text>
-                </g>
-              ))}
+              {cursor.rows.map((row) => {
+                const w = readoutWidth(row.text);
+                return (
+                  <g key={row.tone} className={`itx-pm-end ${row.tone}`}>
+                    <circle className="itx-pm-dot" cx={cursor.x} cy={row.y} r={4} />
+                    {/* A plate under the words, so the label reads over
+                        whatever the chart has behind it -- gridlines, or
+                        the other outcome's line -- without hiding it. */}
+                    <rect
+                      className="itx-pm-plate"
+                      x={cursor.flip ? cursor.x - 10 - w : cursor.x + 10}
+                      y={row.labelY - 10}
+                      width={w}
+                      height={20}
+                      rx={5}
+                    />
+                    <text
+                      className="itx-pm-readout"
+                      x={cursor.x + (cursor.flip ? -10 - PLATE_PAD : 10 + PLATE_PAD)}
+                      y={row.labelY + 4}
+                      textAnchor={cursor.flip ? "end" : "start"}
+                    >
+                      {row.text}
+                    </text>
+                  </g>
+                );
+              })}
             </g>
           )}
         </svg>

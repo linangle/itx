@@ -4414,3 +4414,75 @@ left of the rule while the moment stays clamped inside the plot;
 errors.
 
 Gates: 229 dashboard tests (13 new), tsc, lint, build.
+
+### Round 60 — three samples, and a row that swipes
+
+Same section, three changes the owner asked for after seeing it: a
+readable hover, more than one sample, and a row that scrolls like the
+market overview does.
+
+**The hover readouts got a plate.** The words are painted in their
+line's own colour, which is what lets the pair go unlabelled by
+anything but themselves — but over a gridline or the other outcome's
+line they were hard to read. Now each sits on a rounded plate of the
+page's own ground at 62%: it reads as the chart dimming under the
+label rather than as a tooltip landing on it. The thin ground stroke
+behind the glyphs stays, because at 62% the plate still passes a line
+through and the stroke is what keeps the letter edges clean where it
+does.
+
+  The plate is sized from an estimated character width rather than
+  `getComputedTextLength`, which would force a layout read on every
+  pointer move to place a box whose edges are translucent and seven
+  pixels from any glyph.
+
+**And they part at a crossing.** The two labels are pinned to their own
+lines, and the lines cross — at which point both landed on top of each
+other, which is exactly the moment the chart is most worth reading. The
+labels now separate about the midpoint while the dots stay on their
+lines, so nothing misreports where a price is. Ordered by height rather
+than by outcome, so the pair does not swap sides as the pointer passes
+through the crossing.
+
+**Three sample markets, and they had to look different from each
+other.** A row of samples drawn from one series reads as one market
+shown three times, so `walk()` takes a volatility per market: a
+long-dated spaceflight market that drifts, a weather market with a
+clear late move, and an energy market whose two lines cross repeatedly
+because the agents disagree. Its volatility came down from 11 to 6.5
+during the round — at 11 the line crossed the plot several times a day
+and the shape stopped carrying information, which is a lesson about
+mock data rather than about this chart.
+
+**The row is the market overview's carousel, deliberately.** Same
+`useCarousel`, same real scroll container, same sampled-smoothstep edge
+masks, same slider underneath — so a finger, a trackpad and momentum
+come from the browser and the arrows are left as the one-card step. The
+only thing tuned is the basis: an item here is 94% of the width, so the
+peek is a sliver of the next card rather than half a panel.
+
+  `scroll-snap-type` was tried and taken back out. It fought the smooth
+  scroll the arrows use — a click travelled twelve pixels and stopped.
+  The carousel's own `snapTarget` already lands every arrow on a card
+  boundary, which is what the snap was for.
+
+  The pager moved to the label row, next to the section's name and its
+  door. It was in the card's top corner while there was one card; with
+  three, a control that scrolls the row cannot live inside a thing the
+  row scrolls.
+
+Verified live at 1280×800 in both themes: the row holds three cards and
+steps exactly one card per arrow (688px, its measured stride), the
+counter tracking 1→2→3 with the far arrow dimming at the end; the
+slider's thumb is a third of its track and travels with the row; and
+hovering the crossing on the spaceflight card reads "aug 8 at 9 pm"
+with "lands by 2027 50%" and "slips past 2027 50%" parted and both
+legible. No console errors.
+
+  One note for whoever verifies this next: the preview pane cannot
+  animate a smooth scroll while it is hidden, so an arrow click appears
+  to move ~12px and stall. Forcing the reduced-motion branch — which
+  `useCarousel` honours with an instant scroll — is what showed the
+  arrows landing correctly.
+
+Gates: 233 dashboard tests (4 new), tsc, lint, build.

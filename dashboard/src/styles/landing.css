@@ -2761,12 +2761,91 @@ a.itx-board-what:hover {
 
 /* ---- prediction market (the board's sample card) ----------------- */
 /* One market in the Kalshi format: the odds table and its news on the
-   left, both outcomes' history on the right, the market-flipping pager
-   in the top corner. All of it authored data for now -- see
-   PredictionMarket.tsx -- so nothing here polls or animates. */
+   left, both outcomes' history on the right, and a row of them that
+   scrolls. All of it authored data for now -- see PredictionMarket.tsx
+   -- so nothing here polls. */
 
 .itx-pm {
   margin-top: var(--gap-section);
+}
+
+/* The row and its slider, which is why this box exists: the slider is a
+   sibling of the scroll container, and `useCarousel` writes the thumb's
+   size and position onto the container's *parent* -- custom properties
+   inherit down, not sideways. */
+.itx-pm-row {
+  position: relative;
+}
+
+/* The same scroll container the market overview uses, with the same
+   reasoning behind it (see `.itx-board-carousel`): the browser owns the
+   finger, the momentum and the rubber-banding, and the arrows are left
+   as the deliberate one-card step. Only two things differ -- an item
+   here is nearly the whole width, so the peek is a sliver of the next
+   card rather than half a panel, and each card snaps, because a market
+   left straddling the edge is a card you cannot read either of. */
+.itx-pm-track {
+  /* One card, with the next just breaking the edge. */
+  --pm-basis: calc(94% - var(--sp-7));
+  --peek-edge: calc(var(--pm-basis) + var(--sp-7));
+  --leading-fade-max: 96px;
+  --leading-fade: 0px;
+  --peek-span: calc(100% - var(--peek-edge));
+
+  display: flex;
+  gap: var(--sp-7);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  /* Both edges dissolve on the same sampled smoothstep the market
+     carousel uses -- a linear ramp starts all at once and that corner
+     reads as a crease down the card. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    rgba(0, 0, 0, 0.16) calc(var(--leading-fade) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--leading-fade) * 0.5),
+    rgba(0, 0, 0, 0.84) calc(var(--leading-fade) * 0.75),
+    #000 var(--leading-fade),
+    #000 var(--peek-edge),
+    rgba(0, 0, 0, 0.84) calc(var(--peek-edge) + var(--peek-span) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--peek-edge) + var(--peek-span) * 0.5),
+    rgba(0, 0, 0, 0.16) calc(var(--peek-edge) + var(--peek-span) * 0.75),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    rgba(0, 0, 0, 0.16) calc(var(--leading-fade) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--leading-fade) * 0.5),
+    rgba(0, 0, 0, 0.84) calc(var(--leading-fade) * 0.75),
+    #000 var(--leading-fade),
+    #000 var(--peek-edge),
+    rgba(0, 0, 0, 0.84) calc(var(--peek-edge) + var(--peek-span) * 0.25),
+    rgba(0, 0, 0, 0.5) calc(var(--peek-edge) + var(--peek-span) * 0.5),
+    rgba(0, 0, 0, 0.16) calc(var(--peek-edge) + var(--peek-span) * 0.75),
+    transparent 100%
+  );
+}
+
+.itx-pm-track::-webkit-scrollbar {
+  display: none;
+}
+
+/* At the far end nothing is behind that edge and the fade goes to
+   nothing: the last card finishes on the edge, and dimming it would
+   promise more that isn't there. */
+.itx-pm-track[data-at-end] {
+  --peek-edge: 100%;
+}
+
+/* Its own margin, since this slider sits under a row of cards rather
+   than under the market panels -- otherwise it takes the board's
+   default and crowds the tape below. */
+.itx-pm-slider {
+  margin-top: var(--sp-6);
 }
 
 /* The label row's arrow: the door to the full page. The same grammar as
@@ -2786,14 +2865,20 @@ a.itx-board-what:hover {
 }
 
 .itx-pm-card {
-  position: relative;
+  /* Sized by the row, and it does not shrink: a flex item's default
+     `min-width: auto` would let a long title squeeze the card narrower
+     than its basis, and the cards would stop landing on the snap. */
+  flex: 0 0 var(--pm-basis);
+  min-width: 0;
+  scroll-snap-align: start;
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   gap: var(--sp-6) var(--sp-10);
   padding: var(--sp-8);
 }
 
-/* One column under 1100px: the card is in the board's middle column,
+/* One column under 1100px: the cards sit in the board's middle column,
    which at that point is too narrow to give the chart half. */
 @media (max-width: 1100px) {
   .itx-pm-card {
@@ -2801,12 +2886,12 @@ a.itx-board-what:hover {
   }
 }
 
-/* Top-right, per the reference. Absolute rather than a grid row so the
-   legend below can own the column's top edge. */
+/* On the label row, beside the section's name and its door -- where the
+   market carousel keeps its pager too, rather than out at the row's
+   right end where nothing ties it to what it moves. Pushed to the far
+   end of the row so the label and the arrow stay together. */
 .itx-pm-pager {
-  position: absolute;
-  top: var(--sp-6);
-  right: var(--sp-6);
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--sp-4);
@@ -2815,9 +2900,8 @@ a.itx-board-what:hover {
   color: var(--ld-sub);
 }
 
-/* The reference's circled chevrons. Disabled is their only state today
-   -- one sample, nowhere to flip -- and the board's pagers already say
-   how disabled looks. */
+/* The reference's circled chevrons, disabled at the ends like every
+   other pager on the board. */
 .itx-pm-pager button {
   display: flex;
   align-items: center;
@@ -2833,6 +2917,13 @@ a.itx-board-what:hover {
   cursor: pointer;
 }
 
+.itx-pm-pager button:hover:not(:disabled) {
+  color: var(--ld-light);
+  border-color: var(--ld-sub);
+}
+
+/* At an end. Dimmed rather than hidden, so the pair stays a pair and
+   the label row does not reflow as the row is scrolled. */
 .itx-pm-pager button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -2943,8 +3034,7 @@ a.itx-board-what:hover {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-4) var(--sp-7);
-  /* Clear of the pager in the corner above. */
-  margin: var(--sp-8) 0 var(--sp-4);
+  margin: 0 0 var(--sp-4);
   font-size: var(--fs-body);
   color: var(--ld-sub);
 }
@@ -3004,18 +3094,31 @@ a.itx-board-what:hover {
   text-transform: uppercase;
 }
 
+/* A plate under each readout so the words read against whatever the
+   chart has behind them -- gridlines, or the other outcome's line --
+   without hiding it. The page's own ground at low alpha rather than a
+   panel colour: it should look like the chart dimming under the label,
+   not like a tooltip landing on it. */
+.itx-pm-plate {
+  fill: var(--ld-dark);
+  opacity: 0.62;
+  pointer-events: none;
+}
+
 /* Sits on the line's own colour, like the reference -- which is what
-   lets the two readouts go unlabelled by anything but their words. The
-   stroke is the page ground painted *behind* the glyphs (paint-order),
-   so a label crossing the other line stays readable without a plate
-   behind it. */
+   lets the two readouts go unlabelled by anything but their words.
+   The thin ground stroke is painted *behind* the glyphs
+   (`paint-order`), and does the job the plate cannot: at 62% the plate
+   still passes a line through, and a stroke this close to the letters
+   keeps their edges clean where it does. */
 .itx-pm-readout {
   fill: currentColor;
   font-size: 13px;
   font-weight: 700;
   paint-order: stroke;
   stroke: var(--ld-dark);
-  stroke-width: 3.5;
+  stroke-width: 2.5;
+  stroke-opacity: 0.62;
   stroke-linejoin: round;
   pointer-events: none;
 }

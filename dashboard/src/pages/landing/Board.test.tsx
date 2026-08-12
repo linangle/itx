@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import Board from "./Board";
 import * as hub from "../../lib/hub";
 import type { BoardSummaryDto, CapabilitySummaryDto, TaskDto } from "../../lib/hub";
+import { SAMPLES } from "../../lib/predictionSample";
 import type { AsyncState } from "../../hooks/useAsync";
 
 vi.mock("../../lib/hub", async (importOriginal) => ({
@@ -131,30 +132,35 @@ describe("Board", () => {
     expect(rows.length).toBe(12);
   });
 
-  it("carries the prediction market sample above the tape, with the way out", () => {
+  it("carries the prediction market samples above the tape, with the way out", () => {
     const { container } = renderBoard(capabilities);
 
     const section = screen.getByRole("region", { name: "Prediction market" });
-    // The two outcomes quote complementary odds and reciprocal payouts
-    // -- a binary market's one price implies everything else on the
-    // card. Read through the table: the legend repeats the labels.
-    const table = within(section).getByRole("table");
-    expect(within(table).getByText("under 15")).toBeInTheDocument();
-    expect(within(table).getByText("72%")).toBeInTheDocument();
-    expect(within(table).getByText("1.39x")).toBeInTheDocument();
-    expect(within(table).getByText("15 or more")).toBeInTheDocument();
-    expect(within(table).getByText("3.57x")).toBeInTheDocument();
+    // One card per sample market, each quoting complementary odds and
+    // reciprocal payouts -- a binary market's one price implies
+    // everything else on the card. Read through the first card's table:
+    // its legend repeats the labels.
+    const tables = within(section).getAllByRole("table");
+    expect(tables).toHaveLength(SAMPLES.length);
+    const first = within(tables[0]);
+    expect(first.getByText("under 15")).toBeInTheDocument();
+    expect(first.getByText("72%")).toBeInTheDocument();
+    expect(first.getByText("1.39x")).toBeInTheDocument();
+    expect(first.getByText("15 or more")).toBeInTheDocument();
+    expect(first.getByText("3.57x")).toBeInTheDocument();
 
-    // And it says on its face that the odds are authored. A card
+    // And every card says on its face that its odds are authored. A card
     // quoting a price and a volume looks live whether or not it is.
-    expect(within(section).getByText(/sample market/i)).toBeInTheDocument();
+    expect(within(section).getAllByText(/sample market/i)).toHaveLength(SAMPLES.length);
 
-    // The label row's arrow goes to the full page.
+    // The label row's arrow goes to the full page, and the pager says
+    // where in the row you are.
     expect(
       within(section).getByRole("link", { name: /full prediction market/i }),
     ).toHaveAttribute("href", "/predictions");
+    expect(within(section).getByText(`1 of ${SAMPLES.length}`)).toBeInTheDocument();
 
-    // Above the tape, below the markets: the sample sits between the
+    // Above the tape, below the markets: the row sits between the
     // carousel and the latest feed in the column that scrolls.
     const latest = container.querySelector("#itx-board-latest");
     expect(
@@ -163,17 +169,40 @@ describe("Board", () => {
     ).toBeTruthy();
   });
 
-  it("keeps the sample's odds pills quiet: spans, not trade buttons", () => {
+  it("keeps the samples' odds pills quiet: spans, not trade buttons", () => {
     renderBoard(capabilities);
     const section = screen.getByRole("region", { name: "Prediction market" });
-    const table = within(section).getByRole("table");
-    // Nothing in the protocol can take a trade, so nothing on the card
-    // may offer one. The only buttons in the section are the pager's,
-    // and both are disabled -- one sample, nowhere to flip.
+    // Nothing in the protocol can take a trade, so nothing on a card
+    // may offer one. The only buttons in the whole section are the
+    // pager's two.
+    const buttons = within(section).getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Previous market",
+      "Next market",
+    ]);
     within(section)
-      .getAllByRole("button")
-      .forEach((b) => expect(b).toBeDisabled());
-    expect(within(table).queryByRole("button")).not.toBeInTheDocument();
+      .getAllByRole("table")
+      .forEach((t) => expect(within(t).queryByRole("button")).not.toBeInTheDocument());
+  });
+
+  it("holds the samples in a row that scrolls, arrows and all", () => {
+    const { container } = renderBoard(capabilities);
+    const section = screen.getByRole("region", { name: "Prediction market" });
+
+    // A real scroll container with every card inside it, the two arrows
+    // over it, and the slider under it.
+    //
+    // Deliberately not asserting which arrow is live: jsdom does no
+    // layout, so the row measures as having nowhere to scroll and
+    // `useCarousel` correctly reports *both* ends reached. Where the
+    // arrows actually land is that hook's own test (`useCarousel.test`),
+    // against the arithmetic rather than against a fake ruler -- the
+    // same split `chartAxis` takes.
+    const track = container.querySelector(".itx-pm-track");
+    expect(track).toHaveAttribute("data-at-start");
+    expect(track?.children).toHaveLength(SAMPLES.length);
+    expect(container.querySelector(".itx-pm-slider")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Previous market" })).toBeDisabled();
   });
 
   it("heads the market column with the market, not the agent", async () => {
