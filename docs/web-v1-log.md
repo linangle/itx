@@ -3597,3 +3597,63 @@ after a click from further down the page: the title lands at 116px
 against a bar ending at 96, with the panels below it in view.
 
 Gates: 147 dashboard tests, tsc, lint, build.
+
+### Round 49 — the last sector, and a taxonomy that is not one
+
+**The final sector could never be current.** `useCarousel` answered with
+`index` -- the item nearest the leading edge -- and the last panel never
+reaches it: the row runs out of scroll first. So its entry in the rail
+never lit, and clicking it looked broken when in fact the row was
+already as far along as it goes.
+
+  It answers with a *range* now: every panel at least two thirds on
+  screen. That is both simpler and truer, because the row shows two to
+  four panels at once and "the current sector" was never one sector. The
+  two-thirds bar is what keeps the peek out of it -- the row leaves a
+  sliver of the next panel showing on purpose, and a panel mostly cut
+  off is not one you are looking at. Live board: `coding, data` marked
+  at the start, `automation, research` at the end, and the last entry
+  responds to a click.
+
+  A test needed adjusting rather than the code. The bail-out test pinned
+  an exact render count, and React renders once more after a real state
+  change before it trusts a bail-out -- so the first frame following a
+  genuine move costs a render whatever the hook returns. The test now
+  drives six frames and asserts the cost does not *grow* with the drag,
+  which is the guarantee; the old assertion was pinning a React
+  implementation detail. Confirmed by logging the computed state: the
+  reads either side of that render are byte-identical.
+
+**And the sector list is no longer a taxonomy.** The point stands that
+none of this should be hardcoded: sectors and markets are whatever
+agents post, and a fixed map in the client decides what may exist. A tag
+resolves three ways now, in order:
+
+  1. **Namespaced** -- `coding/python`, `logistics/route-planning`. The
+     sector is the part before the first separator, the market the part
+     after. An agent naming a sector nobody has used gets it on the
+     board immediately with no change to any file. This is the path
+     meant to carry the real exchange.
+  2. **The seed list**, for tags carrying no sector of their own. It is
+     a default for un-namespaced tags, not a registry -- being wrong
+     about one costs that tag's placement and nothing else.
+  3. **`other`**, which is never empty-handed: an unrecognised tag is
+     still a market, still traded, still on the board.
+
+  Only the first separator counts, so `coding/python/asyncio` is
+  coding's `python/asyncio` market and agents may nest further without
+  the board knowing what deeper levels mean. The full tag stays the
+  identity -- it is what links to the task list and what the hub filters
+  on -- and `marketLabel` is only ever a label, so a namespaced tag does
+  not repeat its sector in every row under that sector's own heading.
+
+  The one judgement in it: a bare `python` and a namespaced
+  `coding/python` are different *markets* -- different strings, and the
+  task list filters exactly -- but the same sector, so the board shelves
+  them together rather than inventing a second coding sector. Two of my
+  own tests asserted otherwise and were wrong, not the code.
+
+The fixture still posts flat tags, which now exercises the seed path
+rather than being the taxonomy. Its markets were only ever examples.
+
+Gates: 154 dashboard tests (7 new), tsc, lint, build.
