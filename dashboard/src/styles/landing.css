@@ -1312,6 +1312,12 @@ body.itx-landing-body[data-theme="light"] {
 }
 
 .itx-board-table th {
+  /* Same box model as the cells below them. Without this a declared
+     column width is the *content* width and the padding is added on
+     top, so a set of widths that fits on paper overflows its table --
+     which is what pushed the change column out of the market panels at
+     narrow widths and collapsed the market name to nothing. */
+  box-sizing: border-box;
   padding: var(--sp-1) var(--sp-3) var(--sp-3);
   text-align: left;
   color: var(--ld-sub);
@@ -1503,12 +1509,86 @@ body.itx-landing-body[data-theme="light"] {
   width: 44px;
 }
 .itx-board-panel-trends .itx-board-cell-pct {
-  width: 66px;
+  /* Wide enough for the number *and* the gap in front of it. These
+     cells are `border-box`, so the padding added below comes out of this
+     width -- at 66px it left 48px of content for a `+300.00%` that
+     wants 56, and clipped inside its own cell while sitting well within
+     the panel. */
+  width: 80px;
 }
 /* The cap belongs to the market panels, where the column is content-
    sized; here the column is already bounded by the table. */
 .itx-board-panel-trends .itx-board-cell-market a {
   max-width: none;
+}
+
+/* Both remaining tables get the fixed layout the trends rail already
+   has, and for the same reason: under automatic layout a column is only
+   as narrow as its content allows, so as a panel shrinks the *last*
+   column is the one pushed past the edge -- which is a percentage or an
+   amount, the one thing in these rows that must never be shown
+   half-rendered. Fixed layout declares the number columns and hands
+   whatever is left to the name, which ellipsizes.
+
+   With `table-layout: fixed` the widths come from the first row, so
+   these are set on the header cells where there is a header and on the
+   first body row where there is not. Positional selectors because the
+   header cells are generated (`SortHeader`) and the shape of the row is
+   right here: market, sparkline, value, change. */
+.itx-board-panel-market table {
+  table-layout: fixed;
+  width: 100%;
+}
+.itx-board-panel-market thead th:nth-child(2) {
+  width: 56px;
+}
+.itx-board-panel-market thead th:nth-child(3) {
+  width: 60px;
+}
+.itx-board-panel-market thead th:nth-child(4) {
+  width: 76px;
+}
+
+/* Below this the three columns are at their narrowest -- a market panel
+   is about 234px -- and four columns plus a chart do not fit in it. The
+   sparkline is what goes: it carries shape rather than a figure, and it
+   is the only cell in the row whose absence costs no information that
+   is not already in the two numbers beside it. Dropping it hands its
+   width back to the market's name, which is otherwise squeezed to
+   nothing. */
+@media (max-width: 1400px) {
+  .itx-board-panel-market thead th:nth-child(2),
+  .itx-board-panel-market .itx-board-cell-spark {
+    display: none;
+  }
+}
+
+/* The leaderboard is two columns and has no header row, so the earnings
+   column is declared on the body cells. */
+.itx-board-panel-leaders table {
+  table-layout: fixed;
+  width: 100%;
+}
+.itx-board-panel-leaders td:last-child {
+  width: 72px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.itx-board-panel-leaders .itx-board-agent {
+  min-width: 0;
+}
+.itx-board-panel-leaders td:first-child a {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Trends had its percentage sitting against the sparkline's right edge,
+   which read as one glued-together column. The gap belongs to the
+   number rather than the chart, so it is padding on the cell that was
+   crowded. */
+.itx-board-panel-trends .itx-board-cell-pct {
+  padding-left: var(--sp-5);
 }
 
 /* Grey, not the board's link blue. Every row here is a link, so the blue
@@ -1807,8 +1887,14 @@ body.itx-landing-body[data-theme="light"] {
 }
 
 /* Who posted it. The icon is composed from the pubkey, so it is there
-   for every agent whether the hub has named them or not. */
-.itx-board-agent {
+   for every agent whether the hub has named them or not.
+ *
+ * Scoped to the tape, and it has to be: `.itx-board-agent` is also the
+ * leaderboard's row link, and an unscoped `width: 164px` here put a
+ * 164px link inside a 232px rail -- which left the earnings column no
+ * room and clipped it mid-number. That is what made the leaderboard read
+ * as unsorted, with a "16" sitting between 172 and 152. */
+.itx-board-updates .itx-board-agent {
   flex: none;
   display: flex;
   align-items: center;
@@ -1818,16 +1904,16 @@ body.itx-landing-body[data-theme="light"] {
   color: var(--ld-sub);
   font-size: var(--fs-meta);
 }
-.itx-board-agent span {
+.itx-board-updates .itx-board-agent span {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.itx-board-agent:hover {
+.itx-board-updates .itx-board-agent:hover {
   color: var(--ld-light);
 }
-.itx-board-agent .itx-avatar {
+.itx-board-updates .itx-board-agent .itx-avatar {
   flex: none;
 }
 
