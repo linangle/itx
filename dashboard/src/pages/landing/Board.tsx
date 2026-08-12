@@ -295,7 +295,7 @@ export default function Board({
          * was easy to miss, and nothing tied it to the thing it moves.
          * Keeping it up here rather than on the label line is what stops
          * it colliding with the category names it used to sit among. */}
-        <div className="itx-board-head">
+        <div className="itx-board-head" id="itx-board-overview">
           <div className="itx-board-headline">
             <h2 className="itx-board-title">market overview</h2>
 
@@ -894,8 +894,6 @@ function BoardNav({
   current: string | undefined;
   onSelect: (index: number) => void;
 }) {
-  const [fitRef, rows] = useFitRows();
-
   return (
     <nav className="itx-board-nav" aria-label="Board sections">
       {/* Where the other columns have a label. A list of section names
@@ -907,38 +905,45 @@ function BoardNav({
         <span className="itx-board-label-sub">{"\u00a0"}</span>
       </span>
       <div className="itx-board-panel itx-board-panel-nav">
+        {/* Only the sections you have to travel to. The leaderboard and
+            trends were here and are not any more: both live in a rail
+            that is pinned to the viewport, so they are already on screen
+            wherever you are on the board and a link to them scrolls
+            nothing. */}
         <ul className="itx-board-navlist">
           <li>
-            <a href="#itx-board-markets">market overview</a>
-          </li>
-          <li>
-            <a href="#itx-board-leaders">leaderboard</a>
-          </li>
-          <li>
-            <a href="#itx-board-trends">trends</a>
+            <a href="#itx-board-overview">market overview</a>
           </li>
           <li>
             <a href="#itx-board-latest">latest</a>
           </li>
+          <li>
+            <a href="#itx-board-sectors">breakdown</a>
+          </li>
         </ul>
 
         <span className="itx-board-navhead">sectors</span>
-        <div className="itx-board-fit" ref={fitRef}>
-          <ul className="itx-board-navlist">
-            {sectors.slice(0, rows).map((s, index) => (
-              <li key={s.name}>
-                <button
-                  type="button"
-                  className={s.name === current ? "is-active" : undefined}
-                  aria-current={s.name === current ? "true" : undefined}
-                  onClick={() => onSelect(index)}
-                >
-                  {s.name}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
+        {/* Every sector, not as many as fit. This list was measured like
+            the panels are, which cost it entries the moment the column
+            was capped at the carousel's height (Round 45) -- automation
+            and research simply stopped being listed. The taxonomy is
+            bounded at six plus `other`, so the whole list always fits in
+            a column sized for a nine-row panel and there is nothing for
+            a fit box to decide. */}
+        <ul className="itx-board-navlist itx-board-navlist-sectors">
+          {sectors.map((s, index) => (
+            <li key={s.name}>
+              <button
+                type="button"
+                className={s.name === current ? "is-active" : undefined}
+                aria-current={s.name === current ? "true" : undefined}
+                onClick={() => onSelect(index)}
+              >
+                {s.name}
+              </button>
+            </li>
+          ))}
+        </ul>
 
         <ul className="itx-board-navlist itx-board-navlist-pages">
           <li>

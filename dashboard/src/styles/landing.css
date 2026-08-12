@@ -570,6 +570,18 @@ body.itx-landing-body[data-theme="light"] {
   );
 }
 
+/* Anything the board's own nav jumps to. Without this the target's top
+   edge stops under the sticky masthead -- and for the overview that also
+   meant landing on the carousel with its own heading scrolled away,
+   which is why the nav points at the heading's box rather than the row
+   of panels. Same offset the board itself carries, minus the strip's
+   pull-up, which only applies at the very top of the board. */
+#itx-board-overview,
+#itx-board-latest,
+#itx-board-sectors {
+  scroll-margin-top: calc(var(--ld-bar-h) + var(--sp-7));
+}
+
 /* The grid is a separate layer rather than a background on .itx-board
  * itself, because it needs its own opacity without fading the content
  * on top of it. `public/grid.svg` is the supplied asset with its
@@ -1223,11 +1235,26 @@ body.itx-landing-body[data-theme="light"] {
   font-weight: 700;
 }
 
+/* The heading outranks the things under it now -- it read as a caption
+   under entries that were larger and louder than it, which is backwards
+   for a list it is naming. Bigger, brighter and lettered wider than the
+   sectors, with a rule above to separate the jump links from the list. */
 .itx-board-navhead {
-  margin: var(--sp-5) 0 var(--sp-2);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.02em;
+  margin: var(--sp-5) 0 var(--sp-3);
+  padding-top: var(--sp-5);
+  border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+  color: var(--ld-light);
+  font-size: var(--fs-body);
+  letter-spacing: 0.04em;
+}
+
+.itx-board-navlist-sectors button {
+  font-size: var(--fs-meta);
   color: var(--ld-sub);
+}
+.itx-board-navlist-sectors button:hover,
+.itx-board-navlist-sectors button.is-active {
+  color: var(--ld-light);
 }
 
 /* Links off the board entirely, held apart from the in-page ones and
@@ -2108,6 +2135,11 @@ body.itx-landing-body[data-theme="light"] {
 }
 
 .itx-sectors-map {
+  /* So the tiles can size their type against the map's rendered width
+     (`cqw` below). Without a container the labels were sized in layout
+     units and stayed put as the map shrank, which is what crowded and
+     clipped them at narrow windows. */
+  container-type: inline-size;
   position: relative;
   /* Held to the ratio the layout was computed in (MAP_W x MAP_H), which
      is what lets the tiles be positioned in percentages without anything
@@ -2164,17 +2196,24 @@ body.itx-landing-body[data-theme="light"] {
   outline-offset: -2px;
 }
 
+/* Type as a fraction of the tile's own short side, which `--tile-scale`
+   expresses as a fraction of the map's width -- so `cqw` turns it into
+   pixels that follow the box at every size. Clamped at both ends: a
+   sliver's label still has to be readable, and the biggest tile's must
+   not turn into a headline. */
 .itx-sectors-tile-name {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: calc(var(--fs-body) * var(--tile-scale, 1));
-  line-height: 1.1;
+  font-size: clamp(9px, calc(var(--tile-scale, 0.2) * 14cqw), 21px);
+  line-height: 1.15;
 }
 
 .itx-sectors-tile-pct {
-  font-size: calc(var(--fs-meta) * var(--tile-scale, 1));
+  max-width: 100%;
+  overflow: hidden;
+  font-size: clamp(8px, calc(var(--tile-scale, 0.2) * 10cqw), 15px);
   font-variant-numeric: tabular-nums;
   opacity: 0.9;
 }

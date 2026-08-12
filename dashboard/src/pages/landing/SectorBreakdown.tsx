@@ -39,13 +39,25 @@ function tint(changePct: number | null): number {
   return 0.24;
 }
 
-/** Label size from the tile's short side. Big sectors get a headline,
- * slivers get something that still fits -- the reference does the same,
- * and without it the smallest tiles have their names painted over their
- * neighbours. */
+/** A tile's short side as a fraction of the map's *rendered width*, for
+ * sizing its label.
+ *
+ * The units are the point. An earlier version scaled the label from the
+ * short side in layout units, which are fixed -- so the type stayed the
+ * same size as the map shrank, and by the time the window was narrow the
+ * names had outgrown their tiles and were being clipped mid-word. This
+ * is a ratio instead, and the stylesheet multiplies it by `cqw`, so the
+ * label is always the same fraction of the box it sits in and scales
+ * with it continuously.
+ *
+ * Height is converted into width units before the comparison, because
+ * `cqw` is the only container unit in play: a tile's rendered height is
+ * its share of `MAP_H` times the map's height, and the map's height is
+ * its width times the aspect ratio. */
 function labelScale(rect: { width: number; height: number }): number {
-  const short = Math.min(rect.width, rect.height);
-  return Math.max(0.5, Math.min(1.6, short / 26));
+  const wide = rect.width / MAP_W;
+  const tall = (rect.height / MAP_H) * (MAP_H / MAP_W);
+  return Math.min(wide, tall);
 }
 
 /** The sector breakdown, after the reference: a table of sectors by
@@ -82,7 +94,7 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
   if (sectors.length === 0) return null;
 
   return (
-    <section className="itx-sectors" aria-label="Sector breakdown">
+    <section className="itx-sectors" id="itx-board-sectors" aria-label="Sector breakdown">
       <div className="itx-board-labels">
         <span className="itx-board-label">sectors</span>
       </div>
