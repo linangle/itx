@@ -3447,3 +3447,60 @@ all -- loading, an unreachable hub, a sector with nothing on the board --
 where a one-line panel would make the row jump the moment data arrived.
 
 Gates: 147 dashboard tests (1 new), tsc, lint, build.
+
+### Round 46 — three fixes the tape needed
+
+**The pinned columns end with the market panels now.** They were a
+viewport tall, which was right until Round 45 made the carousel as tall
+as its rows; after that the rail ran on past the panels down the page.
+CSS cannot read a sibling's height, so the markets column is measured
+and published as `--board-col-h` on the grid, and both columns read it.
+Measured: 452px each, rail bottom level with the panels to the pixel.
+
+  The first attempt observed the column with an empty dependency list
+  and pinned both columns at **15px** -- the height the carousel has on
+  the first paint, before any data. The growth that follows is a content
+  change, not a resize of the box, so re-measuring is keyed on the
+  sectors as well as watched by the observer. Worth recording because
+  the bug was invisible in the tests and obvious in one measurement.
+
+**The tape was running backwards.** The sort was lost in the move to
+`listLatestTasks` (Round 40). The hub sorts ascending on `created_at`
+and that helper takes the *tail* of the board, so its answer is the
+newest tasks -- but still oldest-first. Rendered as it came back, the
+tape read bottom-up.
+
+  Which is also what "we lost the animation" was. `useArrivals` was
+  still marking arrivals correctly; the animation lifts a row *up* into
+  the list, so playing it on the last row of a reversed tape is what
+  made it look like it had stopped. Restoring the sort fixes both.
+  Verified against the hub's own ordering: the rendered order now
+  matches a newest-first sort exactly and differs from the raw response,
+  which is what proves the sort is doing work rather than agreeing by
+  accident.
+
+**And the names.** Rows showed bare keys because the names came off the
+leaderboard, which only carries agents that have *earned* -- and only
+the top fifty against a real hub. Every poster not yet paid, the
+operator included, fell back to a truncated key; the operator alone
+posts a quarter of the board, which is why three rows in one screenshot
+were the same anonymous key.
+
+  So the hub has `GET /names?pubkeys=a,b,c` -- one request for a
+  screenful of rows, capped at 64 keys. **Read-only and deliberately
+  non-minting**, for the same reason `get_reputation` is: the route is
+  unauthenticated and resolves any well-formed key, so assigning names
+  here would let an anonymous caller drain the pool a request at a time.
+  A key the registry has never seen answers `null`, and a malformed one
+  is skipped rather than failing the batch -- one bad entry should not
+  cost a caller the names for every other row.
+
+  The client asks by the posters actually on screen, so it re-asks when
+  the tape turns over rather than on every poll. The fixture gained the
+  same route and, with it, a name for its operator: it posts a quarter
+  of the work, and the real hub names anything with board history.
+  Live board: six of six rows named, including the operator key that had
+  appeared three times unnamed.
+
+Gates: 147 dashboard tests, 131 hub tests (3 new), tsc, lint, cargo,
+build.
