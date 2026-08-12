@@ -1686,20 +1686,60 @@ pub async fn get_reputation(
     Ok(Json(dto))
 }
 
-/// Lists the top 50 agents by lifetime earnings, alongside each one's
-/// *current* on-chain balance (`net_worth`) -- a separate, live figure,
-/// not derivable from anything already stored in `board`. Balances are
-/// fetched from the node concurrently, one connection per pubkey
-/// (`NodeClient` is deliberately cheap to clone and reconnect with, see
-/// its own doc comment) rather than sequentially, so this doesn't take
-/// 50x as long as a single lookup. A pubkey whose lookup fails just gets
-/// `net_worth: null` in the response instead of failing the whole
-/// request -- the same "don't let one flaky call take down an unrelated
-/// read" posture `try_settle_verified_task` already takes with the node.
-pub async fn leaderboard(State(state): State<Arc<AppState>>) -> Json<Vec<LeaderboardEntryDto>> {
-    let entries = {
+/// How many agents one leaderboard request returns by default, and the
+/// most it will return however large a `limit` is asked for. Held at the
+/// same fifty the route served before it took a page, since that is what
+/// the balance fan-out below is sized for: a page is one node lookup per
+/// agent, and the ceiling is what stops a single request opening an
+/// unbounded number of them.
+const DEFAULT_LEADERBOARD_PAGE_SIZE: usize = 50;
+const MAX_LEADERBOARD_PAGE_SIZE: usize = 50;
+
+#[derive(Deserialize)]
+pub struct LeaderboardQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+/// A page of agents by lifetime earnings, alongside each one's *current*
+/// on-chain balance (`net_worth`) -- a separate, live figure, not
+/// derivable from anything already stored in `board`.
+///
+/// Paged, where this used to serve a flat top fifty and nothing else.
+/// Fifty is the whole field on a small board and a rounding error on a
+/// real one, and a leaderboard that silently stops at fiftieth place is
+/// answering a different question than the one being asked of it. The
+/// full count rides in `X-Total-Count`, the same header `list_tasks`
+/// uses, so a caller can size a pager without walking the pages.
+///
+/// Balances are fetched from the node concurrently, one connection per
+/// pubkey (`NodeClient` is deliberately cheap to clone and reconnect
+/// with, see its own doc comment) rather than sequentially, so this
+/// doesn't take 50x as long as a single lookup. A pubkey whose lookup
+/// fails just gets `net_worth: null` in the response instead of failing
+/// the whole request -- the same "don't let one flaky call take down an
+/// unrelated read" posture `try_settle_verified_task` already takes with
+/// the node.
+pub async fn leaderboard(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LeaderboardQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LEADERBOARD_PAGE_SIZE)
+        .min(MAX_LEADERBOARD_PAGE_SIZE);
+    let offset = query.offset.unwrap_or(0);
+
+    let (total, entries) = {
         let board = state.board.read().await;
-        board.leaderboard(50)
+        // The whole ranking, then the slice asked for. Ranking is what
+        // makes a leaderboard a leaderboard, so it cannot be done per
+        // page -- and the sort is over the reputation map the board
+        // already holds in memory, which is the same work the flat
+        // top-fifty did.
+        let ranked = board.leaderboard(usize::MAX);
+        let total = ranked.len();
+        (total, ranked.into_iter().skip(offset).take(limit).collect::<Vec<_>>())
     };
 
     let mut lookups = tokio::task::JoinSet::new();
@@ -1728,18 +1768,18 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>) -> Json<Vec<Leaderb
         .ensure_named(entries.iter().map(|(pubkey, _)| pubkey.clone()))
         .await;
 
-    Json(
-        entries
-            .into_iter()
-            .map(|(pubkey, reputation)| {
-                let pubkey_hex = pubkey.to_string();
-                let mut reputation = ReputationDto::from(reputation);
-                reputation.net_worth = net_worths.get(&pubkey_hex).copied();
-                reputation.name = names.get(&pubkey_hex).cloned();
-                LeaderboardEntryDto { pubkey: pubkey_hex, reputation }
-            })
-            .collect(),
-    )
+    let page: Vec<LeaderboardEntryDto> = entries
+        .into_iter()
+        .map(|(pubkey, reputation)| {
+            let pubkey_hex = pubkey.to_string();
+            let mut reputation = ReputationDto::from(reputation);
+            reputation.net_worth = net_worths.get(&pubkey_hex).copied();
+            reputation.name = names.get(&pubkey_hex).cloned();
+            LeaderboardEntryDto { pubkey: pubkey_hex, reputation }
+        })
+        .collect();
+
+    ([("x-total-count", total.to_string())], Json(page)).into_response()
 }
 
 /// How many pubkeys one `names` request may ask about. Sized for a
