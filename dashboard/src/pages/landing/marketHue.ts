@@ -20,15 +20,11 @@ export const CYCLE = 2 * (HOLD + SWEEP);
 /** Width of the travelling colour front, as a fraction of the width. */
 const EDGE = 0.35;
 
-/** `alpha` is for callers that need the mix to vary in strength as well
- * as in hue across one gradient -- the market line's bloom bakes its
- * wave into the stops this way. Opaque by default, so every existing
- * caller keeps the `rgb()` it had. */
-export function mixColor(m: number, alpha = 1): string {
+export function mixColor(m: number): string {
   const r = Math.round(GREEN[0] + (RED[0] - GREEN[0]) * m);
   const g = Math.round(GREEN[1] + (RED[1] - GREEN[1]) * m);
   const b = Math.round(GREEN[2] + (RED[2] - GREEN[2]) * m);
-  return alpha >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 function smoothstep(lo: number, hi: number, x: number): number {

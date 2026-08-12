@@ -93,7 +93,7 @@ body.itx-landing-body[data-theme="light"] {
    * 24px, not the 56 an earlier round widened it to for the bloom's
    * falloff: that floated the rule a whole strip-height clear of the
    * box. The falloff stops are fractions of the band, so they follow it
-   * and the glow still reads as a wave, just over a shorter run. */
+   * and the glow keeps its shape over a shorter run. */
   --ld-chart-base: 24px;
 
   /* Heights of the two sticky bar rows. Declared rather than measured

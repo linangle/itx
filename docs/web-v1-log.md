@@ -4121,3 +4121,34 @@ Verified on the live board and the task list: all three pagers report
 one hover rule each — `scale(1.1)` with the colour at full.
 
 Gates: 188 dashboard tests, tsc, lint.
+
+### Round 43 — the bloom goes back to a plain pulse
+
+Round 38's wave is out. The mirror side of the pattern is a uniform
+counter-coloured band again: densest at the rule, fading down, brighten-
+ing and dimming as one piece on a 3.4 s clock unrelated to the wash's
+13 s, so the two drift in and out of phase rather than blinking
+together. Deliberately featureless along its width -- it sits under the
+chart, and anything drawn into it competes with the chart.
+
+Out with it went `waveHeights`, `waveAt`, `bloomGradient`, the five wave
+constants, and the 48-stop gradient; the bloom is `gradientFor(t,
+invert)` again, at eight stops like the area above it. Net -68 lines.
+`mixColor`'s optional `alpha` argument went too -- it existed only so
+the wave could bake strength into its stops, and a shared module should
+not keep a branch nothing takes.
+
+What stayed, because it is not the wave: the 5px dash, the 24px band,
+and Round 42's overlap -- the bloom still runs to the canvas bottom and
+behind the strip's top third. Its falloff stops are now each multiplied
+by the pulse, so the band breathes over its whole depth instead of only
+at its top edge; the shape is unchanged, which is what keeps 0.38 of
+full strength at the strip's edge.
+
+`PULSE_MAX` is 0.85 rather than Round 37's 0.68, because the falloff
+that multiplies it is the gentler Round 42 curve rather than the
+original steep one, and the overlap needs the covered stretch lit.
+
+Gates: 188 tests, tsc and lint clean on the touched files. Measured the
+band flat at 40% alpha across eight positions from x=2% to x=98%, which
+is the wave being gone; checked in both themes.
