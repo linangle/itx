@@ -4541,3 +4541,73 @@ panel's bottom stays 32px above the footer's top. The stacked layout
 under 1080px still un-pins correctly.
 
 Gates: 235 dashboard tests (2 new), tsc, lint, build.
+
+### Round 62 — the rail in Safari, and one line for every jump to land on
+
+Both of Round 61's fixes were half-fixes. The owner is reading this in
+**Safari**, which is the piece that was missing.
+
+**The rail could still reach the footer, and now it cannot in any
+engine.** Round 61 moved the sticky off the grid item and onto a box
+inside it, which was right but insufficient, because the box's *height*
+still depended on `min-height: min-content` over a flex column — one of
+the places engines genuinely disagree. When that resolves short, the box
+is left shorter than the panels in it, and panels do not clip: the
+trends panel simply draws on past the bottom of the rail and over the
+footer. That is exactly the reported picture, and it is invisible in
+Chrome, where min-content resolves to the 636px the panels actually
+need.
+
+  So the height is stated in terms nothing has to agree about.
+  `height: auto` — the box is as tall as what is in it — with
+  `--board-col-h` demoted to `min-height`, which is the only job it ever
+  had: stretching the rail to finish level with a markets column taller
+  than the rail's own panels. No intrinsic-sizing keyword is involved
+  any more.
+
+  Two more guards, since the failure is one I cannot watch happen. The
+  columns take `height: 100%` as well as `align-self: stretch`, because
+  a sticky child is only bounded by a parent whose height the engine
+  treats as definite, and a height from `stretch` alone is the case
+  Safari has historically got wrong. And the pinned box is now a scroll
+  container (`overflow-y: auto`, bar hidden): whatever its height
+  resolves to, nothing inside it can paint outside it. In Chrome the box
+  is exactly its content height, so the bar never appears — measured
+  spill is 0.
+
+**Every jump link now lands on the same line.** The nav's entries parked
+at three different heights: `latest` and `predictions` a label lower
+than `breakdown`. The cause was Round 61's own fix — anchoring each
+section rather than its panel — because the sections' labels are not all
+the same height, so aligning their tops misaligned everything under
+them.
+
+  The anchors go back onto the panels, with one shared offset
+  (`--anchor-top`) that is where the leaderboard panel's own top edge
+  sits: the pinned box's top, plus the rail's two-line label above it.
+  Both problems fall out of that one number. Every section's panel lands
+  on the leaderboard panel's line, which is what the owner asked for;
+  and because the offset is a whole label taller than the masthead, each
+  section's own label sits in that space rather than behind the bar,
+  which is what Round 61 was fixing.
+
+  The rail label's height is derived from the type scale rather than
+  measured — a `--fs-label` line at the 1.25 leading `.itx-board-label`
+  sets, the `--fs-micro` sub-line under it, and the label's bottom gap.
+  It is the one approximation, and it is worth it: a jump landing a
+  pixel off reads as level, and the alternative is measuring a box in JS
+  to write a number into a stylesheet.
+
+Verified live at 1440×860: `latest` and `breakdown` land their panels
+exactly 0px from the leaderboard panel's top, with their labels 31px
+clear of the masthead. `predictions` lands 111px short, and will keep
+doing so: it is the last section on the page, so the document runs out
+of scroll before it can reach the line. The alternative is padding the
+board with empty space purely so a jump can overshoot, which is a worse
+trade than a last section that stops at the bottom.
+
+Also re-checked: the rail's geometry is unchanged in Chrome (pinned box
+636px, spill 0, six trend rows, 32px clear of the footer at every scroll
+position), and the stacked layout under 1080px still un-pins.
+
+Gates: 235 dashboard tests, tsc, lint, build.

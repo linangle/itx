@@ -597,11 +597,44 @@ body.itx-landing-body[data-theme="light"] {
    which is why the nav points at the heading's box rather than the row
    of panels. Same offset the board itself carries, minus the strip's
    pull-up, which only applies at the very top of the board. */
-#itx-board-overview,
+#itx-board-overview {
+  scroll-margin-top: calc(var(--ld-bar-h) + var(--sp-7));
+}
+
+/* The three sections below the overview park their *panels* on the same
+   line as the leaderboard's, so the board looks the same however you
+   arrived at it. They used to land at three different heights, because
+   the anchor was on each section and the sections' labels are not all
+   the same height.
+ *
+ * So the anchors sit on the panels, and the offset is where the
+ * leaderboard panel's own top edge is: the pinned box's top
+ * (`--ld-bar-h` + `--sp-6`, matching `.itx-board-pin`), plus the rail's
+ * two-line label above it.
+ *
+ * That label's height is derived from the type scale rather than
+ * measured -- a line of `--fs-label` at the 1.25 leading
+ * `.itx-board-label` sets, the `--fs-micro` sub-line under it at its
+ * own 2px offset and normal leading, and the label's bottom gap. It is
+ * the one approximation here, and it is worth it: a jump that lands a
+ * pixel or two off reads as level, and the alternative is measuring a
+ * box in JS to write a number into a stylesheet.
+ *
+ * It also keeps each section's own label clear of the masthead, which
+ * is what the anchor-on-the-panel arrangement got wrong the first time:
+ * this offset is a whole label taller than the bar, so the label sits
+ * in that space rather than behind it. */
+.itx-board {
+  --rail-label-h: calc(
+    var(--fs-label) * 1.25 + var(--fs-micro) * 1.2 + 2px + var(--gap-label)
+  );
+  --anchor-top: calc(var(--ld-bar-h) + var(--sp-6) + var(--rail-label-h));
+}
+
 #itx-board-predictions,
 #itx-board-latest,
 #itx-board-sectors {
-  scroll-margin-top: calc(var(--ld-bar-h) + var(--sp-7));
+  scroll-margin-top: var(--anchor-top);
 }
 
 /* The grid is a separate layer rather than a background on .itx-board
@@ -948,6 +981,14 @@ body.itx-landing-body[data-theme="light"] {
 .itx-board-nav,
 .itx-board-rail {
   align-self: stretch;
+  /* Explicit, not just stretched. A sticky child is only bounded by a
+     parent whose height the engine treats as definite, and a height
+     that comes from `stretch` alone is where engines differ -- the
+     trends panel was reported running past the footer on a browser
+     that is not the one this was checked in. Against a grid area the
+     percentage is definite, so this says the same thing twice in the
+     way every engine agrees on. */
+  height: 100%;
 }
 
 /* What actually pins: the panels, held just under the masthead and
@@ -961,29 +1002,46 @@ body.itx-landing-body[data-theme="light"] {
 .itx-board-pin {
   position: sticky;
   top: calc(var(--ld-bar-h) + var(--sp-6));
-  /* As tall as the market panels beside them, so all three columns
-     finish on the same line -- `--board-col-h` is the markets column's
-     measured height, published by `Board`. The fallback is the viewport
-     rule these carried before, for the frame before the first
-     measurement and for anything that cannot run a ResizeObserver.
-     Capped at the viewport regardless: a pinned column taller than the
-     screen has parts that can never be scrolled to. */
-  height: var(--board-col-h, calc(100vh - var(--ld-bar-h) - var(--sp-9)));
-  max-height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
-  /* ...but never shorter than the panels inside it actually need.
-     `height` here is a *request*, taken from the middle column so the
-     three finish level; it was being honoured even when the two panels
-     plus their labels could not fit in it, and the rail does not clip --
-     so the trends panel simply drew on past the bottom of its own
-     column and, on a short middle column, over the footer.
+  /* **As tall as its contents, and at least as tall as the markets
+     column beside it.** Stated in that order deliberately.
+​
+     It used to be the other way round -- a definite `height` of
+     `--board-col-h` with `min-height: min-content` underneath it to
+     stop the panels being squeezed out of the box. That works here and
+     is what Safari was reported breaking on: min-content sizing of a
+     flex column is one of the places engines genuinely differ, and when
+     it resolves short the box is left shorter than its panels, which do
+     not clip -- the trends panel simply draws on past the bottom of the
+     rail and over the footer.
 
-     `min-height` beats `max-height` in the cascade, so on a genuinely
-     cramped board the rail wins the argument and grows. A rail slightly
-     taller than the viewport scrolls with the page, which is a smaller
-     problem than a panel painted over the footer. */
-  min-height: min-content;
+     `height: auto` needs no such agreement: the box is as tall as what
+     is in it, in every engine, with no intrinsic-sizing keyword
+     involved. `--board-col-h` moves to the floor, which is the only job
+     it was ever doing -- stretching the rail to finish level with a
+     markets column taller than the rail's own panels. The fallback is
+     the viewport rule this carried before, for the frame before the
+     first measurement and for anything that cannot run a
+     ResizeObserver. */
+  height: auto;
+  min-height: var(--board-col-h, calc(100vh - var(--ld-bar-h) - var(--sp-9)));
+  /* Never taller than the screen: a pinned column that is has parts
+     which can never be scrolled to. `max-height` loses to `min-height`
+     in the cascade, so on a board cramped enough for the two to
+     disagree the floor still wins and the rail scrolls itself. */
+  max-height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
   display: flex;
   flex-direction: column;
+  /* And nothing inside may paint outside this box, whatever the height
+     resolves to. This is the belt to the braces above: a scroll
+     container cannot spill its contents over the footer the way a plain
+     block does. In practice the bar never appears, because the box is
+     already the height of its contents. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.itx-board-pin::-webkit-scrollbar {
+  display: none;
 }
 
 /* The column that actually scrolls: the carousel at a screen's height,

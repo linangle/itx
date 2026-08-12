@@ -36,11 +36,7 @@ export default function PredictionMarket() {
   const [trackRef, carousel] = useCarousel<HTMLDivElement>(SAMPLES.length);
 
   return (
-    <section
-      className="itx-pm"
-      id="itx-board-predictions"
-      aria-label="Prediction market"
-    >
+    <section className="itx-pm" aria-label="Prediction market">
       {/* The same label row every board section wears. The arrow is the
           section's own door: these cards are samples, and the full
           market -- however empty today -- is a page of its own.
@@ -92,7 +88,10 @@ export default function PredictionMarket() {
         </div>
       </div>
 
-      <div className="itx-pm-row">
+      {/* The jump link lands here, on the row rather than the section,
+          so this parks level with the leaderboard panel like every
+          other section's panel does -- see `--anchor-top`. */}
+      <div className="itx-pm-row" id="itx-board-predictions">
         {/* Which end the row is against is handed to CSS as a pair of
             flags, exactly as the market carousel does it: whether an
             edge is fading, and how, is the stylesheet's business. */}

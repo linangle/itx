@@ -177,9 +177,17 @@ describe("Board", () => {
     // than eyeballed because three of these are anchors the nav jumps
     // to -- a rail that lists them in a different order than the page
     // holds them is a map of somewhere else.
-    const sections = [...container.querySelectorAll(".itx-board-mid > *")].map((e) => e.id);
-    expect(sections).toEqual([
-      "",
+    //
+    // Read through the anchors each section carries rather than the
+    // sections themselves: the ids live on the *panels* now, so that a
+    // jump parks every section's panel on the same line (see
+    // `--anchor-top`), and the order of those is the order of the
+    // sections holding them.
+    const anchors = [...container.querySelectorAll(".itx-board-mid [id^='itx-board-']")].map(
+      (e) => e.id,
+    );
+    expect(anchors).toEqual([
+      "itx-board-markets",
       "itx-board-latest",
       "itx-board-sectors",
       "itx-board-predictions",
@@ -199,15 +207,22 @@ describe("Board", () => {
     ]);
   });
 
-  it("anchors the tape at its label, not at the panel under it", () => {
-    // The id was on the panel, so the nav's "latest" link parked that
-    // panel's top edge under the sticky masthead and left the word
-    // "latest" behind the bar. A jump link has to land on the label as
-    // well as on the thing it labels.
+  it("anchors each section on its panel, so the jumps land level", () => {
+    // All three sit on a panel rather than on the section around it.
+    // That is what lets one offset park every jump on the same line as
+    // the leaderboard panel: the sections' labels are not all the same
+    // height, so anchoring on the sections landed each at a different
+    // place -- which is what the owner saw. The offset itself
+    // (`--anchor-top`) is a label taller than the masthead, which is
+    // what keeps each label clear of the bar; jsdom applies no
+    // stylesheet, so that part is verified in the browser.
     const { container } = renderBoard(capabilities);
-    const anchor = container.querySelector("#itx-board-latest")!;
-    expect(anchor.querySelector(".itx-board-label")?.textContent).toBe("latest");
-    expect(anchor.querySelector(".itx-board-panel-latest")).toBeInTheDocument();
+    for (const id of ["itx-board-latest", "itx-board-sectors", "itx-board-predictions"]) {
+      const anchor = container.querySelector(`#${id}`);
+      expect(anchor).toBeInTheDocument();
+      expect(anchor).not.toHaveClass("itx-pm");
+    }
+    expect(container.querySelector("#itx-board-latest")).toHaveClass("itx-board-panel-latest");
   });
 
   it("keeps the samples' odds pills quiet: spans, not trade buttons", () => {

@@ -94,12 +94,18 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
   if (sectors.length === 0) return null;
 
   return (
-    <section className="itx-sectors" id="itx-board-sectors" aria-label="Sector breakdown">
+    <section className="itx-sectors" aria-label="Sector breakdown">
       <div className="itx-board-labels">
         <span className="itx-board-label">sectors</span>
       </div>
 
-      <div className="itx-sectors-panel itx-board-panel">
+      {/* The jump link's target is the panel, not the section: every
+          section on the board parks its *panel* level with the
+          leaderboard's, so the page looks the same however you arrived
+          at it. The label above stays clear of the masthead because the
+          offset that does the parking is a label's height taller than
+          the bar -- see `--anchor-top`. */}
+      <div className="itx-sectors-panel itx-board-panel" id="itx-board-sectors">
         <div className="itx-sectors-table">
           <p className="itx-sectors-head">select a sector for a visual breakdown</p>
           <table className="itx-board-table">

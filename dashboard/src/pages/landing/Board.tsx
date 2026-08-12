@@ -489,17 +489,18 @@ export default function Board({
           )}
           </div>
 
-          {/* The anchor is on the section, not on the panel inside it.
-            * It was on the panel, and the nav's "latest" link put that
-            * panel's top edge just under the masthead -- which left the
-            * word "latest" above it, behind the bar. A jump link has to
-            * land on the label as well as the thing it labels. */}
-          <section id="itx-board-latest" aria-label="Latest">
+          <section aria-label="Latest">
           <div className="itx-board-labels itx-board-labels-latest">
             <span className="itx-board-label">latest</span>
             <span className="itx-board-live-dot" aria-label="live" title="live" />
           </div>
-          <div className="itx-board-panel itx-board-panel-latest">
+          {/* The anchor sits on the panel, with an offset a label taller
+            * than the masthead (`--anchor-top`), so every section parks
+            * its panel level with the leaderboard's and its own label
+            * still clears the bar. It was briefly on the section, which
+            * fixed the clipping but left each section landing at a
+            * different height depending on how tall its label was. */}
+          <div className="itx-board-panel itx-board-panel-latest" id="itx-board-latest">
             <div className="itx-board-fit">
               <ul className="itx-board-updates">
                 {updates.length === 0 && !latest.loading && (
