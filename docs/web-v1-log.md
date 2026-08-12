@@ -3704,3 +3704,43 @@ standings render 50 rows in a 222px box over 1724px of content, ranked
 1, 2, 3 against 190.6703, 172.5894, 152.2632.
 
 Gates: 157 dashboard tests (3 new), tsc, lint, build.
+
+### Round 51 — two rules that moved without being touched
+
+Both bugs were rules that had been right and were quietly made wrong by
+the markup changing underneath them. Neither was edited.
+
+**The standings' name ran into its figure.** `.itx-board-panel-leaders
+td:first-child a` clipped the agent name -- correct until Round 50 put
+the rank column in front of it, at which point `first-child` became the
+*rank* cell and the rule started clipping a two-digit number that never
+needed it. The name, left unclipped in a fixed-layout table, ran
+straight into the earnings beside it.
+
+  It targets the cell by name now (`.itx-board-cell-agent`) rather than
+  by position, and the name is wrapped in a span: the link is a flex
+  row, and `text-overflow` on a flex container has nothing to act on.
+  The rank narrowed from 30px to 22 with a smaller gutter, which starts
+  the numbering nearer the panel edge and hands the difference to the
+  name.
+
+**And the sector list laid out beside its own heading.** Every nav entry
+is `.itx-board-navlist li { display: flex; height: var(--row-h) }` --
+right for an item that is one link, wrong for the one that now has a
+list after it. The list became a second flex item, sat to the right of
+"market overview", squeezed the label to "marke..." and overflowed the
+panel, since the row is only 34px tall.
+
+  The overview's item stacks instead, with the link keeping the row
+  rhythm on its own. The fix needed qualifying as `li.itx-board-navgroup`
+  rather than a bare class: `.itx-board-navlist li` is a class *and* an
+  element, so it out-specifies a lone class and the first attempt
+  changed nothing. Measured before and after, which is the only reason
+  that was caught rather than assumed fixed.
+
+Live board after: the sublist sits below the link and inside the panel,
+every sector indented to one line at 30px, the overview label no longer
+truncated; the standings show ranks flush left, names ellipsizing, and
+no overlap between a name and its figure.
+
+Gates: 157 dashboard tests, tsc, lint, build.
