@@ -353,6 +353,11 @@ describe("from the hub's board summary", () => {
 
   function summary(capabilities: CapabilitySummaryDto[], windowMs = 7 * 24 * 3_600_000) {
     return {
+      // The board's age. Nothing in `series.ts` reads it -- it exists
+      // for the chart's range tabs (`chartRanges`) -- but the DTO is the
+      // hub's shape and a fixture that omits a field is a fixture that
+      // stops catching the day something starts depending on it.
+      first_task_at: new Date(Date.now() - windowMs).toISOString(),
       window_ms: windowMs,
       buckets: BUCKETS,
       total_tasks: 10,

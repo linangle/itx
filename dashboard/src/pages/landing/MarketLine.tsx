@@ -68,7 +68,7 @@ const BASE_DASH = [5, 5];
  * because the falloff below multiplies it -- by the strip's top edge
  * this is already down to 0.38 of itself, and that is the stretch the
  * overlap depends on being lit. */
-const PULSE_PERIOD = 3.4;
+const PULSE_PERIOD = 5.5;
 const PULSE_MIN = 0.42;
 const PULSE_MAX = 0.85;
 

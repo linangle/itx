@@ -57,6 +57,11 @@ export function formatItxExact(baseUnits: number): string {
  * scale: 1.2K, 3.4M. Falls back to the exact figure below 1000. */
 export function formatCompactItx(baseUnits: number): string {
   const itx = baseUnits / UNITS_PER_ITX;
+  // Plain "0", not "0.00". Two decimals on a zero are two decimals of
+  // nothing, and the place this shows most is a chart's baseline label,
+  // where the axis reads `4K 3K 2K 1K 0.00` and the odd one out is the
+  // only one that isn't a quantity.
+  if (itx === 0) return "0";
   if (Math.abs(itx) >= 1000) {
     return new Intl.NumberFormat("en-US", {
       notation: "compact",

@@ -33,3 +33,23 @@ if (!window.matchMedia) {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// Same kind of gap: jsdom does no layout, so it ships no
+// `ResizeObserver` -- and `useElementWidth`, which the market chart uses
+// to draw at real pixel coordinates, constructs one on mount. Without
+// this every test that renders the chart throws before asserting
+// anything.
+//
+// It deliberately never fires. There is no layout to observe, so a stub
+// that invoked its callback would be reporting a measurement jsdom never
+// made; leaving it silent keeps the measured width at 0, which is the
+// "not ready to draw" state the chart already handles. Anything actually
+// testing chart *geometry* belongs in `chartAxis.test.ts`, against the
+// arithmetic, rather than against a fake ruler.
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}

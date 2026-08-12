@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import Board from "./Board";
 import * as hub from "../../lib/hub";
@@ -37,6 +37,7 @@ function market(capability: string, openBounty: number): CapabilitySummaryDto {
 function summary(capabilities: CapabilitySummaryDto[]): AsyncState<BoardSummaryDto> {
   return {
     data: {
+      first_task_at: new Date(Date.now() - 86_400_000).toISOString(),
       window_ms: 7 * 24 * 60 * 60 * 1000,
       buckets: BUCKETS,
       total_tasks: 100,
@@ -61,6 +62,15 @@ function noTasks(): AsyncState<{ items: TaskDto[] }> {
   }>;
 }
 
+/** Reports the router's current query string into the DOM.
+ *
+ * `MemoryRouter` keeps history in memory and never touches
+ * `window.location`, so a test asserting that the board wrote `?market=`
+ * has to read it back from the router rather than from the window. */
+function LocationProbe() {
+  return <span data-testid="search">{useLocation().search}</span>;
+}
+
 function renderBoard(
   capabilities: CapabilitySummaryDto[],
   latest: AsyncState<{ items: TaskDto[] }> = noTasks(),
@@ -68,6 +78,7 @@ function renderBoard(
   const view = render(
     <MemoryRouter>
       <Board summary={summary(capabilities)} latest={latest} />
+      <LocationProbe />
     </MemoryRouter>,
   );
   // A market name is on the board twice on purpose -- once as a row in
@@ -97,10 +108,10 @@ describe("Board", () => {
     // through the panel rather than the document, so a stray "python"
     // elsewhere on the board can't satisfy this.
     const coding = (await screen.findAllByRole("table")).find((t) =>
-      within(t).queryByRole("link", { name: "python" }),
+      within(t).queryByRole("button", { name: "python" }),
     );
     expect(coding).toBeDefined();
-    expect(within(coding!).getByRole("link", { name: "web-dev" })).toBeInTheDocument();
+    expect(within(coding!).getByRole("button", { name: "web-dev" })).toBeInTheDocument();
     // Biggest market first, as the carousel orders sectors.
     const rows = within(coding!).getAllByRole("row").slice(1);
     expect(rows.map((r) => r.textContent?.match(/^[a-z-]+/)?.[0])).toEqual(["python", "web-dev"]);
@@ -126,12 +137,35 @@ describe("Board", () => {
     expect(screen.queryByRole("columnheader", { name: "agent" })).not.toBeInTheDocument();
   });
 
-  it("links a market row to that market's tasks", async () => {
+  it("opens a market's chart in place, rather than navigating to its tasks", async () => {
+    const user = userEvent.setup();
     const { carousel } = renderBoard(capabilities);
-    expect(await carousel.findByRole("link", { name: "python" })).toHaveAttribute(
-      "href",
-      "/tasks?capability=python",
-    );
+
+    await user.click(await carousel.findByRole("button", { name: "python" }));
+
+    // The chart takes the middle column and the carousel goes with it...
+    expect(await screen.findByRole("heading", { name: "python" })).toBeInTheDocument();
+    expect(document.querySelector("#itx-board-markets")).toBeNull();
+    // ...while the rail either side stays exactly where it was. That is
+    // the whole point of doing this in place rather than as a route.
+    expect(screen.getByRole("navigation", { name: /board sections/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/search agents/i)).toBeInTheDocument();
+  });
+
+  it("puts the open market in the URL, so a chart is a link", async () => {
+    const user = userEvent.setup();
+    const { carousel } = renderBoard(capabilities);
+    await user.click(await carousel.findByRole("button", { name: "python" }));
+    expect(screen.getByTestId("search").textContent).toContain("market=python");
+  });
+
+  it("goes back to the carousel from the chart", async () => {
+    const user = userEvent.setup();
+    const { carousel } = renderBoard(capabilities);
+    await user.click(await carousel.findByRole("button", { name: "python" }));
+
+    await user.click(await screen.findByRole("button", { name: /market overview/i }));
+    expect(document.querySelector("#itx-board-markets")).not.toBeNull();
   });
 
   it("lists sectors under the overview, ranked by the money in them", async () => {
@@ -179,7 +213,7 @@ describe("Board", () => {
     const nav = screen.getByRole("navigation", { name: /board sections/i });
     await user.click(within(nav).getByRole("link", { name: "market overview" }));
     expect(within(nav).getByRole("button", { name: "other" })).toBeInTheDocument();
-    expect(await carousel.findByRole("link", { name: "haruspicy" })).toBeInTheDocument();
+    expect(await carousel.findByRole("button", { name: "haruspicy" })).toBeInTheDocument();
   });
 
   /** A tape row's worth of task. Every field the row reads is set --

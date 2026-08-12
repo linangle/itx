@@ -1,10 +1,11 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import ProfileIcon from "../../components/ProfileIcon";
 import SearchIcon from "../../components/SearchIcon";
 import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
+import MarketChart from "./MarketChart";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
@@ -294,6 +295,45 @@ export default function Board({
   // rows it has room for, and the table renders that many.
   const [trendFit, trendRows] = useFitRows();
 
+  /** Which market's chart is open, and at what range — in the URL, so a
+   * chart is a link someone can send and a reload lands back on it.
+   *
+   * It is a *search param on this page*, not a route: opening a market
+   * must not unmount the board around it. The left nav and the
+   * leaderboard/trends rail stay exactly where they are; only the
+   * middle column's contents change. */
+  const [params, setParams] = useSearchParams();
+  const openCapability = params.get("market");
+
+  const openMarket = useCallback(
+    (capability: string) => {
+      const next = new URLSearchParams(params);
+      next.set("market", capability);
+      // A range carried over from the last market is meaningless for
+      // this one -- markets have different ages, so `5d` may not even be
+      // on offer here. Let the chart pick its own default.
+      next.delete("range");
+      setParams(next);
+    },
+    [params, setParams],
+  );
+
+  const closeMarket = useCallback(() => {
+    const next = new URLSearchParams(params);
+    next.delete("market");
+    next.delete("range");
+    setParams(next);
+  }, [params, setParams]);
+
+  const setRange = useCallback(
+    (key: string) => {
+      const next = new URLSearchParams(params);
+      next.set("range", key);
+      setParams(next);
+    },
+    [params, setParams],
+  );
+
   return (
     // The masthead's link home targets this, not the top of the
     // document -- see SiteBar. The hero is the pitch; this is the site.
@@ -317,6 +357,11 @@ export default function Board({
          * was easy to miss, and nothing tied it to the thing it moves.
          * Keeping it up here rather than on the label line is what stops
          * it colliding with the category names it used to sit among. */}
+        {/* The heading line belongs to the carousel -- its title names
+            what the carousel shows and its pager moves it -- so it goes
+            when the carousel does. The chart brings its own header, with
+            the back arrow where the pager was. */}
+        {!openCapability && (
         <div className="itx-board-head" id="itx-board-overview">
           <div className="itx-board-headline">
             <h2 className="itx-board-title">market overview</h2>
@@ -344,6 +389,7 @@ export default function Board({
             </div>
           </div>
         </div>
+        )}
 
         <div className="itx-board-cols" ref={colsRef}>
           <BoardNav
@@ -361,6 +407,14 @@ export default function Board({
             * it belongs in the one column that actually scrolls, and
             * within the same bounds as the markets above it. */}
           <div className="itx-board-mid">
+          {openCapability ? (
+            <MarketChart
+              capability={openCapability}
+              range={params.get("range")}
+              onRange={setRange}
+              onClose={closeMarket}
+            />
+          ) : (
           <div className="itx-board-markets" id="itx-board-markets" ref={marketsRef}>
             {/* Which end the row is against is handed to CSS as a pair
              * of flags: whether an edge is fading, and how, is the
@@ -393,6 +447,7 @@ export default function Board({
                     error={summary.error}
                     sort={sort}
                     onSort={setSort}
+                    onOpen={openMarket}
                   />
                 </div>
               ))}
@@ -409,6 +464,7 @@ export default function Board({
               <span />
             </div>
           </div>
+          )}
 
           <div className="itx-board-labels itx-board-labels-latest">
             <span className="itx-board-label">latest</span>
@@ -826,6 +882,7 @@ const SectorPanel = memo(function SectorPanel({
   sector,
   sort,
   onSort,
+  onOpen,
   windowLabel,
   loading,
   error,
@@ -834,6 +891,10 @@ const SectorPanel = memo(function SectorPanel({
   windowLabel: string;
   loading: boolean;
   error: Error | null;
+  /** Opens a market's chart. A stable callback from `Board`, so `memo`
+   * still holds -- an inline arrow here would make every panel re-render
+   * on every poll. */
+  onOpen: (capability: string) => void;
   /** Held by `Board` rather than per panel, so the carousel stays one
    * comparable board: sorting by change in one sector and by value in
    * the next would make two panels side by side mean different things.
@@ -896,18 +957,20 @@ const SectorPanel = memo(function SectorPanel({
             <tbody>
               {markets.slice(0, MAX_MARKET_ROWS).map((m) => (
                 <tr key={m.capability}>
-                  {/* Straight to that market's tasks. A market is a
-                      capability tag on the wire, and the task list
-                      already filters by exactly that. */}
+                  {/* Opens the market's chart in the middle column,
+                      rather than navigating to its task list. It was a
+                      `Link` to `/tasks?capability=`, which answered
+                      "what work is there" when the thing being clicked
+                      is a row in a table of *prices* -- the question a
+                      market row asks is what it has done, and the task
+                      list cannot answer that. The list is still one
+                      click away from the chart. */}
                   <td className="itx-board-cell-market">
                     {/* Titled because the cell clips: the longest tags
                         lose a character at the narrowest panel width. */}
-                    <Link
-                      to={`/tasks?capability=${encodeURIComponent(m.capability)}`}
-                      title={m.capability}
-                    >
+                    <button type="button" title={m.capability} onClick={() => onOpen(m.capability)}>
                       {marketLabel(m.capability)}
-                    </Link>
+                    </button>
                   </td>
                   <td className="itx-board-cell-spark">
                     <Sparkline

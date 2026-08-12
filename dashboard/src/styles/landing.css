@@ -1559,7 +1559,12 @@ body.itx-landing-body[data-theme="light"] {
    a constrained box, and constraining the cell would mean
    `table-layout: fixed` on every board table, including the two that
    size themselves fine today. */
-.itx-board-cell-market a {
+/* `a, button` because the same cell is a link in the trends rail and a
+   button in the market panels -- the rail navigates, the panel opens a
+   chart in place. Both look identical and should; what differs is what
+   they do, not what they are. */
+.itx-board-cell-market a,
+.itx-board-cell-market button {
   display: block;
   /* 18ch, not the 22 this started at: the panel carries a fourth column
      now (the quoted value), and at the narrowest carousel step the four
@@ -1624,7 +1629,8 @@ body.itx-landing-body[data-theme="light"] {
 }
 /* The cap belongs to the market panels, where the column is content-
    sized; here the column is already bounded by the table. */
-.itx-board-panel-trends .itx-board-cell-market a {
+.itx-board-panel-trends .itx-board-cell-market a,
+.itx-board-panel-trends .itx-board-cell-market button {
   max-width: none;
 }
 
@@ -2479,4 +2485,263 @@ a.itx-board-what:hover {
   .itx-sectors-panel {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ------------------------------------------------------------- market chart
+ *
+ * One market's history, opened in the middle column in place of the
+ * carousel. Not a route and not a modal: the board's nav and rail stay
+ * where they are, so this is sized and coloured as another panel on the
+ * board rather than as a surface of its own.
+ */
+
+/* The market cell's button has to be a button and look like the link
+   beside it in the rail -- the browser's own control chrome is the one
+   thing that would give it away. */
+.itx-board-cell-market button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--ld-blue);
+  text-align: left;
+  cursor: pointer;
+}
+
+.itx-board-cell-market button:hover {
+  text-decoration: underline;
+}
+
+.itx-chart-panel {
+  box-sizing: border-box;
+  border: 1px solid var(--bd-line);
+  border-radius: var(--r-panel);
+  background: var(--ld-dark);
+  padding: var(--sp-6) var(--pad-panel-x);
+  /* Matches the carousel it replaces, so the tape below does not jump up
+     the page when a market is opened and back down when it is closed. */
+  min-height: 452px;
+  display: flex;
+  flex-direction: column;
+}
+
+.itx-chart-head {
+  margin-bottom: var(--sp-5);
+}
+
+/* The back arrow sits where the carousel's pager was, and says where it
+   goes rather than just pointing: "back" alone would leave the reader to
+   remember what they came from. */
+.itx-chart-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+  cursor: pointer;
+  transition:
+    transform 130ms ease,
+    color 130ms ease;
+}
+
+.itx-chart-back:hover {
+  color: var(--ld-light);
+}
+
+/* The arrow scales, not the words: the whole control growing would shove
+   the header sideways. Same 1.1 the site's other arrows use. */
+.itx-chart-back svg {
+  font-size: 9px;
+  transition: transform 130ms ease;
+}
+
+.itx-chart-back:hover svg {
+  transform: scale(1.1);
+}
+
+.itx-chart-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-6);
+}
+
+.itx-chart-title h3 {
+  margin: 0;
+  font-size: var(--fs-title, 22px);
+  font-weight: 650;
+  letter-spacing: -0.3px;
+  color: var(--ld-light);
+}
+
+.itx-chart-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
+/* The figure block reads as one quote: value, then its change, then the
+   counts under both. Right-aligned so the numbers stack on one axis. */
+.itx-chart-figure {
+  text-align: right;
+  flex: none;
+}
+
+.itx-chart-value {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-light);
+}
+
+.itx-chart-change {
+  margin-left: var(--sp-4);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Range tabs. Quiet at rest and filled when active, like the pill nav
+   the terminal pages dropped -- a row of eight outlined buttons would
+   out-shout the chart they belong to. */
+.itx-chart-ranges {
+  display: flex;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-5);
+}
+
+.itx-chart-ranges button {
+  background: none;
+  border: 0;
+  border-radius: var(--r-field);
+  padding: var(--sp-2) var(--sp-5);
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+  cursor: pointer;
+}
+
+.itx-chart-ranges button:hover {
+  color: var(--ld-light);
+}
+
+.itx-chart-ranges button.is-active {
+  background: color-mix(in srgb, var(--bd-line) 40%, transparent);
+  color: var(--ld-light);
+}
+
+.itx-chart-plot {
+  flex: 1;
+  min-height: 0;
+}
+
+.itx-chart-empty {
+  padding: var(--sp-11) 0;
+  text-align: center;
+  color: var(--ld-sub);
+  font-size: var(--fs-meta);
+}
+
+/* --- the chart itself --- */
+
+.itx-chart {
+  display: block;
+  overflow: visible;
+}
+
+.itx-chart-grid {
+  stroke: color-mix(in srgb, var(--bd-line) 45%, transparent);
+  stroke-width: 1;
+}
+
+.itx-chart-line {
+  fill: none;
+  stroke: var(--ld-sub);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* Direction colours the line and its wash, and only those: the axes and
+   labels stay neutral, or a market that happened to be down would print
+   its whole chart in red. */
+.itx-chart-up .itx-chart-line {
+  stroke: var(--ld-green);
+}
+
+.itx-chart-down .itx-chart-line {
+  stroke: var(--ld-red);
+}
+
+.itx-chart-fill-top {
+  stop-color: currentColor;
+  stop-opacity: 0.22;
+}
+
+.itx-chart-fill-bottom {
+  stop-color: currentColor;
+  stop-opacity: 0;
+}
+
+.itx-chart-up {
+  color: var(--ld-green);
+}
+
+.itx-chart-down {
+  color: var(--ld-red);
+}
+
+.itx-chart-flat {
+  color: var(--ld-sub);
+}
+
+.itx-chart-ylabel,
+.itx-chart-xlabel {
+  fill: var(--ld-sub);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.itx-chart-ylabel {
+  text-anchor: start;
+}
+
+.itx-chart-bar {
+  fill: color-mix(in srgb, var(--bd-line) 70%, transparent);
+}
+
+.itx-chart-bar.is-active {
+  fill: var(--ld-sub);
+}
+
+.itx-chart-crosshair {
+  stroke: color-mix(in srgb, var(--ld-sub) 55%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.itx-chart-dot {
+  fill: currentColor;
+  stroke: var(--ld-dark);
+  stroke-width: 2;
+}
+
+/* The readout sits at the top-left of the plot and never moves. A
+   tooltip that follows the cursor covers the part of the line being
+   inspected, which at this size is the whole reason for hovering. */
+.itx-chart-readout {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.itx-chart-readout-value {
+  fill: var(--ld-light);
+}
+
+.itx-chart-readout-meta {
+  fill: var(--ld-sub);
 }

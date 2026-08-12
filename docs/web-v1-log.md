@@ -4211,3 +4211,76 @@ the row's wash clearing the clip by 4px, and the standings' bar 12px
 clear of the numbers.
 
 Gates: 188 dashboard tests, tsc, lint, build.
+
+### Round 58 — a market you can actually look at
+
+Clicking a market went to its task list, which answers "what work is
+there" when the thing being clicked is a row in a table of *prices*. The
+question a market row asks is what it has done, and the task list cannot
+answer that at all. Now it opens a chart.
+
+**In place, not as a route.** The board's left nav and its
+leaderboard/trends rail stay exactly where they are; only the middle
+column's contents change, the heading line going with the carousel it
+belongs to. Opening a market is a change of focus rather than a change
+of page. The state is still in the URL (`?market=&range=`), so a chart
+is a link someone can send and a reload lands back on it — what it does
+not do is unmount the board around it.
+
+**The hub grew the endpoint this needed**, which is the part worth
+recording: see `hub-requirements.md`, and the round's first commit. The
+short version is that `/board/summary`'s window is derived from the
+board's age and its resolution is fixed at 24 buckets, both on purpose,
+so a chart with range tabs had nothing to ask. `/board/series` takes a
+capability, a window and a bucket count, and returns `start_ms`/`end_ms`
+so the axis is labelled from the clock that did the bucketing rather
+than the browser's.
+
+**Range tabs are derived, not listed.** `rangesForAge` offers a span
+once 60% of it has elapsed — not 100%, or a tab would appear at the
+exact moment it stops being empty and show a line pinned to the right
+edge. So a market that first traded this morning offers `1h 6h all`; the
+fixture's six-day board offers `1h 6h 1d 5d all`; six months into a real
+run `6m` appears without anyone adding it, which is what the owner
+asked for. The age is the **market's**, not the board's — charting a tag
+that appeared yesterday against a two-month-old board is a flat run of
+nothing followed by a day of data.
+
+  `ytd` is deliberately not on the ladder. It means something for an
+  instrument that has been trading for years and something silly for a
+  board that may have started this morning: on 2 January it is a two-day
+  window that happens to be called "year to date".
+
+**The chart is drawn at real pixel coordinates**, not in a scaled
+`viewBox`, because a `viewBox` stretches text and stroke widths along
+with the geometry — an 11px axis label would be 11px at exactly one
+width. That is why it needs `useElementWidth` and a `ResizeObserver`,
+and why the test setup grew a stub for one (jsdom does no layout, so it
+ships none).
+
+  Volume bars under the line, like the reference. The line is
+  *cumulative* bounty over the window and the bars are per-bucket
+  postings: a cumulative series only rises, which is the shape that
+  reads like a price, and the bars are where the actual activity shows.
+
+  The hover readout sits at the top-left of the plot and never moves. A
+  tooltip that follows the cursor covers the part of the line being
+  inspected, which at this size is the whole reason for hovering.
+
+**Two things in the axis maths worth keeping.** Ticks land on round
+moments — the step is chosen by which one gets *closest* to the target
+tick count, not by the first step wide enough, because the ladder has
+gaps (1h to 3h) and "first that fits" falls through them and draws two
+labels on a six-hour chart. And a bucket is plotted at its **right
+edge**: a cumulative value at bucket `i` is the total by the *end* of
+that span, so plotting it at the start reports every point one bucket
+early — an hour's error on every point of a 24-bucket day.
+
+Verified live: `?market=python` opens the chart with the nav and rail
+intact and the carousel gone, offering `1h 6h 1d 5d all` on a six-day
+board with `5d` default; clicking `1d` issues exactly one request
+(`window_ms=86400000&buckets=143`) and the axis relabels from dates to
+clock times.
+
+Gates: 216 dashboard tests (26 new), 141 hub tests (7 new), tsc, lint,
+cargo, build.

@@ -368,6 +368,12 @@ export interface KindSummaryDto {
 }
 
 export interface BoardSummaryDto {
+  /** RFC3339 creation time of the board's oldest task, or `null` on an
+   * empty board — the board's *age*, which is what decides how far back
+   * it is meaningful to chart. `window_ms` cannot answer that: it is a
+   * preset rounded up from the age, so a board eight days old and one
+   * twenty-nine days old both report 30D. */
+  first_task_at: string | null;
   /** How far back every series reaches from the moment of the request. */
   window_ms: number;
   buckets: number;
@@ -400,6 +406,60 @@ export interface BoardSummaryDto {
  * worth showing anyone -- see `LandingPage`. */
 export function getBoardSummary(): Promise<BoardSummaryDto> {
   return getJson<BoardSummaryDto>("/board/summary");
+}
+
+/** One market's history, at a window and resolution the caller chooses.
+ *
+ * Mirrors `MarketSeriesDto` in `hub/src/handlers.rs`. This is the
+ * endpoint behind the market chart, and it exists because
+ * `/board/summary` structurally cannot serve it: the summary's window is
+ * derived from the board's age and its resolution is fixed at 24
+ * buckets, so a chart with range tabs — the same market at six spans, at
+ * more than a sparkline's resolution — has no way to ask. */
+export interface MarketSeriesDto {
+  /** Echoed back, so a response arriving after the reader has clicked
+   * another market can be recognised as stale. */
+  capability: string | null;
+  window_ms: number;
+  buckets: number;
+  /** Epoch millis of the first bucket's left edge and the last one's
+   * right edge. The axis is labelled from these rather than from "now
+   * minus the window" computed locally — that would use the client's
+   * clock, which is not the clock that bucketed the data. */
+  start_ms: number;
+  end_ms: number;
+  posted_series: number[];
+  bounty_series: number[];
+  posted: number;
+  bounty: number;
+  /** Open **right now** — a fact about the present, not about the
+   * window. A task posted before the window and still unclaimed is
+   * still on offer. */
+  open: number;
+  open_bounty: number;
+  /** When this market first traded, RFC3339, or `null` for a tag that
+   * has never appeared on a task. What the chart sizes its range tabs
+   * from. */
+  first_task_at: string | null;
+}
+
+export interface MarketSeriesParams {
+  /** Omit to chart the whole board rather than one market. */
+  capability?: string;
+  /** Omit to let the hub pick from the same preset ladder the summary
+   * uses, sized to *this market's* age rather than the board's. */
+  windowMs?: number;
+  buckets?: number;
+}
+
+export function getMarketSeries(params: MarketSeriesParams = {}): Promise<MarketSeriesDto> {
+  return getJson<MarketSeriesDto>(
+    `/board/series${query({
+      capability: params.capability,
+      window_ms: params.windowMs,
+      buckets: params.buckets,
+    })}`,
+  );
 }
 
 /** How many keys one request asks about. Matches the hub's own ceiling

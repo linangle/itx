@@ -63,6 +63,7 @@ describe("terminal TasksPage", () => {
     // test here supplies it explicitly; the fallback path (an older hub
     // that 404s the route) has its own case at the bottom.
     vi.mocked(hub.getBoardSummary).mockResolvedValue({
+      first_task_at: new Date(Date.now() - 86_400_000).toISOString(),
       window_ms: 1,
       buckets: 1,
       total_tasks: 0,
