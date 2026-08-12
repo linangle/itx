@@ -1053,9 +1053,13 @@ body.itx-landing-body[data-theme="light"] {
   transition: transform 130ms ease, color 130ms ease;
 }
 
+/* 1.1, down from 1.25. The three pagers on the site share one hover
+   now, and 1.25 on a 12px triangle is a jump rather than a response --
+   it read as the arrow leaping at the cursor once the other two were
+   doing it too. */
 .itx-board-pager button:hover:not(:disabled) {
   color: var(--ld-light);
-  transform: scale(1.25);
+  transform: scale(1.1);
 }
 
 /* At an end. Dimmed rather than hidden, so the pair stays a pair and
@@ -1701,22 +1705,32 @@ body.itx-landing-body[data-theme="light"] {
   font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
 }
+/* A bare triangle, like the carousel's -- the outlined box it sat in
+   was the third pager treatment on the site and the only thing that
+   made this pair look like a different control from the pair above the
+   markets. The 22px stays as the hit area; it just has no edge now. */
 .itx-board-pages button {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 22px;
   height: 22px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
-  border-radius: var(--r-field);
+  border: 0;
   background: none;
-  color: var(--ld-light);
+  color: var(--ld-sub);
   font: inherit;
   font-size: var(--fs-body);
   line-height: 1;
   cursor: pointer;
+  transition:
+    transform 130ms ease,
+    color 130ms ease;
 }
 .itx-board-pages button:hover:not(:disabled) {
-  border-color: var(--ld-light);
+  color: var(--ld-light);
+  transform: scale(1.1);
 }
 .itx-board-pages button:disabled {
   color: var(--ld-sub);

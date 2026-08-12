@@ -1050,10 +1050,13 @@ a.itx-chip:hover {
   margin-left: auto;
 }
 
-/* Round icon buttons, the same 26px circle the board's rail pager and
-   its carousel use, so the three pagers on the site are one control.
-   A circle is the one place 999px is still right: it is a round button,
-   not a field pretending to be a pill. */
+/* A bare triangle, the same control the board's carousel and its rail
+   pager are: no outline, and hover is a 1.1 scale with the ink coming
+   up to full. The circle it used to wear was one of three different
+   pager treatments on the site, and the green it used to go was the
+   only place `--brand` signalled "hoverable" rather than "up" -- which
+   is the one thing green is supposed to mean here. The 26px stays as
+   the hit area. */
 .itx-pager button {
   display: inline-flex;
   align-items: center;
@@ -1061,17 +1064,19 @@ a.itx-chip:hover {
   width: 26px;
   height: 26px;
   background: transparent;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--text);
+  border: 0;
+  color: var(--text-dim);
   font-size: 10px;
   padding: 0;
   cursor: pointer;
+  transition:
+    transform 130ms ease,
+    color 130ms ease;
 }
 
 .itx-pager button:hover:not(:disabled) {
-  border-color: var(--brand);
-  color: var(--brand);
+  color: var(--text);
+  transform: scale(1.1);
 }
 
 .itx-pager button:disabled {
