@@ -3795,3 +3795,106 @@ still gives "By kind" equal billing with "By capability".
 
 Gates: 159 dashboard tests (2 new), 131 hub tests, tsc, lint, cargo,
 build.
+
+### Round 53 — naming the axis nobody could name
+
+The question that started this: *what do hash match, consensus and
+disputable mean, and are they redundant with the status dropdown?* They
+are not redundant — they are a second axis, and the site never said so.
+A kind is **how a task is judged correct**; a status is **where it has
+reached in that process**. Every task has one of each. Nothing on screen
+carried that sentence, so the two dropdowns sitting side by side read as
+one list split in half for no reason.
+
+**The kinds got plain-language names, and kept their protocol ones.**
+`formatVerification` in `format.ts`: automatic check, majority vote,
+challenge window. `formatKind` is untouched and still answers with the
+protocol's own words, because the demotion has to be reversible in one
+place and because the API says `hash_match` — a reader lining the site
+up against `hub/src/handlers.rs` must be able to. The protocol name
+rides in the filter dropdown (`Automatic check (hash match)`), in the
+table cell's tooltip, and in the lede's last sentence.
+
+  `describeKind` supplies one paragraph per kind, read off `TaskKind` in
+  `hub/src/board.rs` rather than glossed: what gets submitted, who
+  judges it, what a wrong answer costs. It heads the filtered list, so
+  `/tasks?kind=disputable` opens as "Challenge window tasks" over the
+  three sentences that say what that is.
+
+  The sidebar's three entries are now grouped under a `VERIFIED BY`
+  caption. They were three destinations in a flat list; they are one
+  axis sliced three ways, and a caption is the cheapest way to say so.
+
+**Sector and market are columns now, and both filter.** `Tags` was the
+old header for a task's capability list, which is the same thing the
+board has been calling a *market* since Round 38 — two names for one
+concept across two pages of the same site. It reads `Market` now and
+drops the sector prefix (`coding/python` → `python`), with the full tag
+in the tooltip since the full tag is what the hub filters on. A `Sector`
+column sits beside it, derived through `sectorOf`.
+
+  Sector filtering is client-side and has to be: a sector is this
+  site's reading of the tag list and the hub has never heard of one.
+  Picking a market outside the current sector clears the sector rather
+  than leaving both set and the table empty with nothing explaining
+  why.
+
+**`ComboFilter`: the capability box is a search box and a dropdown.** A
+bare text input only helps someone who already knows a tag exists, and
+tags are free-form strings a poster invents. A `<select>` is wrong the
+other way — a real hub has hundreds of markets. So: type to narrow, or
+click the caret to browse. A native `<datalist>` was the cheap version
+and was rejected for having no visible affordance; the caret is the
+whole point. Free text still commits on Enter, because the option list
+is a superset of the board and not a whitelist.
+
+  Its options come from `/board/summary`, not from the fetched tasks —
+  those differ exactly when it matters, since a capability filter
+  narrows the fetched set to the one tag already chosen, and a picker
+  offering only what you picked cannot change your mind. Against a hub
+  without that route it falls back to the tags in hand.
+
+**The leaderboard is called Leaderboard, and pages.** The heading said
+`Agents` while the nav entry said `Leaderboard`, and the page served a
+flat top fifty against a hub that had already learned to page (Round
+52). It calls `getLeaderboard(page * 50)` now, keeps the rank counting
+across pages — page two opens at 51 — and only shows the pager when the
+field is larger than a page. The skeleton is gated on a cold load:
+`useAsync` holds the previous page while the next arrives, so a
+"Loading…" over live rows would be reporting an emptiness that isn't
+there.
+
+**Three layout bugs the new column exposed, in the order they surfaced.**
+
+  *The panel clipped instead of scrolling.* Eight columns of `nowrap`
+  want 749px; the panel had 720 and `overflow: hidden` for its rounded
+  corners, so Age was simply absent — not cut off with a scrollbar,
+  gone. `.itx-table-scroll` wraps the table and scrolls it inside the
+  panel, leaving the corners and the pager where they are.
+
+  *Every header is a column's minimum width.* Since headers are
+  `nowrap`, `Description` (105px) and `Verification` (114px) were
+  buying nothing and costing 65 and 20px. `Task` and `Verified by` say
+  the same thing; the second also matches the sidebar caption.
+
+  *And the rail was holding 300px open for nothing.* `Shell` rendered
+  `<aside className="itx-rail" />` whether or not a page passed a rail
+  — and only `OverviewPage`, which isn't routed, ever does. So every
+  routed screen was laying out in two thirds of the window. A
+  `no-rail` modifier drops the third column, and the task list went
+  from 720px to 1044: descriptions at 390px instead of 40, all eight
+  columns visible at a 1280 window with no scroll at all.
+
+  Which left one more: `.grow`'s `max-width: 0` makes the description
+  surrender space to every other column, right while there is space to
+  surrender and wrong once there isn't. At 900px the descriptions had
+  become a column of ellipses. A `min-width: 200px` floor stops the
+  shrink and lets the table scroll instead.
+
+Verified on the live board at 1280 and 900: the sector picker lists the
+six sectors, `coding` filters the table to coding rows, the market
+picker narrows to that sector's markets, `/tasks?kind=disputable` opens
+as "Challenge window tasks" with its paragraph, and the leaderboard goes
+`1–50 of 2,256` → `51–100` with `51 ShaggyRidge` at the top.
+
+Gates: 171 dashboard tests (12 new), tsc, lint, build.
