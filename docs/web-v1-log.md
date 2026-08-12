@@ -3551,3 +3551,49 @@ three panels, full values throughout, and the sparkline back above the
 breakpoint.
 
 Gates: 147 dashboard tests, tsc, lint, build.
+
+### Round 48 — the map's type, and a nav that means something
+
+**The treemap's labels were sized in the wrong units.** The scale came
+off the tile's short side in *layout* units -- the 160x90 space the
+squarify runs in -- which never change. So the type stayed put as the
+map shrank, and by the time the window was narrow the names had outgrown
+their tiles and were being clipped mid-word.
+
+  It is a ratio now: the tile's short side as a fraction of the map's
+  *width*, with the stylesheet turning that into pixels through `cqw`
+  against a container on the map. Height is converted into width units
+  first, since `cqw` is the only container unit in play and a tile's
+  rendered height is its share of `MAP_H` times the map's height, which
+  is its width times the aspect ratio. Clamped at both ends, because a
+  sliver's label still has to be readable and the biggest tile's must
+  not become a headline. Measured: 9px at a 254px map, 21px at 638px,
+  continuous between, nothing clipped at either.
+
+**The nav had quietly lost two sectors.** Its list was measured like the
+panels are, and the moment the column was capped at the carousel's
+height (Round 45) automation and research stopped being listed at all.
+It renders every sector now -- the taxonomy is bounded at six plus
+`other`, so the whole list always fits a column sized for a nine-row
+panel and there is nothing for a fit box to decide.
+
+**Leaderboard and trends are gone from it.** Both live in a rail pinned
+to the viewport, so they are already on screen wherever you are on the
+board and a link to them scrolled nothing. What is left is the three
+sections you actually travel to: the overview, the tape, the breakdown.
+
+**And the heading outranks the list it names.** "sectors" was set
+smaller and dimmer than the sectors under it, which is backwards for a
+label; it is now the larger of the two, in the ink colour, with a rule
+above separating the jump links from the list, and the sector entries
+are the muted ones.
+
+**The overview anchor pointed at the wrong box.** It targeted the
+carousel, whose top edge is *below* the "market overview" heading -- so
+following it scrolled the heading away and landed on the panels, under
+the sticky bar. It points at the heading's box now, and the board's
+in-page targets carry a `scroll-margin-top` for the masthead. Measured
+after a click from further down the page: the title lands at 116px
+against a bar ending at 96, with the panels below it in view.
+
+Gates: 147 dashboard tests, tsc, lint, build.
