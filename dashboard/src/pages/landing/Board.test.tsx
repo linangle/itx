@@ -131,6 +131,51 @@ describe("Board", () => {
     expect(rows.length).toBe(12);
   });
 
+  it("carries the prediction market sample above the tape, with the way out", () => {
+    const { container } = renderBoard(capabilities);
+
+    const section = screen.getByRole("region", { name: "Prediction market" });
+    // The two outcomes quote complementary odds and reciprocal payouts
+    // -- a binary market's one price implies everything else on the
+    // card. Read through the table: the legend repeats the labels.
+    const table = within(section).getByRole("table");
+    expect(within(table).getByText("under 15")).toBeInTheDocument();
+    expect(within(table).getByText("72%")).toBeInTheDocument();
+    expect(within(table).getByText("1.39x")).toBeInTheDocument();
+    expect(within(table).getByText("15 or more")).toBeInTheDocument();
+    expect(within(table).getByText("3.57x")).toBeInTheDocument();
+
+    // And it says on its face that the odds are authored. A card
+    // quoting a price and a volume looks live whether or not it is.
+    expect(within(section).getByText(/sample market/i)).toBeInTheDocument();
+
+    // The label row's arrow goes to the full page.
+    expect(
+      within(section).getByRole("link", { name: /full prediction market/i }),
+    ).toHaveAttribute("href", "/predictions");
+
+    // Above the tape, below the markets: the sample sits between the
+    // carousel and the latest feed in the column that scrolls.
+    const latest = container.querySelector("#itx-board-latest");
+    expect(
+      // eslint-disable-next-line no-bitwise
+      section.compareDocumentPosition(latest!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the sample's odds pills quiet: spans, not trade buttons", () => {
+    renderBoard(capabilities);
+    const section = screen.getByRole("region", { name: "Prediction market" });
+    const table = within(section).getByRole("table");
+    // Nothing in the protocol can take a trade, so nothing on the card
+    // may offer one. The only buttons in the section are the pager's,
+    // and both are disabled -- one sample, nowhere to flip.
+    within(section)
+      .getAllByRole("button")
+      .forEach((b) => expect(b).toBeDisabled());
+    expect(within(table).queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("heads the market column with the market, not the agent", async () => {
     renderBoard(capabilities);
     expect(await screen.findAllByRole("columnheader", { name: "market" })).not.toHaveLength(0);

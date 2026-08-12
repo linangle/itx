@@ -598,6 +598,7 @@ body.itx-landing-body[data-theme="light"] {
    of panels. Same offset the board itself carries, minus the strip's
    pull-up, which only applies at the very top of the board. */
 #itx-board-overview,
+#itx-board-predictions,
 #itx-board-latest,
 #itx-board-sectors {
   scroll-margin-top: calc(var(--ld-bar-h) + var(--sp-7));
@@ -2756,4 +2757,346 @@ a.itx-board-what:hover {
 
 .itx-chart-readout-meta {
   fill: var(--ld-sub);
+}
+
+/* ---- prediction market (the board's sample card) ----------------- */
+/* One market in the Kalshi format: the odds table and its news on the
+   left, both outcomes' history on the right, the market-flipping pager
+   in the top corner. All of it authored data for now -- see
+   PredictionMarket.tsx -- so nothing here polls or animates. */
+
+.itx-pm {
+  margin-top: var(--gap-section);
+}
+
+/* The label row's arrow: the door to the full page. The same grammar as
+   the chart's back control -- the arrow scales on hover, the words (here
+   the label) stay put. */
+.itx-pm-open {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ld-sub);
+  transition: color 130ms ease, transform 130ms ease;
+}
+
+.itx-board .itx-pm-open:hover {
+  color: var(--ld-light);
+  text-decoration: none;
+  transform: scale(1.1);
+}
+
+.itx-pm-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: var(--sp-6) var(--sp-10);
+  padding: var(--sp-8);
+}
+
+/* One column under 1100px: the card is in the board's middle column,
+   which at that point is too narrow to give the chart half. */
+@media (max-width: 1100px) {
+  .itx-pm-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Top-right, per the reference. Absolute rather than a grid row so the
+   legend below can own the column's top edge. */
+.itx-pm-pager {
+  position: absolute;
+  top: var(--sp-6);
+  right: var(--sp-6);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-sub);
+}
+
+/* The reference's circled chevrons. Disabled is their only state today
+   -- one sample, nowhere to flip -- and the board's pagers already say
+   how disabled looks. */
+.itx-pm-pager button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--bd-line);
+  border-radius: 50%;
+  background: none;
+  color: var(--ld-sub);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.itx-pm-pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.itx-pm-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ld-sub);
+}
+
+.itx-pm-title {
+  margin: 0 0 var(--sp-6);
+  font-size: var(--fs-title);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.012em;
+  color: var(--ld-light);
+}
+
+/* Airier rows than the board's 34px: this table has two rows and a
+   pill button's worth of height in each, and the reference gives them
+   room. Overrides the shared `--row-h` locally rather than restyling
+   the cells, so everything else `.itx-board-table` decides still
+   holds. */
+.itx-pm-outcomes {
+  --row-h: 56px;
+}
+
+/* The outcome's name wears its line's colour as an underline -- the
+   reference's way of tying the table to the chart without a swatch
+   column. */
+.itx-pm-outcome {
+  display: inline-block;
+  padding-bottom: var(--sp-2);
+  border-bottom: 2px solid var(--bd-line);
+  font-size: var(--fs-lead);
+  color: var(--ld-light);
+}
+
+.itx-pm-outcome.is-yes {
+  border-bottom-color: var(--ld-green);
+}
+
+.itx-pm-outcome.is-no {
+  border-bottom-color: var(--ld-blue);
+}
+
+.itx-pm-pays {
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-sub);
+}
+
+/* The odds, as the reference's outlined pill. A span dressed as the
+   trade button this will one day be -- deliberately not a <button>
+   while there is nothing to press (see the markup's comment). */
+.itx-pm-pill {
+  display: inline-block;
+  min-width: 44px;
+  padding: var(--sp-3) var(--sp-6);
+  border: 1px solid var(--ld-green);
+  border-radius: 999px;
+  font-size: var(--fs-lead);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ld-light);
+}
+
+.itx-pm-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  margin-top: var(--sp-5);
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
+/* Set off by the reference's dotted rule. */
+.itx-pm-news {
+  margin: var(--sp-6) 0 0;
+  padding-top: var(--sp-6);
+  border-top: 1px dotted var(--bd-line);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--ld-sub);
+}
+
+.itx-pm-news strong {
+  color: var(--ld-light);
+}
+
+.itx-pm-chartcol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.itx-pm-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-7);
+  /* Clear of the pager in the corner above. */
+  margin: var(--sp-8) 0 var(--sp-4);
+  font-size: var(--fs-body);
+  color: var(--ld-sub);
+}
+
+.itx-pm-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.itx-pm-key strong {
+  color: var(--ld-light);
+}
+
+.itx-pm-key-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.itx-pm-key.is-yes .itx-pm-key-dot {
+  background: var(--ld-green);
+}
+
+.itx-pm-key.is-no .itx-pm-key-dot {
+  background: var(--ld-blue);
+}
+
+.itx-pm-plot {
+  flex: 1;
+  min-width: 0;
+}
+
+.itx-pm-svg {
+  display: block;
+  overflow: visible;
+  /* The whole plot reads a price, so the whole plot is the target. */
+  cursor: crosshair;
+  /* A finger dragging across the chart should read prices, not scroll
+     the page out from under itself. `pan-y` keeps the vertical scroll,
+     which is the one gesture that has somewhere else to go. */
+  touch-action: pan-y;
+}
+
+/* The hovered moment: a rule down the plot, the time above it, and each
+   outcome's odds beside its own dot. */
+.itx-pm-crosshair {
+  stroke: color-mix(in srgb, var(--ld-light) 45%, transparent);
+  stroke-width: 1.5;
+}
+
+.itx-pm-when {
+  fill: var(--ld-sub);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Sits on the line's own colour, like the reference -- which is what
+   lets the two readouts go unlabelled by anything but their words. The
+   stroke is the page ground painted *behind* the glyphs (paint-order),
+   so a label crossing the other line stays readable without a plate
+   behind it. */
+.itx-pm-readout {
+  fill: currentColor;
+  font-size: 13px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: var(--ld-dark);
+  stroke-width: 3.5;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+/* Says on the card what the comments say in the source: these odds are
+   authored. Quiet, but not hidden -- a quote and a volume look live
+   whether or not they are. */
+.itx-pm-sample {
+  margin: calc(-1 * var(--sp-3)) 0 var(--sp-6);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  color: var(--ld-sub);
+}
+
+/* Dotted, unlike the market chart's solid rules: the reference's
+   gridlines are dotted, and two chart grammars one section apart is
+   fine when each is faithful to its own reference. */
+.itx-pm-gridline {
+  stroke: color-mix(in srgb, var(--ld-light) 14%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+
+.itx-pm-ylabel,
+.itx-pm-xlabel {
+  fill: var(--ld-sub);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.itx-pm-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.itx-pm-line.is-yes {
+  stroke: var(--ld-green);
+}
+
+.itx-pm-line.is-no {
+  stroke: var(--ld-blue);
+}
+
+.itx-pm-end.is-yes {
+  color: var(--ld-green);
+}
+
+.itx-pm-end.is-no {
+  color: var(--ld-blue);
+}
+
+/* The last price, haloed like the reference: a soft ring with the hard
+   dot inside it. */
+.itx-pm-halo {
+  fill: currentColor;
+  opacity: 0.22;
+}
+
+.itx-pm-dot {
+  fill: currentColor;
+}
+
+/* ---- inner pages (prediction market, newsroom) ------------------- */
+/* An inner page's main area carries `.itx-board` for the grid, the
+   ground and the tokens, plus this class for what differs: it has no
+   hero above it, so it owes the viewport its full height under the
+   masthead, and its grid has no quote strip to reach up behind. */
+
+.itx-subpage {
+  box-sizing: border-box;
+  min-height: calc(100vh - var(--ld-bar-h));
+  min-height: calc(100svh - var(--ld-bar-h));
+  padding: var(--sp-9) var(--sp-11) var(--sp-14);
+}
+
+/* The board's grid layer starts `--bd-overlap + --bd-lift` above its
+   box to ride under the pulled-up quote strip. Here that stretch would
+   sit behind the opaque masthead doing nothing -- start it at the
+   page's own edge. */
+.itx-subpage::before {
+  inset: 0;
 }

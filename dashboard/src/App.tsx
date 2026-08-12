@@ -3,6 +3,8 @@ import TaskListPage from "./pages/TaskListPage";
 import TaskDetailPage from "./pages/TaskDetailPage";
 import LeaderboardPage from "./pages/LeaderboardPage";
 import LandingPage from "./pages/landing/LandingPage";
+import PredictionsPage from "./pages/landing/PredictionsPage";
+import NewsroomPage from "./pages/landing/NewsroomPage";
 import TasksPage from "./pages/terminal/TasksPage";
 import TerminalTaskDetailPage from "./pages/terminal/TaskDetailPage";
 import TerminalLeaderboardPage from "./pages/terminal/LeaderboardPage";
@@ -24,6 +26,12 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
+      {/* Two empty frames, on purpose -- see each page's own comment.
+        * `/predictions` rather than `/markets`, because "market" already
+        * means a capability on this site (`?market=` opens its chart)
+        * and a second sense of the word one path over would collide. */}
+      <Route path="/predictions" element={<PredictionsPage />} />
+      <Route path="/newsroom" element={<NewsroomPage />} />
       <Route path="/tasks" element={<TasksPage />} />
       <Route path="/tasks/:id" element={<TerminalTaskDetailPage />} />
       <Route path="/leaderboard" element={<TerminalLeaderboardPage />} />

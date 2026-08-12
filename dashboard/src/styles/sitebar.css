@@ -118,7 +118,9 @@ body.itx-theme-shift *::after {
    button cannot be the one thing that misses a ground it was not
    written for: it is always the right ink, one step back. */
 .itx-sitebar-theme {
-  margin-left: auto;
+  /* A step off the nav links, which own the auto margin now that they
+     sit between the wordmark and this button. */
+  margin-left: var(--sp-8);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -143,6 +145,40 @@ body.itx-theme-shift *::after {
   outline: 2px solid currentColor;
   outline-offset: 2px;
   border-radius: 999px;
+}
+
+/* The section links: the prediction market and the newsroom. They take
+   the bar's free space on their left, which is what pushes them and the
+   theme toggle to the right end together. */
+.itx-sitebar-nav {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+/* Same weight of selector as the wordmark below, and for the same
+   reason: the terminal surface paints every `.itx a` blue with an
+   underline on hover, and these render inside it. Dimmed at rest and
+   full ink on hover, exactly the theme toggle's treatment -- the three
+   controls at this end of the bar should read as one quiet family. */
+.itx-sitebar a.itx-sitebar-link,
+.itx-sitebar a.itx-sitebar-link:hover,
+.itx-sitebar a.itx-sitebar-link:focus {
+  color: inherit;
+  text-decoration: none;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+.itx-sitebar a.itx-sitebar-link {
+  opacity: 0.68;
+  transition: opacity 140ms ease;
+}
+
+.itx-sitebar a.itx-sitebar-link:hover,
+.itx-sitebar a.itx-sitebar-link:focus-visible {
+  opacity: 1;
 }
 
 /* Wordmark and tagline are one link home -- the reliable way back from
@@ -187,5 +223,21 @@ body.itx-theme-shift *::after {
   .itx-sitebar-mark,
   .itx-sitebar-tag {
     font-size: 18px;
+  }
+
+  .itx-sitebar-nav {
+    gap: var(--sp-6);
+  }
+
+  .itx-sitebar a.itx-sitebar-link {
+    font-size: 13px;
+  }
+}
+
+/* Narrower still, the tagline is the thing to give up: two section
+   links beat a subtitle the wordmark already implies. */
+@media (max-width: 640px) {
+  .itx-sitebar-tag {
+    display: none;
   }
 }

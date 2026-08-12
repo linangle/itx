@@ -4335,3 +4335,82 @@ notice.
   both modes now, where the carousel view was 128.
 
 Gates: 216 dashboard tests, tsc, lint, build.
+
+### Round 59 — two doors in the masthead, and a market that isn't real yet
+
+The masthead grew two links — **prediction market** and **newsroom** —
+and the board grew a sample prediction market card above the tape. The
+two pages behind those links are deliberately empty.
+
+**The empty pages are the deliverable, not a placeholder for one.**
+`/predictions` and `/newsroom` render the masthead over the board's grid
+at full height and nothing else. Shipping the frame first is what makes
+the next round a matter of filling a page rather than inventing one, and
+it is honest about where the protocol is: there are no outcome markets
+on this chain, no odds, no settlement and no event log. `.itx-subpage`
+is the whole of what an inner page adds to `.itx-board` — a viewport
+height under the bar, and a grid that starts at the page's own top edge
+rather than reaching up behind a quote strip that isn't there.
+
+  `/predictions`, not `/markets`. "Market" already means a capability
+  on this site — `?market=python` opens its chart — and a second sense
+  of the word one path over would collide.
+
+**The card is one sample, and says so on itself.** A card quoting a
+price, a payout multiple and a volume looks exactly like a live one
+whether or not it is, so a line under the title reads "sample market —
+authored odds, nothing on the wire yet". The odds pill is a `<span>`
+dressed as the trade button it will be: on the reference that is where
+a trade starts, and drawing it clickable while nothing can take a trade
+would be a lie the markup tells. The pager renders and is disabled at
+both ends — one sample, nowhere to flip, but the control is part of the
+format being shown.
+
+**The sample's subject changed mid-round, and the reason is worth
+keeping.** It started as a market on the board's own sectors ("coding
+stays the largest sector through august"), which was the wrong idea in
+the right format: the intended product is agents scraping the open web
+and pricing *world* events. It is now a generic, unattributed weather
+market, and the news line says plainly that it is where an agent's
+summary of what it scraped will sit. What that needs from the hub — an
+outcome market object, a price mechanism, a series endpoint, and an
+answer to the oracle question — is in `hub-requirements.md`, along with
+the newsroom's event feed.
+
+**Hovering the chart reads the price at that moment**, per the second
+reference: a rule down the plot, a dot where each line crosses it, and
+each outcome's odds beside its own dot, with the moment printed above.
+Both outcomes at once rather than whichever line is nearest the cursor —
+in a binary market the pair *is* the quote, and following one line would
+leave the reader to do the subtraction. The readouts flip to the left of
+the rule near the right edge, and the resting end-dots are hidden while
+a hover is being read: four dots on a two-line chart is one pair too
+many to interpret.
+
+  The readout text is painted on its line's own colour with the page
+  ground stroked *behind* the glyphs (`paint-order: stroke`), so a label
+  crossing the other line stays readable without a plate behind it.
+
+**The sample's arithmetic lives in `lib/predictionSample.ts`,** which is
+the only structural decision here. jsdom does no layout, so the chart
+never draws in a test (see the `ResizeObserver` note in `test-setup.ts`)
+— the same reason `chartAxis` is tested against its numbers rather than
+against a rendered axis. Putting the series, the snap, the quote and the
+axis dates in `lib/` makes all of it testable, and keeps the component
+file exporting only a component, which is what fast refresh wants.
+
+  The history is a **seeded** walk (mulberry32), eased onto the quoted
+  72% so the line finishes exactly where the pill says the market
+  stands. `Math.random` would redraw the market's past on every reload,
+  which even for a sample is the one thing a price history must not do.
+  The axis dates come from the clock rather than being authored, so the
+  card never carries a stale "aug 12" into september.
+
+Verified live: the card renders in both themes at 1280×800; hovering
+mid-plot reads "aug 8 at 3 am · under 15 65% · 15 or more 35%" — a
+complementary pair — and near the right edge the labels flip to the
+left of the rule while the moment stays clamped inside the plot;
+`/predictions` renders the masthead and an empty grid; no console
+errors.
+
+Gates: 229 dashboard tests (13 new), tsc, lint, build.

@@ -6,6 +6,7 @@ import SearchIcon from "../../components/SearchIcon";
 import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
 import MarketChart from "./MarketChart";
+import PredictionMarket from "./PredictionMarket";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
@@ -487,6 +488,13 @@ export default function Board({
           </div>
           )}
           </div>
+
+          {/* One sample market in the Kalshi format, above the tape --
+            * all authored data, and the section's own comment says why.
+            * In the middle column because that is the column that
+            * scrolls: the pinned nav and rail stay beside it, the same
+            * arrangement every other section here gets. */}
+          <PredictionMarket />
 
           <div className="itx-board-labels itx-board-labels-latest">
             <span className="itx-board-label">latest</span>
@@ -1170,6 +1178,11 @@ function BoardNav({
               a section you are no longer looking at, and holding a list
               of them open under a nav entry for somewhere else is the
               rail describing two places at once. */}
+          <li>
+            <a href="#itx-board-predictions" onClick={() => setExpanded(false)}>
+              predictions
+            </a>
+          </li>
           <li>
             <a href="#itx-board-latest" onClick={() => setExpanded(false)}>
               latest

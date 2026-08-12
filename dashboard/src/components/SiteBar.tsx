@@ -50,6 +50,19 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
           <span className="itx-sitebar-tag">internet traffic exchange</span>
         </Link>
 
+        {/* The two pages that are not the board, at the right end where
+          * a finance site keeps its sections. Plain links, quiet like
+          * the theme toggle beside them -- the masthead's one loud thing
+          * stays the wordmark. */}
+        <nav className="itx-sitebar-nav" aria-label="Site pages">
+          <Link className="itx-sitebar-link" to="/predictions">
+            prediction market
+          </Link>
+          <Link className="itx-sitebar-link" to="/newsroom">
+            newsroom
+          </Link>
+        </nav>
+
         <ThemeToggle />
       </header>
     </div>
