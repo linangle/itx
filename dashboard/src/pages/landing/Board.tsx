@@ -48,7 +48,10 @@ import type {
 const MAX_MARKET_ROWS = 12;
 const MAX_TRENDING_ROWS = 24;
 const MAX_UPDATE_ROWS = 24;
-const MAX_LEADER_ROWS = 24;
+/** How deep the standings go. The panel scrolls now, so this is not
+ * "what fits" but how much of the board's field is worth carrying into
+ * one rail -- and the real hub only serves the top fifty anyway. */
+const MAX_LEADER_ROWS = 50;
 /** How often the board re-asks the hub. Slow enough to be cheap, quick
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
@@ -238,6 +241,15 @@ export default function Board({
   // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
 
+  /** Whether the nav is showing the overview's sectors.
+   *
+   * Opened by clicking the overview's entry, and by moving the carousel
+   * -- scrolling the markets says the overview is what you are working
+   * with, so the sectors should be there already when you go looking for
+   * them. Closed only to begin with: a list that vanished mid-read would
+   * be worse than one that stays, so nothing closes it again. */
+  const [sectorsOpen, setSectorsOpen] = useState(false);
+
   const leaders = useAsync(() => getLeaderboard(), [], REFRESH_MS);
 
   /** Pubkey to hub-assigned name, for the tape's poster column.
@@ -267,6 +279,15 @@ export default function Board({
   // own: which sector is at the front, whether either end is reached,
   // and where the arrows should land.
   const [carouselRef, carousel] = useCarousel<HTMLDivElement>(sectors.length);
+
+  // Moving the row opens the sector list, so it is already there when
+  // the reader looks for it. Keyed on the row having left its start
+  // rather than on a scroll handler of its own: `atStart` is a fact the
+  // carousel already publishes and it changes exactly once, on the first
+  // real movement, so this costs nothing per frame.
+  useEffect(() => {
+    if (!carousel.atStart) setSectorsOpen(true);
+  }, [carousel.atStart]);
 
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
@@ -333,6 +354,8 @@ export default function Board({
             sectors={sectors}
             firstVisible={carousel.firstVisible}
             lastVisible={carousel.lastVisible}
+            expanded={sectorsOpen}
+            setExpanded={setSectorsOpen}
             onSelect={carousel.to}
           />
 
@@ -638,7 +661,14 @@ function LeaderboardRail({
   leaders: AsyncState<LeaderboardEntryDto[]>;
 }) {
   const [query, setQuery] = useState("");
-  const [fitRef, leaderRows] = useFitRows();
+
+  /** Each agent's standing, taken once from the order the hub sent --
+   * which is by lifetime earnings, descending. Held apart from the
+   * filtered list so a search cannot renumber it. */
+  const ranks = useMemo(
+    () => new Map((leaders.data ?? []).map((l, i) => [l.pubkey, i + 1])),
+    [leaders.data],
+  );
 
   // Matches the name as well as the key, because the rail now shows the
   // name -- a list you can read but not search by the thing it displays
@@ -674,7 +704,13 @@ function LeaderboardRail({
             aria-label="Search agents by name or public key"
           />
         </div>
-        <div className="itx-board-fit" ref={fitRef}>
+        {/* Scrolls rather than fitting. Every other panel on the board
+            renders as many rows as it has room for and stops; a
+            leaderboard that stops at the sixth agent is answering a
+            different question than the one being asked of it, and the
+            rail's height is set by the carousel beside it rather than by
+            anything about the standings. */}
+        <div className="itx-board-scroll">
           {leaders.data === null ? (
             <p className="itx-board-note">loading agents…</p>
           ) : found.length === 0 ? (
@@ -684,14 +720,19 @@ function LeaderboardRail({
           ) : (
             <table className="itx-board-table">
               <tbody>
-                {found.slice(0, Math.min(leaderRows, MAX_LEADER_ROWS)).map((agent) => (
+                {found.slice(0, MAX_LEADER_ROWS).map((agent) => (
                   <tr key={agent.pubkey}>
+                    {/* Standing, from the *unfiltered* order. A rank is
+                        a position in the leaderboard, not a position in
+                        whatever the search happened to match -- numbering
+                        the filtered rows 1, 2, 3 would tell a searcher
+                        that the agent they looked up is winning. */}
+                    <td className="itx-board-rank">{ranks.get(agent.pubkey)}</td>
                     {/* Name *instead of* the key, not above it: these
-                        rows are a fixed 34px (`--row-h`, which is
-                        what lets the panel compute its own capacity)
-                        and the terminal's stacked treatment would
-                        not fit. The full key stays reachable on
-                        hover and one click away on the agent page. */}
+                        rows are a fixed 34px (`--row-h`) and the
+                        terminal's stacked treatment would not fit. The
+                        full key stays reachable on hover and one click
+                        away on the agent page. */}
                     <td>
                       <Link
                         className="itx-board-agent"
@@ -891,6 +932,8 @@ function BoardNav({
   sectors,
   firstVisible,
   lastVisible,
+  expanded,
+  setExpanded,
   onSelect,
 }: {
   sectors: SectorSummary[];
@@ -904,6 +947,15 @@ function BoardNav({
    * both simpler and true. */
   firstVisible: number;
   lastVisible: number;
+  /** Whether the overview's sectors are showing.
+   *
+   * Held by `Board` rather than here because the carousel opens it too:
+   * scrolling the markets is a statement that the overview is what you
+   * are working with, and the list of sectors should already be there
+   * when you look for it. It never closes itself -- a list that
+   * disappeared while being read would be worse than one that stays. */
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
   onSelect: (index: number) => void;
 }) {
   return (
@@ -921,10 +973,51 @@ function BoardNav({
             trends were here and are not any more: both live in a rail
             that is pinned to the viewport, so they are already on screen
             wherever you are on the board and a link to them scrolls
-            nothing. */}
+            nothing.
+​
+            The sectors sit *inside* the overview's entry rather than
+            under a heading of their own. They had one, called "sectors",
+            immediately above an entry called "breakdown" that goes to
+            the sector map -- two things named after sectors, one a list
+            of the panels above and one a link to a section below. Nested
+            under the thing they belong to, they need no label at all:
+            their place says what they are. */}
         <ul className="itx-board-navlist">
           <li>
-            <a href="#itx-board-overview">market overview</a>
+            <a
+              href="#itx-board-overview"
+              aria-expanded={expanded}
+              aria-controls="itx-board-navsectors"
+              onClick={() => setExpanded(true)}
+            >
+              market overview
+            </a>
+            {/* Every sector, not as many as fit. This list was measured
+                like the panels are, which cost it entries the moment the
+                column was capped at the carousel's height (Round 45) --
+                automation and research simply stopped being listed. */}
+            {expanded && (
+              <ul
+                className="itx-board-navlist itx-board-navlist-sectors"
+                id="itx-board-navsectors"
+              >
+                {sectors.map((s, index) => {
+                  const showing = index >= firstVisible && index <= lastVisible;
+                  return (
+                    <li key={s.name}>
+                      <button
+                        type="button"
+                        className={showing ? "is-active" : undefined}
+                        aria-current={showing ? "true" : undefined}
+                        onClick={() => onSelect(index)}
+                      >
+                        {s.name}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </li>
           <li>
             <a href="#itx-board-latest">latest</a>
@@ -932,32 +1025,6 @@ function BoardNav({
           <li>
             <a href="#itx-board-sectors">breakdown</a>
           </li>
-        </ul>
-
-        <span className="itx-board-navhead">sectors</span>
-        {/* Every sector, not as many as fit. This list was measured like
-            the panels are, which cost it entries the moment the column
-            was capped at the carousel's height (Round 45) -- automation
-            and research simply stopped being listed. The taxonomy is
-            bounded at six plus `other`, so the whole list always fits in
-            a column sized for a nine-row panel and there is nothing for
-            a fit box to decide. */}
-        <ul className="itx-board-navlist itx-board-navlist-sectors">
-          {sectors.map((s, index) => {
-            const showing = index >= firstVisible && index <= lastVisible;
-            return (
-              <li key={s.name}>
-                <button
-                  type="button"
-                  className={showing ? "is-active" : undefined}
-                  aria-current={showing ? "true" : undefined}
-                  onClick={() => onSelect(index)}
-                >
-                  {s.name}
-                </button>
-              </li>
-            );
-          })}
         </ul>
 
         <ul className="itx-board-navlist itx-board-navlist-pages">

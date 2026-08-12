@@ -79,13 +79,16 @@ function renderBoard(
   };
 }
 
+/** A board with markets in four sectors, shared by the blocks below. */
+const capabilitiesFixture = [
+  market("python", 5000),
+  market("web-dev", 3000),
+  market("image-generation", 900),
+  market("therapy", 100),
+];
+
 describe("Board", () => {
-  const capabilities = [
-    market("python", 5000),
-    market("web-dev", 3000),
-    market("image-generation", 900),
-    market("therapy", 100),
-  ];
+  const capabilities = capabilitiesFixture;
 
   it("panels the board by sector, with each sector's markets as its rows", async () => {
     renderBoard(capabilities);
@@ -131,13 +134,35 @@ describe("Board", () => {
     );
   });
 
-  it("lists sectors in the rail, ranked by the money in them", () => {
+  it("lists sectors under the overview, ranked by the money in them", async () => {
+    const user = userEvent.setup();
     renderBoard(capabilities);
     const nav = screen.getByRole("navigation", { name: /board sections/i });
+
+    // They are a subsection of the overview, so they are not there until
+    // the overview is the thing being worked with.
+    expect(within(nav).queryAllByRole("button")).toHaveLength(0);
+
+    await user.click(within(nav).getByRole("link", { name: "market overview" }));
     const sectors = within(nav)
       .getAllByRole("button")
       .map((b) => b.textContent);
     expect(sectors).toEqual(["coding", "creative", "conversation"]);
+  });
+
+  it("nests the sectors inside the overview's own entry", async () => {
+    const user = userEvent.setup();
+    renderBoard(capabilities);
+    const nav = screen.getByRole("navigation", { name: /board sections/i });
+    const overview = within(nav).getByRole("link", { name: "market overview" });
+    await user.click(overview);
+
+    // Inside the overview's list item, not a sibling list under a
+    // heading of its own -- which is what made "sectors" and the
+    // "breakdown" link read as two names for the same thing.
+    const item = overview.closest("li")!;
+    expect(within(item).getByRole("button", { name: "coding" })).toBeInTheDocument();
+    expect(overview).toHaveAttribute("aria-expanded", "true");
   });
 
   it("quotes sectors in the strip rather than protocol task kinds", () => {
@@ -149,8 +174,10 @@ describe("Board", () => {
   });
 
   it("files a tag the taxonomy doesn't know under other, rather than dropping it", async () => {
+    const user = userEvent.setup();
     const { carousel } = renderBoard([market("haruspicy", 100)]);
     const nav = screen.getByRole("navigation", { name: /board sections/i });
+    await user.click(within(nav).getByRole("link", { name: "market overview" }));
     expect(within(nav).getByRole("button", { name: "other" })).toBeInTheDocument();
     expect(await carousel.findByRole("link", { name: "haruspicy" })).toBeInTheDocument();
   });
@@ -215,6 +242,45 @@ describe("Board", () => {
     const { container } = renderBoard(capabilities, feedOf({ capabilities: [] }));
     const row = container.querySelector(".itx-board-updates li") as HTMLElement;
     expect(within(row).getByText("untagged")).toBeInTheDocument();
+  });
+});
+
+describe("Board leaderboard", () => {
+  const agents = [
+    { pubkey: "02aa", name: "CraggyGlacier", total_earned: 19_000_000_000 },
+    { pubkey: "02bb", name: "RareAntelope", total_earned: 17_000_000_000 },
+    { pubkey: "02cc", name: "SmoothMoth", total_earned: 15_000_000_000 },
+  ].map((a) => ({ ...a, completed: 1, failed: 0, net_worth: 1 }));
+
+  it("numbers the standings and keeps them in order", async () => {
+    vi.mocked(hub.getLeaderboard).mockResolvedValue(agents as never);
+    const { container } = renderBoard(capabilitiesFixture);
+
+    const rows = await screen.findAllByRole("row");
+    const leaders = [...container.querySelectorAll(".itx-board-panel-leaders tbody tr")];
+    expect(leaders.length).toBe(3);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(leaders.map((t) => t.querySelector(".itx-board-rank")?.textContent)).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
+  it("keeps a rank meaning position on the board, not position in the search", async () => {
+    // The trap: numbering the *filtered* rows would tell someone who
+    // searched for the third-place agent that they are winning.
+    vi.mocked(hub.getLeaderboard).mockResolvedValue(agents as never);
+    const user = userEvent.setup();
+    const { container } = renderBoard(capabilitiesFixture);
+
+    await screen.findByText("SmoothMoth");
+    await user.type(screen.getByLabelText(/search agents/i), "moth");
+
+    const leaders = [...container.querySelectorAll(".itx-board-panel-leaders tbody tr")];
+    expect(leaders).toHaveLength(1);
+    expect(leaders[0].textContent).toContain("SmoothMoth");
+    expect(leaders[0].querySelector(".itx-board-rank")?.textContent).toBe("3");
   });
 });
 

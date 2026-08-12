@@ -1235,17 +1235,23 @@ body.itx-landing-body[data-theme="light"] {
   font-weight: 700;
 }
 
-/* The heading outranks the things under it now -- it read as a caption
-   under entries that were larger and louder than it, which is backwards
-   for a list it is naming. Bigger, brighter and lettered wider than the
-   sectors, with a rule above to separate the jump links from the list. */
-.itx-board-navhead {
-  margin: var(--sp-5) 0 var(--sp-3);
-  padding-top: var(--sp-5);
-  border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
-  color: var(--ld-light);
-  font-size: var(--fs-body);
-  letter-spacing: 0.04em;
+/* The sectors, nested inside the overview's entry.
+ *
+ * No heading of its own any more: it had one, and an entry called
+ * "breakdown" sat directly under it pointing at the sector map, so the
+ * rail named sectors twice for two different things. Indented under the
+ * thing they belong to, the list needs no label -- its position is the
+ * label -- and the rule that used to separate it now only has to
+ * separate the off-board links at the foot.
+ *
+ * The indent is a rule rather than padding alone: a hairline down the
+ * left of the group says "these belong to the entry above" in a way
+ * whitespace on its own does not, at the width this rail has to work
+ * in. */
+.itx-board-navlist-sectors {
+  margin: var(--sp-2) 0 var(--sp-3);
+  padding-left: var(--sp-5);
+  border-left: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
 
 .itx-board-navlist-sectors button {
@@ -1588,6 +1594,39 @@ body.itx-landing-body[data-theme="light"] {
   .itx-board-panel-market .itx-board-cell-spark {
     display: none;
   }
+}
+
+/* The standings scroll. Every other panel renders what fits and stops,
+   which is right for a chart and wrong for a ranking -- the rail's
+   height comes from the carousel beside it, and there is no reason the
+   number of agents worth showing should be decided by a market panel's
+   row count. */
+.itx-board-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  /* Firefox; the WebKit equivalent is below. */
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--bd-line) 80%, transparent) transparent;
+}
+.itx-board-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.itx-board-scroll::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bd-line) 80%, transparent);
+}
+
+/* Standing, ahead of the agent. Tabular and right-aligned so two- and
+   three-digit ranks stay on one axis instead of stepping in and out as
+   the list scrolls past ten and a hundred. */
+.itx-board-rank {
+  width: 30px;
+  padding-right: var(--sp-3);
+  color: var(--ld-sub);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 /* The leaderboard is two columns and has no header row, so the earnings
