@@ -4664,3 +4664,70 @@ it lands 364px short of the line because the page runs out of scroll,
 which is the same trade recorded in Round 62, moved down one section.
 
 Gates: 241 dashboard tests (6 new), tsc, lint, build.
+
+### Round 64 — the agent the tape names and the page then denies
+
+The owner clicked two agents off the tape and got two broken pages.
+LoftyGargoyle and TealMink both appear on `latest`, named and busy;
+neither comes up in the leaderboard's search, and both their pages
+opened nameless, insisting nothing had ever been completed — while one
+of them had 5,315 posted tasks, of which the page would show exactly
+ten, with no way to the other 5,305. Three separate faults, and worth
+untangling separately, because one was a mock bug, one is a real
+integration gap, and one was the site's own laziness.
+
+**The mock disagreed with itself about who exists.** The tape names its
+posters through `/names`, which the fixture answers from its full
+registry — every agent, the operator included. But the fixture's
+`/reputation` answered by *searching its own leaderboard*, and its
+leaderboard filtered to earners: no paid task, no entry; no entry,
+`name: null` and zeroed stats. So any key on the wrong side of that
+filter was two different agents depending on which endpoint you asked.
+LoftyGargoyle is the operator — it posts a quarter of the board and has
+never claimed anything, so it could *never* be on the earners' list;
+TealMink had posted and claimed but not yet been paid. The real hub
+cannot split this way — `get_reputation` reads the name registry
+directly, one lookup for stats and an independent one for the name — so
+the fixture now does exactly that: stats computed from the board for
+any key, name from the registry, and the leaderboard ranks the whole
+roster with the unpaid tail below the earners, which is where having
+earned nothing puts you. Search now finds both agents (TealMink at rank
+2,288, the operator dead last at 4,001 — correct on both counts), and
+the operator got facts of its own, with a treasury-sized balance,
+because escrowing the board's bounties is what that key does.
+
+**The half that is real.** Naming everyone is *more generous than
+today's hub*, and the old fixture comment claimed otherwise ("posting
+is history" — it is not: reputation records mint on payment, failure,
+or a dispute bond, and names backfill from reputation). Against the
+real hub today, every poster-only key renders as bare hex and is
+unfindable in search, the operator above all. That is precisely the
+owner's worry about integrating off the mock, so it is now recorded
+where the backend asks live: a new `hub-requirements.md` entry ("An
+agent the board remembers") says what the site needs — a name minted
+where a key first touches the board, and search over every named key —
+what it costs today, and that the mock models the ask rather than the
+hub. The fixture's comments say the same thing at the site of the
+divergence, so nobody reads generosity as fidelity.
+
+**Ten rows naming five thousand.** The agent page's panels sliced their
+history to ten and printed "Showing 10 of 5,315" under it — a page that
+names a history it refuses to show. Both panels now page through the
+whole set with the site's one `Pager`, ten to a page, client-side for
+the same reason the task list pages client-side: the set in hand is
+already the whole answer (the hub has no by-claimant or by-poster
+query), so a page is a slice, not a request. The panels are keyed by
+pubkey so page 4 of one agent's history doesn't survive as page 4 of
+another's, and the pager still renders nothing when the history fits —
+a pager that can't page is noise.
+
+Verified live against the fixture: the operator's page headlines
+LoftyGargoyle over the full key, stats render (0 completed is *true*
+for a poster, and now reads as a fact rather than a fault), and posted
+work pages 1–10 of 5,315 through to the tail. Search finds both agents
+from the rail and the leaderboard page. New tests pin the two
+contracts: the name comes from `/reputation` alone (no ranking
+required), and a 23-row history pages 10/10/3 with the arrow dead at
+the end.
+
+Gates: 245 dashboard tests (4 new), tsc, lint, build.

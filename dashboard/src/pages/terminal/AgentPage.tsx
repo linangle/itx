@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import Shell, { Empty, ErrorNote, Loading } from "../../components/Shell";
+import Pager from "../../components/Pager";
 import ProfileIcon from "../../components/ProfileIcon";
 import Sparkline from "../../components/Sparkline";
 import Triangle from "../../components/Triangle";
@@ -127,14 +129,23 @@ export default function AgentPage() {
             </div>
           </div>
 
+          {/* Keyed by pubkey so each panel's page resets when the reader
+              follows a link to a different agent -- page 4 of one
+              agent's history is not a place in another's. */}
           <div className="itx-columns">
             <TaskPanel
+              key={`claimed-${pubkey}`}
               title="claimed work"
               tasks={claimed}
               empty="Hasn't claimed a task yet."
               note="Consensus assignments never appear here — the hub hides who joined."
             />
-            <TaskPanel title="posted work" tasks={posted} empty="Hasn't posted a task yet." />
+            <TaskPanel
+              key={`posted-${pubkey}`}
+              title="posted work"
+              tasks={posted}
+              empty="Hasn't posted a task yet."
+            />
           </div>
         </>
       )}
@@ -155,6 +166,15 @@ function TaskPanel({
   empty: string;
   note?: string;
 }) {
+  // Client-side paging over the already-fetched history, the same trade
+  // the task list makes and for the same reason: the page has the whole
+  // set in hand (it filtered `listAllTasks` by claimant/poster, which
+  // the hub has no query for), so paging is a slice, not a request.
+  // Ten per page as before -- what changed is that the rows past ten
+  // are now reachable. The panel used to stop at "Showing 10 of 5,315",
+  // which for a prolific poster meant the page *named* a history it
+  // refused to show.
+  const [page, setPage] = useState(0);
   const total = tasks.reduce((sum, t) => sum + t.bounty, 0);
 
   return (
@@ -173,7 +193,7 @@ function TaskPanel({
         <>
           <table className="itx-table">
             <tbody>
-              {tasks.slice(0, ROWS).map((task) => (
+              {tasks.slice(page * ROWS, page * ROWS + ROWS).map((task) => (
                 <tr key={task.id}>
                   <td className="grow">
                     <Link to={`/tasks/${task.id}`}>{task.description}</Link>
@@ -189,13 +209,7 @@ function TaskPanel({
               ))}
             </tbody>
           </table>
-          {tasks.length > ROWS && (
-            <div className="itx-pager">
-              <span>
-                Showing {ROWS} of {formatCount(tasks.length)}
-              </span>
-            </div>
-          )}
+          <Pager page={page} pageSize={ROWS} total={tasks.length} onPageChange={setPage} />
         </>
       )}
       {note && (
