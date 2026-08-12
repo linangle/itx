@@ -873,7 +873,15 @@ body.itx-landing-body[data-theme="light"] {
 .itx-board-rail {
   position: sticky;
   top: calc(var(--ld-bar-h) + var(--sp-6));
-  height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
+  /* As tall as the market panels beside them, so all three columns
+     finish on the same line -- `--board-col-h` is the markets column's
+     measured height, published by `Board`. The fallback is the viewport
+     rule these carried before, for the frame before the first
+     measurement and for anything that cannot run a ResizeObserver.
+     Capped at the viewport regardless: a pinned column taller than the
+     screen has parts that can never be scrolled to. */
+  height: var(--board-col-h, calc(100vh - var(--ld-bar-h) - var(--sp-9)));
+  max-height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
 }
 
 /* The column that actually scrolls: the carousel at a screen's height,
