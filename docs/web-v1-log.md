@@ -3744,3 +3744,54 @@ truncated; the standings show ranks flush left, names ellipsizing, and
 no overlap between a name and its figure.
 
 Gates: 157 dashboard tests, tsc, lint, build.
+
+### Round 52 — the standings take pages
+
+**The nav's sectors close when you leave.** The overview's entry toggles
+now, and `latest` and `breakdown` collapse it on the way past: the
+sectors belong to a section you are no longer looking at, and holding
+them open under a nav entry for somewhere else is the rail describing
+two places at once. Verified through the sequence -- 0 sectors, 6, 0, 6,
+then 0 again on `latest`.
+
+**The leaderboard is paged, fifty at a time.** `/leaderboard` served a
+flat top fifty and nothing else, which is the whole field on a small
+board and a rounding error on a real one; a ranking that silently stops
+at fiftieth place is answering a different question than the one asked
+of it. It takes `offset` and `limit` now and returns the size of the
+field in `X-Total-Count`, the same header `list_tasks` uses, so a pager
+can be sized without walking.
+
+  The ceiling stays at fifty rather than becoming a knob, because the
+  ceiling is what the balance fan-out is sized for: a page is one node
+  lookup per agent, and an unbounded `limit` is an unbounded number of
+  connections opened by one request. Ranking still happens over the
+  whole field before the slice -- ranking per page would not be a
+  leaderboard.
+
+  The rail carries the rank across pages (page two starts at 51, not 1)
+  and hides the pager entirely on a board with one page, where it could
+  only ever be disabled. Live against 2,230 agents: `1–50 of 2,230`,
+  then `51–100` with `51 DreamyHerring 83.6001` at the top.
+
+  Search still filters *within* the page, which the hub cannot help with
+  -- there is no agent search endpoint -- and that is worth knowing
+  rather than hiding.
+
+**On the task kinds: they are not legacy, but they were being asked to
+be something they are not.** `hash_match`, `consensus` and `disputable`
+are live protocol -- how a task is verified and settled, in `btclib` and
+the hub's state machine -- and every task has one. What they are not is
+a *category of work*, which is how the board was using them: the quote
+strip led with them until Round 38, and the unrouted `OverviewPage`
+still gives "By kind" equal billing with "By capability".
+
+  Where they remain, they are right: the task detail page needs to say
+  how a task settles, and `/tasks` filtering by kind is a real property
+  of a real task. `summarizeByKind` has no routed consumer left, and
+  `OverviewPage` is kept only for rollback -- so nothing was removed
+  here. Flagged rather than acted on, since deleting the fallback page
+  is the owner's call.
+
+Gates: 159 dashboard tests (2 new), 131 hub tests, tsc, lint, cargo,
+build.
