@@ -3504,3 +3504,50 @@ were the same anonymous key.
 
 Gates: 147 dashboard tests, 131 hub tests (3 new), tsc, lint, cargo,
 build.
+
+### Round 47 — the numbers stop falling out of their panels
+
+Three reports, three different causes, all of them showing up as a
+figure cut in half at a narrow width.
+
+**The leaderboard was my own regression.** Round 44 styled
+`.itx-board-agent` for the tape's poster column and gave it
+`width: 164px` -- unscoped, and that class is also the leaderboard's row
+link. A 164px link in a 232px rail leaves the earnings column nothing,
+so it was clipped mid-number. That is why the list read as unsorted with
+a "16" sitting between 172 and 152: the true value was 160.968, and only
+its first two digits fit. The tape's rules are scoped to the tape now,
+and the column reads 172.5894 / 160.968 / 152.2632 in order.
+
+  Worth naming the tell: a *sorted* list rendering out of order is
+  almost never a sort bug. The order was right the whole time; the
+  column was lying about the values it was ordering by.
+
+**The market panels overflowed because `th` is not `td`.** Those tables
+went to `table-layout: fixed` with declared column widths, which is the
+right fix -- under automatic layout the last column is the one pushed
+past the edge as a panel shrinks, and the last column is always the
+number. But `box-sizing: border-box` was set on `.itx-board-table td`
+and never on `th`, so each declared width had its padding *added*: 56,
+62 and 78 rendered as 68, 74 and 84. The sum came to 226 in a 200px
+container, the table overflowed, and the market-name column was crushed
+to zero to make room. The header cells share the cells' box model now.
+
+**And at the narrowest three columns, four columns plus a chart simply
+do not fit.** A market panel is about 234px there. Below 1400px the
+sparkline column is dropped: it is the only cell in the row carrying
+shape rather than a figure, and nothing in it is absent from the two
+numbers beside it. Its width goes back to the market's name.
+
+**Trends had its percentage against the sparkline's edge.** Padding on
+the number, and the column widened to hold both -- these cells are
+`border-box`, so the new padding came out of the declared width and the
+first attempt clipped `+300.00%` *inside* its own cell while sitting
+comfortably within the panel. 19px of gap now, where they were touching.
+
+Measured at 1090px (the tightest three-column layout) and at 1600: every
+table exactly the width of its container, zero clipped cells in all
+three panels, full values throughout, and the sparkline back above the
+breakpoint.
+
+Gates: 147 dashboard tests, tsc, lint, build.
