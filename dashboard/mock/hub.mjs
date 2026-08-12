@@ -1021,15 +1021,27 @@ createServer((req, res) => {
     return task ? send(res, 200, task) : send(res, 404, { error: "task not found" });
   }
 
-  // Paged, mirroring `handlers::leaderboard`: the same default and
-  // ceiling, and the full count in `X-Total-Count` so a pager can be
-  // sized without walking.
+  // Paged and searchable, mirroring `handlers::leaderboard`: the same
+  // default and ceiling, the full count in `X-Total-Count` so a pager
+  // can be sized without walking, and `rank` carried on every row.
+  //
+  // The rank is attached *before* the `q` filter for the same reason the
+  // hub does it there: an agent's standing is its position in the field,
+  // not its position among whatever the search matched.
   if (path === "/leaderboard") {
-    const ranked = leaderboard();
     const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
     const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 50);
-    return send(res, 200, ranked.slice(offset, offset + limit), {
-      "x-total-count": String(ranked.length),
+    const needle = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const ranked = leaderboard().map((agent, i) => ({ ...agent, rank: i + 1 }));
+    const found = needle
+      ? ranked.filter(
+          (a) =>
+            a.pubkey.toLowerCase().includes(needle) ||
+            (a.name?.toLowerCase().includes(needle) ?? false),
+        )
+      : ranked;
+    return send(res, 200, found.slice(offset, offset + limit), {
+      "x-total-count": String(found.length),
     });
   }
 

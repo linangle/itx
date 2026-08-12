@@ -306,6 +306,18 @@ impl From<Reputation> for ReputationDto {
 #[derive(Serialize)]
 pub struct LeaderboardEntryDto {
     pub pubkey: String,
+    /// This agent's standing in the **whole** field, one-based, taken
+    /// before any filtering or slicing.
+    ///
+    /// Added when `leaderboard` learned to search. Until then a caller
+    /// could derive the rank from `offset + row index`, which is exactly
+    /// true of an unfiltered page and nonsense on a searched one -- the
+    /// three agents matching "otter" are the 4th, 512th and 1,908th, not
+    /// the 1st, 2nd and 3rd. A rank is a position in the leaderboard,
+    /// not a position in whatever the search happened to match, so the
+    /// hub sends the one it actually computed rather than leaving the
+    /// client to guess.
+    pub rank: usize,
     #[serde(flatten)]
     pub reputation: ReputationDto,
 }
@@ -1699,6 +1711,25 @@ const MAX_LEADERBOARD_PAGE_SIZE: usize = 50;
 pub struct LeaderboardQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
+    /// Case-insensitive substring, matched against an agent's assigned
+    /// name and its hex pubkey. Absent or blank searches nothing and
+    /// returns the field in order.
+    pub q: Option<String>,
+}
+
+/// Whether an agent answers to `needle`, which the caller has already
+/// lowercased.
+///
+/// Substring rather than prefix on both halves, for different reasons.
+/// A name is two words joined without a separator (`SwiftWarlock`), so
+/// prefix matching would find it by "swift" and not by "warlock", and a
+/// reader who remembers one of the two words has no way to know which
+/// half they are holding. A pubkey is searched by whichever fragment the
+/// reader has in front of them -- often the truncated tail a table
+/// showed them, never the whole 66 characters.
+fn agent_matches(needle: &str, pubkey_hex: &str, name: Option<&str>) -> bool {
+    pubkey_hex.to_lowercase().contains(needle)
+        || name.is_some_and(|n| n.to_lowercase().contains(needle))
 }
 
 /// A page of agents by lifetime earnings, alongside each one's *current*
@@ -1720,6 +1751,13 @@ pub struct LeaderboardQuery {
 /// the whole request -- the same "don't let one flaky call take down an
 /// unrelated read" posture `try_settle_verified_task` already takes with
 /// the node.
+///
+/// `q` searches the **whole field** by name or pubkey, which is the
+/// half a client cannot do for itself: filtering a page of fifty
+/// searches fifty agents and calls it a board. Matching happens after
+/// the ranking and before the slice, so each entry keeps the `rank` it
+/// holds among all agents and the pager sizes to the matches rather than
+/// to the field.
 pub async fn leaderboard(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LeaderboardQuery>,
@@ -1729,21 +1767,44 @@ pub async fn leaderboard(
         .unwrap_or(DEFAULT_LEADERBOARD_PAGE_SIZE)
         .min(MAX_LEADERBOARD_PAGE_SIZE);
     let offset = query.offset.unwrap_or(0);
+    let needle = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()).map(str::to_lowercase);
 
-    let (total, entries) = {
+    let ranked = {
         let board = state.board.read().await;
         // The whole ranking, then the slice asked for. Ranking is what
         // makes a leaderboard a leaderboard, so it cannot be done per
         // page -- and the sort is over the reputation map the board
         // already holds in memory, which is the same work the flat
         // top-fifty did.
-        let ranked = board.leaderboard(usize::MAX);
-        let total = ranked.len();
-        (total, ranked.into_iter().skip(offset).take(limit).collect::<Vec<_>>())
+        board.leaderboard(usize::MAX)
+    };
+
+    // Ranks are attached here, over the unfiltered order, so a search
+    // reports where an agent actually stands. Names come from a
+    // read-only borrow of the registry: an agent the registry has never
+    // named is still searchable by key, and naming anything at this
+    // point would mint from the pool on behalf of an anonymous caller
+    // (see `names`).
+    let (total, entries) = {
+        let registry = state.names.read().await;
+        // Collected before slicing because the total is the count of
+        // matches, and a lazy filter has no length until it has been run.
+        let matching: Vec<(usize, (PublicKey, Reputation))> = ranked
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (pubkey, _))| match &needle {
+                None => true,
+                Some(needle) => {
+                    agent_matches(needle, &pubkey.to_string(), registry.get(pubkey))
+                }
+            })
+            .collect();
+        let total = matching.len();
+        (total, matching.into_iter().skip(offset).take(limit).collect::<Vec<_>>())
     };
 
     let mut lookups = tokio::task::JoinSet::new();
-    for (pubkey, _) in &entries {
+    for (_, (pubkey, _)) in &entries {
         let node = state.node.clone();
         let pubkey = pubkey.clone();
         lookups.spawn(async move {
@@ -1765,17 +1826,20 @@ pub async fn leaderboard(
     // nothing; it exists to catch agents that first appeared since the
     // hub came up.
     let names = state
-        .ensure_named(entries.iter().map(|(pubkey, _)| pubkey.clone()))
+        .ensure_named(entries.iter().map(|(_, (pubkey, _))| pubkey.clone()))
         .await;
 
     let page: Vec<LeaderboardEntryDto> = entries
         .into_iter()
-        .map(|(pubkey, reputation)| {
+        .map(|(index, (pubkey, reputation))| {
             let pubkey_hex = pubkey.to_string();
             let mut reputation = ReputationDto::from(reputation);
             reputation.net_worth = net_worths.get(&pubkey_hex).copied();
             reputation.name = names.get(&pubkey_hex).cloned();
-            LeaderboardEntryDto { pubkey: pubkey_hex, reputation }
+            // `enumerate` counted from the ranking, so this is a
+            // position in the field and survives both the filter and
+            // the slice. One-based, because it is shown to people.
+            LeaderboardEntryDto { pubkey: pubkey_hex, rank: index + 1, reputation }
         })
         .collect();
 
@@ -2717,6 +2781,41 @@ mod summary_tests {
             .map(|_| hex_of(&PrivateKey::new_key().public_key()))
             .collect();
         assert_eq!(lookup_names(&registry, &keys.join(",")).len(), MAX_NAMES_LOOKUP);
+    }
+
+    /// `agent_matches` is the whole of the leaderboard's search -- the
+    /// route around it only ranks, filters and slices -- so these test
+    /// the predicate rather than standing a hub up.
+    #[test]
+    fn agent_search_matches_either_half_of_a_name_case_insensitively() {
+        let key = hex_of(&PrivateKey::new_key().public_key());
+        assert!(agent_matches("swift", &key, Some("SwiftWarlock")));
+        // The half a prefix match would miss, which is the reason this
+        // is a substring: nobody knows which of the two words they are
+        // holding.
+        assert!(agent_matches("warlock", &key, Some("SwiftWarlock")));
+        assert!(agent_matches("swiftwarlock", &key, Some("SwiftWarlock")));
+        assert!(!agent_matches("otter", &key, Some("SwiftWarlock")));
+    }
+
+    #[test]
+    fn agent_search_matches_a_pubkey_fragment_not_just_its_start() {
+        let key = hex_of(&PrivateKey::new_key().public_key());
+        assert!(agent_matches(&key[..8], &key, None));
+        // The tail is what a truncated table cell shows, so it is the
+        // fragment a reader is most likely to have in hand.
+        assert!(agent_matches(&key[key.len() - 6..], &key, None));
+        // The needle arrives lowercased (the route does it once, rather
+        // than once per agent); the stored side is lowercased here, so a
+        // key that reached us in upper case still answers.
+        assert!(agent_matches(&key[..8], &key.to_uppercase(), None));
+    }
+
+    #[test]
+    fn an_unnamed_agent_is_still_searchable_by_key() {
+        let key = hex_of(&PrivateKey::new_key().public_key());
+        assert!(agent_matches(&key[..6], &key, None));
+        assert!(!agent_matches("swiftwarlock", &key, None));
     }
 
     #[test]
