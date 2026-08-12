@@ -9,8 +9,15 @@ interface Props {
 
 /** Prev/next pager with an explicit "showing X–Y of Z" range.
  *
- * Paging happens **client-side**, over the already-fetched and filtered
- * set, rather than through the hub's `?offset=&limit=`. That's not
+ * The component is agnostic about where the page comes from: it is given
+ * a page number, a size and a total, and reports a range. `/leaderboard`
+ * hands it a **server-side** page -- the hub ranks the whole field and
+ * serves fifty of it, so `total` there is `X-Total-Count` and changing
+ * page issues a request.
+ *
+ * On the task list, paging happens **client-side**, over the
+ * already-fetched and filtered set, rather than through the hub's
+ * `?offset=&limit=`. That's not
  * laziness: kind filtering has no server-side equivalent (the hub has no
  * `?kind=`), so a server-side page of 50 would arrive, get filtered down
  * to whatever matched, and render a page of unpredictable size --
