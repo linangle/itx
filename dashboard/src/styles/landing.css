@@ -69,7 +69,7 @@ body.itx-landing-body[data-theme="light"] {
    * grazing it. The bloom under the baseline is behind the strip at this
    * lift and shows in the gutters either side, which is where that
    * comment above already expected to find it. */
-  --bd-lift: 64px;
+  --bd-lift: 48px;
 
   /* The band under the market line's dotted baseline, where the
    * counter-coloured bloom lives. Read by MarketLine as well as used in
@@ -884,12 +884,11 @@ body.itx-landing-body[data-theme="light"] {
   flex-direction: column;
 }
 
-.itx-board-mid .itx-board-markets {
-  /* The same height as the pinned columns, so the market overview and
-     the rail beside it start and finish together -- which is what the
-     panels' `flex: 1` used to get from the grid row. */
-  height: calc(100vh - var(--ld-bar-h) - var(--sp-9));
-}
+/* No height here any more. It was pinned to the viewport so the market
+   overview finished level with the rail, and that is what left the
+   panels stretched over their own content -- the thing the rows were
+   swimming in. The carousel takes its height from the tallest sector
+   now, and the rail is simply the taller of the two columns. */
 
 .itx-board-markets {
   /* One width for a market column, read by the carousel items. The
@@ -1106,10 +1105,21 @@ body.itx-landing-body[data-theme="light"] {
 }
 
 .itx-board-panel-market {
-  /* Grows to the column's height; the min-height is a floor for when
-     the rail is the shorter of the two. */
+  /* Sized by its rows, not by the column.
+   *
+   * `flex: 1` still fills the carousel item, but the *item* is now as
+   * tall as its content rather than as tall as the viewport -- so a
+   * sector with nine markets makes a nine-row panel instead of a nine-row
+   * table adrift in six hundred pixels of empty box. Every panel in the
+   * row still finishes level, because the carousel is a flex row and its
+   * items stretch to the tallest of them.
+   *
+   * The floor is for the states with no table in them at all -- loading,
+   * an unreachable hub, a sector with nothing on the board -- where a
+   * one-line panel would make the whole row jump the moment data
+   * arrived. */
   flex: 1;
-  min-height: 430px;
+  min-height: calc(var(--row-h) * 5);
   padding: var(--pad-panel-y) var(--pad-panel-x);
   display: flex;
   flex-direction: column;
@@ -1868,13 +1878,6 @@ body.itx-landing-body[data-theme="light"] {
     height: auto;
   }
 
-  /* And the markets column gives its height back to the panels'
-     own min-heights, rather than holding a screen it no longer shares
-     with anything. */
-  .itx-board-mid .itx-board-markets {
-    height: auto;
-  }
-
   /* Stacked, there is no nav column to clear, so the heading goes back
      to the page's left edge. */
   .itx-board-head {
@@ -1904,7 +1907,7 @@ body.itx-landing-body[data-theme="light"] {
   }
 
   .itx-board-panel-market {
-    min-height: 340px;
+    min-height: calc(var(--row-h) * 4);
   }
 }
 

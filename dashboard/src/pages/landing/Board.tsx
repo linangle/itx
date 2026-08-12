@@ -33,11 +33,18 @@ import type {
   SeriesWindow,
 } from "../../lib/series";
 
-/** Ceilings, not row counts. Every table on the board now renders as
- * many rows as its panel has room for -- see `useFitRows` -- so these
- * only cap how much a panel is *prepared* to show, which is what stops
- * a tall window from asking for a sparkline per market on the board. */
-const MAX_MARKET_ROWS = 24;
+/** Ceilings, not row counts, for the tables that measure themselves --
+ * see `useFitRows`. Those only cap how much a panel is *prepared* to
+ * show, which is what stops a tall window from asking for a sparkline
+ * per row on the board.
+ *
+ * `MAX_MARKET_ROWS` is the exception and is a real limit: the sector
+ * panels are sized by their rows rather than measured, so this is how
+ * long the longest of them may get before it starts scrolling the
+ * carousel's own box rather than growing. Twelve is about a screen's
+ * worth beside the rail, and every sector in the taxonomy is under it
+ * today -- coding, the widest, has nine. */
+const MAX_MARKET_ROWS = 12;
 const MAX_TRENDING_ROWS = 24;
 const MAX_UPDATE_ROWS = 24;
 const MAX_LEADER_ROWS = 24;
@@ -678,14 +685,33 @@ const SectorPanel = memo(function SectorPanel({
   // shared between panels, and the order is a view state that changes
   // without the data changing.
   const markets = useMemo(() => sortMarkets(sector.markets, sort), [sector.markets, sort]);
-  // The panel is as tall as the row it sits in, which is set by the rail
-  // beside it -- so how many markets belong here is a question only the
-  // rendered box can answer. The header row is measured out of the
-  // budget rather than assumed, since it is inside the same box.
-  const [fitRef, rows] = useFitRows();
+  // No `useFitRows` here, unlike every other panel on the board, and the
+  // relationship is deliberately the other way round: these panels are
+  // sized *by* their rows rather than measured for how many rows they
+  // can hold.
+  //
+  // Measuring was right while the row's height came from the rail beside
+  // it. It does not any more, and against a viewport-tall column a
+  // sector with nine markets asked for nine rows and then sat in six
+  // hundred pixels of empty panel. Now the table is simply as long as it
+  // is -- capped at `MAX_MARKET_ROWS` -- and the box takes its height
+  // from that.
+  //
+  // The panels still finish level with each other: the carousel is a
+  // flex row, so every item stretches to the tallest, and the tallest is
+  // whichever sector has the most markets. That is what keeps the row
+  // tidy while still letting the whole row shrink when no sector has
+  // many.
   return (
     <section className="itx-board-panel itx-board-panel-market">
-      <div className="itx-board-fit" ref={fitRef}>
+      {/* Not an `itx-board-fit` box, unlike every other panel's inner
+          div. That class is `flex: 1 1 0` with `overflow: hidden`, which
+          is exactly what a *measured* panel needs -- rendering more rows
+          into it can never make it taller, so `useFitRows` can divide a
+          stable height. Here the rows are meant to set the height, so
+          the same box would clamp the panel to its floor and clip the
+          table. */}
+      <div>
         {loading ? (
           <p className="itx-board-note">loading the board…</p>
         ) : error ? (
@@ -707,7 +733,7 @@ const SectorPanel = memo(function SectorPanel({
               </tr>
             </thead>
             <tbody>
-              {markets.slice(0, Math.min(rows, MAX_MARKET_ROWS)).map((m) => (
+              {markets.slice(0, MAX_MARKET_ROWS).map((m) => (
                 <tr key={m.capability}>
                   {/* Straight to that market's tasks. A market is a
                       capability tag on the wire, and the task list

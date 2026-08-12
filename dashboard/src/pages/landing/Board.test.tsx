@@ -103,6 +103,20 @@ describe("Board", () => {
     expect(rows.map((r) => r.textContent?.match(/^[a-z-]+/)?.[0])).toEqual(["python", "web-dev"]);
   });
 
+  it("caps a sector's panel at twelve markets however many it holds", () => {
+    // No sector in the taxonomy is this wide -- coding, the largest, has
+    // nine -- which is exactly why the cap needs a test rather than an
+    // eyeball. Unknown tags all file into "other", so fourteen of them
+    // build one oversized panel without inventing a sector.
+    const many = Array.from({ length: 14 }, (_, i) =>
+      market(`haruspicy-${String.fromCharCode(97 + i)}`, 1000 - i),
+    );
+
+    const { carousel } = renderBoard(many);
+    const rows = within(carousel.getAllByRole("table")[0]).getAllByRole("row").slice(1);
+    expect(rows.length).toBe(12);
+  });
+
   it("heads the market column with the market, not the agent", async () => {
     renderBoard(capabilities);
     expect(await screen.findAllByRole("columnheader", { name: "market" })).not.toHaveLength(0);
