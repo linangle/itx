@@ -1149,7 +1149,24 @@ createServer((req, res) => {
     const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
     const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 50);
     const needle = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-    const ranked = leaderboard().map((agent, i) => ({ ...agent, rank: i + 1 }));
+    // `sort` and `dir` mirror `handlers::leaderboard`: the column ranks
+    // the whole field before it is sliced, unknown columns fall back to
+    // earnings rather than failing, and the pubkey breaks ties so a page
+    // boundary cannot serve one agent twice. `net_worth` is deliberately
+    // absent from both -- the fixture happens to know every balance, but
+    // the real hub fetches them one lookup per agent *for the page*, so
+    // offering it here would work against this file and quietly do
+    // nothing against a hub. See `docs/hub-requirements.md`.
+    const column = { completed: "completed", failed: "failed" }[
+      (url.searchParams.get("sort") ?? "").trim()
+    ] ?? "total_earned";
+    const ascending = (url.searchParams.get("dir") ?? "").trim() === "asc";
+    const ranked = leaderboard()
+      .sort((a, b) => {
+        const byColumn = ascending ? a[column] - b[column] : b[column] - a[column];
+        return byColumn || a.pubkey.localeCompare(b.pubkey);
+      })
+      .map((agent, i) => ({ ...agent, rank: i + 1 }));
     const found = needle
       ? ranked.filter(
           (a) =>

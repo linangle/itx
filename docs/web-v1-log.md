@@ -4963,3 +4963,73 @@ question.
 
 No site code changed this round. Gates: 256 dashboard tests, lint,
 fixture syntax check.
+
+### Round 69 — the standings rank by the column you click
+
+The leaderboard sorted by one thing, and the table showed four numbers.
+Clicking a column now ranks the field by it.
+
+**The hub does the ranking, which is the whole point.** `GET
+/leaderboard?sort=earned|completed|failed&dir=asc|desc` orders all
+several thousand agents and serves the fifty at the top of that
+ordering. Sorting the fifty rows already in hand would have been four
+lines in the client and a different question in the same shape: "the
+highest earners, reordered by completions" reads exactly like "the most
+completions" and is not it. That is the mistake search made before the
+hub took it over, and the reason it moved.
+
+**The tiebreak is load-bearing.** Every column but earnings ties
+constantly — most of a real field has completed nothing and failed
+nothing — and a page is a slice of that order. The ranking is built from
+a `HashMap`, so without a total order two tied agents can swap places
+between the request for page 1 and the request for page 2, and one of
+them is served twice while the other is never served at all. The pubkey
+breaks every tie, in the hub and in the fixture, and a test builds a
+field that is *entirely* ties and shuffles it to prove the order does
+not move.
+
+**Net worth is the one column that stays unsortable, and its header
+says why on hover.** The other three are in the reputation map the hub
+holds in memory, so ranking by one costs a sort. Net worth is a live
+balance the node answers for, fetched one lookup per agent *for the page
+being served* — the same fan-out the fifty-row page cap exists to bound.
+Ranking the field by it would be thousands of node connections to order
+fifty rows. `hub-requirements.md` records it, and records that the fix
+is a balance cache rather than a `sort=net_worth` branch: the same cache
+would lift the page cap, so it is two asks with one answer.
+
+  Worth saying plainly, since the alternative was tempting and cheap:
+  reordering the page and calling it a ranking would have looked
+  identical to a reader and been wrong in the same way every time.
+
+**Smaller things that came with it.** The panel head follows the sort
+rather than claiming "ranked by lifetime earnings" above a table sorted
+by failures, and clicking a column returns to page 1, because page 7 of
+the old order means nothing in the new one.
+
+**Also in the tree, not in this commit.** The filter bar's corrections —
+the green off the selected row, the "any" out of the two picker labels
+and the italic row out of the market list, the clear button cut to the
+site's 10px, the bar spaced to 20px, a light scrollbar in the menu, and
+a caret hit area of 46×34 instead of nine pixels square — are edits
+*inside* another session's uncommitted dropdown work, so they belong to
+that round's commit rather than this one.
+
+  One of them is worth recording wherever it lands. The menus could be
+  open all at once, which is how the owner photographed four overlapping
+  lists: **WebKit does not focus a button when it is clicked**, so the
+  blur that was supposed to close the previous menu never fired. Chrome
+  focuses it and closes them, which is why the guard looked sufficient.
+  Both controls now also close on a `pointerdown` outside themselves,
+  which holds in every engine; measured after, no click can leave more
+  than one menu open.
+
+Verified live against the fixture: `sort=completed` returns a field
+headed by 13 completions where the default returns one headed by 190 itx
+earned, `dir=asc` turns "most failures" into "fewest", and page two of a
+tie-heavy ordering continues rather than repeating. In the browser the
+caret marks the sorted column, the ranks renumber 1..50 in the new
+order, and the panel head reads "ranked by tasks completed".
+
+Gates: 260 dashboard tests (5 new), 144 hub tests (3 new), tsc, lint,
+cargo, build.

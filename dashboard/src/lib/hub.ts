@@ -312,6 +312,25 @@ export function getReputation(pubkey: string): Promise<ReputationDto> {
  * ceiling -- asking for more returns fifty anyway. */
 export const LEADERBOARD_PAGE_SIZE = 50;
 
+/** Which column ranks the standings, and which way.
+ *
+ * **The column the hub can rank by, not every column the table shows.**
+ * `earned`, `completed` and `failed` are in the reputation map the hub
+ * holds, so ranking by one costs it a sort. Net worth is a live balance
+ * the node answers for, fetched one lookup per agent *for the page being
+ * served* — ranking the field by it would mean a lookup per agent in the
+ * whole field. That is why the column is not sortable on the page, and
+ * why `hub-requirements.md` carries it as an ask rather than the site
+ * faking it by reordering the fifty rows in hand. That fake is exactly
+ * what search used to do, and it is the reason `q` is server-side now.
+ */
+export type LeaderboardSortKey = "earned" | "completed" | "failed";
+
+export interface LeaderboardSort {
+  key: LeaderboardSortKey;
+  direction: "asc" | "desc";
+}
+
 /** A page of the standings, plus the size of the whole field.
  *
  * Paged rather than a flat list because the hub now serves it that way:
@@ -330,9 +349,19 @@ export async function getLeaderboard(
   offset = 0,
   limit = LEADERBOARD_PAGE_SIZE,
   q?: string,
+  sort?: LeaderboardSort,
 ): Promise<Page<LeaderboardEntryDto>> {
   const { body, response } = await get<LeaderboardEntryDto[]>(
-    `/leaderboard${query({ offset: offset || undefined, limit, q: q?.trim() })}`,
+    `/leaderboard${query({
+      offset: offset || undefined,
+      limit,
+      q: q?.trim(),
+      // Omitted at the default rather than sent, so the common request
+      // is the same URL it has always been -- and so a hub that predates
+      // the parameter behaves identically.
+      sort: sort && sort.key !== "earned" ? sort.key : undefined,
+      dir: sort?.direction === "asc" ? "asc" : undefined,
+    })}`,
   );
   const header = response.headers.get("x-total-count");
   const parsed = header === null ? Number.NaN : Number(header);

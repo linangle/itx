@@ -164,6 +164,7 @@ describe("terminal LeaderboardPage paging", () => {
       0,
       hub.LEADERBOARD_PAGE_SIZE,
       "",
+      { key: "earned", direction: "desc" },
     );
 
     vi.mocked(hub.getLeaderboard).mockResolvedValue({
@@ -178,6 +179,7 @@ describe("terminal LeaderboardPage paging", () => {
       hub.LEADERBOARD_PAGE_SIZE,
       hub.LEADERBOARD_PAGE_SIZE,
       "",
+      { key: "earned", direction: "desc" },
     );
     expect(await screen.findByText("51–100 of 120")).toBeInTheDocument();
 
@@ -217,6 +219,7 @@ describe("terminal LeaderboardPage search", () => {
         0,
         hub.LEADERBOARD_PAGE_SIZE,
         "otter",
+        { key: "earned", direction: "desc" },
       ),
     );
   });
@@ -256,5 +259,152 @@ describe("terminal LeaderboardPage search", () => {
     await user.type(screen.getByRole("searchbox", { name: /Search agents/ }), "zzz");
 
     expect(await screen.findByText(/no agent's name or key matches/)).toBeInTheDocument();
+  });
+});
+
+describe("terminal LeaderboardPage sorting", () => {
+  beforeEach(() => {
+    vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [], total: 0, complete: true });
+    vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+  });
+
+  /** Fifty rows, the way the paging block builds them -- the contents do
+   * not matter here, only that a table renders and the requests behind
+   * it can be read. */
+  function field(count: number): hub.LeaderboardEntryDto[] {
+    return Array.from({ length: count }, (_, n) =>
+      entry({
+        pubkey: "02" + String(n).padStart(64, "0"),
+        rank: n + 1,
+        name: `Agent${n}`,
+        total_earned: 100_000 - n,
+      }),
+    );
+  }
+
+  function renderPage() {
+    return render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>,
+    );
+  }
+
+  it("re-asks the hub for the field in the new order, rather than reordering the page", async () => {
+    const user = userEvent.setup();
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: field(hub.LEADERBOARD_PAGE_SIZE),
+      total: 3_000,
+    });
+    renderPage();
+    await screen.findByRole("table");
+
+    await user.click(screen.getByRole("button", { name: /completed/i }));
+
+    // The whole point: the fifty rows in hand are the fifty *highest
+    // earners*, so sorting them by completions answers a different
+    // question in the same shape. The hub ranks the field.
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "completed", direction: "desc" },
+      ),
+    );
+  });
+
+  it("flips the direction on a second click, and starts a new column at most-first", async () => {
+    const user = userEvent.setup();
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: field(hub.LEADERBOARD_PAGE_SIZE),
+      total: 3_000,
+    });
+    renderPage();
+    await screen.findByRole("table");
+
+    const failed = () => screen.getByRole("button", { name: /failed/i });
+    await user.click(failed());
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "failed", direction: "desc" },
+      ),
+    );
+
+    // "Fewest failures" is a real question about an agent, which is why
+    // ascending exists at all.
+    await user.click(failed());
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "failed", direction: "asc" },
+      ),
+    );
+
+    // Taking over from another column starts at "most", because that is
+    // what anyone means the first time they sort by a number.
+    await user.click(screen.getByRole("button", { name: /earned/i }));
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "earned", direction: "desc" },
+      ),
+    );
+  });
+
+  it("returns to the first page, since page 7 of the old order means nothing in the new one", async () => {
+    const user = userEvent.setup();
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: field(hub.LEADERBOARD_PAGE_SIZE),
+      total: 3_000,
+    });
+    renderPage();
+    await screen.findByRole("table");
+
+    await user.click(screen.getByRole("button", { name: /next page/i }));
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        hub.LEADERBOARD_PAGE_SIZE,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "earned", direction: "desc" },
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: /completed/i }));
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "completed", direction: "desc" },
+      ),
+    );
+  });
+
+  it("leaves net worth unsortable, and says why on the header", async () => {
+    vi.mocked(hub.getLeaderboard).mockResolvedValue({
+      items: field(hub.LEADERBOARD_PAGE_SIZE),
+      total: 3_000,
+    });
+    renderPage();
+    await screen.findByRole("table");
+
+    // Not a button, because the hub cannot answer it: net worth is a
+    // live balance fetched per agent for the page being served, so
+    // ranking the field by it would be a node lookup per agent in the
+    // field. Reordering the page instead is the fake this site removed
+    // from search.
+    const header = screen.getByRole("columnheader", { name: /net worth/i });
+    expect(within(header).queryByRole("button")).toBeNull();
+    expect(header).toHaveAttribute("title", expect.stringMatching(/live balance/i));
+    expect(header).not.toHaveAttribute("aria-sort");
   });
 });

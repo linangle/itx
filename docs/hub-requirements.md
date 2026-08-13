@@ -213,6 +213,34 @@ and sector filtering — and the Poster column additionally sorts by
 moment it sorts. Grouping one agent's tasks together works; alphabetical
 by name is not currently possible.
 
+### Ranking the standings by net worth
+
+**Needs.** The leaderboard's columns sort the whole field: `GET
+/leaderboard?sort=earned|completed|failed&dir=asc|desc` ranks all
+several thousand agents and serves the fifty at the top of that ranking.
+Net worth is the one column that cannot join them.
+
+**Why it is different from the other three.** `earned`, `completed` and
+`failed` are in the reputation map the hub already holds in memory, so
+ranking by one costs a sort. Net worth is a **live balance the node
+answers for**, fetched one lookup per agent *for the page being served*
+— which is also why the page size is capped at fifty (see the
+leaderboard entry above). Ranking the field by it would mean a lookup
+per agent in the whole field: thousands of node connections to order
+fifty rows.
+
+**Costs today.** The column is not sortable, and its header says so on
+hover. The alternative — reordering the fifty rows in hand and calling
+it a ranking — is the exact fake that search used to be, and the reason
+`q` moved server-side: "the fifty highest earners, reordered by
+balance" reads identically to "the fifty richest agents" and is not it.
+
+**If it moves.** The fix is not a `sort=net_worth` branch in the
+handler; it is the balance fan-out. A cached balance per agent, updated
+on settlement and on a slow sweep, would make this a sort like the
+others *and* lift the fifty-row page cap that exists to bound the same
+fan-out. Two asks, one cache.
+
 ### A realtime channel
 
 **Costs today.** Everything polls, on a 5s interval, with the poll

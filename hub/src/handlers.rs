@@ -1715,6 +1715,53 @@ pub struct LeaderboardQuery {
     /// name and its hex pubkey. Absent or blank searches nothing and
     /// returns the field in order.
     pub q: Option<String>,
+    /// Which column ranks the field: `earned` (the default), `completed`
+    /// or `failed`. Unknown values fall back to `earned` rather than
+    /// failing the request -- a leaderboard that 400s because a client
+    /// sent a column it does not know is worse than one that answers in
+    /// its default order.
+    ///
+    /// **Deliberately not `net_worth`.** Every other column is in the
+    /// reputation map the board already holds, so ranking by it costs a
+    /// sort; net worth is a live balance the node answers for, fetched
+    /// one lookup per agent *for the page being served*. Ranking the
+    /// field by it would mean a lookup per agent in the whole field --
+    /// thousands of connections to order fifty rows. See
+    /// `docs/hub-requirements.md`.
+    pub sort: Option<String>,
+    /// `desc` (the default) or `asc`. Ascending is what makes `failed`
+    /// worth sorting in both directions -- "fewest failures" is a real
+    /// question about an agent, and "most" is the same question asked
+    /// the other way.
+    pub dir: Option<String>,
+}
+
+/// The columns the field can be ranked by, and the order it is ranked
+/// in. Parsed from the query rather than trusted: see `LeaderboardQuery`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LeaderboardSort {
+    Earned,
+    Completed,
+    Failed,
+}
+
+impl LeaderboardSort {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            Some("completed") => Self::Completed,
+            Some("failed") => Self::Failed,
+            _ => Self::Earned,
+        }
+    }
+
+    /// The figure this column ranks on, for one agent.
+    fn key(self, reputation: &Reputation) -> u64 {
+        match self {
+            Self::Earned => reputation.total_earned,
+            Self::Completed => reputation.completed,
+            Self::Failed => reputation.failed,
+        }
+    }
 }
 
 /// Whether an agent answers to `needle`, which the caller has already
@@ -1768,6 +1815,8 @@ pub async fn leaderboard(
         .min(MAX_LEADERBOARD_PAGE_SIZE);
     let offset = query.offset.unwrap_or(0);
     let needle = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()).map(str::to_lowercase);
+    let sort = LeaderboardSort::parse(query.sort.as_deref());
+    let ascending = query.dir.as_deref().map(str::trim) == Some("asc");
 
     let ranked = {
         let board = state.board.read().await;
@@ -1776,7 +1825,31 @@ pub async fn leaderboard(
         // page -- and the sort is over the reputation map the board
         // already holds in memory, which is the same work the flat
         // top-fifty did.
-        board.leaderboard(usize::MAX)
+        let mut ranked = board.leaderboard(usize::MAX);
+        // Re-ranked here rather than in `board.leaderboard`, which keeps
+        // meaning "the field by earnings" for its other caller (the
+        // startup backfill).
+        //
+        // **The pubkey is the tiebreak, and it is load-bearing.** The
+        // columns other than earnings tie constantly -- most of the
+        // field has completed 0 and failed 0 -- and a page is a slice of
+        // this order. Without a total order, two agents that tie could
+        // swap places between the request for page 1 and the request for
+        // page 2, and an agent would be served twice or not at all. The
+        // ranking is built from a `HashMap`, so ties are otherwise in
+        // whatever order the map iterated.
+        if sort != LeaderboardSort::Earned || ascending {
+            ranked.sort_by(|a, b| {
+                let (left, right) = (sort.key(&a.1), sort.key(&b.1));
+                let by_column = if ascending {
+                    left.cmp(&right)
+                } else {
+                    right.cmp(&left)
+                };
+                by_column.then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+            });
+        }
+        ranked
     };
 
     // Ranks are attached here, over the unfiltered order, so a search
@@ -3083,6 +3156,71 @@ mod summary_tests {
             .map(|_| hex_of(&PrivateKey::new_key().public_key()))
             .collect();
         assert_eq!(lookup_names(&registry, &keys.join(",")).len(), MAX_NAMES_LOOKUP);
+    }
+
+    /// The leaderboard's *ordering* is likewise the part worth testing
+    /// without standing a hub up: the route around it filters and
+    /// slices, but which agent lands on which page is decided here.
+    #[test]
+    fn leaderboard_sort_reads_the_column_asked_for_and_defaults_to_earnings() {
+        assert_eq!(LeaderboardSort::parse(None), LeaderboardSort::Earned);
+        assert_eq!(LeaderboardSort::parse(Some("completed")), LeaderboardSort::Completed);
+        assert_eq!(LeaderboardSort::parse(Some("failed")), LeaderboardSort::Failed);
+        // Unknown columns answer in the default order rather than
+        // failing the request -- including `net_worth`, which is a live
+        // balance rather than something the board holds, and so is the
+        // one column here that cannot rank the field. See the doc on
+        // `LeaderboardQuery::sort`.
+        assert_eq!(LeaderboardSort::parse(Some("net_worth")), LeaderboardSort::Earned);
+        assert_eq!(LeaderboardSort::parse(Some("nonsense")), LeaderboardSort::Earned);
+    }
+
+    #[test]
+    fn leaderboard_sort_keys_off_the_right_figure() {
+        let reputation = Reputation { completed: 7, failed: 2, total_earned: 900 };
+        assert_eq!(LeaderboardSort::Earned.key(&reputation), 900);
+        assert_eq!(LeaderboardSort::Completed.key(&reputation), 7);
+        assert_eq!(LeaderboardSort::Failed.key(&reputation), 2);
+    }
+
+    /// Ties are the normal case on every column but earnings -- most of
+    /// a real field has completed nothing and failed nothing -- and a
+    /// page is a slice of this order. Two agents that tie must therefore
+    /// land in the same order on every request, or paging serves one of
+    /// them twice and the other never. This reproduces the route's
+    /// comparator over a field that is *entirely* ties.
+    #[test]
+    fn leaderboard_ties_break_on_the_pubkey_so_paging_cannot_repeat_an_agent() {
+        let field: Vec<(PublicKey, Reputation)> = (0..8)
+            .map(|_| {
+                (
+                    PrivateKey::new_key().public_key(),
+                    Reputation { completed: 3, failed: 0, total_earned: 0 },
+                )
+            })
+            .collect();
+
+        let order = |input: &[(PublicKey, Reputation)]| {
+            let mut sorted = input.to_vec();
+            sorted.sort_by(|a, b| {
+                LeaderboardSort::Completed
+                    .key(&b.1)
+                    .cmp(&LeaderboardSort::Completed.key(&a.1))
+                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+            });
+            sorted.into_iter().map(|(key, _)| key.to_string()).collect::<Vec<_>>()
+        };
+
+        let first = order(&field);
+        // The same field arriving in a different order -- which is what a
+        // HashMap's iteration does between calls -- ranks identically.
+        let mut shuffled = field.clone();
+        shuffled.reverse();
+        assert_eq!(first, order(&shuffled));
+        // And it really is a total order: no two rows compare equal.
+        let mut unique = first.clone();
+        unique.dedup();
+        assert_eq!(unique.len(), first.len());
     }
 
     /// `agent_matches` is the whole of the leaderboard's search -- the
