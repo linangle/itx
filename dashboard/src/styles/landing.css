@@ -2937,21 +2937,46 @@ a.itx-board-what:hover {
   margin-top: var(--sp-6);
 }
 
-/* The label row's arrow: the door to the full page. The same grammar as
-   the chart's back control -- the arrow scales on hover, the words (here
-   the label) stay put. The newsroom's label row wears this class too:
-   same control, same meaning, one rule. */
-.itx-pm-open {
+/* A section's door: its name and an arrow, as one link -- see
+   `SectionLink`. Both sample sections wear it.
+
+   The name keeps the label's own weight and ink, so the row still reads
+   as a heading; only the arrow takes the link colour, which is what
+   says the heading goes somewhere. The selector is qualified with
+   `.itx-board` for the anchor rules the board sets on every link
+   inside it. */
+.itx-board a.itx-section-link,
+.itx-board a.itx-section-link:hover {
   display: inline-flex;
   align-items: center;
-  color: var(--ld-sub);
-  transition: color 130ms ease, transform 130ms ease;
-}
-
-.itx-board .itx-pm-open:hover {
+  gap: var(--sp-4);
   color: var(--ld-light);
   text-decoration: none;
-  transform: scale(1.1);
+}
+
+/* The label inside the link keeps its own type but gives up its bottom
+   margin -- the row it sits in owns the spacing now. */
+.itx-section-link .itx-board-label {
+  margin-bottom: 0;
+}
+
+.itx-section-arrow {
+  flex: none;
+  color: var(--ld-blue);
+  transition: transform 130ms ease;
+}
+
+/* Hover moves the arrow the way it points rather than scaling the pair.
+   Growing the whole control shifted the words beside it, which on a row
+   that also holds a pager read as the layout twitching. */
+.itx-board a.itx-section-link:hover .itx-section-arrow {
+  transform: translateX(3px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .itx-section-arrow {
+    transition: none;
+  }
 }
 
 .itx-pm-card {
@@ -3031,12 +3056,21 @@ a.itx-board-what:hover {
   color: var(--ld-sub);
 }
 
+/* The event, and the biggest thing on the card -- but not the biggest
+   thing on the board.
+ *
+ * It was `--fs-title`, the 25px the board's own section headings use,
+ * which made a sample market's question larger than "market overview"
+ * and larger than every real figure on the page. A card is one item
+ * inside a section; it cannot outrank the section. `--fs-label` is the
+ * board's heading step down from that, and it still leads the card
+ * because nothing else in it is bold at that size. */
 .itx-pm-title {
-  margin: 0 0 var(--sp-6);
-  font-size: var(--fs-title);
+  margin: 0 0 var(--sp-5);
+  font-size: var(--fs-label);
   font-weight: 700;
-  line-height: 1.12;
-  letter-spacing: -0.012em;
+  line-height: 1.2;
+  letter-spacing: -0.008em;
   color: var(--ld-light);
 }
 
@@ -3046,7 +3080,7 @@ a.itx-board-what:hover {
    the cells, so everything else `.itx-board-table` decides still
    holds. */
 .itx-pm-outcomes {
-  --row-h: 56px;
+  --row-h: 48px;
 }
 
 /* The outcome's name wears its line's colour as an underline -- the
@@ -3056,7 +3090,7 @@ a.itx-board-what:hover {
   display: inline-block;
   padding-bottom: var(--sp-2);
   border-bottom: 2px solid var(--bd-line);
-  font-size: var(--fs-lead);
+  font-size: var(--fs-body);
   color: var(--ld-light);
 }
 
@@ -3082,7 +3116,7 @@ a.itx-board-what:hover {
   padding: var(--sp-3) var(--sp-6);
   border: 1px solid var(--ld-green);
   border-radius: 999px;
-  font-size: var(--fs-lead);
+  font-size: var(--fs-body);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-align: center;
@@ -3116,6 +3150,12 @@ a.itx-board-what:hover {
 .itx-pm-chartcol {
   display: flex;
   flex-direction: column;
+  /* Centred in the card's height, not pinned to its top. The left
+     column is the taller of the two -- title, table, meta and the news
+     line -- so a chart that started at the top finished well short of
+     the card's bottom and left the panel looking bottom-heavy. The
+     legend rides with it, since the pair is one object. */
+  justify-content: center;
   min-width: 0;
 }
 
@@ -3153,8 +3193,11 @@ a.itx-board-what:hover {
   background: var(--ld-blue);
 }
 
+/* No `flex: 1` any more: stretching the plot to fill the column is
+   what pinned the chart's box to the top of the card and made
+   centring it a no-op. The SVG is a fixed height, so the box is simply
+   as tall as the chart and the column centres it. */
 .itx-pm-plot {
-  flex: 1;
   min-width: 0;
 }
 
@@ -3307,6 +3350,17 @@ a.itx-board-what:hover {
 
 .itx-nr-panel {
   padding: var(--pad-panel-y) var(--pad-panel-x);
+}
+
+/* The honesty line, moved off the section's label and into the panel --
+   the same place, and the same treatment, a market card gives its own.
+   Above the rows rather than below them: it qualifies what follows, and
+   a reader who takes the counts at face value has already passed it. */
+.itx-nr-sample {
+  margin: 0 0 var(--sp-5);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  color: var(--ld-sub);
 }
 
 /* The headline takes whatever width the row has left and clips.

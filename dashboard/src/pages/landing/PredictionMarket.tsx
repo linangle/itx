@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import Triangle from "../../components/Triangle";
+import SectionLink from "./SectionLink";
 import { useCarousel } from "../../hooks/useCarousel";
 import { useElementWidth } from "../../hooks/useElementWidth";
 import { formatCount } from "../../lib/format";
@@ -43,24 +43,11 @@ export default function PredictionMarket() {
           The pager sits beside it, where the carousel's own pager sits
           on the heading line above. */}
       <div className="itx-board-labels itx-board-labels-predictions">
-        <span className="itx-board-label">prediction market</span>
-        <Link
-          className="itx-pm-open"
+        <SectionLink
           to="/predictions"
-          aria-label="Open the full prediction market"
-          title="full prediction market"
-        >
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-            <path
-              d="M2 8h11M9 3.5 13.5 8 9 12.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </Link>
+          label="prediction market"
+          describedAs="open the full prediction market"
+        />
 
         {/* Disabled at the ends rather than wrapping, like the market
             carousel's: the row is a scroll, and a control that jumped
@@ -124,16 +111,13 @@ function MarketCard({ market }: { market: SampleMarket }) {
   return (
     <article className="itx-board-panel itx-pm-card">
       <div className="itx-pm-info">
-        <span className="itx-pm-cat">
-          {/* A stand-in for the reference's category tile: two bars in
-              the outcome colours, which is what the card is about. */}
-          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
-            <rect x="1" y="1" width="18" height="18" rx="4" fill="none" stroke="currentColor" strokeOpacity="0.5" />
-            <rect x="5" y="7" width="3.4" height="8" rx="1" fill="var(--ld-green)" />
-            <rect x="11.6" y="10" width="3.4" height="5" rx="1" fill="var(--ld-blue)" />
-          </svg>
-          {market.category}
-        </span>
+        {/* The category, as a word. The reference puts an event's own
+            logo here -- a club crest, a party's mark -- and a drawn
+            stand-in for one is a picture of nothing: it carried no
+            information the word beside it did not already carry, and
+            two coloured bars on a card that also has a two-line chart
+            said "chart" twice. */}
+        <span className="itx-pm-cat">{market.category}</span>
 
         <h3 className="itx-pm-title">{market.title}</h3>
 

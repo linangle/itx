@@ -155,9 +155,12 @@ describe("Board", () => {
 
     // The label row's arrow goes to the full page, and the pager says
     // where in the row you are.
-    expect(
-      within(section).getByRole("link", { name: /full prediction market/i }),
-    ).toHaveAttribute("href", "/predictions");
+    const door = within(section).getByRole("link", { name: /full prediction market/i });
+    expect(door).toHaveAttribute("href", "/predictions");
+    // The section's name is *inside* the link, not beside it: an arrow
+    // on its own is a control whose target the reader has to infer,
+    // and the words next to it were the part that said where it went.
+    expect(door).toHaveTextContent("prediction market");
     expect(within(section).getByText(`1 of ${SAMPLES.length}`)).toBeInTheDocument();
 
     // Last in the middle column, after the tape and the breakdown: the
@@ -224,13 +227,18 @@ describe("Board", () => {
     expect(views).toEqual([...views].sort((a, b) => b - a));
     expect(rows[0].querySelector(".itx-board-rank")?.textContent).toBe("1");
 
-    // Says on its face that the stories are examples, and the arrow
-    // goes to the full page -- the same pair every sample section
-    // carries.
-    expect(within(section).getByText(/sample stories/i)).toBeInTheDocument();
-    expect(
-      within(section).getByRole("link", { name: /full newsroom/i }),
-    ).toHaveAttribute("href", "/newsroom");
+    // Says on its face that the stories are examples -- inside the
+    // panel, where a market card says the same thing, rather than under
+    // the section's name where it made this the board's only two-line
+    // label.
+    const sample = within(section).getByText(/sample stories/i);
+    expect(sample).toBeInTheDocument();
+    expect(sample.closest(".itx-nr-panel")).not.toBeNull();
+
+    // And the section's name is the door, words and arrow together.
+    const door = within(section).getByRole("link", { name: /full newsroom/i });
+    expect(door).toHaveAttribute("href", "/newsroom");
+    expect(door).toHaveTextContent("newsroom");
   });
 
   it("anchors each section on its panel, so the jumps land level", () => {

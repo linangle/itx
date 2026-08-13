@@ -4807,3 +4807,61 @@ the guard doing its job in the same column.
 Gates: 252 dashboard tests (7 new), tsc, lint, build. Run with the
 concurrent session's in-flight `SelectField` work excluded, since that
 is mid-change in this tree.
+
+### Round 67 — the sample sections, quieter and clearly doored
+
+Three notes from the owner on the two sample sections.
+
+**A section's name is now its door.** Both sections hung a bare arrow
+beside a plain label, which is a control whose target the reader has to
+infer — and the words right next to it were the part that said where it
+went. `SectionLink` puts them in one link: the name keeps the label's
+weight and the page's ink so the row still reads as a heading, only the
+arrow carries the link colour, and the whole thing is the hit area.
+Hovering nudges the arrow the way it points rather than scaling the
+pair, since growing the control shifted the words beside it — on a row
+that also holds the market pager, that read as the layout twitching.
+
+**The market card's drawn category tile is gone.** The reference puts
+the event's own logo there — a club crest, a party's mark — and a
+drawn stand-in for one is a picture of nothing: two coloured bars that
+carried no information the word beside them did not already carry, on a
+card that also holds a two-line chart. So the category is just the
+word.
+
+**And the card is set a step quieter.** Its title was `--fs-title`, the
+25px the board's own section headings use, which made a *sample* market's
+question the largest thing on the screen — larger than "market
+overview", larger than every real figure on the board. A card is one
+item inside a section and cannot outrank the section, so the title
+drops to `--fs-label` and the outcome rows and odds pills come down with
+it (`--fs-lead` → `--fs-body`), with the table's row height following
+from 56px to 48. The title still leads the card, because nothing else in
+it is bold at that size.
+
+**The chart sits in the middle of the card now.** The left column is the
+taller of the two — title, table, meta, news — so a chart pinned to the
+top finished well short of the card's bottom and left the panel looking
+bottom-heavy. The chart column centres its contents, and the plot gave
+up its `flex: 1`, which was the thing stretching the box to the top and
+making the centring a no-op. Measured after: 25px of air above the chart
+column and 25px below it.
+
+**The newsroom's caption moved inside its panel.** It was a sub-line
+under the section's name, which made this the only two-line label on the
+board. What it says still matters — a ranked feed with view counts looks
+exactly like a live one — so it sits above the rows in the same
+treatment a market card gives its own "sample market" line, which is
+also where a reader meets it before taking the numbers at face value.
+
+Verified live at 1600×900: both sections read "prediction market →" and
+"newsroom →" as single links to their pages, the card's title at 16px
+against the 16px section label, no tile in the corner, the chart column
+centred, and the nav's jumps still landing `latest`, `breakdown` and
+`predictions` exactly level with the leaderboard panel. `newsroom` lands
+347px short for the reason `predictions` used to: it is the last section
+on the page, and the document runs out of scroll before it can reach the
+line.
+
+Gates: 252 dashboard tests, tsc, lint, build. Run with the concurrent
+session's in-flight `SelectField` work excluded.

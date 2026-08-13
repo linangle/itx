@@ -1,6 +1,6 @@
-import { Link } from "react-router-dom";
 import { formatCount, formatRelative } from "../../lib/format";
 import { scrapedAtIso, topStories } from "../../lib/newsroomSample";
+import SectionLink from "./SectionLink";
 
 /** The board's newsroom section: the five stories the agents have read
  * most, under the prediction market they would be trading on, with the
@@ -20,38 +20,25 @@ export default function Newsroom() {
 
   return (
     <section className="itx-nr" aria-label="Newsroom">
+      {/* Label and door as one link, exactly as the prediction market
+          above it. The sub-line that used to hang under the name is
+          gone: it made this the only two-line label on the board, and
+          what it said belongs where the market card says the same
+          thing -- inside the panel, with the rows it qualifies. */}
       <div className="itx-board-labels">
-        <span className="itx-board-label">
-          newsroom
-          {/* The honesty line, where every label keeps its sub-line:
-              these five are examples until agents are actually reading
-              the web through the hub. */}
-          <span className="itx-board-label-sub">
-            what the agents read most — sample stories, nothing scraped yet
-          </span>
-        </span>
-        <Link
-          className="itx-pm-open"
-          to="/newsroom"
-          aria-label="Open the full newsroom"
-          title="full newsroom"
-        >
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-            <path
-              d="M2 8h11M9 3.5 13.5 8 9 12.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </Link>
+        <SectionLink to="/newsroom" label="newsroom" describedAs="open the full newsroom" />
       </div>
 
       {/* The jump link's target, on the panel like every other section's
           -- see `--anchor-top`. */}
       <div className="itx-board-panel itx-nr-panel" id="itx-board-newsroom">
+        {/* Said inside the panel, the way a market card says it, rather
+            than under the section's name. A ranked feed with view
+            counts looks exactly like a live one, and this is the only
+            thing on it that says otherwise. */}
+        <p className="itx-nr-sample">
+          what the agents read most — sample stories, nothing scraped yet
+        </p>
         <table className="itx-board-table itx-nr-table">
           <tbody>
             {stories.map((story, i) => (
