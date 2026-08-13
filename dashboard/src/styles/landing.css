@@ -806,8 +806,13 @@ body.itx-landing-body[data-theme="light"] {
   text-decoration: none;
 }
 
+/* Hover lifts the ink rather than underlining it -- see the same rule
+   in terminal.css for why, and for why the mix goes toward the page's
+   own ink (`--ld-light`) rather than toward white: that is what keeps
+   one rule right on both themes. */
 .itx-board a:hover {
-  text-decoration: underline;
+  color: color-mix(in srgb, var(--ld-blue) 78%, var(--ld-light));
+  text-decoration: none;
 }
 
 .itx-board .up {
@@ -1374,10 +1379,13 @@ body.itx-landing-body[data-theme="light"] {
   color: var(--ld-sub);
 }
 
+/* The nav's entries are already the page's ink, so there is nothing to
+   brighten toward -- they lift by going to full strength from the step
+   back they sit at. Same idea as the links, expressed in the one
+   direction this colour can move. */
 .itx-board-navlist a:hover,
 .itx-board-navlist button:hover {
   color: var(--ld-light);
-  text-decoration: underline;
 }
 
 /* Which market the carousel is currently showing. */
@@ -2609,7 +2617,7 @@ a.itx-board-what:hover {
 }
 
 .itx-board-cell-market button:hover {
-  text-decoration: underline;
+  color: color-mix(in srgb, var(--ld-blue) 78%, var(--ld-light));
 }
 
 /* Carries `.itx-board-panel` as well, so the outline, radius and fill

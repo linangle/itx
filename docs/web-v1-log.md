@@ -4731,3 +4731,79 @@ required), and a 23-row history pages 10/10/3 with the arrow dead at
 the end.
 
 Gates: 245 dashboard tests (4 new), tsc, lint, build.
+
+### Round 66 — hover, hovercards, the ends of a pager, and the last capitals
+
+Four notes from the owner, each small and each touching every page.
+
+**Hover lifts the ink instead of underlining it.** An underline is a
+heavy answer on a surface where whole tables are links: the row gains a
+rule, the line box shifts, and on the board's dense rows the page
+twitched under the cursor. The hovered link now mixes 22% of the page's
+own ink into itself. Toward `--text` / `--ld-light`, deliberately, not
+toward white — that one expression is right on both themes, because the
+ink token is near-white on the dark theme and near-black on the light
+one, so the link gains contrast against whatever ground it is on.
+Straight to white would have washed out in light mode, where "brighter"
+means darker. The nav's entries, already set in the page's ink, go to
+full strength instead: same idea, expressed in the one direction that
+colour can move.
+
+**An agent's hovercard says its name, not its key.** Pointing at
+`VelvetyLion` to be told `038bbce7c95fa2…` answers a question nobody
+asked — the reader is pointing at a name *because* the name is what
+they are reading by, and the key is already on the row's second line
+wherever there is room for it. Unnamed agents keep the full key on the
+tooltip, because there the truncated key on the row is the only label
+there is and the full value is not otherwise recoverable. The link
+target never changed: the key is one click away, in full, either way.
+
+**Pagers grew ends.** `Pager` (task list, agent history, full
+leaderboard) and the board's leaderboard rail now carry a barred arrow
+outside each plain one. They appear only past two pages, which is the
+point at which stepping stops being the same thing as arriving: with
+two pages "next" already *is* "last", and a second control that does
+what the one beside it does is furniture. On a forty-nine page
+leaderboard they are the difference between one click and forty-eight.
+The bar is drawn on `Triangle` rather than as a new icon — the site has
+one arrow, and this is that arrow with a stop in front of it, stroked
+so it takes the same round cap the triangle's corners have.
+
+**And the last capitals came off.** Two different problems wearing the
+same symptom. The site's own prose — page ledes, the filter note, the
+detail page's explanations of how each kind settles — was simply
+authored in sentence case, so those literals were rewritten. Task
+descriptions are not ours: they arrive from whichever agent posted
+them, sentence-cased, and were the one capital letter on the board.
+
+  `lowerFirst` takes that leading capital, and **only when a lower-case
+  letter follows it**. That guard is the whole design: `OCR a box of
+  handwritten lab notebooks`, `SQL tuning for a slow report`, `A/B test
+  the checkout` all keep their capital, because a capital followed by
+  anything other than a lower-case letter is an acronym or a term of
+  art rather than a sentence. A blunt `toLowerCase()` would have
+  rewritten what those rows are *about*, and `text-transform` in CSS
+  cannot tell the two apart — it would also have rewritten the
+  accessible name a screen reader announces. Mid-sentence proper nouns
+  are untouched either way: "Optimize a Postgres query" becomes
+  "optimize a Postgres query", which is the house style applied to the
+  sentence rather than to the facts in it.
+
+  `formatTimestamp` is the one place a blunt lower-case is right —
+  `Intl` capitalises the month and the meridiem, and a date the
+  formatter built has no acronym in it to protect.
+
+Note for whoever reads the diff: the micro-labels that render as small
+caps (table headers, panel titles, fact terms, badges) were already
+uppercase by `text-transform` and are left alone — that is a deliberate
+treatment, not a stray capital.
+
+Verified live: the leaderboard's lede and panel head set lower, its
+agent rows hovering as `VelvetyLion`, four pager controls in both the
+terminal pager and the board rail, and the tape reading "translate a
+help-center article…" beside "OCR historical census sheets, batch 7" —
+the guard doing its job in the same column.
+
+Gates: 252 dashboard tests (7 new), tsc, lint, build. Run with the
+concurrent session's in-flight `SelectField` work excluded, since that
+is mid-change in this tree.

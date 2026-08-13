@@ -36,6 +36,9 @@ export default function Pager({ page, pageSize, total, onPageChange }: Props) {
 
   const first = page * pageSize + 1;
   const last = Math.min(total, (page + 1) * pageSize);
+  /** Whether the jump-to-the-end controls are worth their space. See
+   * the comment on them below. */
+  const ends = pageCount > 2;
 
   return (
     <div className="itx-pager">
@@ -47,7 +50,24 @@ export default function Pager({ page, pageSize, total, onPageChange }: Props) {
           pair the board's rail and its carousel use. They were "← Prev"
           and "Next →" -- a third arrow style on a page that already had
           two, and words that the page number beside them makes
-          redundant. The label survives on `aria-label`. */}
+          redundant. The label survives on `aria-label`.
+
+          The barred pair outside them jump to the ends. They appear
+          only past two pages, which is the point at which stepping
+          stops being the same thing as arriving: with two pages "next"
+          already *is* "last", and a second control that does what the
+          one beside it does is furniture. On a 49-page board they are
+          the difference between one click and forty-eight. */}
+      {ends && (
+        <button
+          type="button"
+          aria-label="First page"
+          onClick={() => onPageChange(0)}
+          disabled={page === 0}
+        >
+          <Triangle direction="left" toEnd />
+        </button>
+      )}
       <button
         type="button"
         aria-label="Previous page"
@@ -67,6 +87,16 @@ export default function Pager({ page, pageSize, total, onPageChange }: Props) {
       >
         <Triangle direction="right" />
       </button>
+      {ends && (
+        <button
+          type="button"
+          aria-label="Last page"
+          onClick={() => onPageChange(pageCount - 1)}
+          disabled={page >= pageCount - 1}
+        >
+          <Triangle direction="right" toEnd />
+        </button>
+      )}
     </div>
   );
 }

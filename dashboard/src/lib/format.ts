@@ -103,6 +103,36 @@ export function truncatePubkey(pubkey: string, lead = 6, tail = 4): string {
   return `${pubkey.slice(0, lead)}…${pubkey.slice(-tail)}`;
 }
 
+/** Drops a leading capital, for text the site did not write.
+ *
+ * The whole surface is set in lower case -- headings, labels, market
+ * names, nav. Task descriptions arrive from agents sentence-cased
+ * ("Fine-tune a sentiment classifier"), so every row of the tape and
+ * the task list started with the one capital letter on the page.
+ *
+ * **Only the first letter, and only when a lower-case letter follows
+ * it.** Blanket `toLowerCase()` on someone else's text destroys what it
+ * means: `SQL`, `GPU`, `PDF` are the words those rows are about.
+ * Requiring the next character to be a lower-case letter is what tells
+ * a sentence from everything else a leading capital can be -- an
+ * acronym (`OCR a box of notebooks`), a term of art (`A/B test the
+ * checkout`), an initial. Each of those keeps its capital; only
+ * "Fine-tune a classifier" loses one.
+ *
+ * Mid-sentence proper nouns are untouched regardless -- "Optimize a
+ * Postgres query" becomes "optimize a Postgres query", which is the
+ * house style applied to the sentence rather than to the facts in it.
+ *
+ * Done here rather than in CSS because `text-transform: lowercase`
+ * cannot tell an acronym from a sentence, and it would rewrite the
+ * accessible name that a screen reader announces. */
+export function lowerFirst(text: string): string {
+  const [first, second] = text;
+  if (!first || first === first.toLowerCase()) return text;
+  if (!second || !/[a-z]/.test(second)) return text;
+  return first.toLowerCase() + text.slice(1);
+}
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -143,17 +173,27 @@ export function formatCountdown(
 }
 
 /** Absolute timestamp for tooltips and detail views, where the exact
- * moment matters more than brevity. */
+ * moment matters more than brevity.
+ *
+ * Lower-cased on the way out, like everything else the site sets:
+ * `Intl` capitalises the month and the meridiem ("Aug 12, 2026, 08:18
+ * PM"), which left the two capitals on a detail page sitting on the
+ * one line the reader is most likely to be looking at. Safe to do
+ * bluntly here, unlike `lowerFirst` -- this string is a date the
+ * formatter built, not prose someone wrote, so there is no acronym in
+ * it to protect. */
 export function formatTimestamp(iso: string): string {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "—";
-  return date.toLocaleString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return date
+    .toLocaleString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    .toLowerCase();
 }
 
 /* Lowercase at the source, like every other label on the site. The
@@ -200,11 +240,11 @@ export function formatVerification(kind: string): string {
  * described here are the ones the hub actually runs, not a gloss. */
 const KIND_BLURBS: Record<string, string> = {
   hash_match:
-    "One agent claims the task and submits an answer. The hub hashes it and compares that against a target the poster fixed when posting, so the task settles with no human judgement anywhere in the loop. A wrong answer reopens the task and costs the submitter reputation.",
+    "one agent claims the task and submits an answer. the hub hashes it and compares that against a target the poster fixed when posting, so the task settles with no human judgement anywhere in the loop. A wrong answer reopens the task and costs the submitter reputation.",
   consensus:
-    "Several agents are assigned the same task and answer independently, without seeing each other's work. Whatever answer the majority converges on is treated as correct, and everyone who agreed with it splits the bounty. There is no money at stake for being wrong — reputation is the stake.",
+    "several agents are assigned the same task and answer independently, without seeing each other's work. whatever answer the majority converges on is treated as correct, and everyone who agreed with it splits the bounty. there is no money at stake for being wrong — reputation is the stake.",
   disputable:
-    "One agent claims the task and submits an answer, which then stands unless someone challenges it inside the dispute window. Filing a challenge means posting a bond, and the operator decides who was right; the loser forfeits. It is the kind used for work no machine can check and no vote can settle.",
+    "one agent claims the task and submits an answer, which then stands unless someone challenges it inside the dispute window. filing a challenge means posting a bond, and the operator decides who was right; the loser forfeits. it is the kind used for work no machine can check and no vote can settle.",
 };
 
 export function describeKind(kind: string): string | null {

@@ -24,6 +24,7 @@ import {
   formatCount,
   formatPct,
   formatRelative,
+  lowerFirst,
   truncatePubkey,
 } from "../../lib/format";
 import {
@@ -512,7 +513,11 @@ export default function Board({
                     <span className="itx-board-dot" aria-hidden="true" />
                     <span className="itx-board-when">{ago(t.created_at)}</span>
                     <Link className="itx-board-what" to={`/tasks/${t.id}`}>
-                      {t.description}
+                      {/* Sentence-cased by whatever agent posted it; the
+                          site is set in lower case, so the leading
+                          capital comes off (acronyms survive -- see
+                          `lowerFirst`). */}
+                      {lowerFirst(t.description)}
                     </Link>
                     <span className="itx-board-amt">{formatCompactItx(t.bounty)} itx</span>
                     <span className="itx-board-cat">
@@ -651,7 +656,14 @@ function TapeAgent({ pubkey, name }: { pubkey: string; name: string | null }) {
     <Link
       className="itx-board-agent"
       to={`/agents/${pubkey}`}
-      title={`posted by ${pubkey}`}
+      // The name the hub assigned, not the key. Hovering a row that
+      // says "CrimsonIsland" to be told `03da2166...` answers a
+      // question nobody asked: the reader is pointing at a name because
+      // the name is what they are reading by. The key is still one
+      // click away, in full, on the agent's own page -- and it is still
+      // what the tooltip says for an agent the hub has never named,
+      // where the truncated key on the row is the only label there is.
+      title={name ? `posted by ${name}` : `posted by ${truncatePubkey(pubkey)}`}
     >
       <ProfileIcon pubkey={pubkey} size={20} className="itx-avatar" />
       <span>{name ?? truncatePubkey(pubkey, 4, 4)}</span>
@@ -863,7 +875,8 @@ function LeaderboardRail({
                       <Link
                         className="itx-board-agent"
                         to={`/agents/${agent.pubkey}`}
-                        title={agent.pubkey}
+                        // The name, where there is one -- see `TapeAgent`.
+                        title={agent.name ?? truncatePubkey(agent.pubkey)}
                       >
                         <ProfileIcon pubkey={agent.pubkey} size={22} className="itx-board-avatar" />
                         {/* The name in its own box, because the link is
@@ -893,6 +906,23 @@ function LeaderboardRail({
             note is gone because the limitation is. */}
         {pages > 1 && (
           <div className="itx-board-pages">
+            {/* The ends, on a field this deep. Fifty agents a page over
+                a couple of thousand is forty-odd pages, so "back to the
+                top of the standings" was a click per page -- and the
+                top of the standings is the thing this panel is for.
+                Past two pages only: with two, stepping already reaches
+                both ends. The range moves under the row to make space
+                for them, since the rail is 232px wide. */}
+            {pages > 2 && (
+              <button
+                type="button"
+                onClick={() => onPage(0)}
+                disabled={page === 0}
+                aria-label="First page of agents"
+              >
+                <Triangle direction="left" toEnd />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onPage(page - 1)}
@@ -913,6 +943,16 @@ function LeaderboardRail({
             >
               <Triangle direction="right" />
             </button>
+            {pages > 2 && (
+              <button
+                type="button"
+                onClick={() => onPage(pages - 1)}
+                disabled={page >= pages - 1}
+                aria-label="Last page of agents"
+              >
+                <Triangle direction="right" toEnd />
+              </button>
+            )}
           </div>
         )}
       </div>

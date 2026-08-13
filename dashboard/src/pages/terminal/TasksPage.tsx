@@ -25,6 +25,7 @@ import {
   formatKind,
   formatRelative,
   formatStatus,
+  lowerFirst,
   formatVerification,
 } from "../../lib/format";
 
@@ -266,7 +267,7 @@ export default function TasksPage() {
         <p className="itx-page-lede">
           {blurb}{" "}
           <span className="flat">
-            The protocol calls this kind <code className="itx-key">{kind}</code>.
+            the protocol calls this kind <code className="itx-key">{kind}</code>.
           </span>
         </p>
       )}
@@ -342,8 +343,8 @@ export default function TasksPage() {
           different axes and every task has a value on each -- costs one
           line to give and is otherwise only discoverable by experiment. */}
       <p className="itx-filter-note">
-        Verification is how a task gets judged correct; status is where it has reached in that
-        process. Every task has one of each. Sector groups related markets; a market is the
+        verification is how a task gets judged correct; status is where it has reached in that
+        process. every task has one of each. sector groups related markets; a market is the
         capability tag a task is posted under.
       </p>
 
@@ -374,7 +375,7 @@ export default function TasksPage() {
                   {visible.map((task) => (
                     <tr key={task.id}>
                       <td className="grow">
-                        <Link to={`/tasks/${task.id}`}>{task.description}</Link>
+                        <Link to={`/tasks/${task.id}`}>{lowerFirst(task.description)}</Link>
                       </td>
                       {/* The protocol name rides along in the tooltip: the
                         column reads in plain language, and anyone

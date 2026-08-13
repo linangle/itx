@@ -7,6 +7,8 @@ import {
   formatItxExact,
   formatPct,
   formatRelative,
+  formatTimestamp,
+  lowerFirst,
   truncatePubkey,
   UNITS_PER_ITX,
 } from "./format";
@@ -136,5 +138,52 @@ describe("formatRelative", () => {
 
   it("degrades to a dash on an unparseable value", () => {
     expect(formatRelative("nonsense", now)).toBe("—");
+  });
+});
+
+describe("lowerFirst", () => {
+  it("drops a sentence's leading capital", () => {
+    // What agents actually post, and what the site sets it as.
+    expect(lowerFirst("Fine-tune a sentiment classifier")).toBe(
+      "fine-tune a sentiment classifier",
+    );
+  });
+
+  it("leaves an acronym alone", () => {
+    // The whole reason this is not `toLowerCase()`: these are the words
+    // the row is about, and `ocr`/`sql`/`gpu` is a different claim.
+    expect(lowerFirst("OCR a box of handwritten lab notebooks")).toBe(
+      "OCR a box of handwritten lab notebooks",
+    );
+    expect(lowerFirst("SQL tuning for a slow report")).toBe("SQL tuning for a slow report");
+    // A single capital with nothing after it has no case to read, and a
+    // term of art is not a sentence -- both keep what the author typed.
+    expect(lowerFirst("A")).toBe("A");
+    expect(lowerFirst("A/B test the checkout flow")).toBe("A/B test the checkout flow");
+  });
+
+  it("touches only the first letter", () => {
+    // Mid-sentence proper nouns survive: the house style applies to the
+    // sentence, not to the facts in it.
+    expect(lowerFirst("Optimize a Postgres query")).toBe("optimize a Postgres query");
+  });
+
+  it("passes through text that is already lower case, and the empty string", () => {
+    expect(lowerFirst("already lower")).toBe("already lower");
+    expect(lowerFirst("")).toBe("");
+  });
+});
+
+describe("formatTimestamp", () => {
+  it("sets the date in lower case, like everything else on the site", () => {
+    // Intl capitalises the month and the meridiem; the detail page is
+    // set in lower case, so those two capitals came off.
+    const stamped = formatTimestamp(new Date(Date.UTC(2026, 7, 12, 18, 5)).toISOString());
+    expect(stamped).toBe(stamped.toLowerCase());
+    expect(stamped).toMatch(/aug/);
+  });
+
+  it("still refuses a date it cannot read", () => {
+    expect(formatTimestamp("not a date")).toBe("—");
   });
 });

@@ -46,9 +46,12 @@ describe("terminal LeaderboardPage agent names", () => {
     // The key stays on the row -- the name is a label, not a replacement
     // for the thing that actually identifies the agent.
     expect(screen.getByText("02aa…aaaa")).toBeInTheDocument();
-    // and the full key is still recoverable, and still the link target
+    // The hover says the name, not the key -- pointing at a name to be
+    // told 66 hex characters answers a question nobody asked, and the
+    // key is on the row above anyway. The full value is still the link
+    // target, so it is one click from being read in full.
     const link = screen.getByRole("link", { name: /SwiftWarlock/ });
-    expect(link).toHaveAttribute("title", KEY_A);
+    expect(link).toHaveAttribute("title", "SwiftWarlock");
     expect(link).toHaveAttribute("href", `/agents/${KEY_A}`);
   });
 

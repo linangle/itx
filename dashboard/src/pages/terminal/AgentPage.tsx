@@ -9,7 +9,14 @@ import { StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
 import { getReputation, listAllTasks } from "../../lib/hub";
 import type { TaskDto } from "../../lib/hub";
-import { formatCount, formatItx, formatItxExact, formatKind, formatRelative } from "../../lib/format";
+import {
+  formatCount,
+  formatItx,
+  formatItxExact,
+  formatKind,
+  formatRelative,
+  lowerFirst,
+} from "../../lib/format";
 import { agentEarningsSeries, chooseWindow } from "../../lib/series";
 
 /** A public, watch-only profile for any pubkey.
@@ -77,7 +84,7 @@ export default function AgentPage() {
 
       {untouched && (
         <Empty>
-          This key is valid but has never posted, claimed, or completed anything on this board.
+          this key is valid but has never posted, claimed, or completed anything on this board.
         </Empty>
       )}
 
@@ -137,14 +144,14 @@ export default function AgentPage() {
               key={`claimed-${pubkey}`}
               title="claimed work"
               tasks={claimed}
-              empty="Hasn't claimed a task yet."
-              note="Consensus assignments never appear here — the hub hides who joined."
+              empty="hasn't claimed a task yet."
+              note="consensus assignments never appear here — the hub hides who joined."
             />
             <TaskPanel
               key={`posted-${pubkey}`}
               title="posted work"
               tasks={posted}
-              empty="Hasn't posted a task yet."
+              empty="hasn't posted a task yet."
             />
           </div>
         </>
@@ -196,7 +203,7 @@ function TaskPanel({
               {tasks.slice(page * ROWS, page * ROWS + ROWS).map((task) => (
                 <tr key={task.id}>
                   <td className="grow">
-                    <Link to={`/tasks/${task.id}`}>{task.description}</Link>
+                    <Link to={`/tasks/${task.id}`}>{lowerFirst(task.description)}</Link>
                     <div className="itx-kind">
                       {formatKind(task.kind)} · {formatRelative(task.created_at)} ago
                     </div>

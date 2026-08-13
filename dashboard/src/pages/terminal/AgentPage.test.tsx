@@ -110,20 +110,45 @@ describe("AgentPage history paging", () => {
     // history the reader is standing.
     const panel = (await screen.findByText("posted work")).closest("section")!;
     expect(await within(panel).findByText("1–10 of 23")).toBeInTheDocument();
-    expect(within(panel).getByText("Task number 22")).toBeInTheDocument();
-    expect(within(panel).queryByText("Task number 12")).toBeNull();
+    expect(within(panel).getByText("task number 22")).toBeInTheDocument();
+    expect(within(panel).queryByText("task number 12")).toBeNull();
 
     await user.click(within(panel).getByRole("button", { name: "Next page" }));
 
     expect(within(panel).getByText("11–20 of 23")).toBeInTheDocument();
-    expect(within(panel).getByText("Task number 12")).toBeInTheDocument();
-    expect(within(panel).queryByText("Task number 22")).toBeNull();
+    expect(within(panel).getByText("task number 12")).toBeInTheDocument();
+    expect(within(panel).queryByText("task number 22")).toBeNull();
 
     // The tail page holds the remainder, and the arrow stops there --
     // there is no page 4 of a 23-row history.
     await user.click(within(panel).getByRole("button", { name: "Next page" }));
     expect(within(panel).getByText("21–23 of 23")).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "Next page" })).toBeDisabled();
+
+    // And the way back is one click, not two: a history deep enough to
+    // page is deep enough to want its ends.
+    await user.click(within(panel).getByRole("button", { name: "First page" }));
+    expect(within(panel).getByText("1–10 of 23")).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Last page" }));
+    expect(within(panel).getByText("21–23 of 23")).toBeInTheDocument();
+  });
+
+  it("offers the ends only once stepping stops reaching them", async () => {
+    // Two pages: "next" already *is* "last", so a second control that
+    // does the same thing is furniture.
+    vi.mocked(hub.listAllTasks).mockResolvedValue({
+      items: Array.from({ length: 12 }, (_, n) => task(n)),
+      total: 12,
+      complete: true,
+    });
+
+    renderPage();
+
+    const panel = (await screen.findByText("posted work")).closest("section")!;
+    expect(await within(panel).findByText("1–10 of 12")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Next page" })).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Last page" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "First page" })).toBeNull();
   });
 
   it("shows no pager when the history fits on one page", async () => {
@@ -136,7 +161,7 @@ describe("AgentPage history paging", () => {
     renderPage();
 
     const panel = (await screen.findByText("posted work")).closest("section")!;
-    await within(panel).findByText("Task number 2");
+    await within(panel).findByText("task number 2");
     expect(within(panel).queryByRole("button", { name: "Next page" })).toBeNull();
   });
 });

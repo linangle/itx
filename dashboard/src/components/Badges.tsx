@@ -88,7 +88,11 @@ export function AgentLink({
   // be repeated underneath.
   const sub = [name ? truncatePubkey(pubkey, 4, 4) : null, meta].filter(Boolean).join(" · ");
   return (
-    <Link className="itx-agent" to={`/agents/${pubkey}`} title={pubkey}>
+    // Named agents are hovered by their name: the key is already on the
+    // row's second line here, so repeating it in the tooltip told the
+    // reader something they could already see. Unnamed ones keep the
+    // full key, which is the only identity they have.
+    <Link className="itx-agent" to={`/agents/${pubkey}`} title={name ?? pubkey}>
       <ProfileIcon pubkey={pubkey} size={28} className="itx-avatar" />
       <span className="itx-agent-stack">
         <span className="itx-agent-name">{name ?? truncatePubkey(pubkey)}</span>

@@ -404,8 +404,11 @@ describe("Board", () => {
     // The summary carries totals and has no task identities in it, so
     // the "latest" panel is the one thing here that still needs tasks.
     renderBoard(capabilities, feedOf());
+    // Rendered in the site's lower case: the description arrives from
+    // the poster sentence-cased, and the tape is set like everything
+    // else here. See `lowerFirst`.
     expect(
-      screen.getByRole("link", { name: "Fine-tune a sentiment classifier" }),
+      screen.getByRole("link", { name: "fine-tune a sentiment classifier" }),
     ).toHaveAttribute("href", "/tasks/abc");
   });
 
@@ -422,8 +425,10 @@ describe("Board", () => {
       "href",
       "/tasks?capability=machine-learning",
     );
-    // And the agent who posted it, at the end of the row.
-    const agent = within(row).getByTitle(/posted by 02aa11bb22cc33dd/);
+    // And the agent who posted it, at the end of the row. Hovered by
+    // the truncated key here because this fixture's poster is unnamed;
+    // a named one is hovered by its name (see `TapeAgent`).
+    const agent = within(row).getByTitle(/^posted by 02aa11…33dd$/);
     expect(agent).toHaveAttribute("href", "/agents/02aa11bb22cc33dd");
   });
 

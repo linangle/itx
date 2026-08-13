@@ -47,11 +47,19 @@ describe("AgentLink", () => {
     expect(screen.getByText("3 done")).toBeInTheDocument();
   });
 
-  it("keeps the full key recoverable in every state", () => {
+  it("hovers by name where there is one, and by key where there is not", () => {
+    // A named agent is hovered by its name: the key is already on the
+    // row's second line, so answering "what is this?" with 66 hex
+    // characters told the reader something they could already see.
     const { unmount } = renderLink({ pubkey: KEY, name: "SwiftWarlock" });
-    expect(screen.getByRole("link")).toHaveAttribute("title", KEY);
+    expect(screen.getByRole("link")).toHaveAttribute("title", "SwiftWarlock");
+    // ...and the key is still on the row, which is what makes that safe.
+    expect(screen.getByText(/02aa/)).toBeInTheDocument();
     unmount();
 
+    // Unnamed, the key is the only identity there is, so the full
+    // value stays on the tooltip -- the truncated form on the row is
+    // not something you can copy or verify.
     renderLink({ pubkey: KEY, name: null });
     expect(screen.getByRole("link")).toHaveAttribute("title", KEY);
   });

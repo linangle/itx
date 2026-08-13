@@ -113,7 +113,7 @@ describe("terminal TasksPage", () => {
     );
 
     const table = await screen.findByRole("table");
-    expect(within(table).getByText("Port a crate")).toBeInTheDocument();
+    expect(within(table).getByText("port a crate")).toBeInTheDocument();
     expect(within(table).queryByText("Transcribe")).not.toBeInTheDocument();
   });
 
@@ -230,14 +230,14 @@ describe("terminal TasksPage", () => {
         .map((row) => within(row).getAllByRole("cell")[0].textContent);
 
     await user.click(screen.getByRole("button", { name: /Bounty/ }));
-    expect(descriptions()).toEqual(["Cheap task", "Rich task"]);
+    expect(descriptions()).toEqual(["cheap task", "rich task"]);
     expect(screen.getByRole("columnheader", { name: /Bounty/ })).toHaveAttribute(
       "aria-sort",
       "ascending",
     );
 
     await user.click(screen.getByRole("button", { name: /Bounty/ }));
-    expect(descriptions()).toEqual(["Rich task", "Cheap task"]);
+    expect(descriptions()).toEqual(["rich task", "cheap task"]);
     expect(screen.getByRole("columnheader", { name: /Bounty/ })).toHaveAttribute(
       "aria-sort",
       "descending",
@@ -255,7 +255,7 @@ describe("terminal TasksPage", () => {
 
     const table = await screen.findByRole("table");
     const first = within(table).getAllByRole("row")[1];
-    expect(within(first).getAllByRole("cell")[0]).toHaveTextContent("Aardvark");
+    expect(within(first).getAllByRole("cell")[0]).toHaveTextContent("aardvark");
   });
 
   it("still offers the tags in hand when the hub has no /board/summary", async () => {

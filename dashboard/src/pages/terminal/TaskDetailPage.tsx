@@ -13,6 +13,7 @@ import {
   formatKind,
   formatRelative,
   formatTimestamp,
+  lowerFirst,
   formatVerification,
 } from "../../lib/format";
 
@@ -64,7 +65,7 @@ function Detail({ task }: { task: TaskDto }) {
           </span>
           <StatusBadge status={task.status} />
         </div>
-        <h1 className="itx-detail-title">{task.description}</h1>
+        <h1 className="itx-detail-title">{lowerFirst(task.description)}</h1>
         <div className="itx-detail-bounty">
           {formatItxExact(task.bounty)}
           <small>ITX bounty</small>
@@ -112,7 +113,7 @@ function Detail({ task }: { task: TaskDto }) {
             <dt>Reputation gate</dt>
             <dd>
               {task.min_reputation === 0 ? (
-                <span className="flat">Open to anyone</span>
+                <span className="flat">open to anyone</span>
               ) : (
                 <>
                   <span className="num">{formatCount(task.min_reputation)}</span> completed{" "}
@@ -124,7 +125,7 @@ function Detail({ task }: { task: TaskDto }) {
             <dt>Capabilities</dt>
             <dd>
               {task.capabilities.length === 0 ? (
-                <span className="flat">Unrestricted</span>
+                <span className="flat">unrestricted</span>
               ) : (
                 task.capabilities.map((capability) => (
                   <Link
@@ -165,12 +166,12 @@ function KindPanel({ task }: { task: TaskDto }) {
           <dl className="itx-facts">
             <dt>Method</dt>
             <dd>
-              The submitted answer is hashed with SHA256 and compared against a target fixed
+              the submitted answer is hashed with SHA256 and compared against a target fixed
               when the task was posted.
             </dd>
             <dt>Target</dt>
             <dd className="flat">
-              Never disclosed. Publishing it would let anyone produce a passing answer without
+              never disclosed. publishing it would let anyone produce a passing answer without
               doing the work.
             </dd>
             <dt>On failure</dt>
@@ -219,19 +220,19 @@ function KindPanel({ task }: { task: TaskDto }) {
               {submission ? (
                 submission.text
               ) : (
-                <span className="flat">Starts once the task fills</span>
+                <span className="flat">starts once the task fills</span>
               )}
             </dd>
 
             <dt>Answers</dt>
             <dd className="flat">
-              Hidden from everyone, before and after resolution — independent assignment only
+              hidden from everyone, before and after resolution — independent assignment only
               works if no one can copy anyone else.
             </dd>
 
             <dt>Payout</dt>
             <dd>
-              Whoever matches the majority splits the bounty evenly. A tie pays no one and
+              whoever matches the majority splits the bounty evenly. A tie pays no one and
               dings no one.
             </dd>
           </dl>
@@ -251,18 +252,18 @@ function KindPanel({ task }: { task: TaskDto }) {
               <div className="itx-answer">{task.answer}</div>
             ) : (
               <div className="flat" style={{ fontSize: 13 }}>
-                No answer submitted yet.
+                no answer submitted yet.
               </div>
             )}
 
             {dispute && (
               <div className="itx-callout" style={{ marginTop: 12 }}>
                 <div className="itx-callout-head">
-                  Disputed — {formatItxExact(dispute.bond_amount)} ITX bond posted
+                  disputed — {formatItxExact(dispute.bond_amount)} ITX bond posted
                 </div>
                 <div style={{ fontSize: 13, marginBottom: 8 }}>{dispute.reason}</div>
                 <div className="flat" style={{ fontSize: 12 }}>
-                  Filed by <PubkeyLink pubkey={dispute.challenger} /> ·{" "}
+                  filed by <PubkeyLink pubkey={dispute.challenger} /> ·{" "}
                   {formatRelative(dispute.filed_at)} ago ·{" "}
                   {dispute.resolution
                     ? dispute.resolution.replace(/_/g, " ")
@@ -274,13 +275,13 @@ function KindPanel({ task }: { task: TaskDto }) {
           <dl className="itx-facts">
             <dt>Challenge window</dt>
             <dd className={window?.expired ? "flat" : ""}>
-              {window ? window.text : <span className="flat">Starts once an answer lands</span>}
+              {window ? window.text : <span className="flat">starts once an answer lands</span>}
             </dd>
             <dt>If unchallenged</dt>
-            <dd>The answer is accepted automatically and the bounty pays out.</dd>
+            <dd>the answer is accepted automatically and the bounty pays out.</dd>
             <dt>If challenged</dt>
             <dd>
-              The challenger posts a bond and the operator rules. The loser forfeits their
+              the challenger posts a bond and the operator rules. the loser forfeits their
               stake to the winner.
             </dd>
           </dl>

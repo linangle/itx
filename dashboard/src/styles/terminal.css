@@ -238,8 +238,23 @@ body.itx-body[data-theme="light"] {
   text-decoration: none;
 }
 
+/* Hover lifts the ink rather than underlining it.
+ *
+ * An underline is a heavy answer on a surface where whole tables are
+ * links: the row's baseline gains a rule, the line box shifts, and on
+ * the board's dense rows the effect was a page that twitched under the
+ * cursor. A link that brightens says the same thing and moves nothing.
+ *
+ * The mix is toward `--text`, not toward white, which is what makes one
+ * rule work on both themes: `--text` is the near-white ink on the dark
+ * theme and the near-black ink on the light one, so the hovered link
+ * gains contrast against its own ground either way. Straight to white
+ * would wash out on the light theme -- brighter there means *darker*.
+ *
+ * 22% is deliberately shy of the point where it reads as a second
+ * colour: the link should look attended to, not swapped out. */
 .itx a:hover {
-  text-decoration: underline;
+  color: color-mix(in srgb, var(--accent-text) 78%, var(--text));
 }
 
 .itx .num {

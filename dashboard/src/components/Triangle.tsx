@@ -23,11 +23,18 @@ export type TriangleDirection = "left" | "right" | "up" | "down";
  */
 export default function Triangle({
   direction = "right",
+  toEnd = false,
   className,
 }: {
   direction?: TriangleDirection;
+  /** Draws the bar the triangle runs into: the same arrow, but "as far
+   * as this goes" rather than "one more". Only the horizontal
+   * directions have one -- the vertical pair are sort carets, where
+   * there is no end to travel to. */
+  toEnd?: boolean;
   className?: string;
 }) {
+  const barred = toEnd && (direction === "left" || direction === "right");
   return (
     <svg
       className={className}
@@ -38,12 +45,27 @@ export default function Triangle({
       focusable="false"
     >
       <path
-        d={PATHS[direction]}
+        d={barred ? END_PATHS[direction as "left" | "right"] : PATHS[direction]}
         fill="currentColor"
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinejoin="round"
       />
+      {barred && (
+        // The stop the triangle is travelling to. Drawn as a stroked
+        // line rather than a filled rectangle so it takes the same
+        // round cap the triangle's corners have -- a square-ended bar
+        // beside a rounded arrow reads as two different icons.
+        <line
+          x1={direction === "right" ? 10 : 2}
+          x2={direction === "right" ? 10 : 2}
+          y1={2.8}
+          y2={9.2}
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      )}
     </svg>
   );
 }
@@ -55,4 +77,13 @@ const PATHS: Record<TriangleDirection, string> = {
   left: "M9.4 2.1 L2.8 6 L9.4 9.9 Z",
   down: "M2.1 3.4 L6 9.2 L9.9 3.4 Z",
   up: "M2.1 8.6 L6 2.8 L9.9 8.6 Z",
+};
+
+/** The same triangles, pulled back and narrowed to leave room for the
+ * bar beside them. The apex stops short of where the plain arrow's
+ * lands, so the pair reads as one mark at a glance rather than as an
+ * arrow that has grown. */
+const END_PATHS: Record<"left" | "right", string> = {
+  right: "M1.8 2.6 L7.5 6 L1.8 9.4 Z",
+  left: "M10.2 2.6 L4.5 6 L10.2 9.4 Z",
 };
