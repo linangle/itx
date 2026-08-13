@@ -26,8 +26,18 @@
 // genuinely moving to show. Set `STATIC=1` to freeze it at the backfill
 // instead, which is what you want when comparing two screenshots.
 //
-//   node dashboard/mock/hub.mjs
+//   npm run mock            # from dashboard/, reloads when this file changes
 //   VITE_HUB_URL=http://127.0.0.1:9101 npm run dev
+//
+// Run it through `npm run mock` rather than bare `node`. Node loads this
+// module once and never looks at the file again, so a fixture started
+// before an edit keeps serving the old answers indefinitely -- and it
+// does so *convincingly*, since a stale fixture is still a well-formed
+// hub. That cost real debugging time twice: a long-running mock served
+// pre-fix `/reputation` and `/leaderboard` answers next to a `/names`
+// that had been fixed, which reads exactly like a frontend bug. The
+// `--watch` in that script restarts on save, the way Vite already does
+// for everything on the other side of the wire.
 //
 // It is a fixture, not a simulator: nothing here validates signatures,
 // enforces state transitions, or accepts writes.

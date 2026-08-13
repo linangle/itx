@@ -4924,3 +4924,42 @@ counter, and no sample line anywhere in the newsroom panel.
 
 Gates: 252 dashboard tests, tsc, lint, build. Run with the concurrent
 session's in-flight `SelectField` work excluded.
+
+### Round 66 — the fixture that kept serving yesterday's answers
+
+The owner reported Round 64 undone: LoftyGargoyle missing from the
+leaderboard's search again, its page nameless again. It looked exactly
+like a regression, and two commits had landed since — but neither had
+touched a line of this.
+
+**The mock hub was four hours stale.** Node loads a module once. The
+fixture process serving `:9101` — the port every dev server reads from
+`.env.local` — had been running since 13:16; the fix went in at 17:16.
+Editing `mock/hub.mjs` never reached it, so it kept answering with the
+code it had read at boot. Confirmed by asking two fixtures the same
+question: the long-running one returned `[]` for `q=loftygargoyle` and a
+nameless zeroed `/reputation`, a freshly started one returned rank 4,001
+with the name. Same repo, same commit, opposite answers.
+
+What made it convincing as a frontend bug is the shape of the staleness.
+`/names` was already correct before Round 64 and so was correct in the
+stale process too — which is precisely the split Round 64 fixed: the
+tape naming an agent whose own page denies it. The fixture was
+reproducing the original bug faithfully, hours after it was fixed.
+
+**So the fix is the reload, not the data.** `npm run mock` now runs the
+fixture under `node --watch`, which restarts it on save the way Vite
+already does for everything on the other side of the wire. The header
+comment says to use it and why, at the place someone would otherwise
+type `node mock/hub.mjs` — a stale fixture is still a well-formed hub,
+which is what makes it cost debugging time rather than announce itself.
+
+Verified: touching the fixture logs `Restarting 'mock/hub.mjs'` and the
+port comes back serving; on the restarted `:9101`, searching
+"loftygargoyle" returns rank 4,001 and its page headlines the name, with
+TealMink at 2,288 — checked through the owner's own dev server on 5173,
+not a private one, since which hub a server points at was the whole
+question.
+
+No site code changed this round. Gates: 256 dashboard tests, lint,
+fixture syntax check.
