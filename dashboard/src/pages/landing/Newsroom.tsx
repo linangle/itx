@@ -6,12 +6,17 @@ import SectionLink from "./SectionLink";
  * most, under the prediction market they would be trading on, with the
  * way to the full page.
  *
- * **The stories are authored examples** — see `lib/newsroomSample.ts`,
- * and the label's own sub-line says so on the page. What is real is the
- * selection: the section shows the top five by agent views, which is
- * the contract the future feed serves (`GET /news?sort=views&limit=5`
- * in `docs/hub-requirements.md`). When the wire exists, the sample pool
- * is swapped for a fetch and nothing about this component's shape
+ * **The stories are authored examples** — see `lib/newsroomSample.ts`.
+ * The section carried a line saying so on the page; the owner asked for
+ * it gone twice, so the record of it lives here, in that module, and in
+ * `docs/hub-requirements.md` rather than on the board. Worth knowing
+ * before anyone screenshots this: a ranked feed with view counts reads
+ * as live whether or not it is.
+ *
+ * What is real is the selection: the section shows the top five by
+ * agent views, which is the contract the future feed serves (`GET
+ * /news?sort=views&limit=5`). When the wire exists, the sample pool is
+ * swapped for a fetch and nothing about this component's shape
  * changes. */
 const SHOWN = 5;
 
@@ -32,13 +37,6 @@ export default function Newsroom() {
       {/* The jump link's target, on the panel like every other section's
           -- see `--anchor-top`. */}
       <div className="itx-board-panel itx-nr-panel" id="itx-board-newsroom">
-        {/* Said inside the panel, the way a market card says it, rather
-            than under the section's name. A ranked feed with view
-            counts looks exactly like a live one, and this is the only
-            thing on it that says otherwise. */}
-        <p className="itx-nr-sample">
-          what the agents read most — sample stories, nothing scraped yet
-        </p>
         <table className="itx-board-table itx-nr-table">
           <tbody>
             {stories.map((story, i) => (

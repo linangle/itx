@@ -3006,53 +3006,26 @@ a.itx-board-what:hover {
    right end where nothing ties it to what it moves. Pushed to the far
    end of the row so the label and the arrow stay together. */
 .itx-pm-pager {
+  /* Position only. The look -- bare triangles, no ring, hover lift,
+     dimmed at the ends -- comes from `.itx-board-pager`, which this row
+     also carries: the market overview's pager and this one are the same
+     control, so they are the same rule. Pushed to the far end of the
+     label row, where the owner wants it, rather than beside the name. */
   margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-  font-size: var(--fs-meta);
-  font-variant-numeric: tabular-nums;
-  color: var(--ld-sub);
 }
 
-/* The reference's circled chevrons, disabled at the ends like every
-   other pager on the board. */
-.itx-pm-pager button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--bd-line);
-  border-radius: 50%;
-  background: none;
-  color: var(--ld-sub);
-  font-size: 9px;
-  cursor: pointer;
-}
-
-.itx-pm-pager button:hover:not(:disabled) {
-  color: var(--ld-light);
-  border-color: var(--ld-sub);
-}
-
-/* At an end. Dimmed rather than hidden, so the pair stays a pair and
-   the label row does not reflow as the row is scrolled. */
-.itx-pm-pager button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
+/* Just the word now that the drawn tile is gone -- so a block with a
+   margin rather than a flex row with a gap for something to sit in. */
 .itx-pm-cat {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-6);
+  display: block;
+  margin-bottom: var(--sp-5);
   font-size: var(--fs-micro);
   font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  /* Lower case, like every word on this site. It was set in caps, and
+     the tracking goes with them: 0.09em is what caps need to stay
+     legible and what lower case at 11px does not want. 0.02em is where
+     the board's own micro labels sit. */
+  letter-spacing: 0.02em;
   color: var(--ld-sub);
 }
 
@@ -3114,13 +3087,30 @@ a.itx-board-what:hover {
   display: inline-block;
   min-width: 44px;
   padding: var(--sp-3) var(--sp-6);
-  border: 1px solid var(--ld-green);
-  border-radius: 999px;
+  /* The board's field radius, not a 999px lozenge. Fields on this site
+     are 10px and panels 14px; a full pill was a third rounding, and the
+     one place it appeared was a card that sits inside both. */
+  border: 1px solid var(--bd-line);
+  border-radius: var(--r-field);
   font-size: var(--fs-body);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-align: center;
   color: var(--ld-light);
+}
+
+/* Which way the market leans, on the outline only -- the figure itself
+   stays the page's ink, because the number is a price rather than a
+   verdict. Green and red are already the board's pair for this, so a
+   reader who has been down the market tables arrives knowing what they
+   mean. `.up`/`.down`/`.flat` are the board's own class names, set by
+   `leaning()` from the odds themselves. */
+.itx-pm-pill.up {
+  border-color: var(--ld-green);
+}
+
+.itx-pm-pill.down {
+  border-color: var(--ld-red);
 }
 
 .itx-pm-meta {
@@ -3137,7 +3127,10 @@ a.itx-board-what:hover {
 .itx-pm-news {
   margin: var(--sp-6) 0 0;
   padding-top: var(--sp-6);
-  border-top: 1px dotted var(--bd-line);
+  /* The same hairline the tables above it draw between rows -- a
+     dotted rule was a separator style this site does not otherwise
+     have, one line below a table full of solid ones. */
+  border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
   font-size: var(--fs-body);
   line-height: 1.6;
   color: var(--ld-sub);
@@ -3350,17 +3343,6 @@ a.itx-board-what:hover {
 
 .itx-nr-panel {
   padding: var(--pad-panel-y) var(--pad-panel-x);
-}
-
-/* The honesty line, moved off the section's label and into the panel --
-   the same place, and the same treatment, a market card gives its own.
-   Above the rows rather than below them: it qualifies what follows, and
-   a reader who takes the counts at face value has already passed it. */
-.itx-nr-sample {
-  margin: 0 0 var(--sp-5);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.04em;
-  color: var(--ld-sub);
 }
 
 /* The headline takes whatever width the row has left and clips.

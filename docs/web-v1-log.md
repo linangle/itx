@@ -4865,3 +4865,62 @@ line.
 
 Gates: 252 dashboard tests, tsc, lint, build. Run with the concurrent
 session's in-flight `SelectField` work excluded.
+
+### Round 68 — the card in the site's own dialect
+
+Six corrections from the owner, all of them the same underlying note:
+this card was drawn to its reference rather than to the site it sits on.
+
+**The category is lower case.** It was set in caps by `text-transform`,
+with the 0.09em tracking caps need — on a board where every other word,
+including the section heading directly above it, is lower case. The
+tracking came down with the capitals: 11px lower case does not want it.
+
+  Recorded as a standing rule in memory this round, since it is the
+  third time a stray capital has had to be chased: **everything on this
+  site is set in lower case**, and new literals should be authored that
+  way rather than uppercased in CSS and lowercased again later.
+
+**The odds pills read the market.** They were both outlined green, which
+made the outline decoration. Now the favoured side is green and the
+other red — the board's own pair for direction, so a reader arriving
+from the market tables already knows what they mean. Taken from the odds
+rather than from which row it is (`leaning()`), so the colour follows a
+market whose favourite changes, and an even 50/50 quote takes neither.
+
+**And they are the board's shape.** A 999px lozenge was a third rounding
+on a site with 10px fields and 14px panels — inside a panel, no less.
+They take `--r-field` now.
+
+**The pager is the market overview's pager**, literally the same class,
+so the board's two rows of arrows cannot drift apart. Gone with the ring
+around each arrow: the "1 of 3" between them, which said what the slider
+under the row already says. It keeps only its position at the far end of
+the label row, which is where the owner wants it.
+
+**The dotted rule above the news is solid**, and is the hairline the
+tables above it draw between rows. A dotted separator was a style this
+site does not otherwise have, one line under a table full of solid ones.
+
+  Left dotted, and worth flagging: the odds chart's own gridlines. Those
+  are faithful to the reference and read as chart furniture rather than
+  as a separator, but they are the last dotted lines on the board and
+  the market chart beside them draws solid ones.
+
+**The newsroom's sample line is gone**, not moved. Last round it went
+from the section's label into its panel; the owner asked again, and
+plainly, so it is off the page. The record that those five stories are
+authored now lives only in `Newsroom.tsx`, `lib/newsroomSample.ts` and
+`hub-requirements.md`. Worth knowing before anyone screenshots that
+panel: a ranked feed with view counts reads as live whether or not it
+is, and nothing on the page says otherwise any more. The test asserts
+its absence, so putting it back is a deliberate act rather than a
+regression.
+
+Verified live at 1600×900: category "weather" with no transform, the
+72% pill outlined green and the 28% red at a 10px radius, the news rule
+solid at the tables' own weight, two bare arrows with no ring and no
+counter, and no sample line anywhere in the newsroom panel.
+
+Gates: 252 dashboard tests, tsc, lint, build. Run with the concurrent
+session's in-flight `SelectField` work excluded.

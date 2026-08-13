@@ -49,10 +49,19 @@ export default function PredictionMarket() {
           describedAs="open the full prediction market"
         />
 
-        {/* Disabled at the ends rather than wrapping, like the market
-            carousel's: the row is a scroll, and a control that jumped
-            the whole way back would contradict what dragging it does. */}
-        <div className="itx-pm-pager">
+        {/* The market overview's pager, literally: same class, so the
+            two rows of arrows on this board are one control rather than
+            two that resemble each other. It keeps only its position --
+            the far end of the label row -- through `itx-pm-pager`.
+
+            No "1 of 3" between them, and no ring around them. The
+            counter said what the slider under the row already says, and
+            the rings made these read as a different, heavier control
+            than the identical pair above. Disabled at the ends rather
+            than wrapping, like the overview's: the row is a scroll, and
+            a control that jumped the whole way back would contradict
+            what dragging it does. */}
+        <div className="itx-board-pager itx-pm-pager">
           <button
             type="button"
             aria-label="Previous market"
@@ -61,9 +70,6 @@ export default function PredictionMarket() {
           >
             <Triangle direction="left" />
           </button>
-          <span>
-            {carousel.index + 1} of {SAMPLES.length}
-          </span>
           <button
             type="button"
             aria-label="Next market"
@@ -103,6 +109,19 @@ export default function PredictionMarket() {
       </div>
     </section>
   );
+}
+
+/** Which way an outcome's odds lean, as the class that colours its
+ * pill: the favoured side green, the other red, neither at an even
+ * quote.
+ *
+ * Derived from the odds themselves rather than from whether the row is
+ * the "yes" -- in a binary market the two prices sum to 100, so this is
+ * simply "is this the side above the coin flip", and it stays right if
+ * a market's favourite changes. */
+function leaning(pct: number): "up" | "down" | "flat" {
+  if (pct === 50) return "flat";
+  return pct > 50 ? "up" : "down";
 }
 
 /** One sample market, in the reference's format: the odds table and its
@@ -150,8 +169,17 @@ function MarketCard({ market }: { market: SampleMarket }) {
                 <td className="right">
                   {/* A span, not a button: on the reference this is
                       where a trade starts, and until the protocol can
-                      take one, drawing it clickable would be a lie. */}
-                  <span className="itx-pm-pill">{outcome.pct}%</span>
+                      take one, drawing it clickable would be a lie.
+
+                      Outlined by which way the market is leaning, not
+                      by which row it is: green is the outcome the money
+                      is on, red the one it is against. That is the
+                      board's own use of the pair -- up and down -- and
+                      it means the colour follows the odds if they ever
+                      cross rather than being pinned to "yes". A market
+                      quoting an even 50/50 leans nowhere and takes
+                      neither colour. */}
+                  <span className={`itx-pm-pill ${leaning(outcome.pct)}`}>{outcome.pct}%</span>
                 </td>
               </tr>
             ))}

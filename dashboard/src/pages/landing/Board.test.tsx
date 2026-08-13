@@ -153,6 +153,13 @@ describe("Board", () => {
     // quoting a price and a volume looks live whether or not it is.
     expect(within(section).getAllByText(/sample market/i)).toHaveLength(SAMPLES.length);
 
+    // The favoured side is outlined green and the other red -- the
+    // board's own pair for direction. Taken from the odds rather than
+    // from which row it is, so the colour follows a market whose
+    // favourite changes.
+    expect(first.getByText("72%")).toHaveClass("itx-pm-pill", "up");
+    expect(first.getByText("28%")).toHaveClass("itx-pm-pill", "down");
+
     // The label row's arrow goes to the full page, and the pager says
     // where in the row you are.
     const door = within(section).getByRole("link", { name: /full prediction market/i });
@@ -161,7 +168,15 @@ describe("Board", () => {
     // on its own is a control whose target the reader has to infer,
     // and the words next to it were the part that said where it went.
     expect(door).toHaveTextContent("prediction market");
-    expect(within(section).getByText(`1 of ${SAMPLES.length}`)).toBeInTheDocument();
+
+    // Two bare arrows and nothing between them: the counter that used
+    // to sit there said what the slider under the row already says, and
+    // the pair is the market overview's pager rather than a heavier
+    // look-alike -- same class, so they cannot drift apart.
+    const pager = section.querySelector(".itx-board-pager")!;
+    expect(pager).toBeInTheDocument();
+    expect(within(pager as HTMLElement).getAllByRole("button")).toHaveLength(2);
+    expect(pager.textContent?.trim()).toBe("");
 
     // Last in the middle column, after the tape and the breakdown: the
     // board's own market comes first, and the section that is not yet
@@ -227,15 +242,13 @@ describe("Board", () => {
     expect(views).toEqual([...views].sort((a, b) => b - a));
     expect(rows[0].querySelector(".itx-board-rank")?.textContent).toBe("1");
 
-    // Says on its face that the stories are examples -- inside the
-    // panel, where a market card says the same thing, rather than under
-    // the section's name where it made this the board's only two-line
-    // label.
-    const sample = within(section).getByText(/sample stories/i);
-    expect(sample).toBeInTheDocument();
-    expect(sample.closest(".itx-nr-panel")).not.toBeNull();
+    // No note on the page saying the stories are authored: the owner
+    // asked for it gone, twice, so the section is the five rows and
+    // nothing else. Asserted rather than merely deleted, so putting it
+    // back is a deliberate act with a test to change.
+    expect(within(section).queryByText(/sample stories/i)).toBeNull();
 
-    // And the section's name is the door, words and arrow together.
+    // The section's name is the door, words and arrow together.
     const door = within(section).getByRole("link", { name: /full newsroom/i });
     expect(door).toHaveAttribute("href", "/newsroom");
     expect(door).toHaveTextContent("newsroom");
