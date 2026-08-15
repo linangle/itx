@@ -2,7 +2,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import SectorBreakdown from "./SectorBreakdown";
-import type { SectorSummary } from "../../lib/series";
+import type { MarketSummary, SectorSummary } from "../../lib/series";
+
+function market(capability: string, openBounty: number): MarketSummary {
+  return { capability, open: 2, openBounty, value: openBounty, series: [], changePct: 5 };
+}
 
 function sector(
   name: string,
@@ -92,18 +96,80 @@ describe("SectorBreakdown", () => {
     expect(tint("coding")).toBeGreaterThan(tint("data"));
   });
 
-  it("picks out one sector and dims the rest when a row is chosen", async () => {
+  it("opens the sector's own markets when a row is chosen", async () => {
     const user = userEvent.setup();
-    const { container } = render(<SectorBreakdown sectors={sectors} />);
-    await user.click(screen.getByRole("button", { name: "coding" }));
+    const withMarkets = sector("conversation", 900, 12, {
+      markets: [
+        market("companionship", 400),
+        market("advice", 300),
+        market("therapy", 200),
+      ],
+    });
+    const { container } = render(
+      <SectorBreakdown sectors={[withMarkets, sector("coding", 100, 4)]} />,
+    );
+    await user.click(screen.getByRole("button", { name: "conversation" }));
 
     const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
-    const on = tiles.filter((t) => t.hasAttribute("data-on"));
-    const dim = tiles.filter((t) => t.hasAttribute("data-dim"));
-    expect(on).toHaveLength(1);
-    expect(on[0].textContent).toContain("coding");
-    // Dimmed, not hidden: the map is a comparison.
-    expect(dim).toHaveLength(2);
+    expect(tiles).toHaveLength(3);
+    expect(tiles.map((t) => t.title.split(" ·")[0])).toEqual([
+      "companionship",
+      "advice",
+      "therapy",
+    ]);
+    // Sized against each other, not against the board -- the sector's
+    // own breakdown fills the sector's own map.
+    const area = (t: HTMLElement) =>
+      parseFloat(t.style.width) * parseFloat(t.style.height);
+    expect(area(tiles[0]) / area(tiles[2])).toBeCloseTo(400 / 200, 1);
+  });
+
+  it("comes back out of a sector", async () => {
+    const user = userEvent.setup();
+    const withMarkets = sector("conversation", 900, 12, {
+      markets: [market("companionship", 400), market("advice", 300)],
+    });
+    const { container } = render(
+      <SectorBreakdown sectors={[withMarkets, sector("coding", 100, 4)]} />,
+    );
+    await user.click(screen.getByRole("button", { name: "conversation" }));
+    await user.click(screen.getByRole("button", { name: "‹ all sectors" }));
+    const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    expect(tiles.map((t) => t.title.split(" ·")[0])).toEqual(["conversation", "coding"]);
+  });
+
+  it("names every tile on hover, including the ones too small to letter", async () => {
+    const user = userEvent.setup();
+    const withTail = sector("conversation", 900, 12, {
+      markets: [
+        market("companionship", 5000),
+        market("advice", 2000),
+        // The long tail: a sliver that cannot carry its own name.
+        market("relationship-advice", 3),
+      ],
+    });
+    const { container } = render(<SectorBreakdown sectors={[withTail]} />);
+    await user.click(screen.getByRole("button", { name: "conversation" }));
+
+    const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    const sliver = tiles.find((t) => t.title.startsWith("relationship-advice"))!;
+    expect(sliver.textContent).toBe("");
+    expect(sliver.title).toContain("relationship-advice");
+    // The big one still letters itself.
+    const biggest = tiles.find((t) => t.title.startsWith("companionship"))!;
+    expect(biggest.textContent).toContain("companionship");
+  });
+
+  it("rounds a tile into the map's corner so its ring is not clipped", () => {
+    const { container } = render(<SectorBreakdown sectors={sectors} />);
+    const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    // The first tile is laid at the origin, so its top-left is the map's.
+    const [first] = tiles;
+    expect(first.style.left).toBe("0%");
+    expect(first.style.top).toBe("0%");
+    expect(first.style.borderRadius.split(" ")[0]).toContain("--r-field");
+    // An interior corner stays square, or the map grows gaps at its seams.
+    expect(first.style.borderRadius.split(" ")[2]).toBe("0");
   });
 
   it("renders nothing at all on an empty board", () => {
@@ -140,19 +206,14 @@ describe("SectorBreakdown", () => {
       <SectorBreakdown sectors={[only, settled("data", 100, 4), settled("research", 100, 4)]} />,
     );
     expect(container.querySelectorAll(".itx-sectors-tile")).toHaveLength(3);
-    expect(screen.getByText(/bounty posted over the window/)).toBeInTheDocument();
-  });
-
-  it("says so when the weight is no longer value on offer", () => {
-    render(<SectorBreakdown sectors={[settled("coding", 600, 10)]} />);
-    expect(screen.getByText(/bounty posted over the window/)).toBeInTheDocument();
+    // Weighed by flow instead: 300 against 100 and 100.
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("60.0%");
   });
 
   it("falls back to tasks posted when the board carries no bounty at all", () => {
     render(
       <SectorBreakdown sectors={[settled("coding", 0, 30), settled("data", 0, 10)]} />,
     );
-    expect(screen.getByText(/tasks posted over the window/)).toBeInTheDocument();
     expect(screen.getAllByRole("row")[1]).toHaveTextContent("75.0%");
   });
 

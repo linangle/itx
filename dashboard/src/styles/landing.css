@@ -2422,9 +2422,23 @@ a.itx-board-what:hover {
 }
 
 .itx-sectors-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
   margin: 0 0 var(--sp-5);
   color: var(--ld-sub);
   font-size: var(--fs-meta);
+}
+
+/* The way back out of a sector, which is why it sits where the label
+   that named the level was. */
+.itx-sectors-back {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ld-blue);
+  font: inherit;
+  cursor: pointer;
 }
 
 .itx-sectors-table table {
@@ -2554,15 +2568,19 @@ a.itx-board-what:hover {
   --tile-hue: var(--ld-sub);
 }
 
-/* Selecting one sector dims the others rather than hiding them: the map
-   is a comparison, and a tile that vanishes takes its own context with
-   it. */
-.itx-sectors-tile[data-dim] {
-  opacity: 0.35;
-}
+/* Drawn inside the tile rather than as an outline. An outline sits on
+   the tile's own edge, and the tiles along the map's border have that
+   edge shaved off by the map's rounded corner -- so the ring on a corner
+   tile came out sliced. A ring inset from a corner tile that is rounded
+   to match (see `corners()`) stays inside the clip and closes. */
 .itx-sectors-tile[data-on] {
-  outline: 1px solid var(--ld-light);
-  outline-offset: -2px;
+  box-shadow: inset 0 0 0 1px var(--ld-light);
+}
+
+/* Only the sector level is clickable; inside a sector the tiles are the
+   breakdown itself and lead nowhere further. */
+.itx-sectors-map[data-level="sectors"] .itx-sectors-tile {
+  cursor: pointer;
 }
 
 /* Type as a fraction of the tile's own short side, which `--tile-scale`

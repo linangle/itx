@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { squarify } from "../../lib/treemap";
+import type { TreemapRect } from "../../lib/treemap";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
-import type { SectorSummary } from "../../lib/series";
+import type { MarketSummary, SectorSummary } from "../../lib/series";
 
 /** The map is laid out in this space and positioned in percentages, so
  * it never has to be measured.
@@ -60,6 +61,46 @@ function labelScale(rect: { width: number; height: number }): number {
   return Math.min(wide, tall);
 }
 
+/** How much of a tile's label it has room for.
+ *
+ * A sector map has six boxes and they all fit. A sector's *markets* do
+ * not: the long tail of a sector is a row of slivers, and a name set in
+ * one of them is either three ellipsised letters or a word overflowing
+ * its own box -- both of which read as a rendering fault rather than as
+ * a small market. Below the thresholds the tile carries no text at all
+ * and is just a shape; every tile names itself on hover regardless, so
+ * nothing is only available to the tiles that happen to be big. */
+function labelDetail(scale: number): "full" | "name" | "none" {
+  if (scale >= 0.1) return "full";
+  if (scale >= 0.055) return "name";
+  return "none";
+}
+
+/** Which of the map's own corners a tile sits in.
+ *
+ * The map is a rounded box that clips what it contains, so a tile in a
+ * corner has its square corner cut away by that curve -- and with it
+ * whatever is drawn along the tile's edge, which is how the selection
+ * ring came to be sliced through at the corner. Rounding the tile to
+ * the same radius on the same corner puts its edge back inside the clip
+ * where it can be seen. Only the corners that are genuinely flush are
+ * rounded: an interior tile that merely ends near the edge must stay
+ * square, or the map grows gaps along its own seams. */
+function corners(rect: TreemapRect): string {
+  const EPS = 0.01;
+  const r = "var(--r-field)";
+  const left = rect.x <= EPS;
+  const top = rect.y <= EPS;
+  const right = rect.x + rect.width >= MAP_W - EPS;
+  const bottom = rect.y + rect.height >= MAP_H - EPS;
+  return [
+    top && left ? r : "0",
+    top && right ? r : "0",
+    bottom && right ? r : "0",
+    bottom && left ? r : "0",
+  ].join(" ");
+}
+
 /** What a sector's size is read off, best first.
  *
  * Open bounty is the quantity this panel wants: value on offer right
@@ -80,23 +121,44 @@ function labelScale(rect: { width: number; height: number }): number {
  * holds all the open bounty on the board, and weighing by it there
  * gives one sector 100%, everything else 0.0%, and a map with one tile
  * in it -- a breakdown that breaks down nothing. Two is the smallest
- * number that is a comparison. Whichever wins is named above the table,
- * because a weight column that quietly changes what it measures is a
- * lie the reader has no way to catch. */
-const BASES = [
-  {
-    of: (s: SectorSummary) => s.openBounty,
-    note: "select a sector for a visual breakdown",
-  },
-  {
-    of: (s: SectorSummary) => s.markets.reduce((sum, m) => sum + m.value, 0),
-    note: "nothing open right now — weighted by bounty posted over the window",
-  },
-  {
-    of: (s: SectorSummary) => s.posted,
-    note: "no bounty on the board — weighted by tasks posted over the window",
-  },
-] as const;
+ * number that is a comparison. */
+const SECTOR_BASES = [
+  (s: SectorSummary) => s.openBounty,
+  (s: SectorSummary) => s.markets.reduce((sum, m) => sum + m.value, 0),
+  (s: SectorSummary) => s.posted,
+];
+
+/** The same ladder one level down, for the markets inside a sector.
+ * Same reasoning, same order: on offer, then flow, then task count. */
+const MARKET_BASES = [
+  (m: MarketSummary) => m.openBounty,
+  (m: MarketSummary) => m.value,
+  (m: MarketSummary) => m.open,
+];
+
+/** The first rung with something on it, and what it adds up to. */
+function pickBasis<T>(items: T[], bases: ((item: T) => number)[]) {
+  const positive = (of: (item: T) => number) => items.map((i) => Math.max(0, of(i)));
+  const sum = (values: number[]) => values.reduce((acc, v) => acc + v, 0);
+  // A one-item board cannot have two contributors, and there is nothing
+  // to compare it against anyway, so it only needs one.
+  const enough = Math.min(2, items.length);
+
+  for (const of of bases) {
+    const values = positive(of);
+    if (sum(values) > 0 && values.filter((v) => v > 0).length >= enough) {
+      return { of, total: sum(values) };
+    }
+  }
+  // Nothing clears the two-item bar. Take whatever has a number in it
+  // rather than nothing -- one tile still beats an empty map -- and only
+  // then give up and say there is nothing to weigh.
+  for (const of of bases) {
+    const total = sum(positive(of));
+    if (total > 0) return { of, total };
+  }
+  return { of: bases[bases.length - 1], total: 0 };
+}
 
 /** The sector breakdown, after the reference: a table of sectors by
  * weight on the left, and a treemap on the right where each sector's
@@ -119,44 +181,52 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
    * the more discoverable of the two silently cancelling the other. */
   const [selected, setSelected] = useState<string | null>(null);
 
-  /** The basis the panel is weighing by, and what it adds up to. The
-   * last rung is the one used when even it is empty, so `total` can
-   * still be zero -- an all-zero board is weightless however it is
+  /** The basis the table is weighing by, and what it adds up to. `total`
+   * can still be zero -- an all-zero board is weightless however it is
    * measured, and the map says so rather than rendering an empty box. */
-  const { basis, total } = useMemo(() => {
-    // A one-sector board cannot have two contributors, and there is
-    // nothing to compare it against anyway, so it only needs one.
-    const enough = Math.min(2, sectors.length);
-    for (const candidate of BASES) {
-      const values = sectors.map((s) => Math.max(0, candidate.of(s)));
-      const sum = values.reduce((acc, v) => acc + v, 0);
-      if (sum > 0 && values.filter((v) => v > 0).length >= enough) {
-        return { basis: candidate, total: sum };
-      }
-    }
-    // Nothing clears the two-sector bar. Take whatever has a number in
-    // it rather than nothing -- one tile still beats an empty map -- and
-    // only then give up and say the board is weightless.
-    for (const candidate of BASES) {
-      const sum = sectors.reduce((acc, s) => acc + Math.max(0, candidate.of(s)), 0);
-      if (sum > 0) return { basis: candidate, total: sum };
-    }
-    return { basis: BASES[BASES.length - 1], total: 0 };
-  }, [sectors]);
+  const { of: basis, total } = useMemo(() => pickBasis(sectors, SECTOR_BASES), [sectors]);
 
   /** Rows follow the weight actually on screen. They arrive ranked by
    * open bounty, which is the right order right up until that is the
    * number that ran out -- and a column of descending percentages that
    * suddenly is not descending reads as a sorting bug. */
   const rows = useMemo(
-    () => [...sectors].sort((a, b) => basis.of(b) - basis.of(a)),
+    () => [...sectors].sort((a, b) => basis(b) - basis(a)),
     [sectors, basis],
   );
 
-  const tiles = useMemo(
-    () => squarify(sectors, basis.of, MAP_W, MAP_H),
-    [sectors, basis],
+  /** The sector the map is inside, if any. Held by name rather than by
+   * reference because the board reloads underneath: the sector the
+   * reader picked is the one with that name in whatever arrived last,
+   * not the object that was on screen when they clicked. */
+  const inside = useMemo(
+    () => sectors.find((s) => s.name === selected) ?? null,
+    [sectors, selected],
   );
+
+  /** One level or the other, laid out the same way. Inside a sector the
+   * boxes are its markets, weighed against each other rather than
+   * against the board -- a sector's own breakdown should fill its own
+   * map however small the sector is. */
+  const tiles = useMemo(() => {
+    if (inside) {
+      const { of } = pickBasis(inside.markets, MARKET_BASES);
+      return squarify(inside.markets, of, MAP_W, MAP_H).map(({ item, rect }) => ({
+        key: item.capability,
+        name: item.capability,
+        changePct: item.changePct,
+        hint: `${formatCount(item.open)} open · ${formatCompactItx(item.value)} itx`,
+        rect,
+      }));
+    }
+    return squarify(sectors, basis, MAP_W, MAP_H).map(({ item, rect }) => ({
+      key: item.name,
+      name: item.name,
+      changePct: item.changePct,
+      hint: `${formatCount(item.open)} open · ${formatCompactItx(item.openBounty)} itx`,
+      rect,
+    }));
+  }, [sectors, basis, inside]);
 
   if (sectors.length === 0) return null;
 
@@ -174,7 +244,7 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
           the bar -- see `--anchor-top`. */}
       <div className="itx-sectors-panel itx-board-panel" id="itx-board-sectors">
         <div className="itx-sectors-table">
-          <p className="itx-sectors-head">{basis.note}</p>
+          <p className="itx-sectors-head">select a sector for a visual breakdown</p>
           <table className="itx-board-table">
             <thead>
               <tr>
@@ -185,7 +255,7 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
             </thead>
             <tbody>
               {rows.map((s) => {
-                const weight = total > 0 ? Math.max(0, basis.of(s)) / total : 0;
+                const weight = total > 0 ? Math.max(0, basis(s)) / total : 0;
                 return (
                   <tr
                     key={s.name}
@@ -223,35 +293,62 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
         </div>
 
         <div className="itx-sectors-side">
-          <p className="itx-sectors-head">all sectors</p>
-          <div className="itx-sectors-map">
+          {/* Inside a sector the head is the way back out, so the map
+              can be left without hunting for the row that opened it. */}
+          <p className="itx-sectors-head">
+            {inside ? (
+              <>
+                <button
+                  type="button"
+                  className="itx-sectors-back"
+                  onClick={() => setSelected(null)}
+                >
+                  ‹ all sectors
+                </button>
+                {inside.name}
+              </>
+            ) : (
+              "all sectors"
+            )}
+          </p>
+          <div className="itx-sectors-map" data-level={inside ? "markets" : "sectors"}>
             {/* A board with nothing to weigh says so inside the map. The
                 alternative is an empty bordered box, which is
                 indistinguishable from a panel that failed to load. */}
             {tiles.length === 0 && (
               <p className="itx-sectors-map-empty">nothing to map yet</p>
             )}
-            {tiles.map(({ item, rect }) => (
-              <div
-                key={item.name}
-                className="itx-sectors-tile"
-                data-dir={directionOf(item.changePct)}
-                data-dim={selected !== null && selected !== item.name ? "" : undefined}
-                data-on={selected === item.name ? "" : undefined}
-                style={{
-                  left: `${(rect.x / MAP_W) * 100}%`,
-                  top: `${(rect.y / MAP_H) * 100}%`,
-                  width: `${(rect.width / MAP_W) * 100}%`,
-                  height: `${(rect.height / MAP_H) * 100}%`,
-                  ["--tile-tint" as string]: tint(item.changePct),
-                  ["--tile-scale" as string]: labelScale(rect),
-                }}
-                onClick={() => setSelected(selected === item.name ? null : item.name)}
-              >
-                <span className="itx-sectors-tile-name">{item.name}</span>
-                <span className="itx-sectors-tile-pct">{formatPct(item.changePct)}</span>
-              </div>
-            ))}
+            {tiles.map(({ key, name, changePct, hint, rect }) => {
+              const detail = labelDetail(labelScale(rect));
+              return (
+                <div
+                  key={key}
+                  className="itx-sectors-tile"
+                  data-dir={directionOf(changePct)}
+                  data-on={!inside && selected === name ? "" : undefined}
+                  style={{
+                    left: `${(rect.x / MAP_W) * 100}%`,
+                    top: `${(rect.y / MAP_H) * 100}%`,
+                    width: `${(rect.width / MAP_W) * 100}%`,
+                    height: `${(rect.height / MAP_H) * 100}%`,
+                    borderRadius: corners(rect),
+                    ["--tile-tint" as string]: tint(changePct),
+                    ["--tile-scale" as string]: labelScale(rect),
+                  }}
+                  /* Every tile names itself on hover, which is what makes
+                     it safe for the small ones to carry no text. */
+                  title={`${name} · ${formatPct(changePct)} · ${hint}`}
+                  onClick={inside ? undefined : () => setSelected(selected === name ? null : name)}
+                >
+                  {detail !== "none" && (
+                    <span className="itx-sectors-tile-name">{name}</span>
+                  )}
+                  {detail === "full" && (
+                    <span className="itx-sectors-tile-pct">{formatPct(changePct)}</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* The ladder, so the colours can actually be read rather than
