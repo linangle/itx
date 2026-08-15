@@ -2503,6 +2503,22 @@ a.itx-board-what:hover {
   overflow: hidden;
 }
 
+/* Centred in the map's own box rather than laid out above it, so an
+   empty map keeps the same footprint a full one has and the panel does
+   not change height as the last task settles. */
+.itx-sectors-map-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  border: 1px solid var(--bd-line);
+  border-radius: inherit;
+  color: var(--ld-sub);
+  font-size: var(--fs-meta);
+}
+
 .itx-sectors-tile {
   position: absolute;
   display: flex;

@@ -60,6 +60,44 @@ function labelScale(rect: { width: number; height: number }): number {
   return Math.min(wide, tall);
 }
 
+/** What a sector's size is read off, best first.
+ *
+ * Open bounty is the quantity this panel wants: value on offer right
+ * now, the same one the carousel ranks by, so a sector that leads the
+ * board also has the biggest tile. It has one failure mode, and it is
+ * not rare -- a board where every task has settled has *no* open bounty
+ * at all, and every sector weighs zero. The table then reads 0.0% down
+ * the column and the map goes blank, because `squarify` drops
+ * zero-valued items rather than laying out boxes with no area. Nothing
+ * is broken at that moment and the panel looks broken, which is worse
+ * than showing the second-best number.
+ *
+ * So the ladder falls back to flow -- bounty *posted* over the charting
+ * window, which is what the change column already trades in -- and then
+ * to tasks posted, for a board carrying work with no bounty on it. A
+ * basis wins when at least two sectors have something in it, not merely
+ * one: a settling board passes through a state where a single open task
+ * holds all the open bounty on the board, and weighing by it there
+ * gives one sector 100%, everything else 0.0%, and a map with one tile
+ * in it -- a breakdown that breaks down nothing. Two is the smallest
+ * number that is a comparison. Whichever wins is named above the table,
+ * because a weight column that quietly changes what it measures is a
+ * lie the reader has no way to catch. */
+const BASES = [
+  {
+    of: (s: SectorSummary) => s.openBounty,
+    note: "select a sector for a visual breakdown",
+  },
+  {
+    of: (s: SectorSummary) => s.markets.reduce((sum, m) => sum + m.value, 0),
+    note: "nothing open right now — weighted by bounty posted over the window",
+  },
+  {
+    of: (s: SectorSummary) => s.posted,
+    note: "no bounty on the board — weighted by tasks posted over the window",
+  },
+] as const;
+
 /** The sector breakdown, after the reference: a table of sectors by
  * weight on the left, and a treemap on the right where each sector's
  * area is its share of the board and its colour is how it is moving.
@@ -81,14 +119,43 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
    * the more discoverable of the two silently cancelling the other. */
   const [selected, setSelected] = useState<string | null>(null);
 
-  const totalBounty = useMemo(
-    () => sectors.reduce((sum, s) => sum + s.openBounty, 0),
-    [sectors],
+  /** The basis the panel is weighing by, and what it adds up to. The
+   * last rung is the one used when even it is empty, so `total` can
+   * still be zero -- an all-zero board is weightless however it is
+   * measured, and the map says so rather than rendering an empty box. */
+  const { basis, total } = useMemo(() => {
+    // A one-sector board cannot have two contributors, and there is
+    // nothing to compare it against anyway, so it only needs one.
+    const enough = Math.min(2, sectors.length);
+    for (const candidate of BASES) {
+      const values = sectors.map((s) => Math.max(0, candidate.of(s)));
+      const sum = values.reduce((acc, v) => acc + v, 0);
+      if (sum > 0 && values.filter((v) => v > 0).length >= enough) {
+        return { basis: candidate, total: sum };
+      }
+    }
+    // Nothing clears the two-sector bar. Take whatever has a number in
+    // it rather than nothing -- one tile still beats an empty map -- and
+    // only then give up and say the board is weightless.
+    for (const candidate of BASES) {
+      const sum = sectors.reduce((acc, s) => acc + Math.max(0, candidate.of(s)), 0);
+      if (sum > 0) return { basis: candidate, total: sum };
+    }
+    return { basis: BASES[BASES.length - 1], total: 0 };
+  }, [sectors]);
+
+  /** Rows follow the weight actually on screen. They arrive ranked by
+   * open bounty, which is the right order right up until that is the
+   * number that ran out -- and a column of descending percentages that
+   * suddenly is not descending reads as a sorting bug. */
+  const rows = useMemo(
+    () => [...sectors].sort((a, b) => basis.of(b) - basis.of(a)),
+    [sectors, basis],
   );
 
   const tiles = useMemo(
-    () => squarify(sectors, (s) => s.openBounty, MAP_W, MAP_H),
-    [sectors],
+    () => squarify(sectors, basis.of, MAP_W, MAP_H),
+    [sectors, basis],
   );
 
   if (sectors.length === 0) return null;
@@ -107,7 +174,7 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
           the bar -- see `--anchor-top`. */}
       <div className="itx-sectors-panel itx-board-panel" id="itx-board-sectors">
         <div className="itx-sectors-table">
-          <p className="itx-sectors-head">select a sector for a visual breakdown</p>
+          <p className="itx-sectors-head">{basis.note}</p>
           <table className="itx-board-table">
             <thead>
               <tr>
@@ -117,8 +184,8 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
               </tr>
             </thead>
             <tbody>
-              {sectors.map((s) => {
-                const weight = totalBounty > 0 ? s.openBounty / totalBounty : 0;
+              {rows.map((s) => {
+                const weight = total > 0 ? Math.max(0, basis.of(s)) / total : 0;
                 return (
                   <tr
                     key={s.name}
@@ -158,6 +225,12 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
         <div className="itx-sectors-side">
           <p className="itx-sectors-head">all sectors</p>
           <div className="itx-sectors-map">
+            {/* A board with nothing to weigh says so inside the map. The
+                alternative is an empty bordered box, which is
+                indistinguishable from a panel that failed to load. */}
+            {tiles.length === 0 && (
+              <p className="itx-sectors-map-empty">nothing to map yet</p>
+            )}
             {tiles.map(({ item, rect }) => (
               <div
                 key={item.name}
