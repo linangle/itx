@@ -190,7 +190,9 @@ export function axisDates(now: number = Date.now()): { index: number; label: str
     const at = now - ((STEPS - 1 - index) / (STEPS - 1)) * SPAN_MS;
     return {
       index,
-      label: new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      label: new Date(at)
+        .toLocaleDateString("en-US", { month: "short", day: "numeric" })
+        .toLowerCase(),
     };
   });
 }

@@ -73,7 +73,7 @@ function Detail({ task }: { task: TaskDto }) {
       </header>
 
       <section className="itx-panel" style={{ marginBottom: 16 }}>
-        <div className="itx-panel-head">Lifecycle</div>
+        <div className="itx-panel-head">lifecycle</div>
         <div className="itx-panel-body">
           <TaskProgress task={task} />
         </div>
@@ -81,36 +81,36 @@ function Detail({ task }: { task: TaskDto }) {
 
       <div className="itx-columns">
         <section className="itx-panel">
-          <div className="itx-panel-head">Task</div>
+          <div className="itx-panel-head">task</div>
           <dl className="itx-facts">
-            <dt>Posted</dt>
+            <dt>posted</dt>
             <dd>
               {formatTimestamp(task.created_at)}{" "}
               <span className="flat">({formatRelative(task.created_at)} ago)</span>
             </dd>
 
-            <dt>Poster</dt>
+            <dt>poster</dt>
             <dd>
               <PubkeyLink pubkey={task.poster} />
             </dd>
 
             {task.claimant && (
               <>
-                <dt>Claimant</dt>
+                <dt>claimant</dt>
                 <dd>
                   <PubkeyLink pubkey={task.claimant} />
                 </dd>
               </>
             )}
 
-            <dt>Attempts failed</dt>
+            <dt>attempts failed</dt>
             <dd>
               <span className={task.failed_attempts > 0 ? "num down" : "num flat"}>
                 {formatCount(task.failed_attempts)}
               </span>
             </dd>
 
-            <dt>Reputation gate</dt>
+            <dt>reputation gate</dt>
             <dd>
               {task.min_reputation === 0 ? (
                 <span className="flat">open to anyone</span>
@@ -122,7 +122,7 @@ function Detail({ task }: { task: TaskDto }) {
               )}
             </dd>
 
-            <dt>Capabilities</dt>
+            <dt>capabilities</dt>
             <dd>
               {task.capabilities.length === 0 ? (
                 <span className="flat">unrestricted</span>
@@ -141,12 +141,12 @@ function Detail({ task }: { task: TaskDto }) {
 
             {task.close_reason && (
               <>
-                <dt>Closed because</dt>
+                <dt>closed because</dt>
                 <dd className="down">{task.close_reason.replace(/_/g, " ")}</dd>
               </>
             )}
 
-            <dt>Task id</dt>
+            <dt>task id</dt>
             <dd className="itx-key">{task.id}</dd>
           </dl>
         </section>
@@ -162,21 +162,21 @@ function KindPanel({ task }: { task: TaskDto }) {
     case "hash_match":
       return (
         <section className="itx-panel">
-          <div className="itx-panel-head">Verification</div>
+          <div className="itx-panel-head">verification</div>
           <dl className="itx-facts">
-            <dt>Method</dt>
+            <dt>method</dt>
             <dd>
               the submitted answer is hashed with SHA256 and compared against a target fixed
               when the task was posted.
             </dd>
-            <dt>Target</dt>
+            <dt>target</dt>
             <dd className="flat">
               never disclosed. publishing it would let anyone produce a passing answer without
               doing the work.
             </dd>
-            <dt>On failure</dt>
+            <dt>on failure</dt>
             <dd>
-              A wrong answer reopens the task for anyone else and counts against the
+              a wrong answer reopens the task for anyone else and counts against the
               submitter&apos;s reputation.
             </dd>
           </dl>
@@ -194,7 +194,7 @@ function KindPanel({ task }: { task: TaskDto }) {
 
       return (
         <section className="itx-panel">
-          <div className="itx-panel-head">Consensus</div>
+          <div className="itx-panel-head">consensus</div>
           <div className="itx-panel-body" style={{ paddingBottom: 0 }}>
             <div className="flat" style={{ fontSize: 12 }}>
               <span className="num" style={{ color: "var(--text)" }}>
@@ -207,7 +207,7 @@ function KindPanel({ task }: { task: TaskDto }) {
             </div>
           </div>
           <dl className="itx-facts">
-            <dt>Join deadline</dt>
+            <dt>join deadline</dt>
             <dd className={join.expired ? "flat" : ""}>
               {join.text}
               {task.status === "Open" && join.expired && (
@@ -215,7 +215,7 @@ function KindPanel({ task }: { task: TaskDto }) {
               )}
             </dd>
 
-            <dt>Submissions due</dt>
+            <dt>submissions due</dt>
             <dd>
               {submission ? (
                 submission.text
@@ -224,15 +224,15 @@ function KindPanel({ task }: { task: TaskDto }) {
               )}
             </dd>
 
-            <dt>Answers</dt>
+            <dt>answers</dt>
             <dd className="flat">
               hidden from everyone, before and after resolution — independent assignment only
               works if no one can copy anyone else.
             </dd>
 
-            <dt>Payout</dt>
+            <dt>payout</dt>
             <dd>
-              whoever matches the majority splits the bounty evenly. A tie pays no one and
+              whoever matches the majority splits the bounty evenly. a tie pays no one and
               dings no one.
             </dd>
           </dl>
@@ -246,7 +246,7 @@ function KindPanel({ task }: { task: TaskDto }) {
 
       return (
         <section className="itx-panel">
-          <div className="itx-panel-head">Answer &amp; disputes</div>
+          <div className="itx-panel-head">answer &amp; disputes</div>
           <div className="itx-panel-body">
             {task.answer ? (
               <div className="itx-answer">{task.answer}</div>
@@ -273,13 +273,13 @@ function KindPanel({ task }: { task: TaskDto }) {
             )}
           </div>
           <dl className="itx-facts">
-            <dt>Challenge window</dt>
+            <dt>challenge window</dt>
             <dd className={window?.expired ? "flat" : ""}>
               {window ? window.text : <span className="flat">starts once an answer lands</span>}
             </dd>
-            <dt>If unchallenged</dt>
+            <dt>if unchallenged</dt>
             <dd>the answer is accepted automatically and the bounty pays out.</dd>
-            <dt>If challenged</dt>
+            <dt>if challenged</dt>
             <dd>
               the challenger posts a bond and the operator rules. the loser forfeits their
               stake to the winner.

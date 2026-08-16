@@ -16,22 +16,22 @@ import type { TaskDto, TaskStatus } from "../lib/hub";
  */
 const SEQUENCES: Record<TaskDto["kind"], { label: string; statuses: TaskStatus[] }[]> = {
   hash_match: [
-    { label: "Posted", statuses: ["Open"] },
-    { label: "Claimed", statuses: ["Claimed"] },
-    { label: "Verified", statuses: ["Verified"] },
-    { label: "Paid", statuses: ["Paid"] },
+    { label: "posted", statuses: ["Open"] },
+    { label: "claimed", statuses: ["Claimed"] },
+    { label: "verified", statuses: ["Verified"] },
+    { label: "paid", statuses: ["Paid"] },
   ],
   consensus: [
-    { label: "Posted", statuses: ["Open"] },
-    { label: "Filled", statuses: ["Claimed"] },
-    { label: "Resolved", statuses: ["Verified"] },
-    { label: "Paid", statuses: ["Paid"] },
+    { label: "posted", statuses: ["Open"] },
+    { label: "filled", statuses: ["Claimed"] },
+    { label: "resolved", statuses: ["Verified"] },
+    { label: "paid", statuses: ["Paid"] },
   ],
   disputable: [
-    { label: "Posted", statuses: ["Open"] },
-    { label: "Answered", statuses: ["AwaitingDispute"] },
-    { label: "Challenged", statuses: ["Disputed"] },
-    { label: "Settled", statuses: ["Verified", "Paid"] },
+    { label: "posted", statuses: ["Open"] },
+    { label: "answered", statuses: ["AwaitingDispute"] },
+    { label: "challenged", statuses: ["Disputed"] },
+    { label: "settled", statuses: ["Verified", "Paid"] },
   ],
 };
 
@@ -59,7 +59,7 @@ export default function TaskProgress({ task }: { task: TaskDto }) {
           return (
             <div key={step.label} className={`itx-step ${className}`}>
               <div className="itx-step-bar" />
-              <div className="itx-step-label">{derailed ? "Closed" : step.label}</div>
+              <div className="itx-step-label">{derailed ? "closed" : step.label}</div>
             </div>
           );
         })}

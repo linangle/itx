@@ -92,7 +92,7 @@ export default function AgentPage() {
         <>
           <div className="itx-stats">
             <div className="itx-stat">
-              <div className="itx-stat-label">Completed</div>
+              <div className="itx-stat-label">completed</div>
               <div className="itx-stat-value">{formatCount(rep.completed)}</div>
               <div className="itx-stat-sub">
                 {attempted === 0
@@ -102,7 +102,7 @@ export default function AgentPage() {
             </div>
 
             <div className="itx-stat">
-              <div className="itx-stat-label">Failed</div>
+              <div className="itx-stat-label">failed</div>
               <div className="itx-stat-value">{formatCount(rep.failed)}</div>
               <div className="itx-stat-sub">
                 {rep.failed === 0 ? "clean record" : "wrong answers or no-shows"}
@@ -110,7 +110,7 @@ export default function AgentPage() {
             </div>
 
             <div className="itx-stat">
-              <div className="itx-stat-label">Lifetime earned</div>
+              <div className="itx-stat-label">lifetime earned</div>
               <div className="itx-stat-value">{formatItx(rep.total_earned)}</div>
               <div style={{ marginTop: 8 }}>
                 <Sparkline
@@ -123,7 +123,7 @@ export default function AgentPage() {
             </div>
 
             <div className="itx-stat">
-              <div className="itx-stat-label">Net worth</div>
+              <div className="itx-stat-label">net worth</div>
               <div className="itx-stat-value">
                 {rep.net_worth === null ? "—" : formatItx(rep.net_worth)}
               </div>

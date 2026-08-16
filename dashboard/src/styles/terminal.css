@@ -380,14 +380,13 @@ body.itx-body[data-theme="light"] {
 }
 
 /* The heading over a group of nav entries. Set like a table header --
-   micro, uppercase, faint -- so it reads as a label for what follows
-   rather than as another destination in the list. The top margin is
-   what separates one group from the entries above it; the first group
-   sits below `All tasks`, so there is always something to separate. */
+   micro, faint -- so it reads as a label for what follows rather than
+   as another destination in the list. The top margin is what separates
+   one group from the entries above it; the first group sits below `all
+   tasks`, so there is always something to separate. */
 .itx-sidebar-caption {
   font-size: var(--fs-micro);
   font-family: var(--font-mono);
-  text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-faint);
   padding: var(--sp-2) var(--sp-5);
@@ -442,7 +441,6 @@ body.itx-body[data-theme="light"] {
   font-size: var(--fs-meta);
   font-weight: 600;
   color: var(--text-dim);
-  text-transform: uppercase;
   letter-spacing: 0.6px;
   display: flex;
   justify-content: space-between;
@@ -473,7 +471,6 @@ body.itx-body[data-theme="light"] {
 
 .itx-stat-label {
   font-size: var(--fs-micro);
-  text-transform: uppercase;
   letter-spacing: 0.7px;
   color: var(--card-fill-dim);
   margin-bottom: var(--sp-4);
@@ -523,6 +520,11 @@ body.itx-body[data-theme="light"] {
    `/legacy` pages and styles bare `th`/`td` with `#eee` fills and `#999`
    borders -- without these overrides its rules bleed into the terminal
    tables as white header strips and stray column separators. */
+/* Headings are lower case like everything else on the site, which is a
+   house rule and not a per-table choice: the labels are authored lower
+   case in the markup rather than being upper-cased here, so what a
+   screen reader reads out and what the eye reads are the same string.
+   `text-transform` could not tell `ITX` from a sentence anyway. */
 .itx-table th {
   text-align: left;
   font-family: var(--font-mono);
@@ -530,7 +532,6 @@ body.itx-body[data-theme="light"] {
   font-size: var(--fs-micro);
   color: var(--text-faint);
   background: transparent;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: var(--sp-3) var(--sp-5) var(--sp-4);
   border: none;
@@ -667,7 +668,6 @@ body.itx-body[data-theme="light"] {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.4px;
   border: 1px solid transparent;
 }
@@ -1241,7 +1241,6 @@ a.itx-chip:hover {
 .itx-step-label {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--text-faint);
   margin-top: var(--sp-3);
@@ -1301,7 +1300,6 @@ a.itx-chip:hover {
 .itx-callout-head {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--down);
   margin-bottom: var(--sp-3);
@@ -1321,7 +1319,6 @@ a.itx-chip:hover {
 .itx-facts dt {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--text-faint);
   padding-top: var(--sp-1);

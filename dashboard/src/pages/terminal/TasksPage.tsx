@@ -47,20 +47,20 @@ const PAGE_SIZE = 25;
  *
  * Two of the labels are shorter than the thing they name, and
  * deliberately: headers are `nowrap`, so every one of them sets its
- * column's minimum width. "Task" over "Description" saves 65px on the
+ * column's minimum width. "task" over "description" saves 65px on the
  * column that gives its width away to all the others (`.grow`), and
- * "Verified by" over "Verification" saves 20 more while matching the
+ * "verified by" over "verification" saves 20 more while matching the
  * wording the sidebar already uses for that axis. Together they are the
  * difference between the row fitting a 1280px window and not. */
 const COLUMNS: { key: SortKey; label: string; right?: boolean }[] = [
-  { key: "task", label: "Task" },
-  { key: "kind", label: "Verified by" },
-  { key: "status", label: "Status" },
-  { key: "poster", label: "Poster" },
-  { key: "sector", label: "Sector" },
-  { key: "market", label: "Market" },
-  { key: "bounty", label: "Bounty", right: true },
-  { key: "age", label: "Age", right: true },
+  { key: "task", label: "task" },
+  { key: "kind", label: "verified by" },
+  { key: "status", label: "status" },
+  { key: "poster", label: "poster" },
+  { key: "sector", label: "sector" },
+  { key: "market", label: "market" },
+  { key: "bounty", label: "bounty", right: true },
+  { key: "age", label: "age", right: true },
 ];
 
 /** A column header that sorts. Module-level rather than nested in the

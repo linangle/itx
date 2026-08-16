@@ -252,13 +252,13 @@ export function describeKind(kind: string): string | null {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  Open: "Open",
-  Claimed: "Claimed",
-  AwaitingDispute: "Awaiting dispute",
-  Disputed: "Disputed",
-  Verified: "Verified",
-  Paid: "Paid",
-  Closed: "Closed",
+  Open: "open",
+  Claimed: "claimed",
+  AwaitingDispute: "awaiting dispute",
+  Disputed: "disputed",
+  Verified: "verified",
+  Paid: "paid",
+  Closed: "closed",
 };
 
 export function formatStatus(status: string): string {

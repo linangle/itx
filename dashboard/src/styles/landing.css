@@ -3268,12 +3268,14 @@ a.itx-board-what:hover {
   stroke-width: 1.5;
 }
 
+/* Lower case, like every other word on the site -- and `momentLabel`
+   already builds the string that way ("aug 9 at 2 pm"), so upper-casing
+   it here was one rule undoing another. */
 .itx-pm-when {
   fill: var(--ld-sub);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 /* A plate under each readout so the words read against whatever the

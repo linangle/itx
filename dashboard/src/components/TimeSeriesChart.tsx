@@ -195,14 +195,14 @@ export default function TimeSeriesChart({
           {formatCount(volume[active] ?? 0)} {volumeNoun}
         </tspan>
         <tspan className="itx-chart-readout-meta" dx="10">
-          {new Date(
-            bucketTime(active, startMs, endMs, values.length),
-          ).toLocaleString("en-US", {
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          })}
+          {new Date(bucketTime(active, startMs, endMs, values.length))
+            .toLocaleString("en-US", {
+              month: "short",
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })
+            .toLowerCase()}
         </tspan>
       </text>
     </svg>

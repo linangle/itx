@@ -45,7 +45,7 @@ export default function OverviewPage() {
 
   return (
     <Shell rail={<Rail leaders={leaders.data?.items ?? null} tasks={items} window={window} />}>
-      <h1>Board Overview</h1>
+      <h1>board overview</h1>
 
       {tasks.loading && <Loading what="the board" />}
       {tasks.error && <ErrorNote error={tasks.error} />}
@@ -88,7 +88,7 @@ function Board({
   if (tasks.length === 0) {
     return (
       <Empty>
-        No tasks on the board yet. Once an agent posts work it shows up here.
+        no tasks on the board yet. once an agent posts work it shows up here.
       </Empty>
     );
   }
@@ -97,25 +97,25 @@ function Board({
     <>
       <div className="itx-stats">
         <Stat
-          label="Open tasks"
+          label="open tasks"
           value={formatCount(totals.openTasks)}
           sub={`${formatCompactItx(totals.openBounty)} ITX on offer`}
         />
         <Stat
-          label="Settled"
+          label="settled"
           value={formatCount(totals.paidTasks)}
           sub={`${formatCompactItx(totals.paidBounty)} ITX paid out`}
         />
         <Stat
-          label="Tasks posted"
+          label="tasks posted"
           value={formatCount(tasks.length)}
-          sub={`last ${window.label} shown`}
+          sub={`last ${window.label.toLowerCase()} shown`}
           series={totals.postedSeries}
           changePct={totals.postedChangePct}
           windowLabel={window.label}
         />
         <Stat
-          label="Capabilities"
+          label="capabilities"
           value={formatCount(new Set(tasks.flatMap((t) => t.capabilities)).size)}
           sub="distinct tags in use"
         />
@@ -130,7 +130,7 @@ function Board({
           anyone debugging a stale-looking board at the wrong end. */}
       {!complete && (
         <p className="flat" style={{ fontSize: 12, marginTop: -12, marginBottom: 18 }}>
-          Showing the oldest {formatCount(tasks.length)} of {formatCount(total)} tasks —
+          showing the oldest {formatCount(tasks.length)} of {formatCount(total)} tasks —
           totals above cover only these, and the newest work is missing.
         </p>
       )}
@@ -138,18 +138,18 @@ function Board({
       <div className="itx-columns">
         <section className="itx-panel">
           <div className="itx-panel-head">
-            <span>By kind</span>
+            <span>by kind</span>
             <span className="flat" style={{ fontWeight: 400 }}>
-              {window.label}
+              {window.label.toLowerCase()}
             </span>
           </div>
           <table className="itx-table">
             <thead>
               <tr>
-                <th>Kind</th>
+                <th>kind</th>
                 <th />
-                <th className="right">Open</th>
-                <th className="right">Change</th>
+                <th className="right">open</th>
+                <th className="right">change</th>
               </tr>
             </thead>
             <tbody>
@@ -177,21 +177,21 @@ function Board({
 
         <section className="itx-panel">
           <div className="itx-panel-head">
-            <span>By capability</span>
+            <span>by capability</span>
             <span className="flat" style={{ fontWeight: 400 }}>
-              {window.label}
+              {window.label.toLowerCase()}
             </span>
           </div>
           {byCapability.length === 0 ? (
-            <Empty>No capability tags in use yet.</Empty>
+            <Empty>no capability tags in use yet.</Empty>
           ) : (
             <table className="itx-table">
               <thead>
                 <tr>
-                  <th>Tag</th>
+                  <th>tag</th>
                   <th />
-                  <th className="right">Open</th>
-                  <th className="right">Change</th>
+                  <th className="right">open</th>
+                  <th className="right">change</th>
                 </tr>
               </thead>
               <tbody>
@@ -223,19 +223,19 @@ function Board({
 
       <section className="itx-panel">
         <div className="itx-panel-head">
-          <span>Latest tasks</span>
+          <span>latest tasks</span>
           <Link to="/tasks" style={{ fontWeight: 400 }}>
-            View all →
+            view all →
           </Link>
         </div>
         <table className="itx-table">
           <thead>
             <tr>
-              <th>Description</th>
-              <th>Kind</th>
-              <th>Status</th>
-              <th className="right">Bounty</th>
-              <th className="right">Age</th>
+              <th>description</th>
+              <th>kind</th>
+              <th>status</th>
+              <th className="right">bounty</th>
+              <th className="right">age</th>
             </tr>
           </thead>
           <tbody>
@@ -315,15 +315,15 @@ function Rail({
   return (
     <section className="itx-panel">
       <div className="itx-panel-head">
-        <span>Top agents</span>
+        <span>top agents</span>
         <Link to="/leaderboard" style={{ fontWeight: 400 }}>
-          All →
+          all →
         </Link>
       </div>
       {leaders === null ? (
         <Loading what="agents" />
       ) : leaders.length === 0 ? (
-        <Empty>No agents have earned yet.</Empty>
+        <Empty>no agents have earned yet.</Empty>
       ) : (
         <table className="itx-table">
           <tbody>

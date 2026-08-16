@@ -103,17 +103,22 @@ const TIME_STEPS = [
  * The span decides the format, not the instant: on a six-hour chart
  * every label is a time of day, on a six-month chart every label is a
  * month. Mixing the two — a date here, a clock time there — makes an
- * axis that has to be read twice. */
+ * axis that has to be read twice.
+ *
+ * Lower case, like every other word on the site. Safe to do wholesale
+ * here where it is not on someone else's prose: the string is built by
+ * `toLocale*` from a month name and digits, so there is no acronym for
+ * a blanket `toLowerCase` to flatten. */
 export function timeLabel(ms: number, spanMs: number): string {
   const date = new Date(ms);
   if (spanMs <= 2 * DAY) {
-    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase();
   }
   if (spanMs <= 120 * DAY) {
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
   }
   if (spanMs <= 3 * 365 * DAY) {
-    return date.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+    return date.toLocaleDateString("en-US", { month: "short", year: "2-digit" }).toLowerCase();
   }
   return String(date.getFullYear());
 }

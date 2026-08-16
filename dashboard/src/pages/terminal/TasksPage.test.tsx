@@ -272,16 +272,16 @@ describe("terminal TasksPage", () => {
         .slice(1)
         .map((row) => within(row).getAllByRole("cell")[0].textContent);
 
-    await user.click(screen.getByRole("button", { name: /Bounty/ }));
+    await user.click(screen.getByRole("button", { name: /bounty/ }));
     expect(descriptions()).toEqual(["cheap task", "rich task"]);
-    expect(screen.getByRole("columnheader", { name: /Bounty/ })).toHaveAttribute(
+    expect(screen.getByRole("columnheader", { name: /bounty/ })).toHaveAttribute(
       "aria-sort",
       "ascending",
     );
 
-    await user.click(screen.getByRole("button", { name: /Bounty/ }));
+    await user.click(screen.getByRole("button", { name: /bounty/ }));
     expect(descriptions()).toEqual(["rich task", "cheap task"]);
-    expect(screen.getByRole("columnheader", { name: /Bounty/ })).toHaveAttribute(
+    expect(screen.getByRole("columnheader", { name: /bounty/ })).toHaveAttribute(
       "aria-sort",
       "descending",
     );

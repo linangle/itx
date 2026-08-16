@@ -92,8 +92,8 @@ describe("timeLabel", () => {
     // One axis, one kind of label: a date here and a clock time there
     // makes an axis that has to be read twice.
     expect(timeLabel(at, 6 * HOUR)).toMatch(/\d{1,2}:\d{2}/);
-    expect(timeLabel(at, 30 * DAY)).toMatch(/[A-Z][a-z]{2} \d{1,2}/);
-    expect(timeLabel(at, 2 * 365 * DAY)).toMatch(/[A-Z][a-z]{2} \d{2}/);
+    expect(timeLabel(at, 30 * DAY)).toMatch(/[a-z]{3} \d{1,2}/);
+    expect(timeLabel(at, 2 * 365 * DAY)).toMatch(/[a-z]{3} \d{2}/);
     expect(timeLabel(at, 10 * 365 * DAY)).toBe("2026");
   });
 });
