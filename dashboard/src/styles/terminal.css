@@ -90,6 +90,12 @@
   --radius-small: 9px;
   --row-height: 34px;
 
+  /* Every control in a filter bar is this tall -- fields, pickers, and
+     the buttons beside them. A token rather than a literal on the field
+     rule because the button that clears the filters is not a field and
+     still has to line up with them. */
+  --control-h: 34px;
+
   /* Field radius, taken from the landing surface's `--r-field` so a
      search box on the board and one on these pages are the same shape.
      These controls were 999px pills, which was a third rounding on a
@@ -797,7 +803,6 @@ body.itx-body[data-theme="light"] {
 .itx-input,
 .itx-select,
 .itx-search {
-  --control-h: 34px;
   background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-field);
@@ -809,18 +814,25 @@ body.itx-body[data-theme="light"] {
   box-sizing: border-box;
 }
 
+/* The closed state of `SelectField`. A `<button>` now rather than a
+   `<select>` -- see the component for why -- so it needs the alignment
+   and cursor a form control had by default, and `text-align` because a
+   button centres its label and a field does not. */
 .itx-select {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
   /* Room on the right for the caret its wrapper draws. */
   padding-right: calc(var(--sp-6) + 14px);
   color: var(--text-dim);
 }
 
-/* A `<select>` cannot hold a child to draw a caret with, and a
-   background image cannot see `currentColor` -- so the caret sits on a
-   wrapper instead and is the same `<Triangle>` component every other
-   arrow on the site is. Which is the whole point: one mark, one file,
-   no data-URI copy of the path to keep in step. */
+/* The caret is a `<Triangle>`, the same mark every other arrow on the
+   site is, drawn on the wrapper rather than inside the control: it
+   started life over a `<select>`, which cannot hold a child, and stayed
+   there because the wrapper is also what the menu positions against. */
 .itx-select-wrap {
   position: relative;
   display: inline-flex;
@@ -836,14 +848,6 @@ body.itx-body[data-theme="light"] {
   /* The caret is over the select's own hit area; clicks have to reach
      the control underneath it. */
   pointer-events: none;
-}
-
-/* The open menu is drawn by the platform and inherits nothing, so its
-   options need colours of their own or a dark theme gets black text on
-   a black list in some browsers. */
-.itx-select option {
-  background: var(--panel);
-  color: var(--text);
 }
 
 .itx-input:focus,
@@ -931,6 +935,19 @@ body.itx-body[data-theme="light"] {
   flex-wrap: wrap;
 }
 
+/* A button in the filter bar is one of the controls, not a call to
+   action standing beside them: the same 34px height, the same 10px
+   corner, the same weight as the text in the fields it sits next to.
+   `.itx-button`'s 999px pill and 600 weight are for buttons that want
+   to be pressed; "clear filters" is an undo, and dressing it as the
+   loudest thing in the row was the only reason it stood out. */
+.itx-filters .itx-button {
+  height: var(--control-h);
+  padding: 0 var(--sp-6);
+  border-radius: var(--radius-field);
+  font-weight: 400;
+}
+
 /* A line under the filters explaining an axis they don't explain
    themselves -- see `TasksPage`. Sits at meta size so it reads as a
    footnote to the controls rather than as page copy. */
@@ -976,7 +993,17 @@ body.itx-body[data-theme="light"] {
   color: var(--text);
 }
 
-.itx-combo-list {
+/* ----------------------------------------------------------- menu
+
+   One dropdown for the whole site. Both filter controls open this: the
+   combo box, whose rows are the markets it found, and `SelectField`,
+   whose rows are a fixed enum. They used to open two different things --
+   the select's menu was the platform's, drawn outside the page with the
+   system's own rounding and checkmark -- which read as two designs in
+   one row of controls. Neither owns these rules now, so neither can
+   drift from the other. */
+
+.itx-menu {
   position: absolute;
   z-index: 40;
   top: calc(100% + 4px);
@@ -993,7 +1020,7 @@ body.itx-body[data-theme="light"] {
   box-shadow: 0 12px 28px rgb(0 0 0 / 22%);
 }
 
-.itx-combo-option {
+.itx-menu-option {
   display: block;
   width: 100%;
   text-align: left;
@@ -1008,22 +1035,22 @@ body.itx-body[data-theme="light"] {
   cursor: pointer;
 }
 
-.itx-combo-option:hover,
-.itx-combo-option.highlight {
+.itx-menu-option:hover,
+.itx-menu-option.highlight {
   background: var(--panel-hover);
   color: var(--text);
 }
 
-.itx-combo-option.selected {
+.itx-menu-option.selected {
   color: var(--brand);
   font-weight: 600;
 }
 
-.itx-combo-clear {
+.itx-menu-clear {
   font-style: italic;
 }
 
-.itx-combo-empty {
+.itx-menu-empty {
   padding: var(--sp-3) var(--sp-5);
   color: var(--text-faint);
   font-size: var(--fs-meta);

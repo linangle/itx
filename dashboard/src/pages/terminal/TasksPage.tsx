@@ -127,13 +127,13 @@ function sectorsOf(task: TaskDto): string[] {
  * the fix is a server-side kind filter, not a bigger page cap.
  *
  * **On the two closed filters and the two open ones.** Kind and status
- * are `<select>`s because they are fixed enums in `hub/src/board.rs` --
- * three values and seven, and no hub will ever answer with an eighth
+ * are `SelectField`s because they are fixed enums in `hub/src/board.rs`
+ * -- three values and seven, and no hub will ever answer with an eighth
  * without a protocol change. Sector and market are `ComboFilter`s
  * because they are open sets: a capability is a free-form string a
  * poster invents, so the list of them is a snapshot of what the board
  * happens to hold today and has to be searchable rather than merely
- * scrollable.
+ * scrollable. Closed or open, both open the same `.itx-menu`.
  */
 export default function TasksPage() {
   const [params, setParams] = useSearchParams();
@@ -277,27 +277,21 @@ export default function TasksPage() {
           value={kind}
           onChange={(value) => update("kind", value)}
           label="Filter by verification"
-        >
-          {KINDS.map((k) => (
-            <option key={k || "any"} value={k}>
-              {k
-                ? `${formatVerification(k)} (${formatKind(k)})`
-                : "any verification"}
-            </option>
-          ))}
-        </SelectField>
+          options={KINDS.map((k) => ({
+            value: k,
+            label: k ? `${formatVerification(k)} (${formatKind(k)})` : "any verification",
+          }))}
+        />
 
         <SelectField
           value={status}
           onChange={(value) => update("status", value)}
           label="Filter by status"
-        >
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s === "all" ? "any status" : formatStatus(s).toLowerCase()}
-            </option>
-          ))}
-        </SelectField>
+          options={STATUSES.map((s) => ({
+            value: s,
+            label: s === "all" ? "any status" : formatStatus(s),
+          }))}
+        />
 
         <ComboFilter
           value={sector}

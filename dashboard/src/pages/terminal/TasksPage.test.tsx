@@ -161,6 +161,49 @@ describe("terminal TasksPage", () => {
     );
   });
 
+  // The status filter is a fixed enum, so it used to be a `<select>` --
+  // whose open menu the platform drew, in the platform's own chrome,
+  // beside a market picker drawing its own. Both open the site's menu
+  // now, which means this filter has to be driven like the other one.
+  it("picks a status from the site's own menu", async () => {
+    const user = userEvent.setup();
+    show([task()]);
+    await screen.findByRole("table");
+
+    await user.click(screen.getByRole("combobox", { name: "Filter by status" }));
+    const list = screen.getByRole("listbox", { name: "Filter by status" });
+    await user.click(within(list).getByRole("option", { name: "open" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(hub.listAllTasks)).toHaveBeenLastCalledWith({
+        status: "Open",
+        capability: undefined,
+      }),
+    );
+  });
+
+  it("moves through the status menu with the keyboard", async () => {
+    const user = userEvent.setup();
+    show([task()]);
+    await screen.findByRole("table");
+
+    // Arrow opens on the current value ("any status"), so one more step
+    // reaches the first real one and Enter commits it -- the behaviour a
+    // `<select>` gave for free and this control has to supply.
+    screen.getByRole("combobox", { name: "Filter by status" }).focus();
+    await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+
+    await waitFor(() =>
+      expect(vi.mocked(hub.listAllTasks)).toHaveBeenLastCalledWith({
+        status: "Open",
+        capability: undefined,
+      }),
+    );
+    expect(
+      screen.queryByRole("listbox", { name: "Filter by status" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("narrows the market picker to the chosen sector", async () => {
     const user = userEvent.setup();
     show([task({ capabilities: ["cpp"] })], "/tasks?sector=coding");

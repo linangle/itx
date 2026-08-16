@@ -139,9 +139,9 @@ export default function ComboFilter({
         <Triangle direction="down" />
       </button>
       {open && (
-        <ul className="itx-combo-list" id={listId} role="listbox" aria-label={label}>
+        <ul className="itx-menu" id={listId} role="listbox" aria-label={label}>
           {matches.length === 0 && (
-            <li className="itx-combo-empty" role="presentation">
+            <li className="itx-menu-empty" role="presentation">
               No match
             </li>
           )}
@@ -149,7 +149,7 @@ export default function ComboFilter({
             <li role="presentation">
               <button
                 type="button"
-                className="itx-combo-option itx-combo-clear"
+                className="itx-menu-option itx-menu-clear"
                 onClick={() => commit("")}
               >
                 Any
@@ -168,7 +168,7 @@ export default function ComboFilter({
                 // actually commit.
                 title={option}
                 className={
-                  "itx-combo-option" +
+                  "itx-menu-option" +
                   (index === highlight ? " highlight" : "") +
                   (option === value ? " selected" : "")
                 }
