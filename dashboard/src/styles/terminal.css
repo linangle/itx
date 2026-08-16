@@ -565,9 +565,22 @@ body.itx-body[data-theme="light"] {
    unsorted one 3px below the plain `<th>`s beside it, purely because
    an empty 7px span and one holding a triangle have different
    baselines. A block-level flex box has no baseline to negotiate: every
-   heading is a line box in its cell, and they line up. */
+   heading is a line box in its cell, and they line up.
+
+   `width: 100%` for a different reason than it looks: a `<button>` is a
+   form control, and browsers give form controls shrink-to-fit sizing
+   even at `display: flex` -- unlike an ordinary block box, which fills
+   its container without being told to. Left unset, the button was only
+   ever as wide as its label, so `text-align: right` on the `<th>` (which
+   aligns inline content, and stopped applying the moment this became a
+   block-level flex box) had nothing left to move, and the row-reverse
+   below packed the label against the *button's* right edge, wherever
+   that happened to land -- nowhere near the numbers beneath it. Filling
+   the cell first is what makes "pack against the end" and "pack against
+   the column's edge" the same instruction again. */
 .itx-sort {
   display: flex;
+  width: 100%;
   align-items: center;
   gap: var(--sp-3);
   background: none;
