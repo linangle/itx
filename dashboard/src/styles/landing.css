@@ -164,6 +164,11 @@ body.itx-landing-body[data-theme="light"] {
 .itx-landing[data-theme="light"] .itx-board {
   --bd-line: #a9b0c0;
   --bd-grid-opacity: 0.22;
+  /* Lifted *away* from the ground, which on this theme means paler --
+     the same value the inner pages' `--panel-hover` takes there. A fill
+     mixed from the ink would darken instead, and the pill under the
+     pointer would read as a shadow. */
+  --bd-nav-fill: #f8fbf9;
 }
 
 /* The masthead follows the page it is on -- the terminal's already did
@@ -537,6 +542,13 @@ body.itx-landing-body[data-theme="light"] {
      table cells, secondary meta, and column headers. */
   --r-field: 10px;
   --r-panel: 14px;
+
+  /* The fill behind the nav's current entry. It is the one place on the
+     board where something is painted *above* the ground rather than
+     outlined on it -- see `.itx-board-navlist`, which follows the inner
+     pages' sidebar. Same value as `--panel-hover` in terminal.css, so a
+     selected entry weighs the same on both surfaces. */
+  --bd-nav-fill: #221f26;
 
   /* One row height for every list on the board, and the only place it is
      decided: `useFitRows` reads this property off the box it measures
@@ -1333,9 +1345,20 @@ body.itx-landing-body[data-theme="light"] {
   min-width: 0;
 }
 
+/* Not a panel, whatever the class beside it says: no outline, no fill,
+   no inset. The nav is the one column on the board that lists *places*
+   rather than data, and the inner pages already navigate that way -- a
+   bare column of pills straight on the grid (see `.itx-sidebar` in
+   terminal.css). Boxing it made the site's two navigations two different
+   objects, one an outlined panel among panels and one a loose column.
+   These three declarations unwind `.itx-board-panel`, which the element
+   still carries; they win on order, being the later of two single-class
+   rules. */
 .itx-board-panel-nav {
   flex: 1;
-  padding: var(--pad-panel-y) var(--pad-panel-x);
+  padding: 0;
+  border: 0;
+  background: none;
   display: flex;
   flex-direction: column;
 }
@@ -1347,22 +1370,26 @@ body.itx-landing-body[data-theme="light"] {
   font-size: var(--fs-body);
 }
 
-/* Same row height as every table on the board, so the nav's entries sit
-   on the same rhythm as the rows in the panels beside it. */
-.itx-board-navlist li {
-  display: flex;
-  align-items: center;
-  height: var(--row-h);
+/* The air between pills, which is what a pill list has instead of a
+   shared row rhythm: the entries are sized by their own padding now, not
+   by `--row-h`, so what separates them is a gap rather than a row. */
+.itx-board-navlist li + li {
+  margin-top: var(--sp-1);
 }
 
+/* A pill: the hit area is the whole width of the column, and the shape
+   only shows when it is filled -- on hover, and under the entry you are
+   on. Rounding is 999px rather than the board's `--r-panel`, which is
+   the point of the shape: a pill cannot be mistaken for a small panel. */
 .itx-board-navlist a,
 .itx-board-navlist button {
   display: block;
   width: 100%;
-  padding: 0;
+  padding: var(--sp-3) var(--sp-5);
   border: 0;
+  border-radius: 999px;
   background: none;
-  color: var(--ld-light);
+  color: var(--ld-sub);
   font: inherit;
   font-size: var(--fs-body);
   text-align: left;
@@ -1373,25 +1400,24 @@ body.itx-landing-body[data-theme="light"] {
   white-space: nowrap;
 }
 
-/* The market entries are a longer, changing list, so they sit back a
-   step from the four fixed section links above them. */
-.itx-board-navlist button {
-  color: var(--ld-sub);
-}
-
-/* The nav's entries are already the page's ink, so there is nothing to
-   brighten toward -- they lift by going to full strength from the step
-   back they sit at. Same idea as the links, expressed in the one
-   direction this colour can move. */
+/* The entries sit a step back and lift to the page's ink under the
+   pointer. The fill is the *ground's own colour* rather than a paler
+   slab -- opaque, so the pill hides the grid behind it, which is how
+   every other surface on this board declares itself (see
+   `.itx-board-panel`). */
 .itx-board-navlist a:hover,
 .itx-board-navlist button:hover {
+  background: var(--ld-dark);
   color: var(--ld-light);
 }
 
-/* Which market the carousel is currently showing. */
+/* Which market the carousel is currently showing. The one fill on the
+   board that is lifted off the ground rather than equal to it: where you
+   are has to hold without a pointer on it. */
 .itx-board-navlist button.is-active {
+  background: var(--bd-nav-fill);
   color: var(--ld-light);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 /* The sectors, nested inside the overview's entry.
@@ -1407,27 +1433,12 @@ body.itx-landing-body[data-theme="light"] {
  * left of the group says "these belong to the entry above" in a way
  * whitespace on its own does not, at the width this rail has to work
  * in. */
-/* The entry that owns the sector list.
- *
- * Every other nav entry is a flex row with a fixed `--row-h`, which
- * centres its single link. This one has a *list* after the link as well,
- * and under those rules the list became a second flex item -- it laid
- * out to the right of "market overview", squeezed the label to
- * "marke...", and overflowed the panel because the row is only 34px
- * tall. So this item stacks and takes its height from its contents, and
- * the link keeps the row rhythm on its own. */
-/* Qualified with the list, because `.itx-board-navlist li` above is a
-   class *and* an element and would otherwise out-specify a bare class
-   here -- the row would stay flex and the list beside the link. */
-.itx-board-navlist li.itx-board-navgroup {
-  display: block;
-  height: auto;
-}
-.itx-board-navgroup > a {
-  display: flex;
-  align-items: center;
-  height: var(--row-h);
-}
+/* The entry that owns the sector list needs no rules of its own now.
+ * It used to: every entry was a flex row of a fixed `--row-h`, and this
+ * one has a *list* after its link, which became a second flex item --
+ * laid out to the right of "market overview", squeezing the label to
+ * "marke..." and overflowing the panel. Pills are blocks sized by their
+ * own padding, so the link and the list under it stack by default. */
 
 .itx-board-navlist-sectors {
   margin: var(--sp-2) 0 var(--sp-3);
@@ -1453,8 +1464,16 @@ body.itx-landing-body[data-theme="light"] {
   border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
 
+/* Blue survives the pill treatment: these two entries leave the board
+   altogether, and that is the one thing colour says here. Their hover
+   keeps the board's own link lift rather than going to the page's ink
+   with the entries above them -- the pill fills either way. */
 .itx-board-navlist-pages a {
   color: var(--ld-blue);
+}
+
+.itx-board-navlist-pages a:hover {
+  color: color-mix(in srgb, var(--ld-blue) 78%, var(--ld-light));
 }
 
 .itx-board-rail .itx-board-label:nth-of-type(2) {
