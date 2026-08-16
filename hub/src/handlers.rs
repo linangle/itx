@@ -2192,18 +2192,21 @@ pub struct LeaderboardQuery {
     /// name and its hex pubkey. Absent or blank searches nothing and
     /// returns the field in order.
     pub q: Option<String>,
-    /// Which column ranks the field: `earned` (the default), `completed`
-    /// or `failed`. Unknown values fall back to `earned` rather than
-    /// failing the request -- a leaderboard that 400s because a client
-    /// sent a column it does not know is worse than one that answers in
-    /// its default order.
+    /// Which column ranks the field: `earned` (the default),
+    /// `completed`, `failed` or `net_worth`. Unknown values fall back to
+    /// `earned` rather than failing the request -- a leaderboard that
+    /// 400s because a client sent a column it does not know is worse
+    /// than one that answers in its default order.
     ///
-    /// **Deliberately not `net_worth`.** Every other column is in the
-    /// reputation map the board already holds, so ranking by it costs a
-    /// sort; net worth is a live balance the node answers for, fetched
-    /// one lookup per agent *for the page being served*. Ranking the
-    /// field by it would mean a lookup per agent in the whole field --
-    /// thousands of connections to order fifty rows.
+    /// **`net_worth` is the expensive one, and is priced differently
+    /// because of it.** The other three are in the reputation map the
+    /// board already holds, so ranking by one costs a sort of memory.
+    /// Net worth is a live balance the node answers for, one lookup per
+    /// agent, and ranking a field by a number means holding that number
+    /// for every agent in it -- thousands of connections to order fifty
+    /// rows, and thousands again when the reader turns the page. So the
+    /// field is priced in one bounded sweep and the result held for
+    /// `NET_WORTH_SNAPSHOT_TTL_SECS`; see `net_worth_snapshot`.
     pub sort: Option<String>,
     /// `desc` (the default) or `asc`. Ascending is what makes `failed`
     /// worth sorting in both directions -- "fewest failures" is a real
@@ -2219,6 +2222,9 @@ pub enum LeaderboardSort {
     Earned,
     Completed,
     Failed,
+    /// The one column that is not in the board's own memory. Ranking by
+    /// it prices the whole field first -- see `net_worth_snapshot`.
+    NetWorth,
 }
 
 impl LeaderboardSort {
@@ -2226,18 +2232,120 @@ impl LeaderboardSort {
         match raw.map(str::trim) {
             Some("completed") => Self::Completed,
             Some("failed") => Self::Failed,
+            Some("net_worth") => Self::NetWorth,
             _ => Self::Earned,
         }
     }
 
-    /// The figure this column ranks on, for one agent.
-    fn key(self, reputation: &Reputation) -> u64 {
+    /// The figure this column ranks on, for one agent -- for the three
+    /// columns the reputation map answers. `NetWorth` is not one of
+    /// them, and returns nothing rather than a plausible zero: the
+    /// caller ranks it from the sweep instead, and a silent 0 here would
+    /// order the field by "no data" and look like a field of paupers.
+    fn key(self, reputation: &Reputation) -> Option<u64> {
         match self {
-            Self::Earned => reputation.total_earned,
-            Self::Completed => reputation.completed,
-            Self::Failed => reputation.failed,
+            Self::Earned => Some(reputation.total_earned),
+            Self::Completed => Some(reputation.completed),
+            Self::Failed => Some(reputation.failed),
+            Self::NetWorth => None,
         }
     }
+}
+
+/// How long one net-worth sweep is reused before the field is priced
+/// again.
+///
+/// Ranking by net worth needs a balance for every agent in the field,
+/// one node lookup each, and a reader who ranks by it then pages through
+/// the result would pay for the whole field on every page. Thirty
+/// seconds is long enough to cover that reading, and short enough that
+/// the figure in the column is still the one the chain would give you --
+/// balances move when a task settles, which on this network is a matter
+/// of blocks, not seconds.
+const NET_WORTH_SNAPSHOT_TTL_SECS: u64 = 30;
+
+/// How many balance lookups a sweep has in flight at once. `NodeClient`
+/// opens a connection per call, so an unbounded sweep of a field of
+/// thousands would try to open thousands of sockets at once -- which is
+/// not faster than a bounded one, and is a good way to be refused by the
+/// node or by the OS. Sized above the fifty a page already fans out to,
+/// since a sweep is the one call that is allowed to take a moment.
+const NET_WORTH_SWEEP_CONCURRENCY: usize = 64;
+
+/// Orders two agents on the figure being ranked, before the pubkey
+/// tiebreak.
+///
+/// **An agent with no figure ranks last in both directions.** Only net
+/// worth can be missing (the node could not be reached for that agent),
+/// and last-either-way is the one position that makes no claim about it.
+/// Ranking it as zero would head "fewest first" with an agent nobody
+/// could reach and call it the poorest on the board; ranking it as the
+/// largest would crown it the richest. Neither is known.
+fn compare_for_ranking(left: Option<u64>, right: Option<u64>, ascending: bool) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if ascending {
+                left.cmp(&right)
+            } else {
+                right.cmp(&left)
+            }
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+/// Every agent's balance, priced in one bounded sweep and reused for
+/// `NET_WORTH_SNAPSHOT_TTL_SECS`.
+///
+/// An agent the node could not answer for is **absent** rather than
+/// zero, the same distinction `net_worth: null` makes in the response:
+/// "we could not reach the chain for this one" is not "this one is
+/// broke". The ranking puts those agents last whichever way the column
+/// is sorted -- see the comparator in `leaderboard`.
+///
+/// The refresh happens under the write lock, and re-checks freshness
+/// after taking it: two readers arriving together on a stale snapshot
+/// would otherwise both sweep the field, which is precisely the fan-out
+/// this exists to avoid. The second one waits and then finds the first
+/// one's answer.
+async fn net_worth_snapshot(state: &AppState, field: &[PublicKey]) -> HashMap<String, u64> {
+    if let Some((taken_at, snapshot)) = state.net_worths.read().await.as_ref() {
+        if taken_at.elapsed().as_secs() < NET_WORTH_SNAPSHOT_TTL_SECS {
+            return snapshot.clone();
+        }
+    }
+
+    let mut cached = state.net_worths.write().await;
+    if let Some((taken_at, snapshot)) = cached.as_ref() {
+        if taken_at.elapsed().as_secs() < NET_WORTH_SNAPSHOT_TTL_SECS {
+            return snapshot.clone();
+        }
+    }
+
+    let permits = Arc::new(tokio::sync::Semaphore::new(NET_WORTH_SWEEP_CONCURRENCY));
+    let mut lookups = tokio::task::JoinSet::new();
+    for pubkey in field {
+        let node = state.node.clone();
+        let pubkey = pubkey.clone();
+        let permits = permits.clone();
+        lookups.spawn(async move {
+            // The semaphore is never closed, so the only way to fail
+            // here is a bug; `ok()?` keeps that from taking the sweep
+            // down with it.
+            let _permit = permits.acquire().await.ok()?;
+            Some((pubkey.to_string(), node.balance(&pubkey).await.ok()?))
+        });
+    }
+    let mut snapshot: HashMap<String, u64> = HashMap::new();
+    while let Some(result) = lookups.join_next().await {
+        if let Ok(Some((pubkey_hex, balance))) = result {
+            snapshot.insert(pubkey_hex, balance);
+        }
+    }
+    *cached = Some((std::time::Instant::now(), snapshot.clone()));
+    snapshot
 }
 
 /// Whether an agent answers to `needle`, which the caller has already
@@ -2287,33 +2395,52 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>, Query(query): Query
     let sort = LeaderboardSort::parse(query.sort.as_deref());
     let ascending = query.dir.as_deref().map(str::trim) == Some("asc");
 
-    let ranked = {
+    // The whole ranking, then the slice asked for. Ranking is what makes
+    // a leaderboard a leaderboard, so it cannot be done per page.
+    let mut ranked = {
         let board = state.board.read().await;
-        // The whole ranking, then the slice asked for. Ranking is what
-        // makes a leaderboard a leaderboard, so it cannot be done per
-        // page -- and the sort is over the reputation map the board
-        // already holds in memory, which is the same work the flat
-        // top-fifty did.
-        let mut ranked = board.leaderboard(usize::MAX);
-        // Re-ranked here rather than in `board.leaderboard`, which keeps
-        // meaning "the field by earnings" for its other caller (the
-        // startup backfill).
-        //
-        // **The pubkey is the tiebreak, and it is load-bearing.** The
-        // columns other than earnings tie constantly -- most of the
-        // field has completed 0 and failed 0 -- and a page is a slice of
-        // this order. Without a total order, two agents that tie could
-        // swap places between the request for page 1 and the request for
-        // page 2, and an agent would be served twice or not at all.
-        if sort != LeaderboardSort::Earned || ascending {
-            ranked.sort_by(|a, b| {
-                let (left, right) = (sort.key(&a.1), sort.key(&b.1));
-                let by_column = if ascending { left.cmp(&right) } else { right.cmp(&left) };
-                by_column.then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-            });
-        }
-        ranked
+        board.leaderboard(usize::MAX)
     };
+
+    // Priced only when net worth is what the field is being ranked by,
+    // and priced **outside the board lock**: this one talks to the node,
+    // and a read of the board should never wait on the chain. The
+    // snapshot then does double duty below -- ranking the field and
+    // filling the column -- so the order a reader sees and the figures
+    // they see it ordered by are the same numbers, which they would not
+    // be if the page re-fetched them a moment later.
+    let sweep = match sort {
+        LeaderboardSort::NetWorth => {
+            let field: Vec<PublicKey> = ranked.iter().map(|(pubkey, _)| pubkey.clone()).collect();
+            Some(net_worth_snapshot(&state, &field).await)
+        }
+        _ => None,
+    };
+
+    // Re-ranked here rather than in `board.leaderboard`, which keeps
+    // meaning "the field by earnings" for its other caller (the startup
+    // backfill).
+    //
+    // **The pubkey is the tiebreak, and it is load-bearing.** The columns
+    // other than earnings tie constantly -- most of the field has
+    // completed 0 and failed 0, and an agent the node could not price
+    // has no net worth at all -- and a page is a slice of this order.
+    // Without a total order, two agents that tie could swap places
+    // between the request for page 1 and the request for page 2, and an
+    // agent would be served twice or not at all.
+    if sort != LeaderboardSort::Earned || ascending {
+        ranked.sort_by(|a, b| {
+            // `None` only ever means "the node could not price this
+            // agent". The three reputation columns always answer.
+            let figure = |pubkey: &PublicKey, reputation: &Reputation| match &sweep {
+                Some(snapshot) => snapshot.get(&pubkey.to_string()).copied(),
+                None => sort.key(reputation),
+            };
+            let (left, right) = (figure(&a.0, &a.1), figure(&b.0, &b.1));
+            compare_for_ranking(left, right, ascending)
+                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+        });
+    }
 
     // Ranks are attached here, over the unfiltered order, so a search
     // reports where an agent actually stands. Names come from a
@@ -2337,21 +2464,30 @@ pub async fn leaderboard(State(state): State<Arc<AppState>>, Query(query): Query
         (total, matching.into_iter().skip(offset).take(limit).collect::<Vec<_>>())
     };
 
-    let mut lookups = tokio::task::JoinSet::new();
-    for (_, (pubkey, _)) in &entries {
-        let node = state.node.clone();
-        let pubkey = pubkey.clone();
-        lookups.spawn(async move {
-            let balance = node.balance(&pubkey).await.ok();
-            (pubkey.to_string(), balance)
-        });
-    }
-    let mut net_worths: HashMap<String, u64> = HashMap::new();
-    while let Some(result) = lookups.join_next().await {
-        if let Ok((pubkey_hex, Some(balance))) = result {
-            net_worths.insert(pubkey_hex, balance);
+    // A sweep has already priced everybody, so the page costs nothing
+    // further; otherwise the page is priced on its own, which is the
+    // fifty lookups this route has always made.
+    let net_worths: HashMap<String, u64> = match sweep {
+        Some(snapshot) => snapshot,
+        None => {
+            let mut lookups = tokio::task::JoinSet::new();
+            for (_, (pubkey, _)) in &entries {
+                let node = state.node.clone();
+                let pubkey = pubkey.clone();
+                lookups.spawn(async move {
+                    let balance = node.balance(&pubkey).await.ok();
+                    (pubkey.to_string(), balance)
+                });
+            }
+            let mut priced: HashMap<String, u64> = HashMap::new();
+            while let Some(result) = lookups.join_next().await {
+                if let Ok((pubkey_hex, Some(balance))) = result {
+                    priced.insert(pubkey_hex, balance);
+                }
+            }
+            priced
         }
-    }
+    };
 
     // Every pubkey here came from the board's reputation map, so each is
     // an agent that has actually done something -- which is what makes
@@ -3701,21 +3837,46 @@ mod summary_tests {
         assert_eq!(LeaderboardSort::parse(None), LeaderboardSort::Earned);
         assert_eq!(LeaderboardSort::parse(Some("completed")), LeaderboardSort::Completed);
         assert_eq!(LeaderboardSort::parse(Some("failed")), LeaderboardSort::Failed);
+        assert_eq!(LeaderboardSort::parse(Some("net_worth")), LeaderboardSort::NetWorth);
         // Unknown columns answer in the default order rather than
-        // failing the request -- including `net_worth`, which is a live
-        // balance rather than something the board holds, and so is the
-        // one column here that cannot rank the field. See the doc on
-        // `LeaderboardQuery::sort`.
-        assert_eq!(LeaderboardSort::parse(Some("net_worth")), LeaderboardSort::Earned);
+        // failing the request.
         assert_eq!(LeaderboardSort::parse(Some("nonsense")), LeaderboardSort::Earned);
     }
 
     #[test]
     fn leaderboard_sort_keys_off_the_right_figure() {
         let reputation = Reputation { completed: 7, failed: 2, total_earned: 900 };
-        assert_eq!(LeaderboardSort::Earned.key(&reputation), 900);
-        assert_eq!(LeaderboardSort::Completed.key(&reputation), 7);
-        assert_eq!(LeaderboardSort::Failed.key(&reputation), 2);
+        assert_eq!(LeaderboardSort::Earned.key(&reputation), Some(900));
+        assert_eq!(LeaderboardSort::Completed.key(&reputation), Some(7));
+        assert_eq!(LeaderboardSort::Failed.key(&reputation), Some(2));
+        // Net worth is not in the reputation map at all, and says so
+        // rather than answering a plausible zero -- a caller that ranked
+        // the field on that would order it by "no data" and show a field
+        // of paupers. It ranks from the sweep instead.
+        assert_eq!(LeaderboardSort::NetWorth.key(&reputation), None);
+    }
+
+    /// The rule that decides where an agent the node could not price
+    /// lands. It is the only column that can be missing a figure, and
+    /// "last, whichever way you sorted" is the only placement that is
+    /// not a guess about how rich it is.
+    #[test]
+    fn ranking_puts_an_agent_with_no_figure_last_in_both_directions() {
+        use std::cmp::Ordering;
+        // Descending is "most first"; ascending is the same question the
+        // other way. Both are ordinary comparisons while both agents
+        // have a figure.
+        assert_eq!(compare_for_ranking(Some(9), Some(1), false), Ordering::Less);
+        assert_eq!(compare_for_ranking(Some(9), Some(1), true), Ordering::Greater);
+
+        // And neither direction lets a missing figure lead.
+        for ascending in [true, false] {
+            assert_eq!(compare_for_ranking(Some(0), None, ascending), Ordering::Less);
+            assert_eq!(compare_for_ranking(None, Some(0), ascending), Ordering::Greater);
+            // Two unpriced agents tie here and are separated by the
+            // pubkey, same as any other tie -- see the paging test below.
+            assert_eq!(compare_for_ranking(None, None, ascending), Ordering::Equal);
+        }
     }
 
     /// Ties are the normal case on every column but earnings -- most of

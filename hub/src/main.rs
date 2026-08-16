@@ -85,6 +85,13 @@ pub struct AppState {
     /// take a write lock on the board just to mint a name for an agent
     /// that turned up since the last request.
     pub names: RwLock<NameRegistry>,
+    /// The last sweep of every agent's on-chain balance, and when it was
+    /// taken -- the one thing `leaderboard` cannot rank from memory. Only
+    /// `?sort=net_worth` ever fills it, and it is a cache in the honest
+    /// sense: dropping it costs a sweep and nothing else. See
+    /// `handlers::net_worth_snapshot` for why the field is priced in one
+    /// pass rather than a page at a time.
+    pub net_worths: RwLock<Option<(std::time::Instant, std::collections::HashMap<String, u64>)>>,
 }
 
 impl AppState {
@@ -420,6 +427,7 @@ async fn main() -> Result<()> {
         exchange_custody_payout_lock: Mutex::new(()),
         rate_limits: rate_limit::new_table(),
         names: RwLock::new(names),
+        net_worths: RwLock::new(None),
     });
 
     tokio::spawn(sweep_loop(state.clone()));
@@ -725,6 +733,7 @@ mod tests {
             exchange_custody_payout_lock: Mutex::new(()),
             rate_limits: rate_limit::new_table(),
             names: RwLock::new(NameRegistry::new()),
+            net_worths: RwLock::new(None),
         });
 
         let app = build_router(state.clone());
@@ -1306,6 +1315,122 @@ mod tests {
             .expect("agent should be on the leaderboard");
         assert_eq!(entry["total_earned"], 500);
         assert_eq!(entry["net_worth"], 7_000_000);
+    }
+
+    /// Net worth ranks the field like any other column -- which is the
+    /// whole point of it being a column, and is not free: it is the one
+    /// ordering the board cannot answer from memory, so the hub prices
+    /// every agent once (see `handlers::net_worth_snapshot`) instead of
+    /// reordering the fifty rows it was already going to serve. This
+    /// gives the two agents opposite standings on earnings and on
+    /// balance, so a ranking that quietly fell back to earnings would
+    /// come out exactly reversed.
+    #[tokio::test]
+    async fn leaderboard_ranks_the_field_by_net_worth_when_asked_to() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let earner = PrivateKey::new_key();
+        let holder = PrivateKey::new_key();
+
+        let expected_output = Hash::hash_bytes(b"x");
+        let mut board = hub.state.board.write().await;
+        for (agent, bounty) in [(&earner, 900u64), (&holder, 100u64)] {
+            let task =
+                board.create_task(hub.state.operator_public_key.clone(), "t".to_string(), bounty, expected_output);
+            board
+                .claim_task(task.id, agent.public_key(), Utc::now() + chrono::Duration::minutes(5))
+                .unwrap();
+            board.submit(task.id, agent.public_key(), expected_output).unwrap();
+            board.mark_recipient_paid(task.id, &agent.public_key(), bounty).unwrap();
+        }
+        drop(board);
+
+        // The earner spent nearly everything; the holder is sitting on a
+        // balance it never earned here. Lifetime earnings and current
+        // balance now disagree about who is ahead.
+        fake_node.fund(earner.public_key(), 1_000).await;
+        fake_node.fund(holder.public_key(), 9_000).await;
+
+        let order = |query: &'static str| {
+            let client = hub.client.clone();
+            let base_url = hub.base_url.clone();
+            async move {
+                let page: Value = client
+                    .get(format!("{base_url}/leaderboard{query}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                page.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| (entry["pubkey"].as_str().unwrap().to_string(), entry["rank"].clone()))
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let by_earnings = order("").await;
+        assert_eq!(by_earnings[0].0, earner.public_key().to_string(), "earnings is still the default");
+
+        let by_net_worth = order("?sort=net_worth").await;
+        assert_eq!(by_net_worth[0].0, holder.public_key().to_string(), "richest first");
+        assert_eq!(by_net_worth[0].1, 1, "and it is ranked first, not merely listed first");
+        assert_eq!(by_net_worth[1].0, earner.public_key().to_string());
+
+        // Ascending is the same question the other way, and is what
+        // makes the column worth two clicks rather than one.
+        let poorest_first = order("?sort=net_worth&dir=asc").await;
+        assert_eq!(poorest_first[0].0, earner.public_key().to_string());
+    }
+
+    /// Ranking by net worth against a node that cannot be reached
+    /// answers anyway: every agent prices to nothing, so the column has
+    /// no ordering to give and the field falls back to the pubkey
+    /// tiebreak -- a stable order, a full page, and a `null` in the
+    /// column, rather than an error page because the chain was busy.
+    /// Same posture the unsorted route already takes (see
+    /// `leaderboard_reports_null_net_worth_when_the_node_is_unreachable`);
+    /// the sweep must not turn a degraded read into a failed one.
+    #[tokio::test]
+    async fn leaderboard_ranked_by_net_worth_survives_an_unreachable_node() {
+        let operator_key = PrivateKey::new_key();
+        let hub = spawn_hub(operator_key.clone(), dead_address().await).await;
+
+        let expected_output = Hash::hash_bytes(b"x");
+        let mut board = hub.state.board.write().await;
+        let agents: Vec<PrivateKey> = (0..3).map(|_| PrivateKey::new_key()).collect();
+        for agent in &agents {
+            let task = board.create_task(operator_key.public_key(), "t".to_string(), 100, expected_output);
+            board
+                .claim_task(task.id, agent.public_key(), Utc::now() + chrono::Duration::minutes(5))
+                .unwrap();
+            board.submit(task.id, agent.public_key(), expected_output).unwrap();
+            board.mark_recipient_paid(task.id, &agent.public_key(), 100).unwrap();
+        }
+        drop(board);
+
+        let page = |query: &'static str| {
+            let client = hub.client.clone();
+            let base_url = hub.base_url.clone();
+            async move {
+                let response = client.get(format!("{base_url}/leaderboard{query}")).send().await.unwrap();
+                assert_eq!(response.status(), 200);
+                response.json::<Value>().await.unwrap()
+            }
+        };
+
+        let first = page("?sort=net_worth").await;
+        let entries = first.as_array().unwrap();
+        assert_eq!(entries.len(), agents.len(), "every agent is still served");
+        assert!(entries.iter().all(|entry| entry["net_worth"] == Value::Null));
+
+        // Stable across requests, which is what the pubkey tiebreak is
+        // for: without it a page boundary could serve one agent twice.
+        let again = page("?sort=net_worth").await;
+        assert_eq!(first, again);
     }
 
     #[tokio::test]

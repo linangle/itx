@@ -314,17 +314,18 @@ export const LEADERBOARD_PAGE_SIZE = 50;
 
 /** Which column ranks the standings, and which way.
  *
- * **The column the hub can rank by, not every column the table shows.**
+ * **Every column the table shows, and each of them ranked by the hub.**
  * `earned`, `completed` and `failed` are in the reputation map the hub
- * holds, so ranking by one costs it a sort. Net worth is a live balance
- * the node answers for, fetched one lookup per agent *for the page being
- * served* — ranking the field by it would mean a lookup per agent in the
- * whole field. That is why the column is not sortable on the page, and
- * why `hub-requirements.md` carries it as an ask rather than the site
- * faking it by reordering the fifty rows in hand. That fake is exactly
- * what search used to do, and it is the reason `q` is server-side now.
+ * holds, so ranking by one costs it a sort. `net_worth` is the odd one:
+ * a live balance the node answers for, one lookup per agent, so ranking
+ * the field by it means pricing the whole field rather than the page.
+ * The hub does exactly that — one bounded sweep, briefly cached (see
+ * `handlers::net_worth_snapshot`) — which is what lets this be a real
+ * ranking instead of the site reordering the fifty rows in hand. That
+ * fake is what search used to do, and it is the reason `q` is
+ * server-side now.
  */
-export type LeaderboardSortKey = "earned" | "completed" | "failed";
+export type LeaderboardSortKey = "earned" | "completed" | "failed" | "net_worth";
 
 export interface LeaderboardSort {
   key: LeaderboardSortKey;

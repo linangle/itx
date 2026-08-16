@@ -1152,18 +1152,30 @@ createServer((req, res) => {
     // `sort` and `dir` mirror `handlers::leaderboard`: the column ranks
     // the whole field before it is sliced, unknown columns fall back to
     // earnings rather than failing, and the pubkey breaks ties so a page
-    // boundary cannot serve one agent twice. `net_worth` is deliberately
-    // absent from both -- the fixture happens to know every balance, but
-    // the real hub fetches them one lookup per agent *for the page*, so
-    // offering it here would work against this file and quietly do
-    // nothing against a hub. See `docs/hub-requirements.md`.
-    const column = { completed: "completed", failed: "failed" }[
+    // boundary cannot serve one agent twice.
+    //
+    // `net_worth` included, which costs this file a comparison and costs
+    // the hub a sweep of every agent's balance -- it is the one column
+    // not in the reputation map, so the hub prices the field once and
+    // holds it briefly rather than asking the node per page. The one
+    // thing to keep true here is the *ordering*, so a null balance ranks
+    // last in both directions rather than as a zero: the fixture leaves
+    // one agent unpriced on purpose (see `net_worth` in the roster), and
+    // an agent nobody could price is neither the richest on the board
+    // nor the poorest.
+    const column = { completed: "completed", failed: "failed", net_worth: "net_worth" }[
       (url.searchParams.get("sort") ?? "").trim()
     ] ?? "total_earned";
     const ascending = (url.searchParams.get("dir") ?? "").trim() === "asc";
     const ranked = leaderboard()
       .sort((a, b) => {
-        const byColumn = ascending ? a[column] - b[column] : b[column] - a[column];
+        const [left, right] = [a[column], b[column]];
+        const byColumn =
+          left == null || right == null
+            ? (left == null ? 1 : 0) - (right == null ? 1 : 0)
+            : ascending
+              ? left - right
+              : right - left;
         return byColumn || a.pubkey.localeCompare(b.pubkey);
       })
       .map((agent, i) => ({ ...agent, rank: i + 1 }));

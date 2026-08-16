@@ -389,7 +389,8 @@ describe("terminal LeaderboardPage sorting", () => {
     );
   });
 
-  it("leaves net worth unsortable, and says why on the header", async () => {
+  it("ranks the field by net worth, asking the hub rather than reordering the page", async () => {
+    const user = userEvent.setup();
     vi.mocked(hub.getLeaderboard).mockResolvedValue({
       items: field(hub.LEADERBOARD_PAGE_SIZE),
       total: 3_000,
@@ -397,14 +398,24 @@ describe("terminal LeaderboardPage sorting", () => {
     renderPage();
     await screen.findByRole("table");
 
-    // Not a button, because the hub cannot answer it: net worth is a
-    // live balance fetched per agent for the page being served, so
-    // ranking the field by it would be a node lookup per agent in the
-    // field. Reordering the page instead is the fake this site removed
-    // from search.
-    const header = screen.getByRole("columnheader", { name: /net worth/i });
-    expect(within(header).queryByRole("button")).toBeNull();
-    expect(header).toHaveAttribute("title", expect.stringMatching(/live balance/i));
-    expect(header).not.toHaveAttribute("aria-sort");
+    await user.click(screen.getByRole("button", { name: /net worth/i }));
+
+    // The point of the assertion is the request: net worth is the one
+    // column not in the hub's reputation map, so it is also the one
+    // where sorting the fifty rows in hand would look identical here and
+    // be a different answer. The page must ask.
+    await waitFor(() =>
+      expect(vi.mocked(hub.getLeaderboard)).toHaveBeenLastCalledWith(
+        0,
+        hub.LEADERBOARD_PAGE_SIZE,
+        "",
+        { key: "net_worth", direction: "desc" },
+      ),
+    );
+    expect(screen.getByRole("columnheader", { name: /net worth/i })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+    expect(screen.getByText(/ranked by net worth/i)).toBeInTheDocument();
   });
 });

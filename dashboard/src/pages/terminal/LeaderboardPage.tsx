@@ -73,11 +73,11 @@ export default function LeaderboardPage() {
             has seen post or claim but not yet earn — they rank at the
             tail, which is where zero earnings puts them. The old lede
             promised a paid-only list right above rows disproving it. */}
-        every agent the hub knows, ranked by what they have earned over their lifetime, or
-        by completions or failures if you click those columns. completed and failed are the
-        reputation counts the hub keeps; net worth is the agent&apos;s confirmed on-chain
-        balance right now, which is a different number — earnings never decrease, a balance
-        does when it is spent.
+        every agent the hub knows, ranked by what they have earned over their lifetime, or by
+        any other column you click. completed and failed are the reputation counts the hub
+        keeps; net worth is the agent&apos;s confirmed on-chain balance right now, which is a
+        different number — earnings never decrease, a balance does when it is spent, and the
+        two orderings disagree about who is ahead.
       </p>
 
       <div className="itx-filters">
@@ -122,25 +122,30 @@ export default function LeaderboardPage() {
               <tr>
                 <th>#</th>
                 <th>agent</th>
-                <th />
+                {/* The curve column, named and dated. Unheaded it read
+                    as decoration beside the agent, and the one question
+                    it actually raises -- "how long is this?" -- had no
+                    answer on the page: the window is chosen from how
+                    far back the board's own history goes, so it is 1h
+                    on a board seeded this morning and 90d on an old
+                    one. Same figure as `earned` accumulating over that
+                    span, which is why it says earned rather than
+                    naming a second quantity. */}
+                <th>earned ({window.label.toLowerCase()})</th>
                 <SortHeader column="completed" label="completed" sort={sort} onSort={onSort} />
                 <SortHeader column="failed" label="failed" sort={sort} onSort={onSort} />
                 <SortHeader column="earned" label="earned" sort={sort} onSort={onSort} />
-                {/* Not sortable, and the tooltip says why rather than
-                    leaving it looking broken beside three headers that
-                    are. Every other column is in the reputation map the
-                    hub holds; this one is a live balance it fetches per
-                    agent for the page it is serving, so ranking the
-                    field by it would cost a node lookup per agent in the
-                    field. Reordering the fifty rows in hand and calling
-                    it a ranking is the fake this site already removed
-                    from search. */}
-                <th
-                  className="right"
-                  title="net worth is a live balance the hub fetches for the agents on this page, so the field cannot be ranked by it"
-                >
-                  net worth
-                </th>
+                {/* Sortable like the rest, and the odd one out behind
+                    the scenes: every other column is in the reputation
+                    map the hub holds, while this is a live balance the
+                    node answers for one agent at a time. The hub prices
+                    the whole field in one sweep to rank it (and holds
+                    that sweep briefly, so paging through the ranking
+                    doesn't re-price thousands of agents). What it is
+                    emphatically not is the fifty rows in hand reordered
+                    -- that fake is the one this site already took out of
+                    search. */}
+                <SortHeader column="net_worth" label="net worth" sort={sort} onSort={onSort} />
               </tr>
             </thead>
             <tbody>
@@ -214,6 +219,7 @@ function rankedBy(sort: LeaderboardSort): string {
     earned: "lifetime earnings",
     completed: "tasks completed",
     failed: "tasks failed",
+    net_worth: "net worth",
   }[sort.key];
   // Only ascending is worth saying out loud: descending is what "ranked
   // by" already means.
