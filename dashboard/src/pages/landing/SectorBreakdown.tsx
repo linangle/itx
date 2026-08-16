@@ -171,15 +171,22 @@ function pickBasis<T>(items: T[], bases: ((item: T) => number)[]) {
  * the sector's change, which is its posting flow period over period.
  * Size is how much is there; colour is which way it is going. */
 export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] }) {
-  /** The picked-out sector, or none. Set by *clicking* a row or a tile,
-   * and by nothing else.
+  /** The sector the map is opened into, set by *clicking* a row or a
+   * tile.
    *
-   * An earlier version also set it on hover, which looked like a free
-   * improvement and was a bug: moving the pointer onto a row selected
-   * it, so the click that followed found it already selected and toggled
-   * it straight back off. Two mechanisms owning one piece of state, and
-   * the more discoverable of the two silently cancelling the other. */
+   * Kept strictly apart from what the pointer is over. An earlier
+   * version had hover write to this same field, which looked like a free
+   * improvement and was a bug: moving the pointer onto a row opened it,
+   * so the click that followed found it already open and shut it again.
+   * Two mechanisms owning one piece of state, and the more discoverable
+   * of the two silently cancelling the other. Hovering picks a sector
+   * out; clicking goes into it; neither can undo the other. */
   const [selected, setSelected] = useState<string | null>(null);
+
+  /** The sector under the pointer, which is a preview and nothing more.
+   * Named on both sides of the panel, so running down the table lights
+   * up the map and vice versa. */
+  const [hovered, setHovered] = useState<string | null>(null);
 
   /** The basis the table is weighing by, and what it adds up to. `total`
    * can still be zero -- an all-zero board is weightless however it is
@@ -244,7 +251,6 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
           the bar -- see `--anchor-top`. */}
       <div className="itx-sectors-panel itx-board-panel" id="itx-board-sectors">
         <div className="itx-sectors-table">
-          <p className="itx-sectors-head">select a sector for a visual breakdown</p>
           <table className="itx-board-table">
             <thead>
               <tr>
@@ -260,11 +266,20 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
                   <tr
                     key={s.name}
                     className={selected === s.name ? "is-selected" : undefined}
+                    /* The whole row is the target, not just the name:
+                       reading across to the weight bar should not put
+                       the map out again halfway. */
+                    onMouseEnter={() => setHovered(s.name)}
+                    onMouseLeave={() => setHovered((h) => (h === s.name ? null : h))}
                   >
                     <td className="itx-board-cell-market">
                       <button
                         type="button"
                         onClick={() => setSelected(selected === s.name ? null : s.name)}
+                        /* Keyboard gets the same preview the pointer
+                           does -- tabbing the table lights the map. */
+                        onFocus={() => setHovered(s.name)}
+                        onBlur={() => setHovered((h) => (h === s.name ? null : h))}
                         title={`${formatCount(s.open)} open · ${formatCompactItx(s.openBounty)} itx`}
                       >
                         {s.name}
@@ -320,12 +335,24 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
             )}
             {tiles.map(({ key, name, changePct, hint, rect }) => {
               const detail = labelDetail(labelScale(rect));
+              // Picking one out only means anything at the sector level;
+              // inside a sector the tiles are already one sector's worth
+              // and there is nothing to pick it out from.
+              const on = !inside && hovered === name;
+              const off = !inside && hovered !== null && !on;
               return (
                 <div
                   key={key}
                   className="itx-sectors-tile"
                   data-dir={directionOf(changePct)}
-                  data-on={!inside && selected === name ? "" : undefined}
+                  data-on={on ? "" : undefined}
+                  /* Dimmed, not hidden: the map is a comparison, and a
+                     tile that vanishes takes its own context with it. */
+                  data-dim={off ? "" : undefined}
+                  onMouseEnter={inside ? undefined : () => setHovered(name)}
+                  onMouseLeave={
+                    inside ? undefined : () => setHovered((h) => (h === name ? null : h))
+                  }
                   style={{
                     left: `${(rect.x / MAP_W) * 100}%`,
                     top: `${(rect.y / MAP_H) * 100}%`,
@@ -338,7 +365,18 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
                   /* Every tile names itself on hover, which is what makes
                      it safe for the small ones to carry no text. */
                   title={`${name} · ${formatPct(changePct)} · ${hint}`}
-                  onClick={inside ? undefined : () => setSelected(selected === name ? null : name)}
+                  onClick={
+                    inside
+                      ? undefined
+                      : () => {
+                          setSelected(selected === name ? null : name);
+                          // The tile is about to be replaced by the
+                          // sector's markets, so its own mouseleave may
+                          // never arrive; letting the name stand would
+                          // dim the map on the way back out.
+                          setHovered(null);
+                        }
+                  }
                 >
                   {detail !== "none" && (
                     <span className="itx-sectors-tile-name">{name}</span>

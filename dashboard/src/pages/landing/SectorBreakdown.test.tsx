@@ -96,6 +96,56 @@ describe("SectorBreakdown", () => {
     expect(tint("coding")).toBeGreaterThan(tint("data"));
   });
 
+  it("picks out the hovered sector and dims the rest", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<SectorBreakdown sectors={sectors} />);
+    const tiles = () => [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    const coding = tiles().find((t) => t.title.startsWith("coding"))!;
+
+    await user.hover(coding);
+    expect(tiles().filter((t) => t.hasAttribute("data-on"))).toHaveLength(1);
+    expect(tiles().filter((t) => t.hasAttribute("data-dim"))).toHaveLength(2);
+
+    await user.unhover(coding);
+    expect(tiles().filter((t) => t.hasAttribute("data-dim"))).toHaveLength(0);
+  });
+
+  it("lights the map from the table, and the hover does not open anything", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<SectorBreakdown sectors={sectors} />);
+    await user.hover(screen.getByRole("button", { name: "data" }));
+
+    const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    expect(tiles.find((t) => t.hasAttribute("data-on"))!.title).toContain("data");
+    // Hover is a preview. The map is still the board's, not one sector's
+    // -- this is the bug where hovering pre-selected a row and the click
+    // that followed toggled it straight back off.
+    expect(container.querySelector(".itx-sectors-map")).toHaveAttribute(
+      "data-level",
+      "sectors",
+    );
+  });
+
+  it("opens the sector the pointer is already on when it is clicked", async () => {
+    const user = userEvent.setup();
+    const withMarkets = sector("conversation", 900, 12, {
+      markets: [market("companionship", 400), market("advice", 300)],
+    });
+    const { container } = render(
+      <SectorBreakdown sectors={[withMarkets, sector("coding", 100, 4)]} />,
+    );
+    const tile = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")].find(
+      (t) => t.title.startsWith("conversation"),
+    )!;
+    await user.hover(tile);
+    await user.click(tile);
+
+    const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    expect(tiles.map((t) => t.title.split(" ·")[0])).toEqual(["companionship", "advice"]);
+    // Nothing left dimmed by a hover whose tile is gone.
+    expect(tiles.filter((t) => t.hasAttribute("data-dim"))).toHaveLength(0);
+  });
+
   it("opens the sector's own markets when a row is chosen", async () => {
     const user = userEvent.setup();
     const withMarkets = sector("conversation", 900, 12, {

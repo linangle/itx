@@ -2466,6 +2466,14 @@ a.itx-board-what:hover {
   color: var(--ld-blue);
 }
 
+/* The row answers the map: running down the table lights a tile, so the
+   row the pointer is on has to look picked out too or only half the
+   pairing is visible. */
+.itx-sectors-table tbody tr:hover td button,
+.itx-sectors-table td button:focus-visible {
+  color: var(--ld-blue);
+}
+
 .itx-sectors-weight {
   display: flex;
   align-items: center;
@@ -2568,12 +2576,26 @@ a.itx-board-what:hover {
   --tile-hue: var(--ld-sub);
 }
 
+/* Whatever the pointer is on holds its colour; the rest of the map goes
+   back so it can be read past. Dimmed rather than hidden -- the map is a
+   comparison, and a tile that vanishes takes its own context with it. */
+.itx-sectors-tile[data-dim] {
+  opacity: 0.35;
+}
+
 /* Drawn inside the tile rather than as an outline. An outline sits on
    the tile's own edge, and the tiles along the map's border have that
    edge shaved off by the map's rounded corner -- so the ring on a corner
    tile came out sliced. A ring inset from a corner tile that is rounded
    to match (see `corners()`) stays inside the clip and closes. */
 .itx-sectors-tile[data-on] {
+  box-shadow: inset 0 0 0 1px var(--ld-light);
+}
+
+/* Inside a sector nothing dims, so the ring is all the pointer gets --
+   and it is what tells you which of the small shapes the tooltip you
+   are waiting on belongs to. */
+.itx-sectors-map[data-level="markets"] .itx-sectors-tile:hover {
   box-shadow: inset 0 0 0 1px var(--ld-light);
 }
 
