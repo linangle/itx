@@ -554,9 +554,19 @@ body.itx-body[data-theme="light"] {
 /* A sortable header. The button carries the header's own type so the
    column looks unchanged until hovered -- a table where every heading
    announces itself as a control is a table of eight buttons rather than
-   a set of columns. */
+   a set of columns.
+
+   `flex`, not `inline-flex`, and that is the whole of the header row's
+   vertical alignment. An inline-flex box is placed by its baseline, and
+   a flex container takes its baseline from the first item in main-axis
+   order -- which under the `row-reverse` below is the arrow, not the
+   label. So a sorted heading sat 1px above its neighbours and an
+   unsorted one 3px below the plain `<th>`s beside it, purely because
+   an empty 7px span and one holding a triangle have different
+   baselines. A block-level flex box has no baseline to negotiate: every
+   heading is a line box in its cell, and they line up. */
 .itx-sort {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: var(--sp-3);
   background: none;
@@ -578,16 +588,27 @@ body.itx-body[data-theme="light"] {
 }
 
 /* Holds its width whether or not an arrow is in it, so the header row
-   doesn't shift sideways as the sorted column changes. */
+   doesn't shift sideways as the sorted column changes.
+
+   No colour of its own: it takes the heading's, the way the hub board's
+   caret does (`.itx-board-caret`). It was painted `--brand`, which made
+   one green mark sit in a row of grey headings and read as a status --
+   green means "up" or "open" everywhere else on this site -- when all
+   it says is which column is doing the ordering. Inheriting also means
+   it brightens with its heading, since the sorted column is the active
+   one. */
 .itx-sort-arrow {
   display: inline-block;
   min-width: 7px;
   font-size: 7px;
-  color: var(--brand);
+  color: inherit;
 }
 
 /* A right-aligned column's header aligns with its figures, so the
-   button has to end at the cell's edge rather than start at it. */
+   button has to end at the cell's edge rather than start at it. The
+   button now fills the cell (it is block-level -- see `.itx-sort`), so
+   reversing the row is what puts the label against the right edge and
+   the arrow inboard of it. */
 .itx-table th.right .itx-sort {
   flex-direction: row-reverse;
 }
