@@ -1062,6 +1062,126 @@ body.itx-landing-body[data-theme="light"] {
   display: none;
 }
 
+/* The two side columns can be dragged narrower, and shut altogether.
+ *
+ * The board is a wide page whose middle column is the one anyone came
+ * for -- the markets, the tape, the sections below them -- and on a
+ * laptop the nav and the rail together are a third of it. So both edges
+ * are draggable, and dragging one in past its floor puts that column
+ * away and gives the width to the middle.
+ *
+ * Nothing here sizes a column directly. The widths are the same
+ * `--col-nav` / `--col-rail` the board has always laid out on, written
+ * on `.itx-board-inner` by `useColumnWidth`; the columns and the heading
+ * line above them both resolve against that pair, so the title stays
+ * over the first market panel however the edges are moved. */
+.itx-board-nav,
+.itx-board-rail {
+  /* The containing block for the grip below, which is positioned
+     against its own column and reaches the whole way down it. */
+  position: relative;
+}
+
+/* The edge itself. It sits in the grid's gutter rather than taking a
+   track of its own, which is what leaves the three-column template --
+   and the heading line that has to match it -- exactly as it was. */
+.itx-board-grip {
+  --grip-w: 14px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--grip-w);
+  z-index: 3;
+  cursor: col-resize;
+  /* A touch drag on the edge resizes rather than scrolling the page. */
+  touch-action: none;
+  user-select: none;
+  /* The thumb below is the focus ring: a default outline on a box as
+     tall as the board draws a rectangle several screens long. */
+  outline: none;
+}
+
+/* Centred in the gutter: half the gap plus half the grip's own width
+   puts the strip's middle on the line between the two columns. */
+.itx-board-nav > .itx-board-grip {
+  right: calc((var(--sp-8) + var(--grip-w)) / -2);
+}
+
+.itx-board-rail > .itx-board-grip {
+  left: calc((var(--sp-8) + var(--grip-w)) / -2);
+}
+
+/* What you actually see of the edge, and the reason it is an element
+   rather than a pseudo: it is `sticky`, so it rides at eye level down a
+   column that is several screens tall. Placed anywhere fixed in that
+   column it would be off screen from almost everywhere on the board.
+   Held at 45vh, it stays beside the panels it moves. */
+.itx-board-grip-thumb {
+  position: sticky;
+  top: 45vh;
+  display: block;
+  width: 3px;
+  height: 40px;
+  margin: 0 auto;
+  border-radius: 3px;
+  background: var(--bd-line);
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    background-color 140ms ease;
+}
+
+/* Quiet until asked for -- except on a column that is already shut,
+   where the strip is all that is left of it and so has to be visible
+   enough to find. */
+.itx-board-grip:hover .itx-board-grip-thumb,
+.itx-board-grip.is-dragging .itx-board-grip-thumb,
+.itx-board-grip[data-shut] .itx-board-grip-thumb {
+  opacity: 1;
+  background: var(--ld-sub);
+}
+
+.itx-board-grip:focus-visible .itx-board-grip-thumb {
+  opacity: 1;
+  background: var(--ld-light);
+  height: 56px;
+}
+
+.itx-board-grip.is-dragging .itx-board-grip-thumb {
+  background: var(--ld-light);
+}
+
+/* A shut column keeps its grip and loses everything else. Emptying it
+   rather than narrowing it: at 0px the panels inside would not vanish,
+   they would wrap into an unreadable sliver and go on painting. */
+.itx-board-inner[data-nav-shut] .itx-board-nav > .itx-board-pin,
+.itx-board-inner[data-rail-shut] .itx-board-rail > .itx-board-pin {
+  display: none;
+}
+
+/* For the length of a drag: the pointer is captured by the grip, so
+   whatever it travels over cannot supply the cursor, and without this
+   the drag selects the board's text as it goes. */
+body.itx-col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Below the stacking breakpoint there are no side columns to size --
+   the three of them are one column each -- so the edges go away and a
+   column that was shut on a wider screen comes back. Its width is not
+   the reason it is off screen here; the layout is. */
+@media (max-width: 1080px) {
+  .itx-board-grip {
+    display: none;
+  }
+
+  .itx-board-inner[data-nav-shut] .itx-board-nav > .itx-board-pin,
+  .itx-board-inner[data-rail-shut] .itx-board-rail > .itx-board-pin {
+    display: flex;
+  }
+}
+
 /* The column that actually scrolls: the carousel at a screen's height,
    then the tape below it. */
 .itx-board-mid {

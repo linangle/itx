@@ -11,6 +11,8 @@ import Newsroom from "./Newsroom";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
+import { useColumnWidth } from "../../hooks/useColumnWidth";
+import type { ColumnWidth } from "../../hooks/useColumnWidth";
 import { useDebounced } from "../../hooks/useDebounced";
 import { useFitRows } from "../../hooks/useFitRows";
 import { useCarousel } from "../../hooks/useCarousel";
@@ -65,6 +67,23 @@ const MAX_LEADER_ROWS = 50;
 /** How often the board re-asks the hub. Slow enough to be cheap, quick
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
+
+/** What the two side columns may be dragged between, and what they are
+ * before anyone has dragged them.
+ *
+ * The starting widths are the stylesheet's own `--col-nav` / `--col-rail`
+ * and have to stay in step with them: those are what the board draws with
+ * until a stored width is applied, and a mismatch would show as the
+ * columns jumping on the first paint after a reload.
+ *
+ * The floors are what the columns' contents actually need rather than a
+ * round number. The nav's longest entry is "full leaderboard"; the rail
+ * carries a rank, an avatar, a name and a figure on one 34px row, and
+ * under about 190px the name starts losing characters to the ellipsis
+ * before the figure has room. Below the floor there is no narrower
+ * column to offer, so that is where dragging further shuts it instead. */
+const NAV_WIDTH = { initial: 172, min: 132, max: 320 };
+const RAIL_WIDTH = { initial: 232, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
 function ago(iso: string): string {
@@ -206,6 +225,38 @@ export default function Board({
    * breakpoint that changes how many panels are shown. */
   const colsRef = useRef<HTMLDivElement | null>(null);
   const marketsRef = useRef<HTMLDivElement | null>(null);
+
+  /** The two side columns are draggable, and shut when dragged in far
+   * enough -- the board is a wide page and the middle column is the one
+   * anybody came for, so the nav and the rail have to be able to get out
+   * of its way.
+   *
+   * Both widths are published on `.itx-board-inner`, which is where the
+   * stylesheet declares them, because two grids resolve against the same
+   * pair: the columns themselves and the heading line above them. Sizing
+   * the columns directly would leave the heading measuring against the
+   * old numbers and the title would drift off the first market panel. */
+  const innerRef = useRef<HTMLDivElement | null>(null);
+  const nav = useColumnWidth({
+    host: innerRef,
+    property: "--col-nav",
+    attribute: "data-nav-shut",
+    storageKey: "itx-board-nav-w",
+    side: "left",
+    label: "the board nav",
+    controls: "itx-board-nav",
+    ...NAV_WIDTH,
+  });
+  const rail = useColumnWidth({
+    host: innerRef,
+    property: "--col-rail",
+    attribute: "data-rail-shut",
+    storageKey: "itx-board-rail-w",
+    side: "right",
+    label: "the leaderboard and trends",
+    controls: "itx-board-rail",
+    ...RAIL_WIDTH,
+  });
   /** Which market's chart is open, and at what range — in the URL, so a
    * chart is a link someone can send and a reload lands back on it.
    *
@@ -346,7 +397,7 @@ export default function Board({
     // The masthead's link home targets this, not the top of the
     // document -- see SiteBar. The hero is the pitch; this is the site.
     <section className="itx-board" id={BOARD_ANCHOR} aria-label="Market board">
-      <div className="itx-board-inner">
+      <div className="itx-board-inner" ref={innerRef}>
         <QuoteStrip sectors={sectors} windowLabel={window.label} />
 
         {/* No truncation notice here any more, and deliberately so. This
@@ -416,6 +467,7 @@ export default function Board({
             expanded={sectorsOpen}
             setExpanded={setSectorsOpen}
             onSelect={carousel.to}
+            column={nav}
           />
 
           {/* The middle column: the carousel, its position indicator,
@@ -570,7 +622,8 @@ export default function Board({
             * is also a grid item is the case engines disagree about,
             * and the column's bottom is what has to stop the rail
             * short of the footer. */}
-          <div className="itx-board-rail">
+          <div className="itx-board-rail" id="itx-board-rail">
+            <ColumnGrip column={rail} />
             <div className="itx-board-pin">
             <LeaderboardRail
               leaders={leaders}
@@ -637,6 +690,28 @@ export default function Board({
         <footer className="itx-board-panel itx-board-footer" aria-label="Footer" />
       </div>
     </section>
+  );
+}
+
+/** The edge of a side column, as something to take hold of.
+ *
+ * Absolutely positioned into the grid's gutter rather than laid out as a
+ * track of its own, which is what keeps the three-column template -- and
+ * the heading line that has to match it -- exactly as it was. It spans
+ * the whole column, so the edge can be grabbed anywhere down the board.
+ *
+ * The thumb inside it is a separate element only so it can be `sticky`:
+ * the column is as tall as the board, so a marker placed anywhere in it
+ * is off screen from almost everywhere on the page. Stuck to the
+ * viewport it stays beside the panels it moves.
+ *
+ * A shut column is nothing but this strip, so the strip is also the way
+ * back: it stays visible, says so on hover, and a click reopens it. */
+function ColumnGrip({ column }: { column: ColumnWidth }) {
+  return (
+    <div className="itx-board-grip" data-shut={column.shut || undefined} {...column.grip}>
+      <span className="itx-board-grip-thumb" aria-hidden="true" />
+    </div>
   );
 }
 
@@ -1147,6 +1222,7 @@ function BoardNav({
   expanded,
   setExpanded,
   onSelect,
+  column,
 }: {
   sectors: SectorSummary[];
   /** The sectors on screen, as an inclusive index range.
@@ -1169,9 +1245,14 @@ function BoardNav({
   expanded: boolean;
   setExpanded: (expanded: boolean) => void;
   onSelect: (index: number) => void;
+  /** This column's own width, so the nav can carry the grip that sizes
+   * it -- the grip is positioned against the column, so it has to live
+   * inside it. */
+  column: ColumnWidth;
 }) {
   return (
-    <nav className="itx-board-nav" aria-label="Board sections">
+    <nav className="itx-board-nav" id="itx-board-nav" aria-label="Board sections">
+      <ColumnGrip column={column} />
       {/* The pinned box, not the column -- see `.itx-board-pin`. */}
       <div className="itx-board-pin">
       {/* Where the other columns have a label. A list of section names
