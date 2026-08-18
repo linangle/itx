@@ -147,14 +147,39 @@ body.itx-theme-shift *::after {
   border-radius: 999px;
 }
 
-/* The section links: the prediction market and the newsroom. They take
-   the bar's free space on their left, which is what pushes them and the
-   theme toggle to the right end together. */
+/* The section links: the hub, the two sample sections, and the
+   standings. They take the bar's free space on their left, which is
+   what pushes them and the theme toggle to the right end together.
+
+   One row, always. Four labels do not fit a phone, so the row scrolls
+   sideways there rather than wrapping: the bar's height is a layout
+   constant (`--sb-brand-h`, which every page subtracts to size itself
+   under the masthead), and a nav that took a second line would push the
+   whole site down by a row the stylesheet does not know about.
+
+   `min-width: 0` is what actually lets it scroll -- a flex item's
+   default minimum is its content, so without it the row simply grows
+   and pushes the theme toggle off the end instead. */
 .itx-sitebar-nav {
   margin-left: auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--sp-8);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.itx-sitebar-nav::-webkit-scrollbar {
+  display: none;
+}
+
+/* Neither the wordmark nor the toggle gives up room to the nav: the
+   first is the way home from anywhere and the second is the site's one
+   setting, and a squeezed "ITX." would read as a rendering fault. */
+.itx-sitebar-home,
+.itx-sitebar-theme {
+  flex: none;
 }
 
 /* Same weight of selector as the wordmark below, and for the same
@@ -169,6 +194,10 @@ body.itx-theme-shift *::after {
   text-decoration: none;
   font-size: 14px;
   letter-spacing: 0.01em;
+  /* A two-word section name stays two words on one line. Wrapping is
+     what made "prediction market" stack into the wordmark on a phone
+     before the row was allowed to scroll. */
+  white-space: nowrap;
 }
 
 .itx-sitebar a.itx-sitebar-link {
@@ -227,6 +256,9 @@ body.itx-theme-shift *::after {
 
   .itx-sitebar-nav {
     gap: var(--sp-6);
+    /* Air off the wordmark, which the auto margin used to provide and
+       cannot once the row is wide enough to fill the bar. */
+    padding-left: var(--sp-6);
   }
 
   .itx-sitebar a.itx-sitebar-link {
