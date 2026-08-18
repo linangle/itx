@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOARD_MARKETS,
   SAMPLES,
   SPAN_MS,
   STEPS,
   axisDates,
   momentLabel,
   paysOut,
+  boardMarkets,
+  marketAnchor,
+  marketTotals,
+  movedPct,
+  orderMarkets,
   quoteAt,
   snapIndex,
   walk,
@@ -110,5 +116,66 @@ describe("reading a price off a sample chart", () => {
     expect(dates[3].index).toBe(STEPS - 1);
     // Four distinct days across a week-long span, in order.
     expect(dates.map((d) => d.label)).toEqual([...new Set(dates.map((d) => d.label))]);
+  });
+});
+
+describe("the pool the board and the full page share", () => {
+  it("keeps the board's row to the head of it", () => {
+    // The board draws a measured chart per card and is already the
+    // heaviest page on the site; the page carries the rest.
+    expect(boardMarkets()).toEqual(SAMPLES.slice(0, BOARD_MARKETS));
+    expect(boardMarkets().length).toBeLessThan(SAMPLES.length);
+  });
+
+  it("spreads the pool across desks, so filtering it means something", () => {
+    const desks = new Set(SAMPLES.map((m) => m.category));
+    expect(desks.size).toBeGreaterThan(3);
+  });
+
+  it("measures a market's week from where it opened to where it stands", () => {
+    // Not the width of the swing between: a market that wandered and
+    // came back has not moved, and "moved 15 points" is what a reader
+    // takes from a price line.
+    const market = { ...SAMPLES[0], series: [40, 90, 10, 55] };
+    expect(movedPct(market)).toBe(15);
+  });
+
+  it("orders the pool three ways, without disturbing it", () => {
+    const before = SAMPLES.map((m) => m.key);
+
+    const busiest = orderMarkets(SAMPLES, "volume");
+    expect(busiest[0].volumeItx).toBe(Math.max(...SAMPLES.map((m) => m.volumeItx)));
+
+    // Closest to even first: the market the agents are actually arguing
+    // over sorts ahead of one at 84/16.
+    const close = orderMarkets(SAMPLES, "close");
+    const distance = (pct: number) => Math.abs(pct - 50);
+    expect(distance(close[0].yes.pct)).toBeLessThanOrEqual(distance(close[1].yes.pct));
+    expect(distance(close.at(-1)!.yes.pct)).toBe(
+      Math.max(...SAMPLES.map((m) => distance(m.yes.pct))),
+    );
+
+    const moved = orderMarkets(SAMPLES, "moved");
+    expect(movedPct(moved[0])).toBeCloseTo(Math.max(...SAMPLES.map(movedPct)), 10);
+
+    // Every ordering is the same pool, and none of them reorders it --
+    // `SAMPLES` is module state the board reads too.
+    for (const ordered of [busiest, close, moved]) {
+      expect(new Set(ordered.map((m) => m.key)).size).toBe(SAMPLES.length);
+    }
+    expect(SAMPLES.map((m) => m.key)).toEqual(before);
+  });
+
+  it("totals what a page is showing rather than what the pool holds", () => {
+    const two = SAMPLES.slice(0, 2);
+    expect(marketTotals(two)).toEqual({
+      count: 2,
+      volumeItx: two[0].volumeItx + two[1].volumeItx,
+      traders: two[0].traders + two[1].traders,
+    });
+  });
+
+  it("names a card's anchor once, for the page that writes it and the page that links to it", () => {
+    expect(marketAnchor("storms")).toBe("market-storms");
   });
 });

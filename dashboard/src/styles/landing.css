@@ -3527,6 +3527,329 @@ a.itx-board-what:hover {
   inset: 0;
 }
 
+/* An inner page runs to one column of a readable width rather than to
+   the window: the board is a dense three-column instrument and these
+   are pages you read down. Wider than prose (a market card holds a
+   table and a chart side by side and wants the room) but bounded, so a
+   2560px display shows a page rather than a stretched one. */
+.itx-subpage > * {
+  max-width: 1180px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ---- an inner page's head: title, lede, figures ------------------ */
+
+.itx-sub-intro {
+  margin-bottom: var(--gap-section);
+}
+
+.itx-sub-title {
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-title);
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  color: var(--ld-light);
+}
+
+/* The lede, at the board's own body size. Measured in `ch` rather than
+   pixels so the line length follows the type: about 90 characters is
+   where a line stops being comfortable to return from. */
+.itx-sub-lede {
+  margin: 0;
+  max-width: 90ch;
+  font-size: var(--fs-lead);
+  line-height: 1.55;
+  color: var(--ld-sub);
+}
+
+/* The one place on these pages that says "authored" in the lede itself.
+   It takes the page's ink rather than a colour: this is emphasis, not a
+   warning, and a red line under a heading would read as an error. */
+.itx-sub-lede strong {
+  font-weight: 700;
+  color: var(--ld-light);
+}
+
+/* The figures under the lede. A flex row that wraps rather than a grid
+   of fixed columns: there are four of them on both pages today, and a
+   fifth should fall to the next line rather than squeeze the other
+   four. */
+.itx-sub-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-11);
+  margin: var(--sp-7) 0 0;
+}
+
+/* Figure over label, which is the order the eye crosses them in. The
+   `dd` comes first in the markup for exactly that reason -- see
+   `SubpageIntro` -- and carries its own reset, since a `dd` has a left
+   margin by default. */
+.itx-sub-stat dd {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-light);
+}
+
+.itx-sub-stat dt {
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  color: var(--ld-sub);
+}
+
+/* What the page is honest about, at its foot. Outlined on its left edge
+   rather than boxed: a panel here would read as one more piece of the
+   feed above it, and this is a note about the feed. */
+.itx-sub-note {
+  max-width: 90ch;
+  margin: var(--gap-section) auto 0;
+  padding-left: var(--sp-6);
+  border-left: 2px solid var(--bd-line);
+  font-size: var(--fs-body);
+  line-height: 1.55;
+  color: var(--ld-sub);
+}
+
+.itx-sub-note strong {
+  font-weight: 700;
+  color: var(--ld-light);
+}
+
+/* ---- the filter rows both inner pages carry --------------------- */
+/* Two groups -- which desk, what order -- on one line where there is
+   room, stacked where there is not. See `FilterPills`. */
+
+.itx-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5) var(--sp-10);
+  margin-bottom: var(--gap-heading);
+}
+
+.itx-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  /* The group may wrap its own pills before the row wraps between
+     groups: nine desks is a long row, and breaking it is better than
+     pushing the order pills to a line of their own. */
+  flex-wrap: wrap;
+}
+
+.itx-filter-label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  color: var(--ld-sub);
+}
+
+.itx-filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+/* The board's pill, with a hairline added -- see `FilterPills` for why:
+   a horizontal row of borderless words reads as a sentence rather than
+   as a set of buttons. Everything else about it is
+   `.itx-board-navlist`'s: 999px, muted at rest, the ground's own colour
+   under the pointer. */
+.itx-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
+  border: 1px solid var(--bd-line);
+  border-radius: 999px;
+  background: none;
+  color: var(--ld-sub);
+  font: inherit;
+  font-size: var(--fs-body);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 130ms ease, background-color 130ms ease, border-color 130ms ease;
+}
+
+.itx-filter-pill:hover {
+  background: var(--ld-dark);
+  color: var(--ld-light);
+}
+
+/* The choice you are on: the one fill on these pages that is lifted off
+   the ground rather than equal to it, exactly as the board's current nav
+   entry is. */
+.itx-filter-pill.is-on {
+  background: var(--bd-nav-fill);
+  border-color: color-mix(in srgb, var(--bd-line) 100%, var(--ld-light) 18%);
+  color: var(--ld-light);
+  font-weight: 600;
+}
+
+/* How many sit behind a choice. A step back from the word it qualifies,
+   and tabular so the pills do not resize as counts change under a
+   filter. */
+.itx-filter-count {
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-sub);
+}
+
+.itx-filter-pill.is-on .itx-filter-count {
+  color: var(--ld-light);
+  opacity: 0.7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .itx-filter-pill {
+    transition: none;
+  }
+}
+
+/* ---- the market page's grid of cards ---------------------------- */
+/* The same card the board's carousel scrolls, laid out as a page: one
+   per market, two across where the column is wide enough for a card's
+   own two halves to stay side by side.
+
+   The card sizes itself as a flex item on the board (`flex: 0 0
+   var(--pm-basis)`), which a grid item simply ignores -- so nothing has
+   to be undone here. */
+
+.itx-pmpage-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-8);
+}
+
+/* The cell rather than the card carries the anchor, so a link from the
+   newsroom lands with the card clear of the masthead. */
+.itx-pmpage-cell {
+  display: grid;
+  scroll-margin-top: calc(var(--ld-bar-h) + var(--sp-7));
+}
+
+/* Wide enough for two cards that each still hold their table and their
+   chart side by side. Below this the cards run one per row and each one
+   keeps its two halves; below 1100px the card itself stacks -- see
+   `.itx-pm-card`. */
+@media (min-width: 1700px) {
+  .itx-subpage > .itx-pmpage-grid {
+    /* Two cards' worth rather than the window's -- the page still ends
+       somewhere on a 2560px display. */
+    max-width: 1900px;
+  }
+
+  .itx-pmpage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---- the newsroom page's lead and feed --------------------------- */
+
+.itx-nrpage-lead {
+  padding: var(--sp-8);
+  margin-bottom: var(--sp-8);
+}
+
+.itx-nrpage-leadtop {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-5);
+}
+
+/* The category is the market card's own -- same rule, same weight -- so
+   a desk reads the same on both pages. It carries a bottom margin there
+   for a card with no second item on that line; here the row owns the
+   spacing. */
+.itx-nrpage-leadtop .itx-pm-cat {
+  margin-bottom: 0;
+}
+
+/* What this story is doing at the top of the page. A word rather than a
+   colour: the feed under it is ranked, so "lead" is a position, not a
+   status. */
+.itx-nrpage-leadtag {
+  padding: 2px var(--sp-4);
+  border: 1px solid var(--bd-line);
+  border-radius: 999px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+  color: var(--ld-sub);
+}
+
+.itx-nrpage-headline {
+  margin: var(--sp-5) 0 0;
+  /* Wide enough that a headline of the length these run to takes one
+     line or two even ones, and balanced so a two-line one does not
+     leave a single word on the second -- which is what 40ch was doing
+     to the lead the page opens on. `text-wrap` is simply ignored where
+     it is not supported, and the max-width alone is still right
+     there. */
+  max-width: 52ch;
+  text-wrap: balance;
+  font-size: var(--fs-title);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.012em;
+  color: var(--ld-light);
+}
+
+.itx-nrpage-summary {
+  margin: var(--sp-5) 0 0;
+  max-width: 80ch;
+  font-size: var(--fs-lead);
+  line-height: 1.55;
+  color: var(--ld-sub);
+}
+
+.itx-nrpage-leadmeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-8);
+  margin-top: var(--sp-6);
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
+/* The way from a reading to the price it moved. The only link on either
+   inner page that crosses to the other, so it takes the link colour
+   plainly rather than the section arrow's quieter treatment. */
+.itx-board a.itx-nrpage-priced {
+  display: inline-block;
+  margin-top: var(--sp-6);
+  font-size: var(--fs-body);
+}
+
+.itx-nrpage-priced strong {
+  font-weight: 600;
+}
+
+.itx-nrpage-panel {
+  padding: var(--pad-panel-y) var(--pad-panel-x);
+}
+
+/* Sources is a small whole number, not a formatted count -- tabular so
+   the column holds its axis, and no wider than it needs to be. */
+.itx-nrpage-sources {
+  width: 72px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-sub);
+}
+
+@media (max-width: 900px) {
+  /* The two counts are the columns to give up first on a narrow screen:
+     the headline, its desk and its age are what the feed is read on. */
+  .itx-nrpage-sources,
+  .itx-nrpage-panel th:nth-child(4) {
+    display: none;
+  }
+}
+
 /* ---- newsroom (the board's sample stories) ----------------------- */
 /* Five authored stories under the prediction market, ranked by how
    many agents have read them -- see Newsroom.tsx and

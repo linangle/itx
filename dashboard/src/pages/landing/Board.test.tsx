@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import Board from "./Board";
 import * as hub from "../../lib/hub";
 import type { BoardSummaryDto, CapabilitySummaryDto, TaskDto } from "../../lib/hub";
-import { SAMPLES } from "../../lib/predictionSample";
+import { SAMPLES, boardMarkets } from "../../lib/predictionSample";
 import type { AsyncState } from "../../hooks/useAsync";
 
 vi.mock("../../lib/hub", async (importOriginal) => ({
@@ -141,7 +141,12 @@ describe("Board", () => {
     // everything else on the card. Read through the first card's table:
     // its legend repeats the labels.
     const tables = within(section).getAllByRole("table");
-    expect(tables).toHaveLength(SAMPLES.length);
+    // The head of the pool, not all of it: the full page carries the
+    // rest, and every card here draws a measured chart the board pays
+    // for whether or not anyone scrolls to it.
+    const shown = boardMarkets();
+    expect(shown.length).toBeLessThan(SAMPLES.length);
+    expect(tables).toHaveLength(shown.length);
     const first = within(tables[0]);
     expect(first.getByText("under 15")).toBeInTheDocument();
     expect(first.getByText("72%")).toBeInTheDocument();
@@ -151,7 +156,7 @@ describe("Board", () => {
 
     // And every card says on its face that its odds are authored. A card
     // quoting a price and a volume looks live whether or not it is.
-    expect(within(section).getAllByText(/sample market/i)).toHaveLength(SAMPLES.length);
+    expect(within(section).getAllByText(/sample market/i)).toHaveLength(shown.length);
 
     // The favoured side is outlined green and the other red -- the
     // board's own pair for direction. Taken from the odds rather than
@@ -303,7 +308,7 @@ describe("Board", () => {
     // same split `chartAxis` takes.
     const track = container.querySelector(".itx-pm-track");
     expect(track).toHaveAttribute("data-at-start");
-    expect(track?.children).toHaveLength(SAMPLES.length);
+    expect(track?.children).toHaveLength(boardMarkets().length);
     expect(container.querySelector(".itx-pm-slider")).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "Previous market" })).toBeDisabled();
   });

@@ -31,6 +31,9 @@ export interface SampleMarket {
   /** In whole itx, not base units — authored copy, not a hub figure
    * passing through the usual formatters. */
   volumeItx: number;
+  /** How many agents hold a position. The full page's header counts
+   * these; the board's card has no room for it and does not read it. */
+  traders: number;
   settles: string;
   news: string;
   /** The `yes` odds over the span, one point per step. The `no` series
@@ -61,8 +64,8 @@ function mulberry32(seed: number): () => number {
  * to review), then eased onto the quoted price so the line ends exactly
  * where the card's pill says the market stands.
  *
- * `volatility` is how far a step may move. It is per market so the three
- * samples do not read as one series drawn three times — a market that
+ * `volatility` is how far a step may move. It is per market so the
+ * samples do not read as one series drawn nine times — a market that
  * has barely moved all week looks different from one that has been
  * argued over, and that difference is most of what a price chart says. */
 export function walk(seed: number, from: number, to: number, volatility: number): number[] {
@@ -77,7 +80,7 @@ export function walk(seed: number, from: number, to: number, volatility: number)
   return points.map((p, i) => p + (drift * i) / (points.length - 1));
 }
 
-/** The three sample markets.
+/** The sample markets, in one pool.
  *
  * They price **world events**, not the ITX board itself, and that is the
  * point of the placeholder: the intended product is agents scraping the
@@ -88,6 +91,17 @@ export function walk(seed: number, from: number, to: number, volatility: number)
  * say plainly that they are placeholders, and each card carries a
  * "sample market" line — so nothing here can be mistaken for a real
  * quote or for reporting from a real outlet.
+ *
+ * The pool is deep enough for the full page to be a page: nine markets
+ * across nine desks, which is what makes the desk filter there a filter
+ * rather than a decoration. The board's row shows the first few — see
+ * `boardMarkets` — because every card on it draws a live chart, and a
+ * landing page that mounts nine of them pays for eight nobody scrolled
+ * to.
+ *
+ * The desks match the newsroom's, on purpose: the stories are what
+ * these markets would be priced off, and one vocabulary across the two
+ * pages is what lets a reader move between them.
  */
 export const SAMPLES: SampleMarket[] = [
   {
@@ -97,6 +111,7 @@ export const SAMPLES: SampleMarket[] = [
     yes: { label: "under 15", pct: 72 },
     no: { label: "15 or more", pct: 28 },
     volumeItx: 84_200,
+    traders: 412,
     settles: "settles dec 1",
     news:
       "placeholder copy. this line is where an agent's summary of what " +
@@ -111,6 +126,7 @@ export const SAMPLES: SampleMarket[] = [
     yes: { label: "slips past 2027", pct: 61 },
     no: { label: "lands by 2027", pct: 39 },
     volumeItx: 45_800,
+    traders: 268,
     settles: "settles jan 1, 2028",
     news:
       "placeholder copy. a long-dated market moves on schedule news " +
@@ -125,16 +141,107 @@ export const SAMPLES: SampleMarket[] = [
     yes: { label: "solar leads", pct: 37 },
     no: { label: "coal holds", pct: 63 },
     volumeItx: 128_400,
+    traders: 594,
     settles: "settles feb 15",
     news:
-      "placeholder copy. the busiest of the three samples, and " +
-      "deliberately the one whose odds have moved most — a market where " +
-      "the agents disagree is the one worth reading.",
-    // The widest of the three, but not so wide that the line reads as
+      "placeholder copy. the widest swing on the board's own row, and " +
+      "deliberately so — a market where the agents disagree is the one " +
+      "worth reading.",
+    // The widest walk in the pool, but not so wide that the line reads as
     // static rather than as a market changing its mind: at 11 the walk
     // crossed the plot several times a day and the shape stopped
     // carrying any information.
     series: walk(53, 52, 37, 6.5),
+  },
+  {
+    key: "gpu",
+    category: "compute",
+    title: "gpu spot prices close the quarter under the spring floor",
+    yes: { label: "under the floor", pct: 44 },
+    no: { label: "at or above", pct: 56 },
+    volumeItx: 96_500,
+    traders: 508,
+    settles: "settles sep 30",
+    news:
+      "placeholder copy. a market whose two sides have traded places " +
+      "twice this week — the shape a chart takes when the agents are " +
+      "reading the same supply notes and disagreeing about them.",
+    series: walk(71, 51, 44, 8),
+  },
+  {
+    key: "warmest",
+    category: "climate",
+    title: "the year closes among the three warmest on record",
+    yes: { label: "top three", pct: 84 },
+    no: { label: "outside top three", pct: 16 },
+    volumeItx: 61_300,
+    traders: 221,
+    settles: "settles jan 15",
+    news:
+      "placeholder copy. the most one-sided of the pool, and worth " +
+      "keeping for that: a card at 84/16 shows what the odds column and " +
+      "the payout column do at the ends of their range.",
+    series: walk(97, 77, 84, 3),
+  },
+  {
+    key: "ratecut",
+    category: "markets",
+    title: "a major central bank cuts rates before july",
+    yes: { label: "cuts", pct: 56 },
+    no: { label: "holds", pct: 44 },
+    volumeItx: 152_700,
+    traders: 733,
+    settles: "settles jul 1",
+    news:
+      "placeholder copy. the deepest book in the pool. a market this " +
+      "close to even is where a scraping agent's edge would show first, " +
+      "since both sides are already priced by everyone else.",
+    series: walk(131, 49, 56, 5.5),
+  },
+  {
+    key: "freight",
+    category: "transport",
+    title: "driverless freight clears a million road miles this quarter",
+    yes: { label: "clears 1m", pct: 33 },
+    no: { label: "falls short", pct: 67 },
+    volumeItx: 38_900,
+    traders: 174,
+    settles: "settles oct 1",
+    news:
+      "placeholder copy. a threshold market: it resolves on a number " +
+      "somebody publishes, which is the kind an oracle can settle " +
+      "without a dispute round.",
+    series: walk(157, 41, 33, 4.5),
+  },
+  {
+    key: "supercon",
+    category: "science",
+    title: "a superconductor claim replicates in a second lab",
+    yes: { label: "replicates", pct: 17 },
+    no: { label: "fails to", pct: 83 },
+    volumeItx: 27_400,
+    traders: 149,
+    settles: "settles dec 31",
+    news:
+      "placeholder copy. thin volume against long odds — the tail of " +
+      "the pool, and the case the page has to render as readably as it " +
+      "renders the busy ones.",
+    series: walk(179, 24, 17, 6),
+  },
+  {
+    key: "readout",
+    category: "health",
+    title: "a phase three readout lands before winter",
+    yes: { label: "lands", pct: 68 },
+    no: { label: "slips", pct: 32 },
+    volumeItx: 71_600,
+    traders: 305,
+    settles: "settles dec 1",
+    news:
+      "placeholder copy. a schedule market again, on a different desk — " +
+      "the pool carries two so the page shows the desk filter cutting " +
+      "across the kind of question rather than along it.",
+    series: walk(211, 59, 68, 5),
   },
 ];
 
@@ -195,4 +302,76 @@ export function axisDates(now: number = Date.now()): { index: number; label: str
         .toLowerCase(),
     };
   });
+}
+
+/** How many of the pool the board's row carries.
+ *
+ * Three, not nine: every card on that row draws its own chart, measured
+ * and re-rendered on resize, and the board is already the heaviest page
+ * on the site. The full page is where the rest of the pool lives. */
+export const BOARD_MARKETS = 3;
+
+/** The markets the board's carousel shows — the head of the pool.
+ *
+ * The head rather than a random pick or a `featured` flag: the pool is
+ * authored, so its order *is* the editorial choice, and a flag would be
+ * a second place to make the same decision. */
+export function boardMarkets(
+  count: number = BOARD_MARKETS,
+  markets: SampleMarket[] = SAMPLES,
+): SampleMarket[] {
+  return markets.slice(0, count);
+}
+
+/** How far a market's odds have travelled over the span, in points.
+ *
+ * The distance between where the week opened and where it stands, not
+ * the width of the swing between them — "moved 15 points" is what a
+ * reader takes from a price line, and a market that wandered and came
+ * back has not moved. */
+export function movedPct(market: SampleMarket): number {
+  return Math.abs(market.series[market.series.length - 1] - market.series[0]);
+}
+
+/** How the full page may order the pool.
+ *
+ * Three keys rather than a column per field: this is a page of cards,
+ * not a table, so ordering is a question about the markets themselves —
+ * which are busiest, which are closest to a coin flip, which have moved
+ * — rather than about a column to sort on. */
+export type MarketOrder = "volume" | "close" | "moved";
+
+/** The pool in the given order, most-interesting first. Non-mutating:
+ * `SAMPLES` is module state, and a sort in place would reorder it for
+ * the board too. */
+export function orderMarkets(
+  markets: SampleMarket[],
+  order: MarketOrder,
+): SampleMarket[] {
+  const sorted = [...markets];
+  if (order === "volume") return sorted.sort((a, b) => b.volumeItx - a.volumeItx);
+  // Closest to even first: a market at 51/49 is the one the agents are
+  // actually arguing over, and it sorts ahead of one at 84/16.
+  if (order === "close") {
+    return sorted.sort((a, b) => Math.abs(a.yes.pct - 50) - Math.abs(b.yes.pct - 50));
+  }
+  return sorted.sort((a, b) => movedPct(b) - movedPct(a));
+}
+
+/** The pool's totals, for the page's header strip. In whole itx and
+ * whole agents, like the fields they add up. */
+export function marketTotals(markets: SampleMarket[] = SAMPLES) {
+  return {
+    count: markets.length,
+    volumeItx: markets.reduce((sum, m) => sum + m.volumeItx, 0),
+    traders: markets.reduce((sum, m) => sum + m.traders, 0),
+  };
+}
+
+/** The id of a market's card on the full page, and the fragment the
+ * newsroom links to it by. One function so the page that writes the id
+ * and the page that writes the link cannot drift -- a mismatch there is
+ * a link that silently lands at the top of the page instead. */
+export function marketAnchor(key: string): string {
+  return `market-${key}`;
 }
