@@ -18,24 +18,20 @@ interface Props {
 /** A one-of-N picker that draws its own menu.
  *
  * This was a native `<select>` with the site's caret painted over it,
- * which fixed the closed state and left the open one alone -- and the
- * open one is the half the platform draws. Beside it in the same filter
- * bar sits `ComboFilter`, whose menu is ours: a 14px panel, a hairline
- * border, 12px rows. Clicking one filter got a macOS popover with a
- * checkmark and system rounding; clicking the next got the site's list.
- * Two dropdowns, two design languages, one row of controls.
+ * which fixed the closed state and left the open one -- the half the
+ * platform draws -- alone. Beside it in the same filter bar sits
+ * `ComboFilter`, whose menu is ours, so one row of controls carried two
+ * design languages.
  *
- * There is no styling fix for that -- an open `<select>`'s menu is not
- * in the page, and `option` takes almost no CSS in any browser. So the
- * menu is a listbox of buttons here, sharing `.itx-menu` with the combo
- * box so the two cannot drift: same panel, same rows, same highlight.
- * The closed control keeps `.itx-select`, so the field itself looks
- * exactly as it did.
+ * There is no styling fix for that: an open `<select>`'s menu is not in
+ * the page, and `option` takes almost no CSS in any browser. So the menu
+ * is a listbox of buttons here, sharing `.itx-menu` with the combo box so
+ * the two cannot drift. The closed control keeps `.itx-select`.
  *
- * What that costs is the keyboard and a11y behaviour a `<select>` had
- * for free, re-implemented below: arrows move, Enter and Space commit,
- * Escape closes, opening starts on the current value, and the roles say
- * combobox/listbox/option. What it buys is one dropdown on the site.
+ * What that costs is the keyboard and a11y behaviour a `<select>` had for
+ * free, re-implemented below: arrows move, Enter and Space commit, Escape
+ * closes, opening starts on the current value, and the roles say
+ * combobox/listbox/option.
  */
 export default function SelectField({ value, onChange, label, options }: Props) {
   const [open, setOpen] = useState(false);

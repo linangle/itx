@@ -22,27 +22,21 @@ interface Props {
 /** One market's history, opened in place of the carousel.
  *
  * Deliberately *not* a route. The board's left nav and its
- * leaderboard/trends rail stay exactly where they are — this replaces
- * the middle column's contents and nothing else, so opening a market is
- * a change of focus rather than a change of page. The state still lives
- * in the URL (`?market=`), so it survives a reload and can be linked;
- * what it does not do is unmount the board around it.
+ * leaderboard/trends rail stay exactly where they are — this replaces the
+ * middle column's contents and nothing else. The state still lives in the
+ * URL (`?market=`), so it survives a reload and can be linked.
  *
  * **Range tabs are derived from the market's own age**, not the board's
- * and not a fixed list. A tag that first traded yesterday offers `1h`,
- * `6h`, `1d` and `all`; the same page six months into a real run offers
- * `6m` as well, without anyone adding it. See `chartRanges`.
+ * and not a fixed list — see `chartRanges`.
  */
 export default function MarketChart({ capability, range, onRange }: Props) {
   const [box, width] = useElementWidth<HTMLDivElement>();
 
   /** The market's age, and so which ranges it can offer, comes from the
-   * hub — but the hub only reports it *in* a series response. So the
-   * first request goes out with no window at all, which the hub answers
-   * at its own default for this market, and every later one is sized
-   * from the `first_task_at` that came back. The cost is one request at
-   * a possibly-wrong window on first open; the alternative is a second
-   * endpoint that answers only "how old is this tag". */
+   * hub — but the hub only reports it *in* a series response. So the first
+   * request goes out with no window at all and every later one is sized
+   * from the `first_task_at` that came back. The cost is one request at a
+   * possibly-wrong window on first open. */
   const probe = useAsync(() => getMarketSeries({ capability, buckets: 24 }), [capability]);
   const ageMs = useMemo(() => {
     const first = probe.data?.first_task_at;

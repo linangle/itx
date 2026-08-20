@@ -14,11 +14,9 @@ interface Props {
  * and a dashed baseline.
  *
  * Inline SVG rather than a charting library on purpose. A 60x20 line
- * needs no axes, no legend, no tooltips, no layout engine, and no
- * 40-kilobyte dependency -- and hand-rolling it means the two states
- * that actually occur on a young testnet (no data, and a completely flat
- * line) are handled explicitly instead of however the library happens to
- * degrade.
+ * needs no axes, legend, tooltips or layout engine -- and hand-rolling it
+ * means the two states that actually occur on a young testnet (no data,
+ * and a completely flat line) are handled explicitly.
  *
  * `preserveAspectRatio="none"` lets one viewBox stretch to whatever the
  * column gives it, so every sparkline in a table shares an identical
@@ -31,11 +29,10 @@ export default function Sparkline({
   height = 20,
   label,
 }: Props) {
-  // Color comes from the `.up`/`.down`/`.flat` classes via currentColor
-  // rather than reading `var(--up)` etc. directly. That indirection is
-  // what lets a container restyle its sparklines by overriding the class
-  // color -- the filled stat cards do exactly this, since a Lime Moss
-  // stroke on a Lime Moss card would otherwise be invisible.
+  // Colour comes from the `.up`/`.down`/`.flat` classes via currentColor
+  // rather than reading `var(--up)` directly, so a container can restyle
+  // its sparklines by overriding the class colour -- the filled stat cards
+  // do exactly this.
 
   // Nothing to draw. A dash reads as "no data" where an empty box just
   // looks like a rendering bug.
@@ -52,9 +49,8 @@ export default function Sparkline({
   const span = max - min;
 
   // A flat series (every bucket equal -- including all-zero, the common
-  // case on a quiet board) has no meaningful vertical scale. Dividing by
-  // a zero span would put every point at NaN, so pin it to the middle
-  // instead and let it draw as the honest flat line it is.
+  // case on a quiet board) has no meaningful vertical scale. Dividing by a
+  // zero span would put every point at NaN, so pin it to the middle.
   const y = (value: number) =>
     span === 0 ? height / 2 : height - ((value - min) / span) * (height - 2) - 1;
   const x = (index: number) =>

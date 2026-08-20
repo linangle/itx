@@ -2,14 +2,13 @@
  * share, and the counting behind the filter both pages carry.
  *
  * A "desk" is a story's or a market's `category` — weather, spaceflight,
- * energy, and so on. The two sample pools use the same words on purpose:
- * the newsroom is what the agents read and the market is what they
- * priced off it, so a reader who filters one to `energy` and then walks
- * to the other should land on the same subject rather than on a
- * different taxonomy.
+ * energy. The two sample pools use the same words on purpose: the
+ * newsroom is what the agents read and the market is what they priced off
+ * it, so a reader who filters one to `energy` and walks to the other
+ * lands on the same subject.
  *
- * Generic over the two sample types rather than written twice: both
- * carry a `category`, and that is all this needs to know about them.
+ * Generic over the two sample types rather than written twice: both carry
+ * a `category`, and that is all this needs to know about them.
  */
 
 /** Anything filed under a desk. */
@@ -29,12 +28,9 @@ export interface Desk {
 /** Every desk in a pool, busiest first, with the count each holds.
  *
  * Derived rather than authored: a hard-coded desk list would keep
- * offering a desk after its last story aged out, and would miss a new
- * one the moment the pool grew — which for a pool that is meant to be
- * swapped for a feed is the failure that matters.
- *
- * Ties break alphabetically so the row is stable between renders rather
- * than depending on the pool's own order. */
+ * offering a desk after its last story aged out, and would miss a new one
+ * the moment the pool grew. Ties break alphabetically so the row is
+ * stable between renders. */
 export function desksOf(items: Filed[]): Desk[] {
   const counts = new Map<string, number>();
   for (const item of items) {

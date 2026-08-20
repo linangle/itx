@@ -2,18 +2,13 @@ import { Link } from "react-router-dom";
 
 /** A board section's door: its name and an arrow, as one link.
  *
- * The two sample sections used to hang a bare arrow beside a plain
- * label. An arrow on its own is a control whose target you have to
- * infer, and the words next to it were the part that said where it
- * went — so the words are inside the link now, and the whole thing is
- * the hit area.
+ * An arrow on its own is a control whose target you have to infer, and
+ * the words next to it were the part that said where it went -- so the
+ * words are inside the link and the whole thing is the hit area.
  *
- * It still *reads* as the section's heading rather than as a link in a
- * sentence: the name keeps the label's weight and the page's ink, and
- * only the arrow carries the link colour. Hovering lifts both and
- * nudges the arrow the way it points, which is the site's grammar for
- * "this goes somewhere" (see `.itx-chart-back`, and the board's
- * pagers). */
+ * It still *reads* as the section's heading: the name keeps the label's
+ * weight and the page's ink, and only the arrow carries the link colour.
+ * Hovering lifts both and nudges the arrow the way it points. */
 export default function SectionLink({
   to,
   label,

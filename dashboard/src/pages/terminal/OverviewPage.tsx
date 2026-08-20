@@ -28,12 +28,10 @@ const LATEST_ROWS = 12;
  * headline figures, aggregate panels whose rows carry sparklines, and a
  * dense table of the most recent activity.
  *
- * Note which things get sparklines. Aggregates do -- a task *kind* or a
- * *capability* accumulates over time and genuinely has a history worth
- * drawing. Individual tasks don't: a task is a single event with one
- * timestamp, so a per-task sparkline would be decoration standing in for
- * data. Rows in the "Latest tasks" table therefore show real values and
- * no chart. */
+ * Aggregates get sparklines -- a task *kind* or a *capability*
+ * accumulates over time. Individual tasks don't: a task is a single event
+ * with one timestamp, so a per-task sparkline would be decoration
+ * standing in for data. */
 export default function OverviewPage() {
   const tasks = useAsync(() => listAllTasks({ status: "all" }), []);
   const leaders = useAsync(() => getLeaderboard(), []);
@@ -74,8 +72,7 @@ function Board({
 }) {
   // One window for the whole page, sized to the board's real age -- so a
   // board seeded an hour ago charts over an hour instead of squashing
-  // every task into the last 1/168th of a seven-day axis. Every panel
-  // header shows the resulting label rather than claiming "7D".
+  // every task into the last 1/168th of a seven-day axis.
   const window = chooseWindow(tasks);
   const options = { windowMs: window.windowMs };
   const totals = boardTotals(tasks, options);
@@ -123,11 +120,8 @@ function Board({
 
       {/* Which end of the board is missing, not just that some of it is.
           `listAllTasks` walks pages from offset 0 and stops at its
-          `maxItems`, and the hub sorts ascending on `created_at`
-          (`tasks.sort_by_key` in `list_tasks`, then `.skip(offset)`), so
-          a truncated walk keeps the *oldest* tasks. This line used to
-          say "the most recent", which was exactly backwards and pointed
-          anyone debugging a stale-looking board at the wrong end. */}
+          `maxItems`, and the hub sorts ascending on `created_at`, so a
+          truncated walk keeps the *oldest* tasks. */}
       {!complete && (
         <p className="flat" style={{ fontSize: 12, marginTop: -12, marginBottom: 18 }}>
           showing the oldest {formatCount(tasks.length)} of {formatCount(total)} tasks —
@@ -300,9 +294,8 @@ function Stat({
  * The curve is built from tasks whose `claimant` is this agent and whose
  * status is `Paid`, stepped at each task's *creation* time -- payout time
  * isn't recorded anywhere (see `lib/series.ts`). Consensus winners are
- * never exposed by the hub, so their earnings can't be curved at all and
- * those agents simply show a flat line. `total_earned` beside it is the
- * authoritative figure and comes straight from the hub. */
+ * never exposed by the hub, so those agents show a flat line;
+ * `total_earned` beside it is the authoritative figure. */
 function Rail({
   leaders,
   tasks,

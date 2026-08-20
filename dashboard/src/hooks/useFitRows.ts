@@ -7,22 +7,19 @@ const ASSUMED_ROWS = 8;
 
 /** Measures a box and reports how many table rows fit inside it.
  *
- * The board's panels are sized by the layout, not by their contents --
- * a market panel is as tall as the leaderboard rail beside it, whatever
- * is in it. Rendering a fixed number of rows into a variable-height box
- * is what left the panels half empty: ten agents in a box with room for
- * eighteen. This closes that gap from the other side; the box says how
- * many rows it can hold and the caller renders that many.
+ * The board's panels are sized by the layout, not by their contents -- a
+ * market panel is as tall as the leaderboard rail beside it, whatever is
+ * in it. Rendering a fixed number of rows into a variable-height box is
+ * what left the panels half empty, so the box says how many rows it can
+ * hold and the caller renders that many.
  *
- * The row height is read from the `--row-h` custom property rather than
- * duplicated here, so the stylesheet stays the one place a row's height
- * is decided. Anything inside the box that isn't a row -- a table's
- * header -- is marked `data-fit-fixed` and measured out of the budget.
+ * The row height is read from the `--row-h` custom property, so the
+ * stylesheet stays the one place a row's height is decided. Anything
+ * inside the box that isn't a row is marked `data-fit-fixed` and measured
+ * out of the budget.
  *
- * No feedback loop: the observed box takes its height from the panel
- * (`flex: 1` in a fixed-height column), so rendering more rows into it
- * cannot make it taller. `floor` plus `overflow: hidden` on the box
- * means a rounding error clips a pixel rather than growing the panel.
+ * No feedback loop: the observed box takes its height from the panel, so
+ * rendering more rows into it cannot make it taller.
  */
 export function useFitRows<T extends HTMLElement = HTMLDivElement>() {
   const ref = useRef<T | null>(null);

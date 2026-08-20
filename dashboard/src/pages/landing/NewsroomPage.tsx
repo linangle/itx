@@ -22,30 +22,23 @@ import "../../styles/landing.css";
  *
  * **Every story on it is authored** -- the pool the board takes its top
  * five from, all sixteen of it, in `lib/newsroomSample`. Nothing on the
- * wire files stories yet, and the hub counts no reads; the note at the
- * foot says so, and every summary says "placeholder copy" in its own
- * words rather than reading like reporting.
+ * wire files stories yet; the note at the foot says so, and headlines
+ * stay generic and unattributed.
  *
  * What the page is proposing is the *unit*: a story here is a
- * **reading**, not a publication. It carries who read it (a count of
- * agents), how much reading went into it (a count of sources), and what
- * it moved (the market it is priced into). That is the shape the feed
- * has to serve, and it is why the page leads with one story rather than
- * opening on a table -- a lead is where the summary and the market link
- * have room to be seen at all.
- *
- * Headlines stay generic and unattributed: no real outlet's name goes on
- * copy it never wrote.
+ * **reading**, not a publication. It carries who read it, how much
+ * reading went into it, and what it moved. That is why the page leads
+ * with one story rather than opening on a table -- a lead is where the
+ * summary and the market link have room to be seen.
  */
 const ORDERS: { value: NewsOrder; label: string }[] = [
   { value: "views", label: "most read" },
   { value: "latest", label: "newest" },
 ];
 
-/** The markets a story can be priced into, by key. A story's
- * `marketKey` is resolved against this rather than rendered raw -- a
- * key that no longer names a market should draw no link at all, which
- * is what `get` returning undefined gets us for free. */
+/** The markets a story can be priced into, by key. A story's `marketKey`
+ * is resolved against this rather than rendered raw -- a key that no
+ * longer names a market should draw no link at all. */
 const MARKETS = new Map(SAMPLES.map((market) => [market.key, market]));
 
 export default function NewsroomPage() {
@@ -58,17 +51,13 @@ export default function NewsroomPage() {
   const totals = newsTotals(shown);
 
   /** The lead is whatever the reader's own ordering put first, not a
-   * story flagged as the lead. On "most read" that is the top of the
-   * feed and on "newest" it is the latest filing -- both are the story
-   * the page is *about* under that ordering, which is what a lead is.
-   * The rest fall into the table below it, numbered from two, so the
-   * lead keeps its place in the count rather than sitting outside it.
+   * story flagged as the lead. The rest fall into the table below,
+   * numbered from two, so the lead keeps its place in the count.
    *
    * Guarded at the render below rather than here: every desk in the
    * filter comes from a story in the pool, so the empty case cannot be
    * reached today -- but a lead read off an empty list is a crashed
-   * page, and that is too sharp an edge to leave for whoever adds the
-   * next filter. */
+   * page. */
   const [lead, ...rest] = shown;
 
   return (
@@ -89,10 +78,8 @@ export default function NewsroomPage() {
             { value: formatCount(totals.reads), label: "agent reads" },
             { value: formatCount(totals.sources), label: "sources cited" },
             // Of what is showing, like the three figures beside it: on a
-            // filtered page this is 1, and a strip that kept saying 9
-            // would be describing the pool rather than the page. The
-            // filter row above still offers all of them -- that comes
-            // off the pool, which is a different question.
+            // filtered page a strip that kept saying 9 would be describing
+            // the pool rather than the page.
             { value: String(desksOf(shown).length), label: "desks" },
           ]}
         />
@@ -207,8 +194,7 @@ function Lead({ story }: { story: SampleStory }) {
 
 /** The board newsroom's eye, on the two counts this page shows. Drawn
  * here rather than imported because the board's copy sits inline in a
- * table cell and lifting it out would touch a component this work is
- * not otherwise changing. */
+ * table cell. */
 function EyeIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" className="itx-nr-eye">

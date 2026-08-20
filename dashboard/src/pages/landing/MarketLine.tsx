@@ -4,13 +4,10 @@ import { useEffect, useRef } from "react";
 import { mixAt, mixColor } from "./marketHue";
 
 /** Horizontal pixels between ticks. Wide spacing is deliberate:
- * sharpness in a chart pattern comes from *long straight legs meeting
- * at decisive corners* -- the way a textbook double-top or pennant is
- * drawn -- not from packing in more vertices. The earlier tighter
- * spacing added detail but read as fuzz.
- *
- * Scaled to the viewport so the pattern holds roughly the same number
- * of legs at any width; a fixed 56px leaves a phone showing six. */
+ * sharpness in a chart pattern comes from *long straight legs meeting at
+ * decisive corners*, not from packing in more vertices. Scaled to the
+ * viewport so the pattern holds roughly the same number of legs at any
+ * width; a fixed 56px leaves a phone showing six. */
 function spacingFor(width: number): number {
   return Math.max(26, Math.min(56, width / 26));
 }
@@ -21,21 +18,17 @@ const SCROLL = 70;
 
 /** Next price in the walk, as a fraction of the chart's value range.
  *
- * This is a *zigzag* generator, not a diffusion. Chart patterns are
- * drawn as alternating impulse legs -- up, down, up -- of varying
- * length, which is what produces clean peaks and troughs instead of a
- * fuzzy band. So direction flips at most vertices (`REVERSAL`), and
- * when it doesn't, two legs run the same way and become one longer
- * straight run; that is exactly how a real chart shows a strong move.
+ * A *zigzag* generator, not a diffusion. Chart patterns are drawn as
+ * alternating impulse legs of varying length, which is what produces
+ * clean peaks and troughs instead of a fuzzy band -- so direction flips
+ * at most vertices (`REVERSAL`), and when it doesn't, two legs run the
+ * same way and become one longer straight run.
  *
- * `drift` is a slow bias added on top, so the zigzag as a whole
- * trends up or down over time rather than oscillating around a fixed
- * level. Legs are long relative to the range, which keeps the corners
- * sharp: a short leg between two long ones reads as noise. */
-/** Chance a vertex reverses direction. Below 1 on purpose: when two
- * legs run the same way they merge into one long straight move, which
- * is what breaks up the mechanical triangle-wave look and gives the
- * shape its rallies and breakdowns. */
+ * `drift` is a slow bias on top, so the zigzag as a whole trends rather
+ * than oscillating around a fixed level. */
+/** Chance a vertex reverses direction. Below 1 on purpose: when two legs
+ * run the same way they merge into one long straight move, which breaks
+ * up the mechanical triangle-wave look. */
 const REVERSAL = 0.7;
 const LEG_MIN = 0.1;
 const LEG_MAX = 0.38;
@@ -47,10 +40,9 @@ const IMPULSE_MIN = 0.42;
 const IMPULSE_MAX = 0.8;
 
 /** The dotted baseline, in the neutral grey a printed chart rules its
- * zero line in. Hard-coded rather than taken from `--ld-sub` for the
- * same reason the wash is: this canvas is theme-blind, and the line
- * lands on the fill's densest band rather than on the page's ground, so
- * it has the same job against either theme. */
+ * zero line in. Hard-coded rather than taken from `--ld-sub`: this canvas
+ * is theme-blind, and the line lands on the fill's densest band rather
+ * than on the page's ground. */
 const BASE_RULE = "rgba(138, 142, 156, 0.9)";
 /** Longer marks than gaps. At 3px a mark reads as a dot and the rule
  * dissolves into stipple against a busy fill; at 5 it is plainly a
@@ -59,15 +51,13 @@ const BASE_DASH = [5, 5];
 
 /** The bloom under the rule breathes as one, on its own clock -- slower
  * than anything else on the surface and unrelated to the wash's 13 s, so
- * the two drift in and out of phase rather than reading as one
- * mechanical blink.
+ * the two drift in and out of phase.
  *
  * Alpha at the rule, at the trough of the breath and at its peak. Never
  * all the way to nothing at the trough: a glow that fully extinguishes
- * reads as a dropped frame rather than a dim one. The peak is high
- * because the falloff below multiplies it -- by the strip's top edge
- * this is already down to 0.38 of itself, and that is the stretch the
- * overlap depends on being lit. */
+ * reads as a dropped frame. The peak is high because the falloff below
+ * multiplies it -- by the strip's top edge this is already down to 0.38
+ * of itself, and that is the stretch the overlap depends on being lit. */
 const PULSE_PERIOD = 5.5;
 const PULSE_MIN = 0.42;
 const PULSE_MAX = 0.85;
@@ -98,36 +88,30 @@ function nextPrice(w: Walk): number {
   return w.y;
 }
 
-/** The stock tape pinned to the bottom of the hero: a jagged price
- * line that scrolls right to left at constant speed, printing a new
- * tick as it goes, stroked in a travelling green<->red gradient with
- * the area beneath washed in the same colors and faded upward.
+/** The stock tape pinned to the bottom of the hero: a jagged price line
+ * that scrolls right to left at constant speed, printing a new tick as it
+ * goes, stroked in a travelling green<->red gradient with the area
+ * beneath washed in the same colours and faded upward.
  *
  * The line's *shape* is fixed once printed -- it slides, it does not
- * writhe. That is the difference between this and the previous
- * version, where every vertex re-animated in place and the result read
- * as a wobbling rope rather than a chart.
+ * writhe.
  *
- * The area stops on a dotted baseline rather than running off the
- * bottom of the box, the way a chart is ruled at its zero line, and
- * under that line sits a bloom in the *counter* colour -- green while
- * the tape is red, red while it is green -- densest against the line,
- * fading downward, and pulsing as one. Deliberately featureless along
- * its width: it is the mirror side of the pattern, and anything drawn
- * into it competes with the chart it is under.
+ * The area stops on a dotted baseline rather than running off the bottom
+ * of the box, and under that line sits a bloom in the *counter* colour --
+ * green while the tape is red, red while it is green -- densest against
+ * the line, fading downward, and pulsing as one. Deliberately featureless
+ * along its width: anything drawn into it competes with the chart above.
  *
- * The vertical fade is why there's an offscreen buffer: a canvas
- * gradient can vary color horizontally or alpha vertically, but not
- * both in one fill. So the area is filled at full strength on the
- * buffer, a destination-in pass multiplies in the vertical alpha ramp,
- * and the result is composited onto the visible canvas.
+ * The vertical fade is why there is an offscreen buffer: a canvas
+ * gradient can vary colour horizontally or alpha vertically, but not both
+ * in one fill. So the area is filled at full strength on the buffer, a
+ * destination-in pass multiplies in the vertical alpha ramp, and the
+ * result is composited onto the visible canvas.
  *
- * The bloom rides along on that same pass. It is a second fill on the
- * buffer -- the same sweep, inverted -- and because it occupies a band
- * the area never touches, one alpha ramp can carry both: it climbs to
- * the baseline for the area, steps to the pulse, and falls away again
- * for the bloom. Two stops at the same offset are what make that step,
- * and they are why this is one composite rather than two. */
+ * The bloom rides on that same pass. Because it occupies a band the area
+ * never touches, one alpha ramp carries both: it climbs to the baseline
+ * for the area, steps to the pulse, and falls away again for the bloom.
+ * Two stops at the same offset are what make that step. */
 export default function MarketLine() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -150,18 +134,15 @@ export default function MarketLine() {
     /** Canvas y the bloom has faded to nothing by: the canvas bottom,
      * which sits `--bd-overlap` *below* the quote strip's top edge. So
      * the bloom is still alight where the strip starts and the strip
-     * covers its last stretch -- that overlap is the point, and it is
-     * what puts the strip on the chart rather than under it. It reads
-     * as depth rather than as clipping because the strip is inset from
-     * the page: in the gutters either side there is nothing to cover
-     * the glow, and it carries on down past the strip's top edge in
-     * plain view. */
+     * covers its last stretch -- that overlap is the point. It reads as
+     * depth rather than clipping because in the gutters either side
+     * there is nothing to cover the glow. */
     let glowY = 0;
     /** Smoothed vertical bounds of the visible window. A real chart
-     * rescales to the data it is showing, which is also what keeps the
-     * line filling its box instead of drifting into a corner; easing
-     * the bounds toward the true min/max (rather than snapping) keeps
-     * the rescale from jolting when an old extreme scrolls off. */
+     * rescales to the data it is showing, which also keeps the line
+     * filling its box; easing toward the true min/max rather than
+     * snapping keeps the rescale from jolting when an old extreme
+     * scrolls off. */
     let loBound = 0.35;
     let hiBound = 0.65;
     /** Whether those two have been sat on real prices yet (see `resize`). */
@@ -181,11 +162,9 @@ export default function MarketLine() {
       canvas.height = buffer.height = Math.round(height * dpr);
       spacing = spacingFor(width);
       // Both bands come from landing.css, which is also where the box's
-      // own height is worked out from them -- so the baseline lands
-      // where the stylesheet says it does instead of where this file
-      // guesses. Read here rather than per frame: getComputedStyle
-      // forces a style recalc, and a resize is the only thing that can
-      // change the answer.
+      // own height is worked out from them. Read here rather than per
+      // frame: getComputedStyle forces a style recalc, and a resize is
+      // the only thing that can change the answer.
       const css = getComputedStyle(canvas);
       const overlap = parseFloat(css.getPropertyValue("--bd-overlap")) || 24;
       const band = parseFloat(css.getPropertyValue("--ld-chart-base")) || 24;
@@ -199,11 +178,10 @@ export default function MarketLine() {
       if (prices.length > need) prices = prices.slice(prices.length - need);
 
       // First sizing only: start the bounds on the prices that were just
-      // generated rather than easing in from a guess. The guess is a
-      // narrow one and the walk opens wider than it, so the opening
-      // frames clamp a good part of the line flat against the floor --
-      // and the reduced-motion path, which draws exactly one frame and
-      // never eases at all, would render that as the finished chart.
+      // generated rather than easing in from a guess. The walk opens
+      // wider than the guess, so the opening frames would clamp a good
+      // part of the line flat against the floor -- and the reduced-motion
+      // path draws exactly one frame.
       if (!seeded) {
         loBound = Math.min(...prices);
         hiBound = Math.max(...prices);
@@ -211,13 +189,11 @@ export default function MarketLine() {
       }
     };
 
-    /** The travelling wash across the width. `invert` flips each sample
-     * to the other end of the green<->red pair, which is all "the
-     * opposite colour" means here: the wash is a one-dimensional mix, so
-     * its counter-colour is the same mix read backwards. Taking it from
-     * the same `mixAt` call is also what keeps the bloom's front tied to
-     * the line's -- a separately-phased sweep underneath would cross the
-     * baseline at a different moment and the two would visibly disagree. */
+    /** The travelling wash across the width. `invert` flips each sample to
+     * the other end of the green<->red pair, which is all "the opposite
+     * colour" means here. Taking it from the same `mixAt` call keeps the
+     * bloom's front tied to the line's -- a separately-phased sweep would
+     * cross the baseline at a different moment. */
     const gradientFor = (g2d: CanvasRenderingContext2D, t: number, invert = false) => {
       const grad = g2d.createLinearGradient(0, 0, width, 0);
       for (let s = 0; s <= 8; s++) {
@@ -229,31 +205,22 @@ export default function MarketLine() {
     };
 
     /** Map a price to a canvas y through the smoothed bounds, leaving
-     * headroom top and bottom so peaks and troughs never touch the
-     * edges of the box. Scaled to the baseline, not the canvas: the band
-     * below it belongs to the bloom, and a trough dipping into it would
-     * put the line under its own floor.
+     * headroom top and bottom so peaks and troughs never touch the edges
+     * of the box. Scaled to the baseline, not the canvas: the band below
+     * it belongs to the bloom, and a trough dipping into it would put the
+     * line under its own floor.
      *
-     * The floor is what makes that a guarantee rather than a hope. The
-     * bounds *ease* toward the window's true min and max, so a fresh
-     * extreme -- an impulse leg lands one, and `span` has a floor of
-     * 0.08 to divide by -- is briefly outside them and normalises past
-     * [0, 1]. Simulating the walk puts that at ~3% of printed points,
-     * overshooting by up to a couple of dozen px: before the baseline
-     * existed it fell off the bottom of the box, where the quote strip
-     * is, and nobody saw it. Against a dotted rule it is the line
-     * crossing its own zero.
+     * The floor makes that a guarantee. The bounds *ease* toward the
+     * window's true min and max, so a fresh extreme is briefly outside
+     * them and normalises past [0, 1] -- about 3% of printed points, by
+     * up to a couple of dozen px. Clamping here rather than speeding up
+     * the easing keeps the rescale exactly as gentle as it was; the cost
+     * is that a trough occasionally bottoms out level, which reads as a
+     * support line.
      *
-     * Clamping here rather than speeding up the easing keeps the
-     * rescale exactly as gentle as it was. The cost is that a trough
-     * occasionally bottoms out level instead of overshooting -- which
-     * is a support line, and reads as one.
-     *
-     * Only the low end is clamped. An overshoot the other way leaves
-     * the top of the box, which is dead space behind the hero's copy
-     * and always was; pinning it there instead draws a flat plateau in
-     * the middle of the chart, which is the one shape this generator
-     * goes out of its way not to produce. */
+     * Only the low end is clamped. An overshoot the other way leaves the
+     * top of the box, which is dead space behind the hero's copy; pinning
+     * it there instead draws a flat plateau in the middle of the chart. */
     const yOf = (price: number) => {
       const span = Math.max(0.08, hiBound - loBound);
       const f = Math.min(1, (price - loBound) / span);
@@ -319,22 +286,16 @@ export default function MarketLine() {
       fade.addColorStop(0.55 * base, "rgba(0, 0, 0, 0.16)");
       // Twice at the baseline: the area arrives at its densest and the
       // bloom starts at the pulse, and the step between them is what the
-      // dotted rule is drawn on. Ramping instead of stepping would put a
-      // washed-out seam under the line where the two colours meet.
+      // dotted rule is drawn on. Ramping would put a washed-out seam
+      // under the line where the two colours meet.
       fade.addColorStop(base, "rgba(0, 0, 0, 0.85)");
       fade.addColorStop(base, `rgba(0, 0, 0, ${pulse})`);
       // Decaying rather than linear: the light belongs to the rule, and a
-      // straight ramp spreads it evenly enough through the band to read
-      // as a stripe laid under the chart instead of a glow coming off it.
-      //
-      // Every stop is scaled by the pulse, so the band brightens and
-      // dims as one piece rather than breathing only at its top edge.
-      // The shape is held gentle because the strip's top edge cuts the
-      // band at its midpoint and the glow has to still be burning there
-      // -- that is the whole point of the overlap. At 0.38 of the pulse
-      // it plainly is. The tail past that edge is hidden except in the
-      // gutters, where it wants to look like it is running out rather
-      // than being sliced.
+      // straight ramp reads as a stripe laid under the chart instead of a
+      // glow coming off it. Every stop is scaled by the pulse, so the band
+      // brightens and dims as one piece. The shape is held gentle because
+      // the strip's top edge cuts the band at its midpoint and the glow
+      // has to still be burning there.
       const band = glowY / height - base;
       fade.addColorStop(base + 0.22 * band, `rgba(0, 0, 0, ${pulse * 0.68})`);
       fade.addColorStop(base + 0.5 * band, `rgba(0, 0, 0, ${pulse * 0.38})`);

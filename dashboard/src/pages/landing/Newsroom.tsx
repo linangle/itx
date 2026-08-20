@@ -7,17 +7,12 @@ import SectionLink from "./SectionLink";
  * way to the full page.
  *
  * **The stories are authored examples** — see `lib/newsroomSample.ts`.
- * The section carried a line saying so on the page; the owner asked for
- * it gone twice, so the record of it lives here, in that module, and in
- * `docs/hub-requirements.md` rather than on the board. Worth knowing
- * before anyone screenshots this: a ranked feed with view counts reads
- * as live whether or not it is.
+ * The on-page note saying so was removed at the owner's request, so the
+ * record lives here and in `docs/hub-requirements.md`: a ranked feed with
+ * view counts reads as live whether or not it is.
  *
- * What is real is the selection: the section shows the top five by
- * agent views, which is the contract the future feed serves (`GET
- * /news?sort=views&limit=5`). When the wire exists, the sample pool is
- * swapped for a fetch and nothing about this component's shape
- * changes. */
+ * What is real is the selection -- the top five by agent views, which is
+ * the contract the future feed serves (`GET /news?sort=views&limit=5`). */
 const SHOWN = 5;
 
 export default function Newsroom() {
@@ -26,10 +21,8 @@ export default function Newsroom() {
   return (
     <section className="itx-nr" aria-label="Newsroom">
       {/* Label and door as one link, exactly as the prediction market
-          above it. The sub-line that used to hang under the name is
-          gone: it made this the only two-line label on the board, and
-          what it said belongs where the market card says the same
-          thing -- inside the panel, with the rows it qualifies. */}
+          above it. One line, so this is not the only two-line label on
+          the board. */}
       <div className="itx-board-labels">
         <SectionLink to="/newsroom" label="newsroom" describedAs="open the full newsroom" />
       </div>

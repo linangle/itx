@@ -51,11 +51,9 @@ describe("snapTarget", () => {
 /** Builds a row of `items` panels with real geometry, mounts the hook on
  * it, and reports how many times the caller re-rendered.
  *
- * jsdom lays nothing out -- every box measures zero -- so the widths the
- * hook reads back are stubbed onto the element. `getBoundingClientRect`
- * is what `stride` uses; `scrollLeft` is writable on a jsdom element, but
- * setting it fires no scroll event (nor does a real browser fire one for
- * every programmatic scroll), so the test dispatches its own. */
+ * jsdom lays nothing out, so the widths the hook reads back are stubbed
+ * onto the element. `scrollLeft` is writable but setting it fires no
+ * scroll event, so the test dispatches its own. */
 function mountRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}) {
   const stride = panel + gap;
   const el = document.createElement("div");
@@ -68,9 +66,8 @@ function mountRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}
   Object.defineProperty(el, "clientWidth", { value: viewport, configurable: true });
   Object.defineProperty(el, "scrollWidth", { value: stride * items - gap, configurable: true });
   // `right` as well as `left`, because a real DOMRect has both and the
-  // hook reads it to work out which panels are actually on screen. A
-  // stub missing it made every overlap NaN, which compares false against
-  // everything and quietly marked the whole row visible.
+  // hook reads it to work out which panels are on screen. A stub missing
+  // it made every overlap NaN, which quietly marked the whole row visible.
   el.getBoundingClientRect = () =>
     ({ left: 0, right: viewport, width: viewport }) as DOMRect;
   for (let i = 0; i < items; i++) {
@@ -123,10 +120,9 @@ describe("useCarousel scroll handling", () => {
   });
 
   it("marks every panel on screen, so the last one is reachable at the far end", () => {
-    // Three panels fit; twelve exist. At the far end the row cannot
-    // scroll any further, so panel 11 never reaches the leading edge --
-    // which is why an `index`-only answer left the final sector
-    // permanently unlit and made clicking it look broken.
+    // Three panels fit; twelve exist. At the far end the row cannot scroll
+    // further, so panel 11 never reaches the leading edge -- which is why
+    // an `index`-only answer left the final sector permanently unlit.
     const row = mountRow(12);
     expect(row.result.current.firstVisible).toBe(0);
     expect(row.result.current.lastVisible).toBe(2);
@@ -152,19 +148,14 @@ describe("useCarousel scroll handling", () => {
     row.scrollTo(row.stride * 3);
     const settled = row.renders();
 
-    // Six frames of a drag well inside one panel: the row moves, the
-    // fade moves with it, but the index, the visible range and both ends
-    // are unchanged. This is the common case while a finger is down, and
-    // it used to re-render the whole board -- twelve market panels and
-    // every sparkline in them -- for each frame.
+    // Six frames of a drag well inside one panel: the row moves, the fade
+    // moves with it, but the index, the visible range and both ends are
+    // unchanged. This is the common case while a finger is down, and it
+    // used to re-render the whole board for each frame.
     //
-    // The claim is that the cost does not grow with the drag, which is
-    // why this counts six frames rather than asserting an exact total.
-    // React renders one more time after a real state change before it
-    // trusts the bail-out, so the first frame following a genuine move
-    // can cost a render whatever this hook returns; every frame after it
-    // costs nothing. Pinning an exact number would be pinning that
-    // implementation detail instead of the guarantee.
+    // Six frames rather than an exact total, because React renders once
+    // more after a real state change before it trusts the bail-out --
+    // pinning a number would pin that detail instead of the guarantee.
     for (const offset of [4, 9, 15, 21, 26, 33]) {
       row.scrollTo(row.stride * 3 + offset);
     }

@@ -12,16 +12,10 @@ import AgentPage from "./pages/terminal/AgentPage";
 import IconSheetPage from "./pages/dev/IconSheetPage";
 
 /** The original three pages are untouched and still routed, now under
- * `/legacy`. Nothing about them changed -- same components, same
- * `src/api.ts` client, same tests -- so reverting this whole direction is
- * a matter of deleting the terminal routes and moving three paths back.
+ * `/legacy` -- same components, same `src/api.ts` client, same tests.
  *
- * The new terminal UI owns the top-level paths because that's the only
- * way to actually review it as the site it's meant to be.
- *
- * `/` now serves the landing hero, which renders the untouched
- * `OverviewPage` below the fold -- so "Board" links still land on the
- * board, just with the hero above it. */
+ * `/` serves the landing hero, which renders the untouched `OverviewPage`
+ * below the fold, so "Board" links still land on the board. */
 export default function App() {
   return (
     <Routes>

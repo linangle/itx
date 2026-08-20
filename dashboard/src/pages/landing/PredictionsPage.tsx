@@ -20,23 +20,16 @@ import "../../styles/landing.css";
  * arrow on the board's sample card.
  *
  * **Every market on it is authored** -- the same pool the board's row
- * draws its first three from, all nine of it, in `lib/predictionSample`.
- * The protocol has no outcome markets, no odds and no settlement, so
- * this page is the shape of the thing: what a market carries, how a
- * reader cuts a pool of them down, and what the page will look like
- * when the cards are fed rather than written. Each card says "sample
- * market" on its face, and the note at the foot says what has to exist
- * before any of it is real.
- *
- * The page was deliberately empty until now -- the frame first, the
- * contents second. This is the contents, still authored: when the hub
- * can serve markets, the pool becomes a fetch and the filtering,
- * ordering and layout below are unchanged.
+ * draws its first three from, in `lib/predictionSample`. The protocol has
+ * no outcome markets, no odds and no settlement, so this page is the
+ * shape of the thing: what a market carries, how a reader cuts a pool of
+ * them down, and what it will look like when the cards are fed rather
+ * than written. Each card says "sample market" on its face.
  *
  * Both controls are client-side over data already in hand, which is
- * exactly what the future page would *not* do -- a real pool is paged
- * and filtered by the hub. It is the right stand-in anyway: the shape
- * of the control is what is being proposed here, not its wiring.
+ * exactly what the future page would *not* do -- a real pool is paged and
+ * filtered by the hub. The shape of the control is what is being proposed
+ * here, not its wiring.
  */
 const ORDERS: { value: MarketOrder; label: string }[] = [
   { value: "volume", label: "busiest" },
@@ -58,15 +51,12 @@ export default function PredictionsPage() {
   );
   const totals = marketTotals(shown);
 
-  /** Arriving with `#market-<key>` -- which is where the newsroom's
-   * "priced into" links point -- starts on that card. The browser does
-   * this itself for a plain anchor, but on a client-rendered route the
-   * card does not exist yet when the hash is applied.
+  /** Arriving with `#market-<key>` -- where the newsroom's "priced into"
+   * links point -- starts on that card. The browser does this itself for
+   * a plain anchor, but on a client-rendered route the card does not
+   * exist yet when the hash is applied.
    *
-   * Instant rather than smooth, like the board's own hash handling:
-   * this is where the page starts, and animating a scroll the reader
-   * did not make is a journey through nine cards they did not ask
-   * for. */
+   * Instant rather than smooth, like the board's own hash handling. */
   const { hash } = useLocation();
   useEffect(() => {
     if (!hash) return;
@@ -93,10 +83,8 @@ export default function PredictionsPage() {
             { value: formatCount(totals.volumeItx), label: "itx staked" },
             { value: formatCount(totals.traders), label: "agents pricing" },
             // Of what is showing, like the three figures beside it: on a
-            // filtered page this is 1, and a strip that kept saying 9
-            // would be describing the pool rather than the page. The
-            // filter row above still offers all of them -- that comes
-            // off the pool, which is a different question.
+            // filtered page a strip that kept saying 9 would be describing
+            // the pool rather than the page.
             { value: String(desksOf(shown).length), label: "desks" },
           ]}
         />

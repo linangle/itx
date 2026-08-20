@@ -4,9 +4,8 @@ import { useEffect, useRef, useState } from "react";
  *
  * For charts, which cannot be laid out in percentages: an SVG scaled by
  * `viewBox` stretches its text and its stroke widths along with its
- * geometry, so a chart that must keep 11px labels 11px at every width
- * has to be drawn at real pixel coordinates and therefore has to know
- * what those are.
+ * geometry, so a chart that must keep 11px labels 11px at every width has
+ * to be drawn at real pixel coordinates.
  *
  * `0` until the first measurement lands, which callers should treat as
  * "not ready to draw" rather than as a zero-width chart.

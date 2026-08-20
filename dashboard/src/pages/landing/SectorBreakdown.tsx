@@ -4,33 +4,25 @@ import type { TreemapRect } from "../../lib/treemap";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 import type { MarketSummary, SectorSummary } from "../../lib/series";
 
-/** The map is laid out in this space and positioned in percentages, so
- * it never has to be measured.
- *
- * The numbers are the map's own aspect ratio, and they have to be: the
- * squarified layout picks arrangements that keep boxes near square *for
+/** The map is laid out in this space and positioned in percentages, so it
+ * never has to be measured. The numbers are the map's own aspect ratio,
+ * and they have to be: the squarified layout keeps boxes near square *for
  * the box it is given*, so computing in a square and rendering into a
  * 16:9 panel would stretch every one of those decisions sideways. The
- * stylesheet holds the panel to the same ratio (`aspect-ratio` on
- * `.itx-sectors-map`), which is what lets this be a constant instead of
- * a ResizeObserver. */
+ * stylesheet holds the panel to the same ratio. */
 const MAP_W = 160;
 const MAP_H = 90;
 
 /** Where the colour ladder steps, in percent change. The reference's own
  * ladder runs ±3% because equity indices move in single digits over a
  * day; a task marketplace's sectors routinely double or halve over the
- * charting window, so the same seven buckets are spread over a range
- * that actually discriminates here. Stated in the legend rather than
- * left implicit -- a colour scale nobody can read the thresholds off is
- * decoration. */
+ * charting window. Stated in the legend rather than left implicit. */
 const TINT_STEPS = [25, 50, 100];
 
-/** How strongly a tile is tinted, 0 to 1, from its change. Stepped
- * rather than continuous so that two sectors of similar standing read as
- * the same colour, which is what makes the map scannable -- a smooth
- * ramp turns every tile into its own shade and the eye cannot group
- * them. */
+/** How strongly a tile is tinted, 0 to 1, from its change. Stepped rather
+ * than continuous so two sectors of similar standing read as the same
+ * colour -- a smooth ramp turns every tile into its own shade and the eye
+ * cannot group them. */
 function tint(changePct: number | null): number {
   if (changePct === null || !Number.isFinite(changePct)) return 0;
   const magnitude = Math.abs(changePct);
@@ -43,18 +35,13 @@ function tint(changePct: number | null): number {
 /** A tile's short side as a fraction of the map's *rendered width*, for
  * sizing its label.
  *
- * The units are the point. An earlier version scaled the label from the
- * short side in layout units, which are fixed -- so the type stayed the
- * same size as the map shrank, and by the time the window was narrow the
- * names had outgrown their tiles and were being clipped mid-word. This
- * is a ratio instead, and the stylesheet multiplies it by `cqw`, so the
- * label is always the same fraction of the box it sits in and scales
- * with it continuously.
+ * The units are the point: scaling from the short side in layout units
+ * leaves the type the same size as the map shrinks, so names outgrow
+ * their tiles at narrow widths. This is a ratio, and the stylesheet
+ * multiplies it by `cqw`.
  *
  * Height is converted into width units before the comparison, because
- * `cqw` is the only container unit in play: a tile's rendered height is
- * its share of `MAP_H` times the map's height, and the map's height is
- * its width times the aspect ratio. */
+ * `cqw` is the only container unit in play. */
 function labelScale(rect: { width: number; height: number }): number {
   const wide = rect.width / MAP_W;
   const tall = (rect.height / MAP_H) * (MAP_H / MAP_W);
@@ -64,12 +51,10 @@ function labelScale(rect: { width: number; height: number }): number {
 /** How much of a tile's label it has room for.
  *
  * A sector map has six boxes and they all fit. A sector's *markets* do
- * not: the long tail of a sector is a row of slivers, and a name set in
- * one of them is either three ellipsised letters or a word overflowing
- * its own box -- both of which read as a rendering fault rather than as
- * a small market. Below the thresholds the tile carries no text at all
- * and is just a shape; every tile names itself on hover regardless, so
- * nothing is only available to the tiles that happen to be big. */
+ * not: the long tail is a row of slivers, and a name set in one is either
+ * three ellipsised letters or a word overflowing its box. Below the
+ * thresholds the tile carries no text at all; every tile names itself on
+ * hover regardless. */
 function labelDetail(scale: number): "full" | "name" | "none" {
   if (scale >= 0.1) return "full";
   if (scale >= 0.055) return "name";
@@ -79,13 +64,10 @@ function labelDetail(scale: number): "full" | "name" | "none" {
 /** Which of the map's own corners a tile sits in.
  *
  * The map is a rounded box that clips what it contains, so a tile in a
- * corner has its square corner cut away by that curve -- and with it
- * whatever is drawn along the tile's edge, which is how the selection
- * ring came to be sliced through at the corner. Rounding the tile to
- * the same radius on the same corner puts its edge back inside the clip
- * where it can be seen. Only the corners that are genuinely flush are
- * rounded: an interior tile that merely ends near the edge must stay
- * square, or the map grows gaps along its own seams. */
+ * corner has its square corner cut away by that curve -- and with it the
+ * selection ring drawn along that edge. Rounding the tile to the same
+ * radius puts its edge back inside the clip. Only the corners that are
+ * genuinely flush are rounded, or the map grows gaps along its seams. */
 function corners(rect: TreemapRect): string {
   const EPS = 0.01;
   const r = "var(--r-field)";
@@ -103,25 +85,18 @@ function corners(rect: TreemapRect): string {
 
 /** What a sector's size is read off, best first.
  *
- * Open bounty is the quantity this panel wants: value on offer right
- * now, the same one the carousel ranks by, so a sector that leads the
- * board also has the biggest tile. It has one failure mode, and it is
- * not rare -- a board where every task has settled has *no* open bounty
- * at all, and every sector weighs zero. The table then reads 0.0% down
- * the column and the map goes blank, because `squarify` drops
- * zero-valued items rather than laying out boxes with no area. Nothing
- * is broken at that moment and the panel looks broken, which is worse
- * than showing the second-best number.
+ * Open bounty is the quantity this panel wants: value on offer right now,
+ * the same one the carousel ranks by. Its failure mode is not rare -- a
+ * board where every task has settled has no open bounty at all, so every
+ * sector weighs zero, the table reads 0.0% down the column and the map
+ * goes blank (`squarify` drops zero-valued items).
  *
  * So the ladder falls back to flow -- bounty *posted* over the charting
- * window, which is what the change column already trades in -- and then
- * to tasks posted, for a board carrying work with no bounty on it. A
- * basis wins when at least two sectors have something in it, not merely
- * one: a settling board passes through a state where a single open task
- * holds all the open bounty on the board, and weighing by it there
- * gives one sector 100%, everything else 0.0%, and a map with one tile
- * in it -- a breakdown that breaks down nothing. Two is the smallest
- * number that is a comparison. */
+ * window -- and then to tasks posted. A basis wins when at least two
+ * sectors have something in it, not merely one: a settling board passes
+ * through a state where a single open task holds all the open bounty, and
+ * weighing by it there gives one sector 100% and a map with one tile in
+ * it. Two is the smallest number that is a comparison. */
 const SECTOR_BASES = [
   (s: SectorSummary) => s.openBounty,
   (s: SectorSummary) => s.markets.reduce((sum, m) => sum + m.value, 0),
@@ -161,26 +136,21 @@ function pickBasis<T>(items: T[], bases: ((item: T) => number)[]) {
 }
 
 /** The sector breakdown, after the reference: a table of sectors by
- * weight on the left, and a treemap on the right where each sector's
- * area is its share of the board and its colour is how it is moving.
+ * weight on the left, and a treemap on the right where each sector's area
+ * is its share of the board and its colour is how it is moving.
  *
- * "Weight" here is share of **value on offer** -- open bounty -- which
- * is the same quantity the sectors are ranked by in the carousel above,
- * so a sector that leads the board also has the biggest tile. It is
- * deliberately not the quantity the *colour* shows: the tint comes from
- * the sector's change, which is its posting flow period over period.
- * Size is how much is there; colour is which way it is going. */
+ * "Weight" is share of **value on offer** -- open bounty -- the same
+ * quantity the carousel ranks by. It is deliberately not the quantity the
+ * *colour* shows: the tint comes from the sector's change. Size is how
+ * much is there; colour is which way it is going. */
 export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] }) {
   /** The sector the map is opened into, set by *clicking* a row or a
    * tile.
    *
-   * Kept strictly apart from what the pointer is over. An earlier
-   * version had hover write to this same field, which looked like a free
-   * improvement and was a bug: moving the pointer onto a row opened it,
-   * so the click that followed found it already open and shut it again.
-   * Two mechanisms owning one piece of state, and the more discoverable
-   * of the two silently cancelling the other. Hovering picks a sector
-   * out; clicking goes into it; neither can undo the other. */
+   * Kept strictly apart from what the pointer is over. With hover writing
+   * to this same field, moving the pointer onto a row opened it, so the
+   * click that followed found it already open and shut it again.
+   * Hovering picks a sector out; clicking goes into it. */
   const [selected, setSelected] = useState<string | null>(null);
 
   /** The sector under the pointer, which is a preview and nothing more.
@@ -194,27 +164,25 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
   const { of: basis, total } = useMemo(() => pickBasis(sectors, SECTOR_BASES), [sectors]);
 
   /** Rows follow the weight actually on screen. They arrive ranked by
-   * open bounty, which is the right order right up until that is the
-   * number that ran out -- and a column of descending percentages that
-   * suddenly is not descending reads as a sorting bug. */
+   * open bounty, which is right up until that is the number that ran out
+   * -- and a column of descending percentages that suddenly is not
+   * descending reads as a sorting bug. */
   const rows = useMemo(
     () => [...sectors].sort((a, b) => basis(b) - basis(a)),
     [sectors, basis],
   );
 
   /** The sector the map is inside, if any. Held by name rather than by
-   * reference because the board reloads underneath: the sector the
-   * reader picked is the one with that name in whatever arrived last,
-   * not the object that was on screen when they clicked. */
+   * reference because the board reloads underneath: the sector the reader
+   * picked is the one with that name in whatever arrived last. */
   const inside = useMemo(
     () => sectors.find((s) => s.name === selected) ?? null,
     [sectors, selected],
   );
 
   /** One level or the other, laid out the same way. Inside a sector the
-   * boxes are its markets, weighed against each other rather than
-   * against the board -- a sector's own breakdown should fill its own
-   * map however small the sector is. */
+   * boxes are its markets, weighed against each other rather than against
+   * the board -- a sector's own breakdown should fill its own map. */
   const tiles = useMemo(() => {
     if (inside) {
       const { of } = pickBasis(inside.markets, MARKET_BASES);
@@ -372,8 +340,7 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
                           setSelected(selected === name ? null : name);
                           // The tile is about to be replaced by the
                           // sector's markets, so its own mouseleave may
-                          // never arrive; letting the name stand would
-                          // dim the map on the way back out.
+                          // never arrive.
                           setHovered(null);
                         }
                   }

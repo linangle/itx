@@ -6,14 +6,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * the distance from one item's leading edge to the next.
  *
  * Rounds *towards* the direction asked for rather than to the nearest
- * boundary. From halfway through a panel, "next" finishes the move the
+ * boundary: from halfway through a panel, "next" finishes the move the
  * row is already in the middle of instead of skipping the panel you are
- * looking at -- which is what makes the arrows read as tidying the row
- * onto the grid, now that the scroll itself is free.
+ * looking at.
  *
- * The one-pixel slack is for scroll positions that are fractional: a
- * trackpad leaves the row at 459.6 rather than 460 often enough that
- * without it, "next" from a boundary would sometimes cost nothing.
+ * The one-pixel slack is for fractional scroll positions -- a trackpad
+ * leaves the row at 459.6 rather than 460 often enough that without it,
+ * "next" from a boundary would sometimes cost nothing.
  */
 export function snapTarget(
   scrollLeft: number,
@@ -32,11 +31,8 @@ export function snapTarget(
 /** What the board needs to know about a horizontally scrolling row.
  *
  * The row is a real scroll container -- `overflow-x` in the stylesheet,
- * not a transform driven from JS. That is the whole point of this hook
- * being as small as it is: the browser already knows how to follow a
- * finger, carry momentum, rubber-band at the ends and keep all of it at
- * 60fps on a compositor thread, on every engine including the ones a
- * hand-rolled gesture never quite matches. What is left is the two
+ * not a transform driven from JS -- so the browser already handles the
+ * finger, the momentum and the rubber-banding. What is left is the two
  * things it cannot know: which item counts as current, and where a
  * deliberate step should land.
  */
@@ -45,15 +41,10 @@ export interface Carousel {
   index: number;
   /** The items actually on screen, as an inclusive index range.
    *
-   * `index` alone could not answer "which sector am I looking at",
-   * because the row shows two to four panels at once and the *last* one
-   * can never reach the leading edge -- the row runs out of scroll
-   * first. So the final panel was never current, its entry in the rail
-   * never lit, and clicking it looked like it did nothing: the row was
-   * already as far along as it goes.
-   *
-   * A range says what is true instead of approximating it. At the far
-   * end every panel still on screen is marked, the last one included. */
+   * `index` alone could not answer "which sector am I looking at": the
+   * row shows two to four panels at once and the *last* one can never
+   * reach the leading edge, so it was never current and clicking its
+   * entry in the rail looked like it did nothing. */
   firstVisible: number;
   lastVisible: number;
   /** Whether either end has been reached, for the arrows and the edge
@@ -67,12 +58,10 @@ export interface Carousel {
 }
 
 export function useCarousel<T extends HTMLElement = HTMLDivElement>(
-  /** How many items the row holds. Nothing else announces a change in
-   * how far the row can scroll: items arriving from the hub do not
-   * resize the container -- its width comes from the column it sits in
-   * -- and adding them fires no scroll event. Measured before the first
-   * markets land, the row looks like it is against both of its ends,
-   * which is how both arrows came to be disabled on a full board. */
+  /** How many items the row holds. Nothing else announces a change in how
+   * far the row can scroll: items arriving from the hub do not resize the
+   * container and fire no scroll event, so measured before the first
+   * markets land the row looks like it is against both of its ends. */
   items: number,
 ) {
   const ref = useRef<T | null>(null);
@@ -84,18 +73,16 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     atEnd: false,
   });
 
-  /** Where a smooth scroll that is still running is headed, so that a
-   * second arrow click steps on from there rather than from wherever
-   * the animation happens to be at that instant. Without it, clicking
-   * through the markets quickly loses most of the clicks -- each one
-   * re-snaps to the boundary the row is passing through. Cleared once
-   * the row arrives, or the moment the reader takes over themselves. */
+  /** Where a smooth scroll that is still running is headed, so a second
+   * arrow click steps on from there rather than from wherever the
+   * animation happens to be. Without it, clicking through the markets
+   * quickly loses most of the clicks. Cleared once the row arrives, or
+   * the moment the reader takes over. */
   const pending = useRef<number | null>(null);
 
   // Distance from one item's leading edge to the next, read off the
-  // layout rather than rebuilt from the basis and the gap -- those live
-  // in the stylesheet and change at two breakpoints, and a second copy
-  // of that arithmetic here would be a copy that goes stale.
+  // layout rather than rebuilt from the basis and the gap -- those live in
+  // the stylesheet and change at two breakpoints.
   const stride = (el: T) => {
     const items = el.children;
     if (items.length === 0) return 0;
@@ -106,9 +93,9 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
 
   /** The stylesheet's ceiling for the near edge's fade, cached because
    * this is read on every scroll frame and dropped whenever the row is
-   * resized, since the breakpoints may have changed it. Kept in CSS
-   * rather than here so the stylesheet stays the one place a length on
-   * this row is decided -- the same arrangement as `--row-h`. */
+   * resized, since the breakpoints may have changed it. Kept in CSS so
+   * the stylesheet stays the one place a length on this row is decided --
+   * the same arrangement as `--row-h`. */
   const cap = useRef<number | null>(null);
 
   const read = useCallback(() => {
@@ -120,19 +107,14 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
       pending.current = null;
     }
 
-    // How wide the near edge's fade should be right now.
+    // How wide the near edge's fade should be right now: only ever as wide
+    // as what is actually cut off. The arrows leave the row on a boundary,
+    // where the panel starts flush against the edge and nothing is sliced,
+    // and a fade there dimmed the first inch of the market just asked for.
     //
-    // Only ever as wide as what is actually cut off, which is what the
-    // arrows exposed: they leave the row on a boundary, where the panel
-    // starts flush against the edge and nothing is sliced -- and a fade
-    // there dimmed the first inch of the market you had just asked for.
-    //
-    // `into` is how far the row sits past the last boundary. Just past
-    // one, only that sliver of the outgoing panel is hidden and a fade
-    // that wide covers it; just short of the next, the outgoing panel is
-    // down to its last few pixels and the fade shrinks to match rather
-    // than reaching across the panel arriving behind it. In the middle,
-    // both are wide and the stylesheet's ceiling applies.
+    // `into` is how far the row sits past the last boundary, so the fade
+    // covers exactly the sliver of outgoing panel that is hidden and never
+    // reaches across the panel arriving behind it.
     if (cap.current === null) {
       cap.current = parseFloat(getComputedStyle(el).getPropertyValue("--leading-fade-max")) || 0;
     }
@@ -140,16 +122,14 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     const fade = Math.max(0, Math.min(into, step - into, cap.current));
     el.style.setProperty("--leading-fade", `${Math.round(fade)}px`);
 
-    // Where the row sits, for the indicator under it: how much of the
-    // row is on screen, and how far through the rest we are. Written on
-    // the *parent* because the indicator is a sibling of this scroll
-    // container -- custom properties inherit down, not sideways, and an
-    // indicator inside the container would scroll away with the panels.
+    // Where the row sits, for the indicator under it: how much of the row
+    // is on screen, and how far through the rest we are. Written on the
+    // *parent* because the indicator is a sibling of this scroll container
+    // -- custom properties inherit down, not sideways.
     //
     // Set here rather than kept in state for the same reason
-    // `--leading-fade` is: most frames of a free-scrolling row move the
-    // row without changing anything React renders, and putting this in
-    // state would re-render the whole board behind every one of them.
+    // `--leading-fade` is: most frames of a free-scrolling row change
+    // nothing React renders.
     //
     // A row that fits entirely on screen has nowhere to travel, so the
     // thumb fills the track and sits at 0 rather than dividing by zero.
@@ -163,10 +143,9 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     const index = step > 0 ? Math.round(el.scrollLeft / step) : 0;
 
     // Which items are substantially on screen. "Substantially" is the
-    // whole point: the row deliberately leaves a sliver of the next
-    // panel showing past its right edge (the peek, which the mask fades
-    // out), and a panel that is mostly cut off is not one you are
-    // looking at. Two thirds visible is the bar.
+    // point: the row deliberately leaves a sliver of the next panel
+    // showing past its right edge, and a panel that is mostly cut off is
+    // not one you are looking at. Two thirds visible is the bar.
     const box = el.getBoundingClientRect();
     let firstVisible = index;
     let lastVisible = index;
@@ -187,12 +166,10 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     // must still be the one that is switched off.
     const atStart = el.scrollLeft <= 1;
     const atEnd = el.scrollLeft >= max - 1;
-    // Handing back the previous object when nothing changed is what
-    // lets React skip the re-render. This runs on every scroll event of
-    // a free-scrolling row -- most frames move the row without moving
-    // the front market -- and an unconditional fresh object here meant
-    // every one of those frames re-rendered the whole board above the
-    // fade it came for.
+    // Handing back the previous object when nothing changed is what lets
+    // React skip the re-render. This runs on every scroll event of a
+    // free-scrolling row, and an unconditional fresh object meant every
+    // one of those frames re-rendered the whole board.
     setState((previous) =>
       previous.index === index &&
       previous.firstVisible === firstVisible &&

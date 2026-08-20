@@ -2,17 +2,11 @@
 //
 // Tiles a rectangle with one box per item, each box's *area* proportional
 // to its value, choosing arrangements that keep boxes close to square.
-// The squarified variant (Bruls, Huizing & van Wijk, 2000) exists
-// because the naive "slice and dice" alternative produces slivers: with
-// one large value and several small ones it lays the small ones out as
-// hairlines, which carry their number nowhere near legibly and read as
-// rounding error rather than as data.
+// The squarified variant (Bruls, Huizing & van Wijk, 2000) exists because
+// the naive "slice and dice" alternative lays small values out as
+// hairlines, which read as rounding error rather than as data.
 //
-// Pure geometry -- numbers in, rectangles out, no DOM and no React, like
-// the rest of `lib/`. Which is also what makes the awkward parts
-// testable: that the areas really are proportional, that nothing
-// overlaps, and that the boxes exactly fill the rectangle they were
-// given rather than leaving a seam at one edge.
+// Pure geometry -- numbers in, rectangles out, no DOM and no React.
 
 export interface TreemapRect {
   x: number;
@@ -28,8 +22,8 @@ export interface TreemapTile<T> {
 
 /** How far from square the worst box in a row is, given the side it is
  * laid along. Lower is better; 1 would be a perfect square. This is the
- * quantity the algorithm is named for -- a row is extended for as long
- * as adding to it makes its worst box *less* lopsided. */
+ * quantity the algorithm is named for -- a row is extended for as long as
+ * adding to it makes its worst box *less* lopsided. */
 function worstAspect(areas: number[], side: number): number {
   if (areas.length === 0) return Infinity;
   let sum = 0;
@@ -51,15 +45,13 @@ function worstAspect(areas: number[], side: number): number {
 
 /** Tiles `width` x `height` with one rectangle per item.
  *
- * Items are laid largest first, which is what the algorithm assumes --
- * the caller's order is not preserved, and the returned tiles carry
- * their item so the caller can find its own again.
+ * Items are laid largest first, which is what the algorithm assumes -- the
+ * caller's order is not preserved, and the returned tiles carry their item
+ * so the caller can find its own again.
  *
- * Items with no value are dropped rather than laid out at zero size: a
- * box with no area cannot be labelled, and leaving it in only puts an
- * invisible tile in the middle of the map for a pointer to find. A
- * caller that needs to say "this sector has nothing in it" should say so
- * outside the map.
+ * Items with no value are dropped rather than laid out at zero size: a box
+ * with no area cannot be labelled, and leaving it in only puts an
+ * invisible tile in the map for a pointer to find.
  */
 export function squarify<T>(
   items: T[],

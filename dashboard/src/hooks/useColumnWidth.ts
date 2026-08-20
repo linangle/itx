@@ -1,19 +1,16 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, RefObject } from "react";
 
-/** A side column whose edge can be dragged, and which shuts when the
- * edge is dragged far enough in.
+/** A side column whose edge can be dragged, and which shuts when the edge
+ * is dragged far enough in.
  *
  * The width is published as a **custom property on a host element**
  * rather than as an inline style React renders, and that is the whole
  * design of this hook. The board is an expensive tree -- a dozen sector
- * panels and some hundred and fifty sparklines (Round 36 measured what
- * one keystroke in the leaderboard search used to cost) -- and a drag
- * produces a pointermove per frame. Committing each of those to state
- * would re-render the board behind every frame of the drag. So the drag
- * writes straight to the DOM, exactly as `useCarousel` does with the
- * carousel's scroll position, and only the *settled* width becomes state
- * -- once, on pointer-up, which is also when it is remembered.
+ * panels and some hundred and fifty sparklines -- and a drag produces a
+ * pointermove per frame. So the drag writes straight to the DOM, exactly
+ * as `useCarousel` does with the scroll position, and only the *settled*
+ * width becomes state, once, on pointer-up.
  *
  * The host is the element that already declares the column widths
  * (`.itx-board-inner`), so both grids that resolve against them -- the
@@ -21,23 +18,22 @@ import type { KeyboardEvent, PointerEvent, RefObject } from "react";
  */
 
 /** How far past its floor an edge has to be dragged before the column
- * shuts entirely. Without slack the column would snap shut on the way
- * past its minimum, which makes the last stretch of a resize feel like a
- * cliff; with it, shutting is a deliberate shove. */
+ * shuts entirely. Without slack the column snaps shut on the way past its
+ * minimum, which makes the last stretch of a resize feel like a cliff. */
 const SHUT_SLACK = 44;
 
 /** How much one arrow-key press moves an edge. */
 const STEP = 16;
 
 /** Farther than this and a pointer-up ends a drag rather than a click.
- * Kept above zero because a click on a trackpad usually moves a pixel or
- * two, and a shut column that reopened only on a perfectly still click
- * would read as broken. */
+ * Above zero because a click on a trackpad usually moves a pixel or two,
+ * and a shut column that reopened only on a perfectly still click would
+ * read as broken. */
 const CLICK_SLOP = 3;
 
-/** On `<body>` for the length of a drag: holds the resize cursor while
- * the pointer is out over the page, and stops the drag selecting text.
- * The pointer is captured by the grip, so the cursor cannot come from
+/** On `<body>` for the length of a drag: holds the resize cursor while the
+ * pointer is out over the page, and stops the drag selecting text. The
+ * pointer is captured by the grip, so the cursor cannot come from
  * whatever is under it. */
 const RESIZING_CLASS = "itx-col-resizing";
 
@@ -114,12 +110,10 @@ function readStored(key: string): number | null {
   }
 }
 
-/** Where an edge dragged to `px` actually lands: shut once it is past
- * the floor's slack, and clamped between the floor and the ceiling
- * anywhere above that.
- *
- * Exported for its own test -- it is the whole of the resize's
- * arithmetic, and the rest of this file is pointer plumbing around it. */
+/** Where an edge dragged to `px` actually lands: shut once it is past the
+ * floor's slack, and clamped between the floor and the ceiling anywhere
+ * above that. Exported for its own test -- it is the whole of the
+ * resize's arithmetic. */
 export function settle(px: number, min: number, max: number): number {
   if (px < min - SHUT_SLACK) return 0;
   return Math.min(Math.max(px, min), max);
@@ -162,8 +156,7 @@ export function useColumnWidth(options: ColumnWidthOptions): ColumnWidth {
 
   // Before paint, not after. A remembered width applied in an ordinary
   // effect would show one frame of the stylesheet's default first, which
-  // on a shut rail is a full column appearing and vanishing on every
-  // load.
+  // on a shut rail is a full column appearing and vanishing on every load.
   useLayoutEffect(() => {
     publish(width);
   }, [publish, width]);
@@ -250,9 +243,8 @@ export function useColumnWidth(options: ColumnWidthOptions): ColumnWidth {
         const grow = side === "left" ? towardsRight : -towardsRight;
         event.preventDefault();
         // Widening a shut column takes it back to where it was rather
-        // than crawling out of the shut zone 16px at a time -- from
-        // zero, every step short of the floor's slack resolves to shut
-        // again, so the key would do nothing at all for five presses.
+        // than crawling out of the shut zone 16px at a time -- from zero,
+        // every step short of the floor's slack resolves to shut again.
         commit(width === 0 && grow > 0 ? lastOpen.current : resolve(width + grow * STEP));
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();

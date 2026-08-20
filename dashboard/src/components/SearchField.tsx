@@ -9,18 +9,16 @@ interface Props {
   label: string;
 }
 
-/** A search box shaped like the rest of the filter bar.
- *
- * The same pill as `.itx-input` and `ComboFilter`, with the magnifier
- * inside it and a clear button that appears once there is something to
- * clear. `type="search"` for the semantics and the browser's own Escape
+/** A search box shaped like the rest of the filter bar: the same pill as
+ * `.itx-input` and `ComboFilter`, with the magnifier inside it and a
+ * clear button that appears once there is something to clear.
+ * `type="search"` for the semantics and the browser's own Escape
  * handling; the native clear affordance is suppressed in CSS because it
- * differs per browser and would sit beside ours.
+ * differs per browser.
  *
- * Uncontrolled debouncing is deliberately *not* here: the field reports
- * every keystroke, and whoever owns the query decides whether to wait
- * before acting on it (`useDebounced`). A field that lies about its own
- * value to save a request is a field you cannot type in.
+ * Debouncing is deliberately *not* here: the field reports every
+ * keystroke, and whoever owns the query decides whether to wait before
+ * acting on it (`useDebounced`).
  */
 export default function SearchField({ value, onChange, placeholder, label }: Props) {
   return (

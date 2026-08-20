@@ -1,21 +1,13 @@
 // Deriving time series from the board.
 //
-// ## What we can and cannot honestly chart
-//
 // The hub exposes exactly one timestamp per task: `created_at`. There is
-// no record anywhere of when a task was claimed, verified, or paid -- a
-// task carries its current status but not the moment it arrived there.
+// no record of when a task was claimed, verified, or paid. So this module
+// only produces series keyed on **when work was posted** -- a chart
+// labelled "payouts over time" would really be plotting the creation
+// times of tasks that have since been paid, and we don't build one.
 //
-// So this module only produces series keyed on **when work was posted**.
-// A chart labelled "payouts over time" would really be plotting the
-// creation times of tasks that have since been paid, which is a
-// different and misleading quantity, and we don't build one. Charting
-// settlement over time needs a `resolved_at` on `Task`, which is a change
-// to board state -- see `docs/web-v1-log.md`.
-//
-// Everything here is pure: tasks in, numbers out, `now` passed
-// explicitly rather than read from the clock, so tests are deterministic.
-// That mirrors how the Rust side threads `now` through `TaskBoard`.
+// Everything here is pure: tasks in, numbers out, `now` passed explicitly
+// rather than read from the clock, so tests are deterministic.
 
 import type { BoardSummaryDto, TaskDto } from "./hub";
 import { sectorOf } from "./sectors";
@@ -58,21 +50,15 @@ const DEFAULT_WINDOW: SeriesWindow = { windowMs: DEFAULT_WINDOW_MS, label: "7D" 
 
 /** Picks a charting window that actually fits the board's age.
  *
- * A fixed 7-day window is wrong at both ends of a board's life. On a
- * board seeded an hour ago every task lands in the final bucket and each
- * sparkline is a flat line with one spike at the right edge -- the chart
- * is technically correct and tells you nothing. On a board a year old,
- * seven days hides almost all of its history.
+ * A fixed 7-day window is wrong at both ends of a board's life: on one
+ * seeded an hour ago every task lands in the final bucket, and on one a
+ * year old seven days hides almost all of its history. So: measure how
+ * far back the oldest task goes and take the smallest preset that covers
+ * it. The label travels with the window so a panel header can say `1H`
+ * rather than claiming `7D` for something that spans an hour.
  *
- * So: measure how far back the oldest task actually goes and take the
- * smallest preset that covers it. This never invents data -- it only
- * stops stretching a short history across a long axis. The label travels
- * with the window so a panel header can say `1H` rather than claiming
- * `7D` for something that spans an hour.
- *
- * Note the floor: a board whose tasks were all created within the same
- * minute still charts as a single spike, because that is genuinely all
- * that happened. No window can fix an instantaneous history.
+ * A board whose tasks were all created within the same minute still
+ * charts as a single spike, because that is genuinely all that happened.
  */
 export function chooseWindow(tasks: TaskDto[], now: number = Date.now()): SeriesWindow {
   let oldest = Number.POSITIVE_INFINITY;
@@ -98,8 +84,8 @@ export function chooseWindow(tasks: TaskDto[], now: number = Date.now()): Series
 /** Bucketed counts of tasks by creation time, oldest bucket first.
  *
  * Tasks older than the window are dropped rather than piled into the
- * first bucket -- a leading spike made entirely of ancient history would
- * flatten everything recent into an unreadable baseline. */
+ * first bucket -- a leading spike made of ancient history would flatten
+ * everything recent into an unreadable baseline. */
 export function countByCreatedAt(tasks: TaskDto[], options: BucketOptions = {}): number[] {
   return sumByCreatedAt(tasks, () => 1, options);
 }
@@ -139,14 +125,13 @@ export function cumulative(series: number[]): number[] {
 /** Change in activity between the two halves of the window, as a
  * percentage.
  *
- * This is period-over-period, not first-point-to-last-point: for counts
- * of discrete events, comparing two equal spans is meaningful where
+ * Period-over-period, not first-point-to-last-point: for counts of
+ * discrete events, comparing two equal spans is meaningful where
  * comparing two individual buckets is mostly noise.
  *
- * Returns `null` when there's nothing to compare against -- an empty
- * earlier half means any activity at all is an increase from zero, which
- * is not a percentage. `null` renders as an em dash, deliberately
- * distinct from a real 0.00%. */
+ * `null` when there is nothing to compare against -- an empty earlier
+ * half means any activity at all is an increase from zero, which is not a
+ * percentage. It renders as an em dash, distinct from a real 0.00%. */
 export function periodChangePct(series: number[]): number | null {
   if (series.length < 2) return null;
   const midpoint = Math.floor(series.length / 2);
@@ -159,17 +144,12 @@ export function periodChangePct(series: number[]): number | null {
 /** An agent's cumulative earnings curve, derived from the tasks they were
  * paid for.
  *
- * The honest caveat: each task contributes its bounty at its **creation**
- * time, not its payout time, because payout time isn't recorded. On a
- * board where tasks are claimed and settled quickly the two are close;
- * on one where a task sat open for days before someone took it, the
- * curve steps earlier than the money actually moved. It's a shape
- * indicator, not an accounting record -- which is all a sparkline ever
- * is, but worth saying out loud.
+ * Each task contributes its bounty at its **creation** time, not its
+ * payout time, because payout time isn't recorded -- so this is a shape
+ * indicator, not an accounting record.
  *
- * Consensus tasks split their bounty between winners, and the board
- * never exposes who those winners were (`TaskKindDto::Consensus` hides
- * assignees deliberately), so only tasks with a visible `claimant`
+ * Consensus tasks split their bounty between winners, and the board never
+ * exposes who those winners were, so only tasks with a visible `claimant`
  * contribute. */
 export function agentEarningsSeries(
   tasks: TaskDto[],
@@ -229,15 +209,10 @@ export function summarizeByCapability(
   options: BucketOptions = {},
 ): CapabilitySummary[] {
   // One grouping pass, then work proportional to each tag's own tasks.
-  //
-  // This used to collect the tag names and then, for each one, filter
-  // the whole task list again -- so the cost was tasks x tags, and every
-  // task's `capabilities` array was scanned once per tag on the board.
-  // Fine at a dozen tags and a few hundred tasks; at 35 tags and 20000
-  // it was 700k array scans and measured 282ms on every poll, which was
-  // two thirds of the landing page's entire derivation budget. Same
-  // shape of fix as `topAgents` in `Board.tsx` and for the same reason.
-  // Results are identical -- this is arithmetic order, not policy.
+  // Collecting the tag names and then filtering the whole task list per
+  // tag cost tasks x tags -- at 35 tags and 20000 tasks, 700k array scans
+  // and 282ms on every poll. Results are identical: this is arithmetic
+  // order, not policy.
   const byCapability = new Map<string, TaskDto[]>();
   for (const task of tasks) {
     for (const capability of uniqueCapabilities(task)) {
@@ -265,17 +240,13 @@ export function summarizeByCapability(
 
 /** A task's capability tags with repeats removed.
  *
- * Only matters to the grouping passes below. Filtering the task list per
- * tag -- which is what they replaced -- counted a task once however many
- * times it carried the same tag, because `includes` either matches or
- * does not. A grouping pass would file it once per entry and
- * double-count its bounty instead, so the duplicate is dropped here and
- * the two approaches keep agreeing.
+ * Only matters to the grouping passes below. Filtering per tag counted a
+ * task once however many times it carried the same tag; a grouping pass
+ * would file it once per entry and double-count its bounty, so the
+ * duplicate is dropped here and the two approaches keep agreeing.
  *
- * Nothing is known to emit a repeated tag; this is about the rewrite not
- * quietly changing what a malformed task means. The array is returned
- * as-is unless there is actually a repeat, so the common cases -- no
- * tags, one tag -- allocate nothing. */
+ * The array is returned as-is unless there is actually a repeat, so the
+ * common cases -- no tags, one tag -- allocate nothing. */
 function uniqueCapabilities(task: TaskDto): string[] {
   const caps = task.capabilities;
   if (caps.length < 2) return caps;
@@ -290,18 +261,13 @@ export interface MarketSummary {
   openBounty: number;
   /** Bounty posted into this market across the window -- the market's
    * quoted level, and deliberately the *same* quantity the other two
-   * columns describe: `series` is its running total, so the sparkline
-   * ends here, and `changePct` is this flow's period-over-period
-   * movement.
+   * columns describe: `series` is its running total and `changePct` is
+   * this flow's period-over-period movement.
    *
-   * `openBounty` would have been the other candidate for a price, and is
-   * a truer "level" in the stock sense -- what is on offer right now.
-   * It is not used, because there is no honest change to pair it with:
-   * a task carries its current status but no record of when it reached
-   * it (see the note at the top of this file), so how open bounty moved
-   * over time cannot be derived at all. Quoting one quantity beside
-   * another's percentage is the kind of pairing a reader would never
-   * question and would always misread. */
+   * `openBounty` is a truer "level" in the stock sense, but there is no
+   * honest change to pair it with: a task carries its current status but
+   * no record of when it reached it, so how open bounty moved over time
+   * cannot be derived at all. */
   value: number;
   /** Cumulative bounty posted over the window -- the shape that reads
    * as a price line. Same honesty caveat as every series here: keyed on
@@ -329,22 +295,17 @@ export interface SectorSummary {
  * sector with tagged work on it, each carrying one market per capability
  * tag, biggest first at both levels.
  *
- * Ranked by open bounty rather than task count, same as the market
- * carousel always was: a sector is "big" when there is real money on
- * offer in it, and the order is recomputed from whatever the hub last
- * returned, so sectors genuinely move around as work is posted and
- * settled.
+ * Ranked by open bounty rather than task count: a sector is "big" when
+ * there is real money on offer in it.
  *
- * A market's change column carries the same guard the agent tickers
- * had: below two active buckets there is no trend to report, only a
- * single payout landing in one half of the window and masquerading as
- * +100% or -100%, so it reports `null` and the UI shows a dash.
+ * A market's change column reports `null` below two active buckets --
+ * there is no trend there, only a single payout landing in one half of
+ * the window and masquerading as +100%.
  *
  * Untagged tasks are unrestricted rather than belonging to a sector, so
- * they are absent here -- consistent with `summarizeByCapability`. A
- * task tagged into two sectors counts once in each; one tagged twice
- * into the *same* sector counts once, which is why the grouping walks a
- * per-task set of sector names rather than pushing per tag. */
+ * they are absent here. A task tagged into two sectors counts once in
+ * each; one tagged twice into the *same* sector counts once, which is why
+ * the grouping walks a per-task set of sector names. */
 export function summarizeBySector(
   tasks: TaskDto[],
   options: BucketOptions = {},
@@ -437,29 +398,21 @@ export function boardTotals(tasks: TaskDto[], options: BucketOptions = {}): Boar
 //
 // Everything above derives the board's aggregates from the task list,
 // which means downloading it. The hub can compute the same buckets once
-// (`/board/summary`, `handlers::board_summary`) and send a few kilobytes
-// instead, and these turn that response into the same shapes the board
-// already renders.
+// (`/board/summary`) and send a few kilobytes instead; these turn that
+// response into the same shapes the board already renders.
 //
-// The split of responsibilities is deliberate. The hub does the part
-// that is O(tasks) and identical for every viewer: counting, summing,
-// bucketing. The client does the part that is a product decision --
-// what counts as a trend, how tags group into sectors -- which is O(24)
-// per row and would otherwise be frozen into the protocol.
+// The split is deliberate: the hub does the part that is O(tasks) and
+// identical for every viewer, the client does the part that is a product
+// decision -- what counts as a trend, how tags group into sectors.
 //
-// One honest difference from `summarizeBySector`. Working from the task
-// list, a task tagged into two markets of the *same* sector is counted
-// once for that sector. Working from the summary there are no task
-// identities to deduplicate against, only per-tag totals, so it counts
-// once per market. Nothing on the board carries two tags of one sector
-// today, and the fixture never emits multi-tag tasks at all; if that
-// changes and the difference starts to matter, the fix is a sector
-// grouping the hub can compute, not a bigger download here.
+// One honest difference from `summarizeBySector`: from the summary there
+// are no task identities to deduplicate against, only per-tag totals, so
+// a task tagged into two markets of the same sector counts once per
+// market rather than once for the sector.
 
-/** The label for a window the hub picked, matched back to the ladder
- * both sides share. An unrecognised width is labelled by its own size
- * rather than guessed at -- a hub that adds a preset should show it, not
- * be rounded into the nearest one this build happens to know. */
+/** The label for a window the hub picked, matched back to the ladder both
+ * sides share. An unrecognised width is labelled by its own size rather
+ * than rounded into the nearest preset this build happens to know. */
 export function windowFromSummary(summary: BoardSummaryDto): SeriesWindow {
   const known = WINDOW_PRESETS.find((preset) => preset.windowMs === summary.window_ms);
   if (known) return known;
@@ -489,11 +442,9 @@ export function capabilitiesFromSummary(
     .slice(0, limit);
 }
 
-/** The board's sectors and their markets, from the summary.
- *
- * The change guard travels with it: below two active buckets there is
- * nothing to compare and the column shows a dash rather than turning a
- * single posting into a confident-looking +100%. */
+/** The board's sectors and their markets, from the summary. The change
+ * guard travels with it: below two active buckets the column shows a dash
+ * rather than turning a single posting into a confident-looking +100%. */
 export function sectorsFromSummary(summary: BoardSummaryDto): SectorSummary[] {
   const bySector = new Map<string, SectorSummary>();
 
@@ -562,18 +513,13 @@ export const DEFAULT_MARKET_SORT: MarketSort = { key: "value", direction: "desc"
 /** Markets in a panel, ordered by one of its columns.
  *
  * Returns a new array -- the summaries are memoized upstream and shared
- * between renders, so sorting in place would reorder the memo and make
- * the ordering depend on how many times it had been read.
+ * between renders, so sorting in place would make the ordering depend on
+ * how many times the memo had been read.
  *
  * A market with no change to report sorts to the end in *both*
- * directions. `null` there does not mean zero; it means there was too
- * little activity to compare halves of the window (see
- * `summarizeBySector`). Treating it as zero would file "nothing
- * happened" in among the genuinely flat markets, and treating it as
- * -Infinity would put the emptiest markets at the top of an ascending
- * sort, which is the opposite of what "sort by change" is for. Ties, and
- * the dashes among themselves, fall back to the market's name so the
- * order is stable rather than dependent on the input's arrival order. */
+ * directions: `null` means there was too little activity to compare
+ * halves of the window, not zero. Ties fall back to the market's name so
+ * the order is stable rather than dependent on arrival order. */
 export function sortMarkets(markets: MarketSummary[], sort: MarketSort): MarketSummary[] {
   const sign = sort.direction === "asc" ? 1 : -1;
   return markets.slice().sort((a, b) => {

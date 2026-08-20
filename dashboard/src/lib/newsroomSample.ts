@@ -1,17 +1,14 @@
 /** The board's sample newsroom: authored stories, and the one piece of
  * real logic the section carries — picking the most-read of them.
  *
- * In `lib/` for the same reasons `predictionSample` is: pure
- * TypeScript, testable without a DOM, and out of the component file so
- * fast refresh keeps working.
+ * In `lib/` for the same reasons `predictionSample` is: pure TypeScript,
+ * testable without a DOM, and out of the component file.
  *
  * **Every story here is authored.** The intended product is agents
- * scraping the open web, with the hub counting which stories the agents
- * actually read — the board then shows the five most-read. None of that
- * exists on the wire yet; what it needs is recorded in
+ * scraping the open web, with the hub counting which stories they
+ * actually read; none of that exists on the wire yet — see
  * `docs/hub-requirements.md` under "A newsroom feed". The headlines are
- * generic and deliberately unattributed — no real outlet's name goes on
- * copy it never wrote.
+ * generic and deliberately unattributed.
  */
 
 export interface SampleStory {
@@ -28,39 +25,33 @@ export interface SampleStory {
    * the sample never carries a stale date -- rendered against the clock
    * like the market chart's axis. */
   ageMs: number;
-  /** The agent's own line on what it read. The board's five-row table
-   * has no room for it; the full page leads with it.
-   *
-   * Every one of these says "placeholder copy" in its own words, and
-   * that is not padding: a summary that read like reporting would be
-   * indistinguishable from the real thing this section is waiting for. */
+  /** The agent's own line on what it read. The board's five-row table has
+   * no room for it; the full page leads with it. Every one says
+   * "placeholder copy" in its own words: a summary that read like
+   * reporting would be indistinguishable from the real thing. */
   summary: string;
-  /** How many pages the agent read to file it. The unit the future feed
-   * would actually carry — a story on this site is a *reading*, not a
-   * publication, so what it cites is the closest thing it has to a
-   * byline. */
+  /** How many pages the agent read to file it. A story on this site is a
+   * *reading*, not a publication, so what it cites is the closest thing
+   * it has to a byline. */
   sources: number;
   /** The sample market this story would be priced into, if any. Keys a
-   * market in `predictionSample`; stories on a desk with no market
-   * leave it out, which is most of what makes the link worth drawing
-   * when it is there. */
+   * market in `predictionSample`; stories on a desk with no market leave
+   * it out. */
   marketKey?: string;
 }
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 
-/** More stories than the board shows, on purpose: "the top five by
- * views" is a selection, and a pool of exactly five would make the sort
- * decoration. Deliberately not stored in view order, so a rendering
- * that skips the sort is visibly wrong (and caught by the tests).
+/** More stories than the board shows, on purpose: "the top five by views"
+ * is a selection, and a pool of exactly five would make the sort
+ * decoration. Deliberately not stored in view order, so a rendering that
+ * skips the sort is visibly wrong.
  *
- * Sixteen of them, across the same nine desks the sample markets use.
- * The board still shows five; the depth is for the full page, where a
- * desk filter over seven stories would have been a control with nothing
- * to control. Roughly half carry a `marketKey`, so the page shows both
- * cases — a reading that moved a price, and a reading that is just a
- * reading.
+ * Sixteen across the same nine desks the sample markets use. The depth is
+ * for the full page, where a desk filter over seven stories would be a
+ * control with nothing to control. Roughly half carry a `marketKey`, so
+ * the page shows both cases.
  */
 export const STORIES: SampleStory[] = [
   {
@@ -259,11 +250,9 @@ export const STORIES: SampleStory[] = [
 
 /** The stories the board shows: the most-read first, cut to `count`.
  *
- * This is the section's contract with the future feed — when the hub
- * grows `GET /news?sort=views&limit=5`, the server does exactly this
- * and the client half of it goes away. Non-mutating, because `STORIES`
- * is module state and a sort in place would reorder it for every other
- * reader. */
+ * The section's contract with the future feed — when the hub grows
+ * `GET /news?sort=views&limit=5`, the server does exactly this.
+ * Non-mutating, because `STORIES` is module state. */
 export function topStories(count = 5, stories: SampleStory[] = STORIES): SampleStory[] {
   return [...stories].sort((a, b) => b.agentViews - a.agentViews).slice(0, count);
 }
@@ -274,17 +263,12 @@ export function scrapedAtIso(ageMs: number, now: number = Date.now()): string {
   return new Date(now - ageMs).toISOString();
 }
 
-/** How the full page may order the feed.
- *
- * Two keys, because a feed has exactly two honest orders: what is most
- * read and what is newest. The board only ever wants the first — it
- * shows a top five — so this lives here rather than there. */
+/** How the full page may order the feed. Two keys, because a feed has
+ * exactly two honest orders: most read and newest. */
 export type NewsOrder = "views" | "latest";
 
-/** The feed in the given order. Non-mutating, for the reason
- * `topStories` is: `STORIES` is module state.
- *
- * "latest" sorts on `ageMs` ascending — the field is an offset from
+/** The feed in the given order. Non-mutating, for the reason `topStories`
+ * is. "latest" sorts on `ageMs` ascending — the field is an offset from
  * now, so smaller is newer, and ordering on it never needs a clock. */
 export function orderStories(stories: SampleStory[], order: NewsOrder): SampleStory[] {
   const sorted = [...stories];

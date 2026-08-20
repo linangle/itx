@@ -2,18 +2,15 @@ import { Link, useLocation } from "react-router-dom";
 import { Fragment, type ReactNode } from "react";
 import LiveSiteBar from "./SiteBar";
 import { useThemedBody } from "../hooks/useTheme";
-// No font imports: these pages are set in Helvetica Neue like the
-// landing surface, which is a system face. The Instrument Sans and
-// Geist Mono packages the first iteration self-hosted are gone with it.
+// No font imports: these pages are set in Helvetica Neue like the landing
+// surface, which is a system face.
 import "../styles/terminal.css";
 
 /** `caption` opens a labelled group above an entry. The three kind
  * filters needed one: on their own they read as three more places to go,
- * when what they actually are is one axis -- how a task gets judged
- * correct -- sliced three ways. The labels themselves are the plain
- * language ones from `formatVerification`, not the protocol's
- * `hash_match` / `consensus` / `disputable`, which name the mechanism to
- * someone who already knows it and nothing to anyone else. */
+ * when what they are is one axis -- how a task gets judged correct --
+ * sliced three ways. The labels are the plain-language ones from
+ * `formatVerification`. */
 const SIDEBAR = [
   { to: "/", label: "overview" },
   { to: "/tasks", label: "all tasks" },
@@ -27,10 +24,9 @@ const SIDEBAR = [
  * column, optional right rail.
  *
  * Both the `itx-body` class and the `data-theme` attribute are applied to
- * `<body>` while one of these pages is mounted, rather than being set
- * globally -- that's what keeps the full-bleed themed background from
- * leaking onto the three original dashboard pages, which still render
- * with their own bare styling and must keep working untouched. */
+ * `<body>` while one of these pages is mounted rather than globally --
+ * that keeps the full-bleed themed background off the three original
+ * dashboard pages, which still render with their own bare styling. */
 export default function Shell({ children, rail }: { children: ReactNode; rail?: ReactNode }) {
   const theme = useThemedBody("itx-body");
 
@@ -42,12 +38,6 @@ export default function Shell({ children, rail }: { children: ReactNode; rail?: 
        * now, so the top bar dropped its own -- two ITX marks stacked
        * read as a mistake. */}
       <LiveSiteBar />
-
-      {/* The top bar that used to sit here is gone with the last thing in
-       * it. The pill nav went first -- it duplicated the left sidebar --
-       * and the theme toggle has moved into the masthead above, which is
-       * the one piece of chrome the landing page shares, so a 58px row
-       * holding nothing is all that was left. */}
 
       {/* A page without a rail gets the rail's 300px, rather than an
           empty column holding it open. Only the overview passes one, so
@@ -70,9 +60,8 @@ export default function Shell({ children, rail }: { children: ReactNode; rail?: 
 
 /** The sidebar distinguishes `/tasks` from `/tasks?kind=consensus`, which
  * `NavLink` alone cannot do -- its `isActive` compares pathnames and
- * ignores the query string entirely, so every one of the four task links
- * would light up at once. Comparing the full `pathname + search` instead
- * gives each filtered view its own active state. */
+ * ignores the query string, so all four task links would light up at
+ * once. */
 function SidebarLinks() {
   const location = useLocation();
   const current = `${location.pathname}${location.search}`;
@@ -95,11 +84,9 @@ function SidebarLinks() {
   );
 }
 
-/** Shared loading / error / empty treatments.
- *
- * A hub that isn't running is the single most common state during local
- * development, so the error case names that possibility explicitly
- * instead of showing a bare stack trace. */
+/** Shared loading / error / empty treatments. A hub that isn't running is
+ * the most common state during local development, so the error case names
+ * that possibility explicitly. */
 export function Loading({ what = "data" }: { what?: string }) {
   return <div className="itx-empty">loading {what}…</div>;
 }

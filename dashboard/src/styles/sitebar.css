@@ -1,12 +1,11 @@
 /* The site-wide masthead: the market tape plus the wordmark, on every
  * screen.
  *
- * These rules are deliberately *not* scoped under .itx-landing or .itx.
- * The bar renders inside both roots, and the point of the change is
- * that it looks the same wherever it is. The tape's own rules
- * (.itx-news*) still live in landing.css, which is where they were
- * written; what this file adds is the tokens they read, declared on the
- * bar itself so they resolve outside the landing root too. */
+ * These rules are deliberately *not* scoped under .itx-landing or .itx --
+ * the bar renders inside both roots, and the point is that it looks the
+ * same wherever it is. The tape's own rules (.itx-news*) live in
+ * landing.css; what this file adds is the tokens they read, declared on
+ * the bar itself so they resolve outside the landing root too. */
 
 :root {
   /* The two rows' heights, and the one place they are decided. Both
@@ -27,32 +26,22 @@
    taken off again -- see `startShift` in useTheme.ts -- so nothing else
    the page does gets a transition it did not ask for.
  *
- * It lives in this file because this is the one stylesheet that is not
- * scoped to a surface: the switch has to carry the masthead, the landing
- * and the terminal pages together, or they would cross over at
- * different moments and the seam between bar and page would show.
+ * In this file because it is the one stylesheet not scoped to a surface:
+ * the switch has to carry the masthead, the landing and the terminal
+ * pages together, or the seam between bar and page would show.
  *
- * Deliberately only the four colour properties, and `opacity` for the
- * grid behind the board, which changes weight between themes. Not
- * `all` -- that would animate layout as well, and a board mid-switch is
- * not somewhere to be moving rows around.
+ * Deliberately only the four colour properties, plus `opacity` for the
+ * grid behind the board. Not `all` -- that would animate layout, and a
+ * board mid-switch is not somewhere to be moving rows around.
  *
  * `body` in the selector so it outranks the components that declare
- * transitions of their own; those resume the moment the flag comes off.
- * The body is named on its own as well as through the descendant
- * selector: it carries the ground that overscroll bounces against, and
- * `body *` does not match the body itself, so it was the one surface
- * still snapping while everything on it faded.
+ * transitions of their own, and named on its own as well as through the
+ * descendant selector: it carries the ground that overscroll bounces
+ * against, and `body *` does not match the body itself.
  *
- * 170ms and `ease-out`, which between them are what stop the switch
- * feeling late. `ease` spends its first third barely moving, so on a
- * change with no motion to anticipate -- nothing travels, colours just
- * arrive -- the eye reads that ramp as the page hesitating. `ease-out`
- * puts most of the change in the first 60ms and lets the tail settle,
- * which is the fade rather than the slide. The switch also costs about
- * a frame of style recalc before it can start (this rule doubles the
- * flip's ~9ms, measured), so every millisecond of easing ramp is spent
- * on top of a delay that is already there. */
+ * 170ms and `ease-out`: `ease` spends its first third barely moving, and
+ * on a change with no motion to anticipate the eye reads that ramp as the
+ * page hesitating. */
 body.itx-theme-shift,
 body.itx-theme-shift *,
 body.itx-theme-shift *::before,
@@ -72,11 +61,9 @@ body.itx-theme-shift *::after {
 }
 
 .itx-sitebar {
-  /* The landing palette, restated here because the bar keeps it
-     everywhere -- the tape is the same red-blue-green wherever it
-     rides. Terminal pages override the two that have to follow the
-     theme (see terminal.css); the rest are the tape's own colours and
-     do not change. */
+  /* The landing palette, restated here because the bar keeps it everywhere
+     -- the tape is the same red-blue-green wherever it rides. Terminal
+     pages override the two that have to follow the theme. */
   --ld-red: #d8402d;
   --ld-green: #63ba6c;
   --ld-blue: #91c4f2;
@@ -110,13 +97,10 @@ body.itx-theme-shift *::after {
 }
 
 /* Treated like the tape's close button -- the glyph alone, growing a
-   little on hover -- rather than as a bordered pill, which in the
-   masthead read as a second wordmark.
-
-   Colour is the bar's own text at reduced opacity rather than a token.
-   The bar follows the theme on both surfaces, and inheriting means this
-   button cannot be the one thing that misses a ground it was not
-   written for: it is always the right ink, one step back. */
+   little on hover -- rather than as a bordered pill, which in the masthead
+   read as a second wordmark. Colour is the bar's own text at reduced
+   opacity rather than a token, so it is always the right ink, one step
+   back. */
 .itx-sitebar-theme {
   /* A step off the nav links, which own the auto margin now that they
      sit between the wordmark and this button. */
@@ -147,19 +131,17 @@ body.itx-theme-shift *::after {
   border-radius: 999px;
 }
 
-/* The section links: the hub, the two sample sections, and the
-   standings. They take the bar's free space on their left, which is
-   what pushes them and the theme toggle to the right end together.
+/* The section links: the hub, the two sample sections, and the standings.
+   They take the bar's free space on their left, which pushes them and the
+   theme toggle to the right end together.
 
    One row, always. Four labels do not fit a phone, so the row scrolls
-   sideways there rather than wrapping: the bar's height is a layout
-   constant (`--sb-brand-h`, which every page subtracts to size itself
-   under the masthead), and a nav that took a second line would push the
-   whole site down by a row the stylesheet does not know about.
+   sideways rather than wrapping: the bar's height is a layout constant
+   every page subtracts to size itself, and a second line would push the
+   site down by a row the stylesheet does not know about.
 
-   `min-width: 0` is what actually lets it scroll -- a flex item's
-   default minimum is its content, so without it the row simply grows
-   and pushes the theme toggle off the end instead. */
+   `min-width: 0` is what actually lets it scroll -- a flex item's default
+   minimum is its content. */
 .itx-sitebar-nav {
   margin-left: auto;
   min-width: 0;
@@ -182,11 +164,10 @@ body.itx-theme-shift *::after {
   flex: none;
 }
 
-/* Same weight of selector as the wordmark below, and for the same
-   reason: the terminal surface paints every `.itx a` blue with an
-   underline on hover, and these render inside it. Dimmed at rest and
-   full ink on hover, exactly the theme toggle's treatment -- the three
-   controls at this end of the bar should read as one quiet family. */
+/* Same weight of selector as the wordmark below, and for the same reason:
+   the terminal surface paints every `.itx a` blue with an underline on
+   hover, and these render inside it. Dimmed at rest and full ink on
+   hover, exactly the theme toggle's treatment. */
 .itx-sitebar a.itx-sitebar-link,
 .itx-sitebar a.itx-sitebar-link:hover,
 .itx-sitebar a.itx-sitebar-link:focus {
@@ -210,16 +191,14 @@ body.itx-theme-shift *::after {
   opacity: 1;
 }
 
-/* Wordmark and tagline are one link home -- the reliable way back from
-   a deep page, and on the front page itself a way back to the top.
+/* Wordmark and tagline are one link home -- the reliable way back from a
+   deep page, and on the front page a way back to the top.
 
-   The selector is heavier than it looks because it has to be. The
-   terminal surface styles every anchor inside it (`.itx a`, and
-   `.itx a:hover` for the underline), which outranks a lone class and
-   was painting the masthead blue with an underline on hover. Matching
-   the element and the class, and restating hover, wins on both surfaces
-   without reaching for `!important`. It should read as the masthead,
-   not as a link in a sentence. */
+   The selector is heavier than it looks because it has to be: the terminal
+   surface styles every anchor inside it, which outranks a lone class and
+   was painting the masthead blue. Matching the element and the class, and
+   restating hover, wins on both surfaces without reaching for
+   `!important`. */
 .itx-sitebar a.itx-sitebar-home,
 .itx-sitebar a.itx-sitebar-home:hover,
 .itx-sitebar a.itx-sitebar-home:focus {

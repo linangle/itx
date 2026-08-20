@@ -9,9 +9,8 @@ import ProfileIcon from "./ProfileIcon";
  *   - blue   = work in progress
  *   - amber  = contested, needs attention
  *   - grey   = finished, nothing more to do
- * `Paid` is deliberately grey rather than green: it's a settled result,
- * not an opportunity, and a board full of green "Paid" rows would drown
- * out the handful of rows a visitor can actually act on. */
+ * `Paid` is deliberately grey rather than green: it is a settled result,
+ * not an opportunity. */
 const STATUS_CLASS: Record<TaskStatus, string> = {
   Open: "itx-badge-open",
   Claimed: "itx-badge-active",
@@ -32,19 +31,15 @@ export function StatusBadge({ status }: { status: TaskStatus }) {
 
 /** A signed percentage, coloured by direction. `null` renders as a
  * neutral em dash -- "no basis for comparison" is not the same claim as
- * "no change", and colouring it green or red would invent a trend that
- * the data doesn't support. */
+ * "no change", and colouring it would invent a trend. */
 export function Delta({ pct }: { pct: number | null }) {
   return <span className={`num ${directionOf(pct)}`}>{formatPct(pct)}</span>;
 }
 
 /** Pubkeys are 66 hex characters. Shown truncated, with the full value in
- * the title attribute so it's still copyable and verifiable on hover.
- *
- * The icon beside the key is derived from the key itself (see
- * `lib/profileIcon`), so it appears for *any* pubkey on any surface --
- * which is the point: two truncated keys that read near-identically get
- * visibly different faces. */
+ * the title attribute so it stays copyable on hover. The icon beside the
+ * key is derived from the key itself, so two truncated keys that read
+ * near-identically get visibly different faces. */
 export function PubkeyLink({ pubkey }: { pubkey: string }) {
   return (
     <Link className="itx-pubkey" to={`/agents/${pubkey}`} title={pubkey}>
@@ -56,24 +51,16 @@ export function PubkeyLink({ pubkey }: { pubkey: string }) {
 
 /** An agent, by name where the hub has assigned one.
  *
- * The name is the label; the pubkey is still the identity, so it stays
- * on the row as dimmed secondary text rather than being replaced. Two
- * agents can have near-identical truncated pubkeys (`02a4f1…9c3b` and
- * `03a4e8…9c3b` differ by two characters at opposite ends) and no
- * reader will ever catch that at a glance -- `SwiftWarlock` next to
- * `AmberOtter` they catch instantly. Keeping both means the row is
- * scannable without becoming unverifiable.
+ * The name is the label; the pubkey is still the identity, so it stays on
+ * the row as dimmed secondary text rather than being replaced -- two
+ * agents can have near-identical truncated pubkeys and no reader will
+ * catch that at a glance. When `name` is null the key takes the top line
+ * instead, at the usual 6/4 truncation.
  *
- * When `name` is null -- the normal state for a key the hub has no
- * history for -- the key takes the top line instead, at the usual 6/4
- * truncation, which is exactly what a bare `PubkeyLink` used to render.
- *
- * `meta` is an optional extra fact for the second line (the overview's
- * "3 done"). It shares that line with the key rather than taking a third
- * one, because these rows sit in tables whose height is set in CSS and a
- * third line would push every row past it. With no name and no meta
- * there is no second line at all, so a plain leaderboard row stays one
- * line high. */
+ * `meta` is an optional extra fact for the second line, which it shares
+ * with the key rather than taking a third: these rows sit in tables whose
+ * height is set in CSS. With no name and no meta there is no second line
+ * at all. */
 export function AgentLink({
   pubkey,
   name,
@@ -89,9 +76,8 @@ export function AgentLink({
   const sub = [name ? truncatePubkey(pubkey, 4, 4) : null, meta].filter(Boolean).join(" · ");
   return (
     // Named agents are hovered by their name: the key is already on the
-    // row's second line here, so repeating it in the tooltip told the
-    // reader something they could already see. Unnamed ones keep the
-    // full key, which is the only identity they have.
+    // row's second line, so repeating it told the reader something they
+    // could already see.
     <Link className="itx-agent" to={`/agents/${pubkey}`} title={name ?? pubkey}>
       <ProfileIcon pubkey={pubkey} size={28} className="itx-avatar" />
       <span className="itx-agent-stack">

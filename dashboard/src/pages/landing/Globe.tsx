@@ -5,17 +5,15 @@ import * as THREE from "three";
 const RED = "#d8402d";
 const GLOBE_RADIUS = 1.55;
 
-/** Axial lean, radians -- Earth's ~23.5°, with the north pole tipping
- * to the upper LEFT and the south pole exiting lower right, matching
- * the axis diagram the user supplied. Positive rotation.z tips the
- * +Y pole toward -X (screen left). */
+/** Axial lean, radians -- Earth's ~23.5°, with the north pole tipping to
+ * the upper left and the south pole exiting lower right, matching the
+ * axis diagram the user supplied. */
 const AXIAL_TILT = 0.41;
 
 /** Where the "sun" sits for the cel shade: upper right and slightly in
- * front, so the hard shadow crescent falls on the lower left exactly
- * where the reference mock draws it. This is a shader uniform, not a
- * scene light -- the scene has no lights at all, because the look is
- * flat 2D animation, not 3D rendering. */
+ * front, so the hard shadow crescent falls on the lower left. A shader
+ * uniform, not a scene light -- the scene has no lights at all, because
+ * the look is flat 2D animation, not 3D rendering. */
 const LIGHT_DIR = new THREE.Vector3(0.55, 0.4, 0.55).normalize();
 
 interface OrbitSpec {
@@ -30,9 +28,8 @@ interface OrbitSpec {
   /** Orbit-plane lean toward/away from the camera. */
   tiltX: number;
   /** Rotation of the plane about the vertical axis. Combined with a
-   * non-zero `tiltX` this is what actually points each orbit's normal
-   * somewhere different -- without it every ring shares an axis and
-   * the satellites swing behind and in front of the globe together. */
+   * non-zero `tiltX` this is what points each orbit's normal somewhere
+   * different -- without it every ring shares an axis. */
   swivel: number;
   /** Orbit-plane lean across the screen, on top of the global tilt. */
   tiltZ: number;
@@ -43,16 +40,13 @@ interface OrbitSpec {
   sweep: number;
 }
 
-/** Six satellites on deliberately mixed planes and directions. Radii
- * stay under 2.45 so every orbit (plus orb size) fits inside the
- * camera frustum: nothing gets clipped mid-trail at the canvas edge.
+/** Six satellites on deliberately mixed planes and directions. Radii stay
+ * under 2.45 so every orbit plus orb size fits inside the camera frustum.
  *
- * Two things keep the swarm from bunching up. Each plane gets its own
- * `swivel`, so the orbits genuinely face different ways rather than
- * being one ring seen six times; and the speeds are mutually
- * non-commensurate (no value is a near-multiple of another), so
- * whatever alignment happens to occur doesn't recur on a short
- * period. Phases start evenly spread around the circle. */
+ * Two things keep the swarm from bunching up: each plane gets its own
+ * `swivel`, so the orbits genuinely face different ways, and the speeds
+ * are mutually non-commensurate, so whatever alignment occurs doesn't
+ * recur on a short period. */
 const ORBITS: OrbitSpec[] = [
   { radius: 2.1, speed: 1.13, phase: 0.0, tiltX: 0.5, swivel: 0.0, tiltZ: -0.28, size: 0.105, sweep: 1.05 },
   { radius: 1.86, speed: -0.94, phase: 1.05, tiltX: -0.62, swivel: 1.1, tiltZ: 0.34, size: 0.085, sweep: 0.95 },
@@ -62,30 +56,26 @@ const ORBITS: OrbitSpec[] = [
   { radius: 1.8, speed: -1.49, phase: 5.24, tiltX: -0.44, swivel: 5.7, tiltZ: -0.16, size: 0.1, sweep: 1.1 },
 ];
 
-/** Every drawn thing sits within this radius: the widest orbit, plus
- * that comet's orb, plus its glow sprite's half-extent. Checked at
- * startup against the camera frustum so a satellite can never be cut
- * off at the canvas edge -- the failure the eye reads as the globe
- * "clipping into" the text column beside it. */
+/** Every drawn thing sits within this radius: the widest orbit, plus that
+ * comet's orb, plus its glow sprite's half-extent. Checked at startup
+ * against the camera frustum so a satellite can never be cut off at the
+ * canvas edge. */
 const MAX_EXTENT = Math.max(...ORBITS.map((o) => o.radius + o.size * (1 + 2.4 / 2)));
 
 /** Cel-shaded globe: the texture at full brightness on the lit side, a
- * single flat blue-grey multiply on the shaded side, and a genuinely
- * hard edge between them. `colorspace_fragment` keeps the output
- * identical to how the built-in materials would encode the same
- * colors. */
+ * single flat blue-grey multiply on the shaded side, and a genuinely hard
+ * edge between them. `colorspace_fragment` keeps the output identical to
+ * how the built-in materials would encode the same colours. */
 function makeGlobeMaterial(texture: THREE.Texture): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       map: { value: texture },
       lightDir: { value: LIGHT_DIR },
       shadowTint: { value: new THREE.Color(0.34, 0.38, 0.68) },
-      /* Sets how much of the disc falls in shade. Positive values push
-       * the terminator across the middle of the globe (+0.3 put half of
-       * it in shade, which read as gloom); far-negative ones squeeze it
-       * out to the rim as a sliver (-0.35 was barely visible). Just
-       * under zero puts the cut near the light's great circle, giving
-       * the broad lower-left crescent the mock draws. */
+      /* How much of the disc falls in shade. Positive values push the
+       * terminator across the middle of the globe (+0.3 read as gloom);
+       * far-negative ones squeeze it out to the rim as a sliver. Just
+       * under zero puts the cut near the light's great circle. */
       threshold: { value: -0.05 },
     },
     vertexShader: /* glsl */ `
@@ -107,11 +97,10 @@ function makeGlobeMaterial(texture: THREE.Texture): THREE.ShaderMaterial {
       void main() {
         vec4 tex = texture2D(map, vUv);
         float d = dot(normalize(vNormal), lightDir) - threshold;
-        // The terminator is a hard cut, blended only across the width
-        // of a single pixel. Using fwidth (how fast d changes between
-        // neighbouring fragments) rather than a fixed softness is what
-        // keeps it crisp: a constant ramp covers more screen pixels the
-        // larger the globe is drawn, which is what read as blur.
+        // The terminator is a hard cut, blended only across the width of a
+        // single pixel. fwidth rather than a fixed softness is what keeps
+        // it crisp: a constant ramp covers more screen pixels the larger
+        // the globe is drawn, which is what read as blur.
         float aa = fwidth(d);
         float lit = smoothstep(-aa, aa, d);
         gl_FragColor = vec4(tex.rgb * mix(shadowTint, vec3(1.0), lit), 1.0);
@@ -142,11 +131,10 @@ function makeGlowTexture(): THREE.CanvasTexture {
 const TRAIL_TUBULAR = 64;
 const TRAIL_RADIAL = 8;
 
-/** Shrink each cross-section ring of a tube toward its own center, so
- * the trail starts at the orb's full thickness and thins toward the
- * tail -- the comet shape the user drew, rather than a ball towing a
- * skinnier pipe. Ring centers are recovered by averaging the ring's
- * vertices, which sidesteps re-deriving the curve's Frenet frames. */
+/** Shrink each cross-section ring of a tube toward its own centre, so the
+ * trail starts at the orb's full thickness and thins toward the tail.
+ * Ring centres are recovered by averaging the ring's vertices, which
+ * sidesteps re-deriving the curve's Frenet frames. */
 function taperTube(geometry: THREE.TubeGeometry): void {
   const pos = geometry.attributes.position;
   const rings = TRAIL_TUBULAR + 1;
@@ -180,16 +168,14 @@ function taperTube(geometry: THREE.TubeGeometry): void {
 }
 
 /** The trail is a tapered tube along the arc the orb just travelled,
- * fading out along its length in the shader. The arc is *static* in
- * the spinner group's frame: the whole group rotates each frame, so
- * the tube always trails the orb exactly without geometry updates. A
- * point placed at local angle phi sits at world angle (rotation.y +
- * phi), and the orb's past positions are at smaller world angles when
- * speed > 0 -- hence phi runs from 0 back to -sign(speed) * sweep.
+ * fading out along its length in the shader. The arc is *static* in the
+ * spinner group's frame: the whole group rotates each frame, so the tube
+ * always trails the orb without geometry updates. A point at local angle
+ * phi sits at world angle (rotation.y + phi), and the orb's past
+ * positions are at smaller world angles when speed > 0.
  *
  * The tube's head radius matches the orb and its head alpha is nearly
- * opaque, so orb and trail read as one continuous 2D comet instead of
- * a sphere with an attachment. */
+ * opaque, so orb and trail read as one continuous 2D comet. */
 function makeTrail(spec: OrbitSpec): THREE.Mesh {
   const points: THREE.Vector3[] = [];
   const STEPS = 48;
@@ -217,12 +203,10 @@ function makeTrail(spec: OrbitSpec): THREE.Mesh {
       uniform vec3 color;
       varying float vAlong;
       void main() {
-        // Exponent below 1 holds the trail near full opacity for most
-        // of its length and drops off only at the tail. At a linear or
-        // steeper fade the mid-trail sits around 30-40% alpha, and red
-        // at that alpha over the light-blue ocean composites to a
-        // grey-lavender -- which passes across the globe as a smudge
-        // and reads as the sphere being blurry.
+        // Exponent below 1 holds the trail near full opacity for most of
+        // its length and drops off only at the tail. At a steeper fade the
+        // mid-trail sits around 30-40% alpha, and red at that alpha over
+        // the light-blue ocean composites to a grey-lavender smudge.
         gl_FragColor = vec4(color, pow(1.0 - vAlong, 0.55));
         #include <colorspace_fragment>
       }
@@ -236,7 +220,7 @@ function makeTrail(spec: OrbitSpec): THREE.Mesh {
 /** The hero's scene: the cel-shaded globe spinning west->east on the
  * diagram's tilted axis, four red comets riding its equatorial band.
  * Purely decorative, so the mount is aria-hidden and a machine with no
- * WebGL simply gets an empty column instead of an error. */
+ * WebGL gets an empty column rather than an error. */
 export default function Globe() {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
@@ -295,10 +279,9 @@ export default function Globe() {
       );
       orb.position.set(spec.radius, 0, 0);
 
-      // Kept tight and faint. A large soft sprite is the one element
-      // here that genuinely blurs: when a comet passes in front of the
-      // globe its halo washes over the map and the whole sphere reads
-      // as low-res, however hard the terminator itself is.
+      // Kept tight and faint. A large soft sprite is the one element here
+      // that genuinely blurs: a comet passing in front of the globe washes
+      // its halo over the map and the whole sphere reads as low-res.
       const glow = new THREE.Sprite(
         new THREE.SpriteMaterial({
           map: glowTexture,
@@ -324,12 +307,10 @@ export default function Globe() {
       camera.aspect = w / h;
 
       // Pull back exactly far enough that MAX_EXTENT fits, with a 6%
-      // margin -- and no further, so the globe fills as much of the
-      // box as it safely can. Deriving this instead of hard-coding a
-      // distance means the orbits can be retuned without silently
-      // reintroducing clipping at the canvas edge. The narrower of the
-      // two half-angles governs, which on a portrait box is the
-      // horizontal one.
+      // margin -- and no further, so the globe fills as much of the box as
+      // it safely can. Deriving it means the orbits can be retuned without
+      // silently reintroducing clipping. The narrower of the two
+      // half-angles governs.
       const halfV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
       const halfH = halfV * Math.min(1, camera.aspect);
       camera.position.z = (MAX_EXTENT * 1.06) / Math.min(halfV, halfH);
@@ -363,10 +344,8 @@ export default function Globe() {
     };
 
     // Only runs while the globe is actually on screen. This is the most
-    // expensive thing on the page -- a WebGL scene redrawing every frame
-    // -- and once you have scrolled to the board it is drawing to nobody.
-    // The board polls the hub on a timer, so those two were competing for
-    // the same main thread for no reason.
+    // expensive thing on the page, and once you have scrolled to the board
+    // it is drawing to nobody while the board polls on the same thread.
     const visibility = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) start();

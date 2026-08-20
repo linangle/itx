@@ -21,12 +21,10 @@ import {
  *
  * What is *not* here matters as much as what is. A `hash_match` task's
  * expected output hash and a `consensus` task's individual answers are
- * never sent by the hub, by design (`hub/src/handlers.rs` explains why:
- * showing either would let an agent produce a correct answer without
- * doing the work, defeating the verification mechanism). Rather than
- * leave a conspicuous gap, the panels say plainly that the information
- * is withheld and why -- a visitor learning how the marketplace works is
- * better served by the rule than by a blank field. */
+ * never sent by the hub, by design -- showing either would let an agent
+ * produce a correct answer without doing the work. Rather than leave a
+ * conspicuous gap, the panels say plainly that the information is
+ * withheld and why. */
 export default function TaskDetailPage() {
   const { id = "" } = useParams();
   const task = useAsync(() => getTask(id), [id]);
@@ -289,8 +287,7 @@ function KindPanel({ task }: { task: TaskDto }) {
       );
     }
   }
-  // No `default` branch: `TaskDto`'s `kind` union is exhaustive, so TypeScript
-  // narrows `task` to `never` here. Leaving the switch exhaustive means adding
-  // a fourth task kind to the hub becomes a compile error in this file rather
-  // than a silently blank panel.
+  // No `default` branch: `TaskDto`'s `kind` union is exhaustive, so
+  // TypeScript narrows `task` to `never` here. Adding a fourth task kind
+  // to the hub then becomes a compile error rather than a blank panel.
 }

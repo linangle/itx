@@ -63,11 +63,10 @@ function noTasks(): AsyncState<{ items: TaskDto[] }> {
   }>;
 }
 
-/** Reports the router's current query string into the DOM.
- *
- * `MemoryRouter` keeps history in memory and never touches
- * `window.location`, so a test asserting that the board wrote `?market=`
- * has to read it back from the router rather than from the window. */
+/** Reports the router's current query string into the DOM. `MemoryRouter`
+ * keeps history in memory and never touches `window.location`, so a test
+ * asserting that the board wrote `?market=` has to read it back from the
+ * router. */
 function LocationProbe() {
   return <span data-testid="search">{useLocation().search}</span>;
 }
@@ -119,10 +118,8 @@ describe("Board", () => {
   });
 
   it("caps a sector's panel at twelve markets however many it holds", () => {
-    // No sector in the taxonomy is this wide -- coding, the largest, has
-    // nine -- which is exactly why the cap needs a test rather than an
-    // eyeball. Unknown tags all file into "other", so fourteen of them
-    // build one oversized panel without inventing a sector.
+    // No sector in the taxonomy is this wide, which is why the cap needs a
+    // test rather than an eyeball. Unknown tags all file into "other".
     const many = Array.from({ length: 14 }, (_, i) =>
       market(`haruspicy-${String.fromCharCode(97 + i)}`, 1000 - i),
     );
@@ -137,9 +134,7 @@ describe("Board", () => {
 
     const section = screen.getByRole("region", { name: "Prediction market" });
     // One card per sample market, each quoting complementary odds and
-    // reciprocal payouts -- a binary market's one price implies
-    // everything else on the card. Read through the first card's table:
-    // its legend repeats the labels.
+    // reciprocal payouts. Read through the first card's table.
     const tables = within(section).getAllByRole("table");
     // The head of the pool, not all of it: the full page carries the
     // rest, and every card here draws a measured chart the board pays
@@ -158,10 +153,8 @@ describe("Board", () => {
     // quoting a price and a volume looks live whether or not it is.
     expect(within(section).getAllByText(/sample market/i)).toHaveLength(shown.length);
 
-    // The favoured side is outlined green and the other red -- the
-    // board's own pair for direction. Taken from the odds rather than
-    // from which row it is, so the colour follows a market whose
-    // favourite changes.
+    // The favoured side is outlined green and the other red, taken from
+    // the odds rather than from which row it is.
     expect(first.getByText("72%")).toHaveClass("itx-pm-pill", "up");
     expect(first.getByText("28%")).toHaveClass("itx-pm-pill", "down");
 
@@ -196,16 +189,12 @@ describe("Board", () => {
   it("orders the middle column, and the rail's links with it", () => {
     const { container } = renderBoard(capabilities);
 
-    // The order the owner asked for. Asserted against the DOM rather
-    // than eyeballed because three of these are anchors the nav jumps
-    // to -- a rail that lists them in a different order than the page
-    // holds them is a map of somewhere else.
+    // The order the owner asked for. Asserted against the DOM because
+    // three of these are anchors the nav jumps to.
     //
     // Read through the anchors each section carries rather than the
-    // sections themselves: the ids live on the *panels* now, so that a
-    // jump parks every section's panel on the same line (see
-    // `--anchor-top`), and the order of those is the order of the
-    // sections holding them.
+    // sections themselves: the ids live on the *panels*, so that a jump
+    // parks every section's panel on the same line (see `--anchor-top`).
     const anchors = [...container.querySelectorAll(".itx-board-mid [id^='itx-board-']")].map(
       (e) => e.id,
     );
@@ -247,10 +236,9 @@ describe("Board", () => {
     expect(views).toEqual([...views].sort((a, b) => b - a));
     expect(rows[0].querySelector(".itx-board-rank")?.textContent).toBe("1");
 
-    // No note on the page saying the stories are authored: the owner
-    // asked for it gone, twice, so the section is the five rows and
-    // nothing else. Asserted rather than merely deleted, so putting it
-    // back is a deliberate act with a test to change.
+    // No note on the page saying the stories are authored -- asserted
+    // rather than merely deleted, so putting it back is a deliberate act
+    // with a test to change.
     expect(within(section).queryByText(/sample stories/i)).toBeNull();
 
     // The section's name is the door, words and arrow together.
@@ -260,14 +248,10 @@ describe("Board", () => {
   });
 
   it("anchors each section on its panel, so the jumps land level", () => {
-    // All three sit on a panel rather than on the section around it.
-    // That is what lets one offset park every jump on the same line as
-    // the leaderboard panel: the sections' labels are not all the same
-    // height, so anchoring on the sections landed each at a different
-    // place -- which is what the owner saw. The offset itself
-    // (`--anchor-top`) is a label taller than the masthead, which is
-    // what keeps each label clear of the bar; jsdom applies no
-    // stylesheet, so that part is verified in the browser.
+    // All three sit on a panel rather than on the section around it, which
+    // is what lets one offset park every jump on the same line as the
+    // leaderboard panel. The offset itself (`--anchor-top`) is verified in
+    // the browser, since jsdom applies no stylesheet.
     const { container } = renderBoard(capabilities);
     for (const id of ["itx-board-latest", "itx-board-sectors", "itx-board-predictions"]) {
       const anchor = container.querySelector(`#${id}`);
@@ -303,9 +287,7 @@ describe("Board", () => {
     // Deliberately not asserting which arrow is live: jsdom does no
     // layout, so the row measures as having nowhere to scroll and
     // `useCarousel` correctly reports *both* ends reached. Where the
-    // arrows actually land is that hook's own test (`useCarousel.test`),
-    // against the arithmetic rather than against a fake ruler -- the
-    // same split `chartAxis` takes.
+    // arrows land is that hook's own test.
     const track = container.querySelector(".itx-pm-track");
     expect(track).toHaveAttribute("data-at-start");
     expect(track?.children).toHaveLength(boardMarkets().length);
@@ -375,9 +357,9 @@ describe("Board", () => {
     const overview = within(nav).getByRole("link", { name: "market overview" });
     await user.click(overview);
 
-    // Inside the overview's list item, not a sibling list under a
-    // heading of its own -- which is what made "sectors" and the
-    // "breakdown" link read as two names for the same thing.
+    // Inside the overview's list item, not a sibling list under a heading
+    // of its own -- which would make "sectors" and the "breakdown" link
+    // read as two names for the same thing.
     const item = overview.closest("li")!;
     expect(within(item).getByRole("button", { name: "coding" })).toBeInTheDocument();
     expect(overview).toHaveAttribute("aria-expanded", "true");
@@ -401,9 +383,8 @@ describe("Board", () => {
   });
 
   /** A tape row's worth of task. Every field the row reads is set --
-   * `capabilities` especially, which the hub always sends (it is not
-   * optional in `TaskCommon`) and which the rest of `lib/` already
-   * indexes without guarding. */
+   * `capabilities` especially, which the hub always sends and which the
+   * rest of `lib/` already indexes without guarding. */
   function feedOf(overrides: Partial<TaskDto> = {}) {
     return {
       data: {
@@ -481,10 +462,9 @@ describe("Board leaderboard", () => {
     vi.mocked(hub.getLeaderboard).mockResolvedValue({ items: agents, total: agents.length } as never);
     const { container } = renderBoard(capabilitiesFixture);
 
-    // Other panels on the board (market, latest) render their own <tr>
-    // rows independently, so a bare `findAllByRole("row")` can resolve
-    // on those before the leaderboard panel's own async data has
-    // loaded. Wait specifically for the leaderboard's own rows instead.
+    // Other panels on the board render their own <tr> rows, so a bare
+    // `findAllByRole("row")` can resolve on those before the leaderboard's
+    // async data has loaded.
     const leaders = await waitFor(() => {
       const rows = [...container.querySelectorAll(".itx-board-panel-leaders tbody tr")];
       if (rows.length === 0) throw new Error("leaderboard rows not rendered yet");

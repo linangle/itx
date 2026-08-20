@@ -8,23 +8,20 @@ import { useThemedBody } from "../../hooks/useTheme";
 import { getBoardSummary, listLatestTasks } from "../../lib/hub";
 
 /** three.js is ~170 KB gzipped and only the landing hero uses it, so the
- * globe loads as its own chunk -- a deep link straight to /tasks or
- * /leaderboard never downloads it. The fallback is null because the
- * globe is decoration: while the chunk loads, the hero simply shows its
- * copy and chart, which is also the no-WebGL rendering. */
+ * globe loads as its own chunk. The fallback is null because the globe is
+ * decoration: while the chunk loads, the hero shows its copy and chart,
+ * which is also the no-WebGL rendering. */
 const Globe = lazy(() => import("./Globe"));
 import Board from "./Board";
 import "../../styles/landing.css";
 
 /** The site's front door, per the reference mocks: a sticky news tape,
- * then a full-viewport hero -- spinning globe with orbiting satellites
- * on the left, the pitch on the right, the animated market line pinned
- * to the bottom -- and the untouched terminal board below the fold.
+ * then a full-viewport hero -- spinning globe on the left, the pitch on
+ * the right, the animated market line pinned to the bottom -- and the
+ * board below the fold.
  *
- * The tape is `position: sticky` on the page root, so it rides along
- * as the visitor scrolls down into the board. The board below is the
- * hand-drawn `Board` (per the user's sketch); the previous terminal
- * `OverviewPage` remains in the tree, unrouted, for clean rollback. */
+ * The tape is `position: sticky` on the page root, so it rides along as
+ * the visitor scrolls down into the board. */
 /** How often the page re-asks the hub. Slow enough to be cheap, quick
  * enough that a settling task shows up while you are still looking. */
 const REFRESH_MS = 5000;
@@ -35,20 +32,14 @@ const REFRESH_MS = 5000;
 const LATEST_HEADLINES = 20;
 
 export default function LandingPage() {
-  // Two small requests where this page used to walk the entire board.
+  // Two small requests where this page used to walk the entire board:
+  // every task fetched and the aggregates derived in the browser, about
+  // ten megabytes of JSON at twenty thousand tasks, on first paint and
+  // again every five seconds. `/board/summary` answers in ~7KB.
   //
-  // It fetched every task, then derived the board's aggregates in the
-  // browser -- a hundred requests and about ten megabytes of JSON at
-  // twenty thousand tasks, on first paint and again every five seconds,
-  // to end up rendering a few kilobytes of numbers. The hub computes
-  // exactly those numbers now, once, from data already in memory:
-  // `/board/summary` answers in ~7KB.
-  //
-  // The tape is the one thing here that genuinely wants tasks rather
-  // than totals, and it only wants the newest dozen -- which
-  // `listLatestTasks` gets in two small requests by reading the total
-  // and taking the tail, rather than by walking to it. Wrapped to the
-  // `{ items }` shape both the tape and the board's feed expect.
+  // The tape is the one thing here that wants tasks rather than totals,
+  // and only the newest dozen -- `listLatestTasks` reads the total and
+  // takes the tail rather than walking to it.
   const summary = useAsync(() => getBoardSummary(), [], REFRESH_MS);
   const latest = useAsync(
     () => listLatestTasks(LATEST_HEADLINES, { status: "all" }).then((items) => ({ items })),
@@ -56,25 +47,19 @@ export default function LandingPage() {
     REFRESH_MS,
   );
   // `index.css` gives `body` a 16px margin for the three legacy pages,
-  // which on a full-bleed page shows as a white frame around the whole
-  // viewport. Rather than change that global rule -- the legacy pages
-  // still want it -- flag the body while this page is mounted and remove
-  // the flag on unmount, the same approach `Shell` takes for the
-  // terminal screens. The theme rides along on the same flag, so
-  // overscroll at either end of the page bounces against the ground the
-  // page is actually painted in.
+  // which on a full-bleed page shows as a white frame around the viewport.
+  // Rather than change that global rule, flag the body while this page is
+  // mounted. The theme rides along on the same flag, so overscroll bounces
+  // against the ground the page is actually painted in.
   const theme = useThemedBody("itx-landing-body");
 
-  // Arriving with `#itx-board` -- which is where the masthead points --
-  // starts on the board rather than the hero. A browser would do this
-  // itself for a plain anchor, but on a client-rendered route the
-  // element does not exist yet when the hash is applied, and a sticky
-  // masthead means the right offset is not the element's top anyway.
+  // Arriving with `#itx-board` -- where the masthead points -- starts on
+  // the board rather than the hero. A browser would do this itself for a
+  // plain anchor, but on a client-rendered route the element does not
+  // exist yet when the hash is applied, and a sticky masthead means the
+  // right offset is not the element's top anyway.
   //
-  // Instant, not smooth: this is where the page *starts*, so animating
-  // from a hero the visitor never asked for would be a scroll they
-  // didn't make. The hero's height doesn't depend on hub data, so the
-  // board's position is settled as soon as it mounts.
+  // Instant, not smooth: this is where the page *starts*.
   const { hash } = useLocation();
   useEffect(() => {
     if (hash === `#${BOARD_ANCHOR}`) scrollToBoard({ smooth: false });

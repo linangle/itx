@@ -2,17 +2,15 @@ import type { TaskDto, TaskStatus } from "../lib/hub";
 
 /** Where a task sits in its lifecycle.
  *
- * Each kind has a genuinely different sequence, so there's no single
+ * Each kind has a genuinely different sequence, so there is no single
  * shared stepper: a `hash_match` task is claimed by one agent and
  * verified on submission, a `consensus` task fills with N assignees
  * before anyone's answer counts, and a `disputable` task's answer has to
- * survive a challenge window. Showing all three as "Open → Claimed →
- * Paid" would misdescribe two of them.
+ * survive a challenge window.
  *
- * `Closed` is deliberately *not* a step. It's an off-path terminal state
- * (no majority, under-subscribed, or cancelled) that can interrupt the
- * sequence at different points depending on kind, so it renders as a
- * derailed final marker rather than pretending to be progress.
+ * `Closed` is deliberately *not* a step. It is an off-path terminal state
+ * that can interrupt the sequence at different points depending on kind,
+ * so it renders as a derailed final marker rather than as progress.
  */
 const SEQUENCES: Record<TaskDto["kind"], { label: string; statuses: TaskStatus[] }[]> = {
   hash_match: [

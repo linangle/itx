@@ -2,11 +2,8 @@
  * price histories, and the arithmetic the cards read off them.
  *
  * Here rather than in the component for the reason the rest of `lib/`
- * exists — it is pure TypeScript with no DOM in it, so it can be tested
- * against the numbers instead of against a chart jsdom cannot lay out
- * (see the `ResizeObserver` note in `test-setup.ts`). It also keeps
- * `PredictionMarket.tsx` a component file that only exports a
- * component, which is what fast refresh wants.
+ * exists — pure TypeScript with no DOM in it, so it can be tested against
+ * the numbers instead of against a chart jsdom cannot lay out.
  *
  * **Everything here is authored.** The protocol has no outcome markets,
  * no odds and no settlement yet; what it would need is recorded in
@@ -46,9 +43,9 @@ export const STEPS = 84;
 export const SPAN_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** mulberry32: a tiny deterministic PRNG, so a sample's history is the
- * same on every load. `Math.random` here would redraw the market's past
- * on every visit, which even for a sample is the one thing a price
- * history must not do. */
+ * same on every load. `Math.random` would redraw the market's past on
+ * every visit, which even for a sample is the one thing a price history
+ * must not do. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -59,15 +56,13 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-/** A week of odds that ticks discretely, like the reference. A seeded
- * walk rather than a hand-authored array (84 points is too many literals
- * to review), then eased onto the quoted price so the line ends exactly
- * where the card's pill says the market stands.
+/** A week of odds that ticks discretely, like the reference. A seeded walk
+ * rather than a hand-authored array, then eased onto the quoted price so
+ * the line ends exactly where the card's pill says the market stands.
  *
- * `volatility` is how far a step may move. It is per market so the
- * samples do not read as one series drawn nine times — a market that
- * has barely moved all week looks different from one that has been
- * argued over, and that difference is most of what a price chart says. */
+ * `volatility` is per market so the samples do not read as one series
+ * drawn nine times — a market that has barely moved all week looks
+ * different from one that has been argued over. */
 export function walk(seed: number, from: number, to: number, volatility: number): number[] {
   const rnd = mulberry32(seed);
   const points: number[] = [];
@@ -84,24 +79,18 @@ export function walk(seed: number, from: number, to: number, volatility: number)
  *
  * They price **world events**, not the ITX board itself, and that is the
  * point of the placeholder: the intended product is agents scraping the
- * open web and pricing what they find there. Markets about the board's
- * own sectors would have shown the wrong idea in the right format.
+ * open web and pricing what they find there.
  *
  * The events are generic and deliberately unattributed, the news lines
- * say plainly that they are placeholders, and each card carries a
- * "sample market" line — so nothing here can be mistaken for a real
- * quote or for reporting from a real outlet.
+ * say plainly that they are placeholders, and each card carries a "sample
+ * market" line — so nothing here can be mistaken for a real quote or for
+ * reporting from a real outlet.
  *
- * The pool is deep enough for the full page to be a page: nine markets
- * across nine desks, which is what makes the desk filter there a filter
- * rather than a decoration. The board's row shows the first few — see
- * `boardMarkets` — because every card on it draws a live chart, and a
- * landing page that mounts nine of them pays for eight nobody scrolled
- * to.
- *
- * The desks match the newsroom's, on purpose: the stories are what
- * these markets would be priced off, and one vocabulary across the two
- * pages is what lets a reader move between them.
+ * Nine markets across nine desks, which is what makes the desk filter on
+ * the full page a filter rather than a decoration. The board's row shows
+ * the first few (see `boardMarkets`) because every card draws a live
+ * chart. The desks match the newsroom's on purpose: one vocabulary
+ * across the two pages is what lets a reader move between them.
  */
 export const SAMPLES: SampleMarket[] = [
   {
@@ -148,9 +137,7 @@ export const SAMPLES: SampleMarket[] = [
       "deliberately so — a market where the agents disagree is the one " +
       "worth reading.",
     // The widest walk in the pool, but not so wide that the line reads as
-    // static rather than as a market changing its mind: at 11 the walk
-    // crossed the plot several times a day and the shape stopped
-    // carrying any information.
+    // static rather than as a market changing its mind.
     series: walk(53, 52, 37, 6.5),
   },
   {
@@ -261,10 +248,8 @@ export function snapIndex(fraction: number): number {
 }
 
 /** The quote at point `i`: both prices and the moment they stood at.
- *
- * Percentages are rounded because the cards quote whole numbers — a
- * readout saying 71.6% beside a pill saying 72% reads as two different
- * figures rather than one at two precisions. */
+ * Percentages are rounded because the cards quote whole numbers — 71.6%
+ * beside a pill saying 72% reads as two different figures. */
 export function quoteAt(series: number[], i: number, now: number = Date.now()) {
   const yesPct = series[i];
   const at = now - ((STEPS - 1 - i) / (STEPS - 1)) * SPAN_MS;
@@ -304,18 +289,14 @@ export function axisDates(now: number = Date.now()): { index: number; label: str
   });
 }
 
-/** How many of the pool the board's row carries.
- *
- * Three, not nine: every card on that row draws its own chart, measured
- * and re-rendered on resize, and the board is already the heaviest page
- * on the site. The full page is where the rest of the pool lives. */
+/** How many of the pool the board's row carries. Three, not nine: every
+ * card draws its own chart, measured and re-rendered on resize, and the
+ * board is already the heaviest page on the site. */
 export const BOARD_MARKETS = 3;
 
-/** The markets the board's carousel shows — the head of the pool.
- *
- * The head rather than a random pick or a `featured` flag: the pool is
- * authored, so its order *is* the editorial choice, and a flag would be
- * a second place to make the same decision. */
+/** The markets the board's carousel shows — the head of the pool. The head
+ * rather than a random pick or a `featured` flag: the pool is authored,
+ * so its order *is* the editorial choice. */
 export function boardMarkets(
   count: number = BOARD_MARKETS,
   markets: SampleMarket[] = SAMPLES,
@@ -323,22 +304,17 @@ export function boardMarkets(
   return markets.slice(0, count);
 }
 
-/** How far a market's odds have travelled over the span, in points.
- *
- * The distance between where the week opened and where it stands, not
- * the width of the swing between them — "moved 15 points" is what a
- * reader takes from a price line, and a market that wandered and came
- * back has not moved. */
+/** How far a market's odds have travelled over the span, in points. The
+ * distance between where the week opened and where it stands, not the
+ * width of the swing between them — a market that wandered and came back
+ * has not moved. */
 export function movedPct(market: SampleMarket): number {
   return Math.abs(market.series[market.series.length - 1] - market.series[0]);
 }
 
-/** How the full page may order the pool.
- *
- * Three keys rather than a column per field: this is a page of cards,
- * not a table, so ordering is a question about the markets themselves —
- * which are busiest, which are closest to a coin flip, which have moved
- * — rather than about a column to sort on. */
+/** How the full page may order the pool. Three keys rather than a column
+ * per field: this is a page of cards, not a table, so ordering is a
+ * question about the markets themselves rather than about a column. */
 export type MarketOrder = "volume" | "close" | "moved";
 
 /** The pool in the given order, most-interesting first. Non-mutating:
@@ -370,8 +346,7 @@ export function marketTotals(markets: SampleMarket[] = SAMPLES) {
 
 /** The id of a market's card on the full page, and the fragment the
  * newsroom links to it by. One function so the page that writes the id
- * and the page that writes the link cannot drift -- a mismatch there is
- * a link that silently lands at the top of the page instead. */
+ * and the page that writes the link cannot drift. */
 export function marketAnchor(key: string): string {
   return `market-${key}`;
 }

@@ -1,9 +1,9 @@
 // Tick selection for the market chart's two axes.
 //
-// Separated from the drawing for the usual reason: choosing where the
-// gridlines go is arithmetic with awkward cases (a flat series, a span
-// of ninety seconds, a value range of 0.0003) and testing it through a
-// rendered SVG would be testing the SVG. Nothing here imports React.
+// Separated from the drawing because choosing where the gridlines go is
+// arithmetic with awkward cases (a flat series, a span of ninety seconds,
+// a value range of 0.0003) and testing it through a rendered SVG would be
+// testing the SVG. Nothing here imports React.
 
 /** A "nice" step at or above `rough`: 1, 2, 2.5 or 5 times a power of
  * ten. Gridlines land on numbers a reader can hold in their head, which
@@ -25,16 +25,14 @@ export interface ValueScale {
 
 /** Where to put the horizontal gridlines, and what range to draw over.
  *
- * The axis is rounded *outward* to whole steps so the topmost gridline
- * is at or above the peak rather than floating just under it, which
- * leaves the line poking out of its own chart.
+ * The axis is rounded *outward* to whole steps so the topmost gridline is
+ * at or above the peak rather than floating just under it.
  *
  * **The baseline is zero unless the data is far from it.** A cumulative
- * total that runs from 990 to 1000 is, on a zero-based axis, a flat
- * line — true but useless — and on a tightly-cropped axis, a dramatic
- * climb, which is a lie of a different kind. The rule here: keep zero
- * when the series spans a decent fraction of its own height, crop when
- * it does not, which is the same call a finance chart makes.
+ * total running 990 to 1000 is a flat line on a zero-based axis — true
+ * but useless — and a dramatic climb on a tightly-cropped one. So: keep
+ * zero when the series spans a decent fraction of its own height, crop
+ * when it does not.
  */
 export function valueScale(values: number[], targetTicks = 4): ValueScale {
   const finite = values.filter((v) => Number.isFinite(v));
@@ -76,9 +74,8 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /** Candidate spacings for the time axis, shortest first. Chosen so the
- * labels land on round moments -- five past, quarter past, the hour, the
- * day -- rather than at even divisions of an arbitrary span, which is
- * what produces an axis reading 10:07, 10:34, 11:01. */
+ * labels land on round moments rather than at even divisions of an
+ * arbitrary span, which produces an axis reading 10:07, 10:34, 11:01. */
 const TIME_STEPS = [
   MINUTE,
   5 * MINUTE,
@@ -100,15 +97,13 @@ const TIME_STEPS = [
 
 /** How to write an instant, given how much time the whole axis covers.
  *
- * The span decides the format, not the instant: on a six-hour chart
- * every label is a time of day, on a six-month chart every label is a
- * month. Mixing the two — a date here, a clock time there — makes an
- * axis that has to be read twice.
+ * The span decides the format, not the instant: on a six-hour chart every
+ * label is a time of day, on a six-month chart every label is a month.
+ * Mixing the two makes an axis that has to be read twice.
  *
  * Lower case, like every other word on the site. Safe to do wholesale
- * here where it is not on someone else's prose: the string is built by
- * `toLocale*` from a month name and digits, so there is no acronym for
- * a blanket `toLowerCase` to flatten. */
+ * here: the string is built by `toLocale*`, so there is no acronym for a
+ * blanket `toLowerCase` to flatten. */
 export function timeLabel(ms: number, spanMs: number): string {
   const date = new Date(ms);
   if (spanMs <= 2 * DAY) {
@@ -126,21 +121,19 @@ export function timeLabel(ms: number, spanMs: number): string {
 /** Where to put the vertical gridlines.
  *
  * Ticks are placed on multiples of the step *in local time*, so a daily
- * tick falls at local midnight rather than at whatever moment is a whole
- * number of days after the window opened. `Date` handles the offset;
- * doing it in UTC would put the day boundary in the wrong place for
- * every reader west of Greenwich.
+ * tick falls at local midnight rather than a whole number of days after
+ * the window opened. Doing it in UTC would put the day boundary in the
+ * wrong place for every reader west of Greenwich.
  */
 export function timeTicks(startMs: number, endMs: number, targetTicks = 5): TimeTick[] {
   const span = endMs - startMs;
   if (!(span > 0)) return [];
 
-  // The step whose tick *count* lands closest to the target, rather
-  // than the first step at least as wide as `span / target`. The ladder
-  // has gaps -- 1h to 3h, 30d to 90d -- and "first that fits" falls
-  // through them: a six-hour window asking for five ticks takes the 3h
-  // step and draws two. Ties go to the wider step, since fewer labels
-  // read better than more.
+  // The step whose tick *count* lands closest to the target, rather than
+  // the first step at least as wide as `span / target`. The ladder has
+  // gaps -- 1h to 3h, 30d to 90d -- and "first that fits" falls through
+  // them: a six-hour window asking for five ticks draws two. Ties go to
+  // the wider step.
   let step = TIME_STEPS[0];
   let best = Infinity;
   for (const candidate of TIME_STEPS) {
@@ -174,12 +167,10 @@ export function timeTicks(startMs: number, endMs: number, targetTicks = 5): Time
   return ticks;
 }
 
-/** The instant a bucket represents, taken as its **right edge**.
- *
- * A bucket covers a span, and a cumulative series' value at bucket `i`
- * is the total *by the end of* that span -- so plotting it at the
- * bucket's start would report every total one bucket early. On a
- * 24-bucket day that is an hour's error on every point. */
+/** The instant a bucket represents, taken as its **right edge**. A
+ * cumulative series' value at bucket `i` is the total *by the end of*
+ * that span, so plotting it at the bucket's start would report every
+ * total one bucket early. */
 export function bucketTime(index: number, startMs: number, endMs: number, buckets: number): number {
   if (buckets <= 0) return startMs;
   return startMs + ((index + 1) * (endMs - startMs)) / buckets;

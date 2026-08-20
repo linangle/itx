@@ -161,10 +161,9 @@ describe("terminal TasksPage", () => {
     );
   });
 
-  // The status filter is a fixed enum, so it used to be a `<select>` --
-  // whose open menu the platform drew, in the platform's own chrome,
-  // beside a market picker drawing its own. Both open the site's menu
-  // now, which means this filter has to be driven like the other one.
+  // The status filter is a fixed enum, but it opens the site's own menu
+  // rather than a native `<select>`, so it is driven like the market
+  // picker beside it.
   it("picks a status from the site's own menu", async () => {
     const user = userEvent.setup();
     show([task()]);

@@ -11,24 +11,21 @@ import "../styles/sitebar.css";
  * poll, so a task that appears on one appears on the other. */
 const REFRESH_MS = 5000;
 
-/** The site's masthead: the market tape, then the wordmark. Sticky, so
- * it stays with you down any page.
+/** The site's masthead: the market tape, then the wordmark. Sticky, so it
+ * stays with you down any page.
  *
- * It exists as its own component because it is now on *every* screen,
- * not just the landing hero it started in -- the terminal pages had
- * their own bare "ITX." in the top bar and no tape at all, which made
- * the board and the rest of the site read as two different products.
+ * Its own component because it is on *every* screen -- the terminal pages
+ * had their own bare "ITX." and no tape at all, which made the board and
+ * the rest of the site read as two different products.
  *
- * The wordmark is a link home. It is the only thing on a deep page like
- * an agent's profile that reliably goes back to the front. */
+ * The wordmark is a link home, and on a deep page it is the only thing
+ * that reliably goes back to the front. */
 export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) {
   const { pathname } = useLocation();
 
-  /** "Home" means the board, not the top of the document. The hero is
-   * the pitch -- a globe and a paragraph -- and someone clicking the
-   * masthead from inside the site is looking for the market, so the
-   * link lands on the data and the pitch stays where a first-time
-   * visitor meets it.
+  /** "Home" means the board, not the top of the document: someone
+   * clicking the masthead from inside the site is looking for the market,
+   * so the pitch stays where a first-time visitor meets it.
    *
    * Already on the landing page, this scrolls; from anywhere else the
    * hash rides along with the navigation and `LandingPage` acts on it
@@ -88,14 +85,11 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
 
 /** Light/dark, at the right end of the masthead.
  *
- * It lives here rather than in `Shell` because the masthead is the one
- * piece of chrome on every surface -- the landing page has no Shell, and
- * a toggle the front page cannot reach is not a site-wide setting. The
- * terminal's top bar existed only to hold this button, and is gone with
- * it.
+ * Here rather than in `Shell` because the masthead is the one piece of
+ * chrome on every surface -- the landing page has no Shell, and a toggle
+ * the front page cannot reach is not a site-wide setting.
  *
- * The glyph is the mode you would switch *to*, matching the label the
- * button used to carry ("Light" while dark). Drawn inline rather than
+ * The glyph is the mode you would switch *to*. Drawn inline rather than
  * loaded: two shapes at 15px, on the one piece of chrome that stays dark
  * in both themes, so they only ever need one colour. */
 function ThemeToggle() {
@@ -146,12 +140,9 @@ function ThemeToggle() {
   );
 }
 
-/** The same bar, fetching its own headlines.
- *
- * For pages that aren't already holding the task list. It asks for the
- * newest dozen rather than walking the board -- see `listLatestTasks`.
- * The landing page uses `SiteBar` directly and hands over what its board
- * already fetched, so that page still makes exactly one pass. */
+/** The same bar, fetching its own headlines, for pages that aren't
+ * already holding the task list. It asks for the newest dozen rather than
+ * walking the board -- see `listLatestTasks`. */
 export default function LiveSiteBar() {
   const tasks = useAsync(
     () => listLatestTasks().then((items) => ({ items })),

@@ -18,22 +18,17 @@ interface Props {
 
 /** A filter field that is both a search box and a dropdown.
  *
- * A plain text input was the wrong control for the capability filter: it
- * only helps someone who already knows a tag exists, and the tags are
- * free-form strings a poster invents, so nobody arriving at the board
- * knows one to type. A plain `<select>` is the wrong control too -- a
- * real hub has hundreds of markets, which is a scroll, not a menu.
+ * A plain text input only helps someone who already knows a tag exists,
+ * and the tags are free-form strings a poster invents. A plain `<select>`
+ * is wrong too -- a real hub has hundreds of markets, which is a scroll,
+ * not a menu. So: type to narrow, or open the list and browse.
  *
- * So: type to narrow, or open the list and browse. A native `<datalist>`
- * would have been a quarter of this code and does the typing half well,
- * but its dropdown has no affordance a reader can see -- there is no
- * caret to click, and no way to browse without first typing a character
- * that eliminates most of the list. The caret is the whole point here.
+ * A native `<datalist>` does the typing half well but its dropdown has no
+ * affordance a reader can see -- no caret to click, and no way to browse
+ * without first typing a character that eliminates most of the list.
  *
- * Free text still commits on Enter, unchanged from the input this
- * replaces: the option list is a superset of what the board currently
- * holds, not a whitelist, and a tag the list has never heard of is a
- * perfectly good filter for a hub that has just started using it.
+ * Free text still commits on Enter: the option list is a superset of what
+ * the board currently holds, not a whitelist.
  */
 export default function ComboFilter({
   value,
@@ -163,9 +158,8 @@ export default function ComboFilter({
                 role="option"
                 aria-selected={option === value}
                 // `renderOption` can collapse two distinct tags to the
-                // same label -- `coding/rust` and a bare `rust` both
-                // print as "rust" -- so the row carries the tag it will
-                // actually commit.
+                // same label -- `coding/rust` and a bare `rust` both print
+                // as "rust" -- so the row carries the tag it commits.
                 title={option}
                 className={
                   "itx-menu-option" +

@@ -4,14 +4,12 @@ import type { ReactNode } from "react";
  * behind what is below.
  *
  * Shared by the market and the newsroom because the two pages are the
- * same shape -- a pool, filtered, under a heading that says what the
- * pool is. The board itself has no equivalent: it opens on a quote
- * strip, and these pages open under the masthead with nothing above
- * them, so they owe the reader a title in a way the board does not.
+ * same shape -- a pool, filtered, under a heading that says what the pool
+ * is. The board has no equivalent: it opens on a quote strip, where these
+ * pages open under the masthead with nothing above them.
  *
  * The lede is a node rather than a string: both pages say plainly in it
- * that what follows is authored, and both want a word or two of that
- * sentence carrying emphasis.
+ * that what follows is authored, with a word or two carrying emphasis.
  */
 export interface IntroStat {
   label: string;

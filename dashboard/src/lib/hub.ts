@@ -1,15 +1,11 @@
 // The canonical hub client for the v1 site.
 //
-// This is a deliberate sibling of `src/api.ts` rather than a replacement
-// for it: the three original pages still import `api.ts` and still work
-// untouched, so nothing here can break them. The two overlap in their
-// type definitions for now; when the owner accepts this direction,
-// `api.ts` and the pages using it can be deleted in one commit and this
-// becomes the only client.
+// A deliberate sibling of `src/api.ts` rather than a replacement: the
+// three original pages still import `api.ts` and still work untouched.
 //
 // Nothing in `src/lib/` may import React. It is plain TypeScript against
 // `fetch`, which is what lets it be lifted into a package shared with a
-// future mobile app without touching a line.
+// future mobile app.
 //
 // Types mirror `hub/src/handlers.rs`'s DTOs and `hub/src/board.rs`'s
 // enums field for field, including exact wire casing -- read from the
@@ -83,33 +79,26 @@ export interface ReputationDto {
   failed: number;
   total_earned: number;
   /** Current confirmed on-chain balance -- distinct from `total_earned`,
-   * which is lifetime cumulative payout and never decreases even after
-   * the agent spends it. `null` if the hub couldn't reach the node for
-   * this pubkey when the request was made, which is a normal state to
-   * render, not an error. */
+   * which is lifetime cumulative payout and never decreases. `null` if
+   * the hub couldn't reach the node, which is a normal state to render,
+   * not an error. */
   net_worth: number | null;
   /** The hub's display name for this agent -- a descriptor and a subject
-   * in CamelCase, capped at 15 characters: `SwiftWarlock`, `AmberOtter`.
-   * Assigned by the hub (`hub/src/names.rs`), unique across agents, and
-   * stable for the agent's lifetime.
+   * in CamelCase, capped at 15 characters. Assigned by `hub/src/names.rs`,
+   * unique, and stable for the agent's lifetime.
    *
-   * A **label, not an identity**: the pubkey is still the only thing
-   * that identifies an agent, and nothing here should ever key off, link
-   * by, or compare names. Render it beside the pubkey, never instead of
-   * it in a context where the distinction matters.
-   *
-   * `null` for a pubkey the hub has never seen do anything -- the agent
-   * page resolves any key, and most keys are strangers. Every consumer
-   * needs a pubkey fallback; see `AgentLink`. */
+   * A **label, not an identity**: the pubkey is the only thing that
+   * identifies an agent, and nothing should key off, link by, or compare
+   * names. `null` for a pubkey the hub has never seen, so every consumer
+   * needs a pubkey fallback -- see `AgentLink`. */
   name: string | null;
 }
 
 export type LeaderboardEntryDto = ReputationDto & {
   pubkey: string;
   /** Standing in the whole field, one-based, computed by the hub before
-   * it filtered or sliced. Not derivable from the row's position once a
-   * search is involved -- see `LeaderboardEntryDto::rank` in
-   * `hub/src/handlers.rs`. */
+   * it filtered or sliced -- not derivable from the row's position once a
+   * search is involved. */
   rank: number;
 };
 
@@ -133,9 +122,8 @@ export class HubRequestError extends Error {
 
 /** A page of results plus the unpaginated total, read from the hub's
  * `X-Total-Count` header. `total` falls back to the page length when the
- * header is missing or unreadable -- which happens against an older hub,
- * or when a misconfigured CORS layer withholds it from JavaScript. Better
- * to render a slightly wrong count than to crash the page over it. */
+ * header is missing or unreadable, which happens against an older hub or
+ * a CORS layer that withholds it from JavaScript. */
 export interface Page<T> {
   items: T[];
   total: number;
@@ -190,61 +178,33 @@ export async function listTasks(params: ListTasksParams = {}): Promise<Page<Task
   };
 }
 
-/** How many page requests `listAllTasks` keeps in the air at once. Six
- * is what a browser will actually run in parallel to one HTTP/1.1
- * origin anyway; asking for more queues in the browser instead of here,
- * and hitting the hub harder than its own transport allows buys
- * nothing. */
+/** How many page requests `listAllTasks` keeps in the air at once. Six is
+ * what a browser will actually run in parallel to one HTTP/1.1 origin
+ * anyway. */
 const MAX_PARALLEL_PAGES = 6;
 
-/** The hub caps one page at `MAX_TASKS_PAGE_SIZE` (200, see
- * `hub/src/handlers.rs`), but the overview's headline figures -- total
- * settled value, open bounty -- are wrong if they only count the most
- * recent page. This walks pages until the board is exhausted.
+/** The hub caps one page at `MAX_TASKS_PAGE_SIZE` (200), but the
+ * overview's headline figures -- total settled value, open bounty -- are
+ * wrong if they only count the most recent page. This walks pages until
+ * the board is exhausted.
  *
  * The first page is fetched alone for its `X-Total-Count`; every
  * remaining page is known from that answer and fetched concurrently,
- * `MAX_PARALLEL_PAGES` at a time. The previous version walked strictly
- * one page after another, which put 28 sequential round trips in front
- * of a 5600-task board -- off localhost that is 28 x RTT before the
- * page has its data, and it was the single largest latency on the
- * landing page (see Round 36 in `docs/web-v1-log.md`). Now it is two
- * sequential rounds: the probe, then the rest in flights of six.
+ * `MAX_PARALLEL_PAGES` at a time, so the walk is two sequential rounds
+ * rather than one round trip per page. Pages land in `pages[i]` by
+ * position, so the assembled list keeps the hub's oldest-first ordering
+ * whatever order the responses came back in.
  *
- * Pages land in `pages[i]` by position rather than arrival order, so
- * the assembled list keeps the hub's oldest-first ordering whatever
- * order the responses came back in.
+ * `maxItems` is a safety stop, not a target, and `complete` reports
+ * whether we actually saw everything so the UI can say so rather than
+ * presenting a partial total as a whole one. Every headline figure here
+ * is a sum over the whole task list, and the hub sorts ascending on
+ * `created_at`, so a truncated walk drops the **newest** tasks -- the
+ * half of a live market anyone is looking at. The fix when a real board
+ * outgrows this is the aggregate endpoint, not a bigger number.
  *
- * `maxItems` is a safety stop, not a target: it bounds how much a single
- * page load can pull if the board ever grows large, at which point the
- * honest fix is a server-side aggregate endpoint rather than a bigger
- * number here. `complete` reports whether we actually saw everything, so
- * the UI can say so instead of quietly presenting a partial total as a
- * whole one. Parallelism cuts the walk's latency, not its weight: every
- * client still downloads and re-derives what the hub could have summed
- * once, and the server-side endpoint remains the actual answer.
- *
- * **What hitting the stop actually costs.** Every headline figure on the
- * board -- open bounty, settled value, a sector's size, a market's
- * sparkline -- is a sum over the whole task list. Stop the walk early
- * and those sums are computed from the tasks that were fetched but
- * rendered as though they were the market, which is the site
- * misreporting its own size rather than merely showing less.
- *
- * And it truncates at the wrong end. The hub sorts ascending on
- * `created_at` (`tasks.sort_by_key` in `list_tasks`) and offsets slice
- * from the front, so the tasks dropped are the **newest** ones -- the
- * half of a live market anyone is actually looking at. A truncated
- * board would show sparklines flattening toward the right edge and a
- * "latest" feed that has quietly stopped being latest. Which is the
- * other reason this is a stop and not a policy: the fix when a real
- * board outgrows it is the aggregate endpoint, not walking from the
- * other end and inheriting the mirror-image problem.
- *
- * Raised to 24000 with the fixture's backfill (`dashboard/mock/hub.mjs`
- * seeds 20000 and caps its live growth at 22000); the two move
- * together, since a limit under the board's size means every figure on
- * the page is wrong by an unknown amount. */
+ * 24000 matches the fixture's backfill (`dashboard/mock/hub.mjs` seeds
+ * 20000 and caps growth at 22000); the two have to move together. */
 export async function listAllTasks(
   params: Omit<ListTasksParams, "offset" | "limit"> = {},
   maxItems = 24_000,
@@ -276,19 +236,15 @@ export async function listAllTasks(
   return { items, total, complete: items.length >= total };
 }
 
-/** The newest `count` tasks, for the ticker that now rides on every
- * page.
+/** The newest `count` tasks, for the ticker that rides on every page.
  *
- * Two small requests rather than `listAllTasks`. The tape needs a
- * dozen headlines; walking the whole board for them would pull a
- * megabyte of JSON on every page load and every poll, which is a real
- * cost to pay for a decoration.
+ * Two small requests rather than `listAllTasks`: the tape needs a dozen
+ * headlines, and walking the whole board for them would pull a megabyte
+ * of JSON on every page load and every poll.
  *
- * The hub lists tasks **oldest-first** by `created_at` (see
- * `list_tasks` in `hub/src/handlers.rs`), so the newest are the tail:
- * ask for the total with a one-item request, then take the last page.
- * The count is read from `X-Total-Count`, which is the same header the
- * paginated views already rely on. */
+ * The hub lists tasks **oldest-first** by `created_at`, so the newest are
+ * the tail: ask for the total with a one-item request, then take the last
+ * page. */
 export async function listLatestTasks(
   count = 14,
   params: Omit<ListTasksParams, "offset" | "limit"> = { status: "all" },
@@ -314,16 +270,13 @@ export const LEADERBOARD_PAGE_SIZE = 50;
 
 /** Which column ranks the standings, and which way.
  *
- * **Every column the table shows, and each of them ranked by the hub.**
- * `earned`, `completed` and `failed` are in the reputation map the hub
- * holds, so ranking by one costs it a sort. `net_worth` is the odd one:
- * a live balance the node answers for, one lookup per agent, so ranking
- * the field by it means pricing the whole field rather than the page.
- * The hub does exactly that — one bounded sweep, briefly cached (see
- * `handlers::net_worth_snapshot`) — which is what lets this be a real
- * ranking instead of the site reordering the fifty rows in hand. That
- * fake is what search used to do, and it is the reason `q` is
- * server-side now.
+ * Every column the table shows is ranked by the hub. `earned`,
+ * `completed` and `failed` are in the reputation map it holds, so ranking
+ * by one costs it a sort. `net_worth` is the odd one: a live balance the
+ * node answers for, one lookup per agent, which the hub prices in one
+ * bounded, briefly cached sweep (`handlers::net_worth_snapshot`) -- which
+ * is what lets this be a real ranking rather than a reorder of the fifty
+ * rows in hand.
  */
 export type LeaderboardSortKey = "earned" | "completed" | "failed" | "net_worth";
 
@@ -334,17 +287,13 @@ export interface LeaderboardSort {
 
 /** A page of the standings, plus the size of the whole field.
  *
- * Paged rather than a flat list because the hub now serves it that way:
- * fifty is the whole board on a small hub and the first page of it on a
- * real one, and the difference has to be visible or the ranking quietly
- * stops at fiftieth place. `total` comes from `X-Total-Count`, the same
- * header the task list uses.
+ * Paged because the hub serves it that way: fifty is the whole board on a
+ * small hub and the first page of it on a real one, and the difference
+ * has to be visible or the ranking quietly stops at fiftieth place.
  *
  * `q` searches by name or pubkey **across the whole field**, server-side.
- * Both leaderboards used to filter the fifty rows they had in hand,
- * which searches a page and presents it as a board -- the agent you are
- * looking for is on page 31 and no amount of typing will find them.
- * With the hub doing it, `total` is the number of matches and each
+ * Filtering the fifty rows in hand searches a page and presents it as a
+ * board. With the hub doing it, `total` is the number of matches and each
  * entry's `rank` is still its standing among all agents. */
 export async function getLeaderboard(
   offset = 0,
@@ -399,10 +348,9 @@ export interface KindSummaryDto {
 
 export interface BoardSummaryDto {
   /** RFC3339 creation time of the board's oldest task, or `null` on an
-   * empty board — the board's *age*, which is what decides how far back
-   * it is meaningful to chart. `window_ms` cannot answer that: it is a
-   * preset rounded up from the age, so a board eight days old and one
-   * twenty-nine days old both report 30D. */
+   * empty board — the board's *age*, which decides how far back it is
+   * meaningful to chart. `window_ms` cannot answer that: it is a preset
+   * rounded up from the age. */
   first_task_at: string | null;
   /** How far back every series reaches from the moment of the request. */
   window_ms: number;
@@ -426,26 +374,22 @@ export interface BoardSummaryDto {
  * sends back a few kilobytes of buckets. What it deliberately does not
  * send is percentages or groupings: change is period-over-period with a
  * "too thin to report" rule, and sectors are this site's reading of the
- * tag list -- both presentation decisions that live in `series.ts` and
+ * tag list -- presentation decisions that live in `series.ts` and
  * `sectors.ts` and would be frozen into the protocol if the hub made
- * them. So this returns raw per-bucket arrays and the client finishes
- * the job in O(buckets).
+ * them.
  *
- * Against a hub too old to have the route this 404s, which callers
- * should treat as "fall back to `listAllTasks`" rather than as an error
- * worth showing anyone -- see `LandingPage`. */
+ * Against a hub too old to have the route this 404s, which callers should
+ * treat as "fall back to `listAllTasks`" -- see `LandingPage`. */
 export function getBoardSummary(): Promise<BoardSummaryDto> {
   return getJson<BoardSummaryDto>("/board/summary");
 }
 
 /** One market's history, at a window and resolution the caller chooses.
  *
- * Mirrors `MarketSeriesDto` in `hub/src/handlers.rs`. This is the
- * endpoint behind the market chart, and it exists because
+ * Mirrors `MarketSeriesDto` in `hub/src/handlers.rs`. It exists because
  * `/board/summary` structurally cannot serve it: the summary's window is
- * derived from the board's age and its resolution is fixed at 24
- * buckets, so a chart with range tabs — the same market at six spans, at
- * more than a sparkline's resolution — has no way to ask. */
+ * derived from the board's age and its resolution is fixed at 24 buckets,
+ * so a chart with range tabs has no way to ask. */
 export interface MarketSeriesDto {
   /** Echoed back, so a response arriving after the reader has clicked
    * another market can be recognised as stale. */
@@ -455,7 +399,7 @@ export interface MarketSeriesDto {
   /** Epoch millis of the first bucket's left edge and the last one's
    * right edge. The axis is labelled from these rather than from "now
    * minus the window" computed locally — that would use the client's
-   * clock, which is not the clock that bucketed the data. */
+   * clock, not the clock that bucketed the data. */
   start_ms: number;
   end_ms: number;
   posted_series: number[];
@@ -498,16 +442,12 @@ const MAX_NAMES_PER_REQUEST = 64;
 
 /** Display names for a set of pubkeys, in one request.
  *
- * The alternative for a list of rows was the leaderboard, which only
- * carries agents that have *earned* -- so anyone who had posted work
- * without being paid for it yet showed as a bare key. This resolves any
- * well-formed pubkey the hub's registry knows, and answers `null` for
- * one it does not, which is a normal state rather than an error: a name
- * is a label the hub assigns, and the pubkey is what identifies an
- * agent.
+ * The leaderboard only carries agents that have *earned*, so anyone who
+ * had posted work without being paid yet showed as a bare key. This
+ * resolves any well-formed pubkey the registry knows, and answers `null`
+ * for one it does not -- a normal state rather than an error.
  *
- * Duplicates are collapsed before the request goes out -- a tape of
- * twenty rows is often a handful of distinct posters -- and an empty set
+ * Duplicates are collapsed before the request goes out, and an empty set
  * short-circuits rather than asking the hub about nothing. */
 export async function getNames(pubkeys: string[]): Promise<Map<string, string | null>> {
   const unique = [...new Set(pubkeys.filter(Boolean))].slice(0, MAX_NAMES_PER_REQUEST);

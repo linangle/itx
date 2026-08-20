@@ -7,32 +7,18 @@ import type { Piece } from "../lib/profileAssets.gen";
 
 /** An agent's profile icon, composed from `assets/profiles/`.
  *
- * ## The rule
- *
  * **Every worn piece has exactly one placement, shared by all six
  * animals.** The animal is what moves (`ALIGN`); the crown, the
- * headphones, the eyes never do. That is the whole design. A crown that
- * sits right on the cat and floats above the rabbit means the *rabbit's*
- * `ALIGN` is wrong -- it never means the crown needs a per-animal
- * exception, and adding one would put us back where an earlier version
- * was, with thirty-six numbers drifting against each other.
+ * headphones, the eyes never do. A crown that sits right on the cat and
+ * floats above the rabbit means the *rabbit's* `ALIGN` is wrong -- never
+ * that the crown needs a per-animal exception.
  *
- * ## Where the numbers came from
- *
- * The Illustrator exports all declare the same 4000x4000 artboard but
- * the artwork inside them is scattered: the party hat sits near the top
- * of its sheet, the crown two thirds of the way down its own. So native
- * coordinates place nothing, and every piece needs a measured offset.
- *
- * `PLACE` was derived from the owner's eight reference images (all of
- * the cat) rather than guessed: each piece's box was measured as a
- * fraction of the reference frame, mapped back into artboard units
- * through the cat -- which appears identically in all eight and so fixes
- * the mapping -- and centre-matched against its own artboard box. The
- * check that this is right is that the *sizes* then agree: the crown
- * measures 279x223 against a native 277x223, the sunglasses 674x265
- * against 676x263. Nothing is scaled anywhere; the artist drew every
- * piece at its intended size.
+ * The Illustrator exports all declare the same 4000x4000 artboard but the
+ * artwork inside them is scattered, so native coordinates place nothing
+ * and every piece needs a measured offset. `PLACE` was derived from the
+ * owner's eight reference images (all of the cat) by measuring each
+ * piece's box as a fraction of the reference frame and centre-matching it
+ * against its own artboard box. Nothing is scaled anywhere.
  *
  * To move an accessory on every animal at once, edit its `PLACE` entry.
  * To fix one animal wearing everything slightly wrong, edit its `ALIGN`
@@ -45,13 +31,9 @@ import type { Piece } from "../lib/profileAssets.gen";
  * would silently resize them relative to what they are wearing. */
 const FRAME = { x: 951, y: 719, size: 1427 };
 
-/** Per-animal nudge into the shared frame.
- *
- * `cat` is the origin: the reference images are all cats, so it is the
- * one animal whose placement is measured rather than matched. The other
- * five are aligned to it -- horizontally by the face centre-line and
- * vertically by the eye line, both read off a rasterized silhouette
- * profile and then corrected by eye. */
+/** Per-animal nudge into the shared frame. `cat` is the origin, since
+ * the reference images are all cats; the other five are aligned to it
+ * horizontally by the face centre-line and vertically by the eye line. */
 const ALIGN: Record<IconSpec["animal"], { dx: number; dy: number }> = {
   cat: { dx: 0, dy: 0 },
   bear: { dx: 28, dy: -32 },
@@ -61,12 +43,9 @@ const ALIGN: Record<IconSpec["animal"], { dx: number; dy: number }> = {
   rabbit: { dx: -96, dy: 250 },
 };
 
-/** Where each worn piece sits, as a nudge from its own artboard box.
- *
- * One entry per piece. The three eye pieces get separate entries rather
- * than sharing one because they were not drawn as overlays of each
- * other -- `dead` happens to land almost where it belongs and `open`
- * sits 215 units high of it. */
+/** Where each worn piece sits, as a nudge from its own artboard box. The
+ * three eye pieces get separate entries rather than sharing one because
+ * they were not drawn as overlays of each other. */
 const PLACE: Record<string, { dx: number; dy: number }> = {
   // eyes
   open: { dx: 25, dy: 215 },
@@ -90,10 +69,9 @@ const PLACE: Record<string, { dx: number; dy: number }> = {
   tie: { dx: -147, dy: 654 },
 };
 
-/** What `ProfileIcon` actually draws. Identical to `IconSpec` except
- * that the accessory and eyes may be omitted -- production never omits
- * them, but the tuning sheet needs an animal's bare face to judge
- * `ALIGN` without a hat confusing the picture. */
+/** What `ProfileIcon` actually draws. Identical to `IconSpec` except that
+ * the accessory and eyes may be omitted -- production never omits them,
+ * but the tuning sheet needs a bare face to judge `ALIGN`. */
 export type RenderSpec = Omit<IconSpec, "accessory" | "eyes"> & {
   accessory: IconSpec["accessory"] | null;
   eyes: IconSpec["eyes"] | null;

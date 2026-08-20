@@ -1,17 +1,12 @@
 /** The supplied search glyph (`assets/search_icon.svg`), inlined.
  *
- * Two changes from the file as exported. It ships as a *white plate
- * with a dark magnifier*, which on a dark panel renders as a light
- * blob -- so the plate is dropped and the glyph takes `currentColor`,
- * letting CSS colour it. And the lens is already a second subpath of
- * the same path, punched in the export by laying a white circle over
+ * Two changes from the file as exported. It ships as a *white plate with
+ * a dark magnifier*, which on a dark panel renders as a light blob -- so
+ * the plate is dropped and the glyph takes `currentColor`. And the lens
+ * is a second subpath punched in the export by laying a white circle over
  * it; `fill-rule: evenodd` makes it a real hole instead, so the ring is
- * transparent in the middle rather than painted with a background
- * colour that would have to be kept in sync with the panel.
- *
- * Lifted out of `landing/Board.tsx` when the terminal pages grew a
- * search of their own: one glyph, two surfaces, and a path string this
- * long is not a thing to keep two copies of.
+ * transparent rather than painted with a colour that would have to be
+ * kept in sync with the panel.
  */
 export default function SearchIcon({ size = 13 }: { size?: number }) {
   return (

@@ -1,22 +1,17 @@
-/** One row of choices, as pills: the control both inner pages filter
- * and order with.
+/** One row of choices, as pills: the control both inner pages filter and
+ * order with.
  *
- * Generic over what it is choosing rather than written once per page:
- * the market page picks a desk and an order, the newsroom picks a desk
- * and an order, and four hand-written pill rows would be four places to
- * fix the same hover state.
+ * Generic over what it is choosing rather than written once per page, or
+ * four hand-written pill rows would be four places to fix the same hover
+ * state.
  *
- * It follows the board's own pill grammar -- 999px, muted at rest, the
- * ground's colour under the pointer, a lifted fill on the one you are on
- * (see `.itx-board-navlist`) -- with a hairline added, because a
- * horizontal row of borderless words reads as a sentence rather than as
- * a set of buttons.
+ * It follows the board's own pill grammar (see `.itx-board-navlist`) with
+ * a hairline added, because a horizontal row of borderless words reads as
+ * a sentence rather than as a set of buttons.
  *
- * Buttons, not links: these filter what is already on the page. Nothing
- * is fetched and nowhere is navigated to, so a URL for each combination
- * would be a promise the page does not keep. `aria-pressed` is what
- * carries the state to a screen reader, which is the accurate reading of
- * a toggle that changes the view in place.
+ * Buttons, not links: these filter what is already on the page, so a URL
+ * for each combination would be a promise the page does not keep.
+ * `aria-pressed` carries the state to a screen reader.
  */
 export interface PillOption<T extends string> {
   value: T;

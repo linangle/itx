@@ -45,13 +45,12 @@ const PAGE_SIZE = 25;
 
 /** The table's columns, in order, each sortable by its own key.
  *
- * Two of the labels are shorter than the thing they name, and
- * deliberately: headers are `nowrap`, so every one of them sets its
- * column's minimum width. "task" over "description" saves 65px on the
- * column that gives its width away to all the others (`.grow`), and
- * "verified by" over "verification" saves 20 more while matching the
- * wording the sidebar already uses for that axis. Together they are the
- * difference between the row fitting a 1280px window and not. */
+ * Two of the labels are shorter than the thing they name, deliberately:
+ * headers are `nowrap`, so every one sets its column's minimum width.
+ * "task" over "description" saves 65px on the column that gives its width
+ * away to all the others, and "verified by" over "verification" saves 20
+ * more -- together the difference between the row fitting a 1280px window
+ * and not. */
 const COLUMNS: { key: SortKey; label: string; right?: boolean }[] = [
   { key: "task", label: "task" },
   { key: "kind", label: "verified by" },
@@ -65,8 +64,8 @@ const COLUMNS: { key: SortKey; label: string; right?: boolean }[] = [
 
 /** A column header that sorts. Module-level rather than nested in the
  * page: a component redeclared on every render is a new type each time,
- * so React unmounts and remounts it -- which would take keyboard focus
- * off the very header that was just activated. */
+ * so React unmounts and remounts it -- taking keyboard focus off the very
+ * header that was just activated. */
 function SortHeader({
   column,
   label,
@@ -115,25 +114,17 @@ function sectorsOf(task: TaskDto): string[] {
 /** The full board, filterable and paged.
  *
  * Status and capability filter server-side (the hub supports both), but
- * **kind and sector filter client-side** -- the hub has neither a
- * `?kind=` nor a `?sector=` param, and sectors are this site's reading
- * of the tag list rather than anything the protocol stores (see
- * `sectors.ts`), so there is nothing for the hub to filter on even in
- * principle. Since the whole board is already fetched for the overview's
- * aggregates, filtering in the browser costs nothing extra.
+ * **kind and sector filter client-side** -- the hub has neither param,
+ * and sectors are this site's reading of the tag list rather than
+ * anything the protocol stores. Since the whole board is already fetched
+ * for the overview's aggregates, filtering in the browser costs nothing.
  *
- * Paging is client-side for a related but stronger reason -- see
- * `Pager`'s own doc comment. If the board ever outgrows a single fetch,
- * the fix is a server-side kind filter, not a bigger page cap.
+ * Paging is client-side for a related but stronger reason -- see `Pager`.
  *
- * **On the two closed filters and the two open ones.** Kind and status
- * are `SelectField`s because they are fixed enums in `hub/src/board.rs`
- * -- three values and seven, and no hub will ever answer with an eighth
- * without a protocol change. Sector and market are `ComboFilter`s
- * because they are open sets: a capability is a free-form string a
- * poster invents, so the list of them is a snapshot of what the board
- * happens to hold today and has to be searchable rather than merely
- * scrollable. Closed or open, both open the same `.itx-menu`.
+ * Kind and status are `SelectField`s because they are fixed enums in
+ * `hub/src/board.rs`. Sector and market are `ComboFilter`s because they
+ * are open sets: a capability is a free-form string a poster invents, so
+ * the list has to be searchable rather than merely scrollable.
  */
 export default function TasksPage() {
   const [params, setParams] = useSearchParams();
@@ -156,18 +147,14 @@ export default function TasksPage() {
   /** What the sector and market pickers offer.
    *
    * Sourced from `/board/summary` rather than from the fetched tasks,
-   * because those two differ exactly when it matters: with a capability
+   * because those differ exactly when it matters: with a capability
    * filter applied the fetched set holds one tag, and a picker offering
-   * only the tag already picked is a picker you cannot use to change
-   * your mind. The summary describes the whole board regardless of what
-   * this page is currently showing.
+   * only the tag already picked is one you cannot use to change your mind.
    *
-   * Against a hub too old to serve `/board/summary` this 404s and the
-   * union below quietly falls back to the tags on the tasks in hand,
-   * which is complete whenever no capability filter is set -- so the
-   * pickers degrade to "everything you can currently see" rather than
-   * to nothing. No error is surfaced for it; the same route is optional
-   * on the landing page for the same reason. */
+   * Against a hub too old to serve the route this 404s and the union
+   * below falls back to the tags on the tasks in hand, so the pickers
+   * degrade to "everything you can currently see" rather than to
+   * nothing. */
   const summary = useAsync(() => getBoardSummary(), []);
   const catalog = useMemo(() => {
     const tags = new Set<string>();
@@ -209,12 +196,11 @@ export default function TasksPage() {
 
   /** Clicking a header sorts by it; clicking the column already sorted
    * flips the direction. A fresh column always starts ascending rather
-   * than inheriting the last column's direction -- "descending" means
-   * something different for money than it does for a name, and carrying
-   * it over surprises more often than it saves a click.
+   * than inheriting the last one's -- "descending" means something
+   * different for money than for a name.
    *
-   * The default (age, ascending -- newest first) is written out of the
-   * URL rather than into it, so the plain `/tasks` link stays plain. */
+   * The default (age, ascending) is written out of the URL rather than
+   * into it, so the plain `/tasks` link stays plain. */
   function sortBy(key: SortKey) {
     const direction: SortDirection =
       key === sortKey && sortDirection === "asc" ? "desc" : "asc";
@@ -248,10 +234,8 @@ export default function TasksPage() {
 
   /** Display names for the posters on **this page**, resolved in one
    * request. Not for the whole filtered board: `/names` caps a lookup at
-   * 64 keys, and a board of twenty thousand tasks is not a batch. A page
-   * of 25 is one request, re-issued when the page or the ordering
-   * changes, and a poster whose name hasn't landed yet renders exactly
-   * as it did before names existed -- as a truncated key. */
+   * 64 keys. A poster whose name hasn't landed yet renders as a truncated
+   * key. */
   const posterKeys = visible.map((task) => task.poster).join(",");
   const names = useAsync(
     () => getNames(posterKeys ? posterKeys.split(",") : []),

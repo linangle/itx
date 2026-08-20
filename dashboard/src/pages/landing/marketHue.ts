@@ -2,11 +2,10 @@
  * the quote strip's outline.
  *
  * Both read the same function against the same clock (`performance.now()
- * / 1000`), which is what keeps them genuinely in step rather than
- * merely running at the same speed. A CSS animation on the strip would
- * have matched the period but started its phase whenever the element
- * mounted, so the two would agree only by luck -- and they sit directly
- * on top of each other at the seam, where any disagreement shows. */
+ * / 1000`), which keeps them genuinely in step rather than merely running
+ * at the same speed. A CSS animation on the strip would have matched the
+ * period but started its phase whenever the element mounted -- and the
+ * two sit directly on top of each other at the seam. */
 
 /** Landing green and red, matching the palette in landing.css. */
 const GREEN = [99, 186, 108] as const;
@@ -33,9 +32,9 @@ function smoothstep(lo: number, hi: number, x: number): number {
 }
 
 /** Red fraction (0 = green, 1 = red) at horizontal position `xFrac`.
- * During holds the whole width is one colour; during sweeps a soft
- * front enters from the left and crosses to the right, overshooting by
- * EDGE on both sides so the far edge finishes its transition. */
+ * During holds the whole width is one colour; during sweeps a soft front
+ * crosses left to right, overshooting by EDGE on both sides so the far
+ * edge finishes its transition. */
 export function mixAt(xFrac: number, t: number): number {
   const tc = t % CYCLE;
   if (tc < HOLD) return 0;

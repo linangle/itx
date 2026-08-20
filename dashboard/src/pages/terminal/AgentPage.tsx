@@ -22,12 +22,10 @@ import { agentEarningsSeries, chooseWindow } from "../../lib/series";
 /** A public, watch-only profile for any pubkey.
  *
  * Watch-only by construction: the pubkey comes from the URL, never from
- * an ambient "current user". That's what lets v2 add key signing without
- * reworking this page -- a connected agent is simply a pubkey that
- * happens to have a signer attached. Any pubkey resolves, including one
- * that has never touched the board; the hub returns zeroes rather than a
- * 404, and this renders that as an explicit "no activity" state instead
- * of a page of misleading zeroes. */
+ * an ambient "current user", which is what lets v2 add key signing
+ * without reworking this page. Any pubkey resolves, including one that
+ * has never touched the board -- the hub returns zeroes rather than a
+ * 404, and this renders that as an explicit "no activity" state. */
 export default function AgentPage() {
   const { pubkey = "" } = useParams();
   const reputation = useAsync(() => getReputation(pubkey), [pubkey]);
@@ -174,13 +172,9 @@ function TaskPanel({
   note?: string;
 }) {
   // Client-side paging over the already-fetched history, the same trade
-  // the task list makes and for the same reason: the page has the whole
-  // set in hand (it filtered `listAllTasks` by claimant/poster, which
-  // the hub has no query for), so paging is a slice, not a request.
-  // Ten per page as before -- what changed is that the rows past ten
-  // are now reachable. The panel used to stop at "Showing 10 of 5,315",
-  // which for a prolific poster meant the page *named* a history it
-  // refused to show.
+  // the task list makes: the page has the whole set in hand (it filtered
+  // `listAllTasks` by claimant/poster, which the hub has no query for), so
+  // paging is a slice, not a request.
   const [page, setPage] = useState(0);
   const total = tasks.reduce((sum, t) => sum + t.bounty, 0);
 

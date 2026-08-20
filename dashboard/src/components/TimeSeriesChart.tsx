@@ -39,10 +39,9 @@ const VOLUME_GAP = 10;
  * why this needs to be told how wide it is.
  *
  * Hovering reads out the bucket under the cursor. The readout is
- * deliberately *inside* the plot rather than following the cursor as a
- * floating tooltip: a tooltip that tracks the pointer covers the very
- * part of the line being inspected, and at this size there is room to
- * put the numbers somewhere they never move.
+ * deliberately *inside* the plot rather than following the cursor: a
+ * tooltip that tracks the pointer covers the very part of the line being
+ * inspected.
  */
 export default function TimeSeriesChart({
   values,

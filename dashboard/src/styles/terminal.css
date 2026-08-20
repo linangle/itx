@@ -3,12 +3,12 @@
  * Every rule here is scoped under `.itx` (or `body.itx-body[data-theme]`,
  * applied only while one of these pages is mounted -- see `Shell.tsx`).
  * The three original dashboard pages render outside that scope and keep
- * their original bare appearance, so this file cannot change them.
+ * their bare appearance.
  *
  * ## Palette
  *
  * The landing surface's palette, so the board and the pages below it are
- * one design rather than two. Same values declared in landing.css:
+ * one design. Same values declared in landing.css:
  *
  *   Dark   #161418  page ground
  *   Light  #e9f2ed  primary text
@@ -18,50 +18,40 @@
  *   Red    #d8402d  "down", errors, disputes
  *   Line   #3f4351  every outline
  *
- * Green and red carry meaning (direction, verdicts), so they are never
- * used decoratively. Blue is the link colour and never signals state,
- * which keeps "interactive" and "good/bad" from colliding.
+ * Green and red carry meaning, so they are never used decoratively. Blue
+ * is the link colour and never signals state.
  *
  * ## Typography
  *
- * Helvetica Neue throughout, matching the landing surface. The first
- * iteration paired Instrument Sans with Geist Mono for tabular figures;
- * one family is the point of this pass, so numeric cells keep
- * `font-variant-numeric: tabular-nums` and let the face supply figures
- * where it can.
+ * Helvetica Neue throughout, matching the landing surface. Numeric cells
+ * keep `font-variant-numeric: tabular-nums`.
  *
  * ## Theming
  *
  * Dark is the design; `[data-theme="light"]` is a light counterpart from
- * the same hues, kept because `Shell`'s toggle predates this pass and
- * still works. Only tokens change per theme -- component rules below the
- * token blocks are theme-blind.
+ * the same hues. Only tokens change per theme -- component rules below
+ * the token blocks are theme-blind.
  */
 
 .itx {
-  /* Page ground, and panels **on** it rather than above it.
-     `--panel` used to be #1b191f, a hair lighter than the ground, which
-     is how a panel announced itself. It is the ground's own colour now
-     for the same reason the board's panels are: with a grid printed
-     behind everything, what sets a panel apart is that it is *opaque*
-     and hides the grid, not that it is a paler slab. A lifted fill on
-     top of a grid reads as a third surface. `--panel-hover` stays
-     lifted, since a row under the cursor still has to answer. */
+  /* Page ground, and panels **on** it rather than above it. `--panel` is
+     the ground's own colour, for the same reason the board's panels are:
+     with a grid printed behind everything, what sets a panel apart is
+     that it is *opaque* and hides the grid, not that it is a paler slab.
+     `--panel-hover` stays lifted, since a row under the cursor still has
+     to answer. */
   --bg: #161418;
   --panel: #161418;
   --panel-hover: #221f26;
 
   /* The grid behind it all -- same ink, pitch and weight as the board's,
      so scrolling from the landing page into these ones does not cross a
-     seam. `landing.css` explains where the numbers come from (they are
-     measured off the `grid.svg` both surfaces used to load).
+     seam. `landing.css` explains where the numbers come from.
 
      The board keeps ink and opacity apart because its grid is a separate
-     layer with an offset; here it is a background on the page element
-     itself, which has no opacity of its own to set -- so the two are
-     pre-multiplied: 0.417 ink x 0.3 layer = 0.125. Redeclared rather
-     than imported because the two stylesheets are independent scopes;
-     they are checked against each other, not derived. */
+     layer; here it is a background on the page element itself, which has
+     no opacity of its own, so the two are pre-multiplied:
+     0.417 x 0.3 = 0.125. */
   --grid-step: 16.812px;
   --grid-line: rgba(62, 67, 82, 0.125);
   --border: #3f4351;
@@ -79,9 +69,8 @@
   --brand-contrast: #161418;
   --warn: #d8402d;
 
-  /* Stat cards are outlined here, not filled. The landing board has no
-     filled panels, and a row of solid lime blocks was the loudest thing
-     carrying over from the first iteration. */
+  /* Stat cards are outlined here, not filled -- the landing board has no
+     filled panels. */
   --card-fill: transparent;
   --card-fill-text: #e9f2ed;
   --card-fill-dim: #b3b4bf;
@@ -90,35 +79,22 @@
   --radius-small: 9px;
   --row-height: 34px;
 
-  /* Every control in a filter bar is this tall -- fields, pickers, and
-     the buttons beside them. A token rather than a literal on the field
-     rule because the button that clears the filters is not a field and
-     still has to line up with them. */
+  /* Every control in a filter bar is this tall. A token rather than a
+     literal on the field rule, because the button that clears the filters
+     is not a field and still has to line up with them. */
   --control-h: 34px;
 
-  /* Field radius, taken from the landing surface's `--r-field` so a
-     search box on the board and one on these pages are the same shape.
-     These controls were 999px pills, which was a third rounding on a
-     site that already had 10px fields and 14px panels. */
+  /* Field radius, taken from the landing surface's `--r-field` so a search
+     box on the board and one on these pages are the same shape. */
   --radius-field: 10px;
 
   /* One type scale, shared in spirit with the board's: display sizes for
-     page and detail headings, then label / lead / body / meta / micro.
-     The first iteration had fourteen distinct sizes here including
-     half-pixel steps (12.5, 11.5, 10.5), which is what "no standard"
-     looks like in practice -- adjacent sizes that differ by half a pixel
-     read as identical but have to be maintained separately. */
+     page and detail headings, then label / lead / body / meta / micro. */
 
   /* Spacing scale. Every margin, padding and gap picks a step from this
-     rather than inventing a number -- the two files had 23 and 19
-     distinct spacing literals between them, including 5/7/9/11/13,
-     which differ from their neighbours by a pixel and read as identical.
-     6px is kept as a step because the dense table rows genuinely need a
-     tighter rhythm than 8px gives; everything above that is a 4px grid.
-
-     Values that are *not* rhythm keep their literals: 1px hairlines and
-     the gradient ring, fixed widths, min-heights, and anything in
-     calc()/vh. */
+     rather than inventing a number. 6px is kept because the dense table
+     rows need a tighter rhythm than 8px; above that it is a 4px grid.
+     Values that are not rhythm keep their literals. */
   --sp-1: 2px;
   --sp-2: 4px;
   --sp-3: 6px;
@@ -147,10 +123,9 @@
   --font-mono: "Helvetica Neue", Helvetica, Arial, sans-serif;
 
   /* The grid rides on the page element itself rather than on a layer of
-     its own -- there is nothing to offset it from here, unlike the
-     board, so a second box would only be a second box. Panels sit over
-     it and hide it, which is now the only thing that distinguishes one:
-     see `--panel`. */
+     its own -- there is nothing to offset it from here, unlike the board.
+     Panels sit over it and hide it, which is the only thing that
+     distinguishes one: see `--panel`. */
   background-color: var(--bg);
   background-image:
     repeating-linear-gradient(
@@ -170,33 +145,26 @@
   min-height: 100vh;
 }
 
-/* The light counterpart. Shared with the landing surface, value for
-   value (see the block of the same name in landing.css) -- the two are
-   one design, so a colour that exists on both is decided once.
+/* The light counterpart. Shared with the landing surface, value for value
+   -- the two are one design, so a colour that exists on both is decided
+   once.
  *
- * Every value here is derived rather than picked by eye, which is what
- * the first pass at this block was missing: it reached for white and for
- * pale greys that looked right in isolation and left the surface washed
- * out next to its dark twin.
+ * Every value is derived rather than picked by eye. Surfaces and lines are
+ * matched by *contrast against their own ground*: the dark panel sits
+ * 1.05:1 off the dark ground and the dark hairline 1.86:1 off it; these
+ * land at 1.05 and 1.90. White was 1.14 -- a distinct slab, on a board
+ * whose whole idea is that panels are outlines rather than cards.
  *
- * Surfaces and lines are matched by *contrast against their own ground*.
- * The dark panel sits 1.05:1 off the dark ground and the dark hairline
- * 1.86:1 off it; these land at 1.05 and 1.90, so a panel is the same
- * hair of lift and an outline the same weight in both themes. White was
- * 1.14 -- a distinct slab, on a board whose whole idea is that panels
- * are outlines rather than cards.
- *
- * The three hues keep their dark-theme hue angle to within two degrees
- * and take their lightness down to ~33%, which is what clears 4.5:1 for
- * a 13px figure on both the ground and a panel. */
+ * The three hues keep their dark-theme hue angle to within two degrees and
+ * take their lightness down to ~33%, which clears 4.5:1 for a 13px figure
+ * on both the ground and a panel. */
 .itx[data-theme="light"] {
   --bg: #e9f2ed;
   --panel: #e9f2ed;
   --panel-hover: #f8fbf9;
-  /* 0.417 x 0.22, the board's light-theme grid opacity. Dialled back
-     from the dark theme's 30% for the reason `landing.css` gives: the
-     ink is one fixed dark blue-grey, so the same value on a light
-     ground draws a mid-grey mesh at four times the contrast. */
+  /* 0.417 x 0.22, the board's light-theme grid opacity. Dialled back from
+     the dark theme's 30%: the ink is one fixed dark blue-grey, so the
+     same value on a light ground draws a mid-grey mesh. */
   --grid-line: rgba(62, 67, 82, 0.092);
   --border: #a9b0c0;
   --border-strong: #969db0;
@@ -247,18 +215,13 @@ body.itx-body[data-theme="light"] {
 /* Hover lifts the ink rather than underlining it.
  *
  * An underline is a heavy answer on a surface where whole tables are
- * links: the row's baseline gains a rule, the line box shifts, and on
- * the board's dense rows the effect was a page that twitched under the
- * cursor. A link that brightens says the same thing and moves nothing.
+ * links: the line box shifts, and on dense rows the effect is a page that
+ * twitches under the cursor.
  *
  * The mix is toward `--text`, not toward white, which is what makes one
- * rule work on both themes: `--text` is the near-white ink on the dark
- * theme and the near-black ink on the light one, so the hovered link
- * gains contrast against its own ground either way. Straight to white
- * would wash out on the light theme -- brighter there means *darker*.
- *
- * 22% is deliberately shy of the point where it reads as a second
- * colour: the link should look attended to, not swapped out. */
+ * rule work on both themes -- straight to white would wash out on the
+ * light theme, where brighter means *darker*. 22% is deliberately shy of
+ * the point where it reads as a second colour. */
 .itx a:hover {
   color: color-mix(in srgb, var(--accent-text) 78%, var(--text));
 }
@@ -287,8 +250,7 @@ body.itx-body[data-theme="light"] {
 
 /* The bar's own rules are in sitebar.css; these are the two things that
    have to follow this page's theme rather than the palette the bar
-   declares on itself. The landing does the same for its own light theme.
-   The tape's gradient is untouched -- it is the same tape here. */
+   declares on itself. The tape's gradient is untouched. */
 .itx .itx-sitebar {
   background: var(--bg);
   color: var(--text);
@@ -298,10 +260,9 @@ body.itx-body[data-theme="light"] {
   color: var(--brand);
 }
 
-/* How much sticky chrome sits above the content. Declared on the page
-   root rather than measured, and restated without the tape when the
-   visitor dismisses it -- `:has` reads that off the DOM, so nothing has
-   to be told. */
+/* How much sticky chrome sits above the content. Declared on the page root
+   rather than measured, and restated without the tape when the visitor
+   dismisses it -- `:has` reads that off the DOM. */
 .itx {
   --sb-h: calc(var(--sb-news-h) + var(--sb-brand-h));
 }
@@ -310,12 +271,10 @@ body.itx-body[data-theme="light"] {
   --sb-h: var(--sb-brand-h);
 }
 
-/* The top bar and its theme toggle are gone. The row was already down
-   to one control after the pill nav went -- a duplicate of the left
-   sidebar -- and the toggle now lives in the masthead, which is the one
-   piece of chrome the landing page also has, so the setting is reachable
-   from the front page too. Content starts under the masthead directly;
-   `--sb-h` is still what everything sticky here parks against. */
+/* The top bar and its theme toggle are gone: the toggle now lives in the
+   masthead, which is the one piece of chrome the landing page also has.
+   Content starts under the masthead directly; `--sb-h` is still what
+   everything sticky here parks against. */
 
 .itx-body-grid {
   display: grid;
@@ -380,10 +339,9 @@ body.itx-body[data-theme="light"] {
 }
 
 /* The heading over a group of nav entries. Set like a table header --
-   micro, faint -- so it reads as a label for what follows rather than
-   as another destination in the list. The top margin is what separates
-   one group from the entries above it; the first group sits below `all
-   tasks`, so there is always something to separate. */
+   micro, faint -- so it reads as a label for what follows rather than as
+   another destination. The top margin is what separates one group from
+   the entries above it. */
 .itx-sidebar-caption {
   font-size: var(--fs-micro);
   font-family: var(--font-mono);
@@ -406,11 +364,10 @@ body.itx-body[data-theme="light"] {
   letter-spacing: -0.2px;
 }
 
-/* The paragraph under a page title that says what the page is. Held to
-   a measure rather than the column's full width -- a single sentence
-   set across 1000px is read as a banner and skipped. The negative top
-   margin pulls it up under the h1's own bottom margin, which is sized
-   for a heading sitting directly on content. */
+/* The paragraph under a page title that says what the page is. Held to a
+   measure rather than the column's full width -- a single sentence set
+   across 1000px is read as a banner and skipped. The negative top margin
+   pulls it up under the h1's own bottom margin. */
 .itx-page-lede {
   font-size: var(--fs-meta);
   line-height: 1.55;
@@ -518,13 +475,11 @@ body.itx-body[data-theme="light"] {
 /* `background`/`border` are set explicitly (not just the bottom edge)
    because the legacy `index.css` is still imported globally for the
    `/legacy` pages and styles bare `th`/`td` with `#eee` fills and `#999`
-   borders -- without these overrides its rules bleed into the terminal
-   tables as white header strips and stray column separators. */
-/* Headings are lower case like everything else on the site, which is a
-   house rule and not a per-table choice: the labels are authored lower
-   case in the markup rather than being upper-cased here, so what a
-   screen reader reads out and what the eye reads are the same string.
-   `text-transform` could not tell `ITX` from a sentence anyway. */
+   borders, which would otherwise bleed into the terminal tables. */
+/* Headings are lower case like everything else on the site. The labels are
+   authored lower case in the markup rather than being upper-cased here,
+   so what a screen reader reads out and what the eye reads are the same
+   string -- `text-transform` could not tell `ITX` from a sentence. */
 .itx-table th {
   text-align: left;
   font-family: var(--font-mono);
@@ -554,30 +509,19 @@ body.itx-body[data-theme="light"] {
 
 /* A sortable header. The button carries the header's own type so the
    column looks unchanged until hovered -- a table where every heading
-   announces itself as a control is a table of eight buttons rather than
-   a set of columns.
+   announces itself as a control is a table of eight buttons.
 
    `flex`, not `inline-flex`, and that is the whole of the header row's
-   vertical alignment. An inline-flex box is placed by its baseline, and
-   a flex container takes its baseline from the first item in main-axis
+   vertical alignment: an inline-flex box is placed by its baseline, and a
+   flex container takes its baseline from the first item in main-axis
    order -- which under the `row-reverse` below is the arrow, not the
-   label. So a sorted heading sat 1px above its neighbours and an
-   unsorted one 3px below the plain `<th>`s beside it, purely because
-   an empty 7px span and one holding a triangle have different
-   baselines. A block-level flex box has no baseline to negotiate: every
-   heading is a line box in its cell, and they line up.
+   label. A block-level flex box has no baseline to negotiate.
 
-   `width: 100%` for a different reason than it looks: a `<button>` is a
-   form control, and browsers give form controls shrink-to-fit sizing
-   even at `display: flex` -- unlike an ordinary block box, which fills
-   its container without being told to. Left unset, the button was only
-   ever as wide as its label, so `text-align: right` on the `<th>` (which
-   aligns inline content, and stopped applying the moment this became a
-   block-level flex box) had nothing left to move, and the row-reverse
-   below packed the label against the *button's* right edge, wherever
-   that happened to land -- nowhere near the numbers beneath it. Filling
-   the cell first is what makes "pack against the end" and "pack against
-   the column's edge" the same instruction again. */
+   `width: 100%` because a `<button>` is a form control, and browsers give
+   form controls shrink-to-fit sizing even at `display: flex`. Left unset,
+   the button was only as wide as its label, so `text-align: right` on the
+   `<th>` had nothing to move and `row-reverse` packed the label against
+   the button's right edge rather than the column's. */
 .itx-sort {
   display: flex;
   width: 100%;
@@ -604,13 +548,10 @@ body.itx-body[data-theme="light"] {
 /* Holds its width whether or not an arrow is in it, so the header row
    doesn't shift sideways as the sorted column changes.
 
-   No colour of its own: it takes the heading's, the way the hub board's
-   caret does (`.itx-board-caret`). It was painted `--brand`, which made
-   one green mark sit in a row of grey headings and read as a status --
-   green means "up" or "open" everywhere else on this site -- when all
-   it says is which column is doing the ordering. Inheriting also means
-   it brightens with its heading, since the sorted column is the active
-   one. */
+   No colour of its own: it takes the heading's, the way the board's caret
+   does. Painted `--brand` it read as a status -- green means "up" or
+   "open" everywhere else -- when all it says is which column is ordering
+   the table. */
 .itx-sort-arrow {
   display: inline-block;
   min-width: 7px;
@@ -618,23 +559,20 @@ body.itx-body[data-theme="light"] {
   color: inherit;
 }
 
-/* A right-aligned column's header aligns with its figures, so the
-   button has to end at the cell's edge rather than start at it. The
-   button now fills the cell (it is block-level -- see `.itx-sort`), so
-   reversing the row is what puts the label against the right edge and
-   the arrow inboard of it. */
+/* A right-aligned column's header aligns with its figures, so the button
+   has to end at the cell's edge rather than start at it. The button fills
+   the cell (see `.itx-sort`), so reversing the row is what puts the label
+   against the right edge and the arrow inboard of it. */
 .itx-table th.right .itx-sort {
   flex-direction: row-reverse;
 }
 
 /* Every cell is `nowrap`, so a table with enough columns has a minimum
-   width the panel can't always give it -- and the panel clips
-   (`overflow: hidden`, for its rounded corners) rather than scrolling,
-   so the overflow is silently invisible. The task list crossed that line
-   at eight columns: at a 1280px window it wants 749px inside a 720px
-   panel, and Age simply wasn't there. Scrolling the table inside its own
-   box keeps the panel's corners and the pager where they are, and does
-   nothing at all on a wide window, where the columns fit. */
+   width the panel can't always give it -- and the panel clips (for its
+   rounded corners) rather than scrolling, so the overflow is silently
+   invisible. The task list crossed that line at eight columns. Scrolling
+   the table inside its own box keeps the panel's corners and the pager
+   where they are, and does nothing at all on a wide window. */
 .itx-table-scroll {
   overflow-x: auto;
 }
@@ -653,13 +591,11 @@ body.itx-body[data-theme="light"] {
 .itx-table .grow {
   width: 100%;
   max-width: 0;
-  /* A floor, not a width. `max-width: 0` makes this column surrender
-     space to every other one, which is right while there is space to
-     surrender and wrong once there isn't -- at a narrow window the task
-     list's eight columns took the lot and left the descriptions as
-     "Tri…", "La…", a column of ellipses. Below this the table stops
-     shrinking and scrolls sideways inside `.itx-table-scroll` instead,
-     which costs a swipe and keeps the rows readable. */
+  /* A floor, not a width. `max-width: 0` makes this column surrender space
+     to every other one, which is right while there is space to surrender
+     and wrong once there isn't -- at a narrow window the descriptions
+     became a column of ellipses. Below this the table stops shrinking and
+     scrolls sideways inside `.itx-table-scroll` instead. */
   min-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -730,11 +666,10 @@ body.itx-body[data-theme="light"] {
 
 /* --------------------------------------------------------- agent naming */
 
-/* An agent cell: the profile icon, then name over key. The name/key
-   pair is stacked rather than inline because the name is the thing
-   being scanned down the column and a trailing key on the same line
-   would push every name's right edge to a different place, which is
-   exactly what makes a column stop reading as a column. */
+/* An agent cell: the profile icon, then name over key. Stacked rather than
+   inline because the name is what is scanned down the column, and a
+   trailing key on the same line would push every name's right edge to a
+   different place. */
 .itx-agent {
   display: inline-flex;
   align-items: center;
@@ -787,10 +722,10 @@ body.itx-body[data-theme="light"] {
   margin: 0;
 }
 
-/* The agent page's header: portrait beside the name/key block. The
-   margin that used to live on the key/title moves out here so the pair
-   stays vertically centred against the portrait regardless of whether
-   a name line is present. */
+/* The agent page's header: portrait beside the name/key block. The margin
+   that used to live on the key/title moves out here so the pair stays
+   vertically centred against the portrait whether or not a name line is
+   present. */
 .itx-agent-head {
   display: flex;
   align-items: center;
@@ -820,20 +755,14 @@ body.itx-body[data-theme="light"] {
 
 /* One field, four controls. The filter bar holds two `<select>`s, two
    combo boxes and (on the leaderboard) a search field, and until these
-   were unified the selects wore the platform's own chrome -- a taller
-   box, a squarer corner, a double-caret on macOS -- beside three
+   were unified the selects wore the platform's own chrome beside three
    controls that didn't. `appearance: none` takes the native widget off
-   the select so it can be given the same border, radius, height and
-   caret as everything else.
+   the select so it can be given the same border, radius, height and caret
+   as everything else.
 
-   The radius is the landing surface's `--r-field`, not the 999px pill
-   these started as: the board's own search box is a 10px field, and two
-   search boxes on one site being different shapes was the thing that
-   gave the split away.
-
-   `--control-h` is what actually makes them line up: padding alone
-   leaves each control as tall as its own font metrics decide, and an
-   input and a select disagree about that by a pixel or two. */
+   `--control-h` is what actually makes them line up: padding alone leaves
+   each control as tall as its own font metrics decide, and an input and a
+   select disagree about that by a pixel or two. */
 .itx-input,
 .itx-select,
 .itx-search {
@@ -849,9 +778,9 @@ body.itx-body[data-theme="light"] {
 }
 
 /* The closed state of `SelectField`. A `<button>` now rather than a
-   `<select>` -- see the component for why -- so it needs the alignment
-   and cursor a form control had by default, and `text-align` because a
-   button centres its label and a field does not. */
+   `<select>` -- see the component -- so it needs the alignment and cursor
+   a form control had by default, and `text-align` because a button centres
+   its label and a field does not. */
 .itx-select {
   appearance: none;
   display: inline-flex;
@@ -863,10 +792,10 @@ body.itx-body[data-theme="light"] {
   color: var(--text-dim);
 }
 
-/* The caret is a `<Triangle>`, the same mark every other arrow on the
-   site is, drawn on the wrapper rather than inside the control: it
-   started life over a `<select>`, which cannot hold a child, and stayed
-   there because the wrapper is also what the menu positions against. */
+/* The caret is a `<Triangle>`, the same mark every other arrow on the site
+   is, drawn on the wrapper rather than inside the control: it started life
+   over a `<select>`, which cannot hold a child, and the wrapper is also
+   what the menu positions against. */
 .itx-select-wrap {
   position: relative;
   display: inline-flex;
@@ -969,12 +898,10 @@ body.itx-body[data-theme="light"] {
   flex-wrap: wrap;
 }
 
-/* A button in the filter bar is one of the controls, not a call to
-   action standing beside them: the same 34px height, the same 10px
-   corner, the same weight as the text in the fields it sits next to.
-   `.itx-button`'s 999px pill and 600 weight are for buttons that want
-   to be pressed; "clear filters" is an undo, and dressing it as the
-   loudest thing in the row was the only reason it stood out. */
+/* A button in the filter bar is one of the controls, not a call to action
+   standing beside them: the same height, corner and weight as the fields
+   it sits next to. `.itx-button`'s pill and 600 weight are for buttons
+   that want to be pressed; "clear filters" is an undo. */
 .itx-filters .itx-button {
   height: var(--control-h);
   padding: 0 var(--sp-6);
@@ -1031,10 +958,7 @@ body.itx-body[data-theme="light"] {
 
    One dropdown for the whole site. Both filter controls open this: the
    combo box, whose rows are the markets it found, and `SelectField`,
-   whose rows are a fixed enum. They used to open two different things --
-   the select's menu was the platform's, drawn outside the page with the
-   system's own rounding and checkmark -- which read as two designs in
-   one row of controls. Neither owns these rules now, so neither can
+   whose rows are a fixed enum. Neither owns these rules, so neither can
    drift from the other. */
 
 .itx-menu {
@@ -1127,12 +1051,10 @@ a.itx-chip:hover {
 }
 
 /* A bare triangle, the same control the board's carousel and its rail
-   pager are: no outline, and hover is a 1.1 scale with the ink coming
-   up to full. The circle it used to wear was one of three different
-   pager treatments on the site, and the green it used to go was the
-   only place `--brand` signalled "hoverable" rather than "up" -- which
-   is the one thing green is supposed to mean here. The 26px stays as
-   the hit area. */
+   pager are: no outline, and hover is a 1.1 scale with the ink coming up
+   to full. The circle it used to wear was one of three pager treatments
+   on the site, and the green it went was the only place `--brand`
+   signalled "hoverable" rather than "up". */
 .itx-pager button {
   display: inline-flex;
   align-items: center;
@@ -1197,9 +1119,9 @@ a.itx-chip:hover {
   letter-spacing: 0;
 }
 
-/* Flex, because the `←` it used to be typed is now the site's triangle
-   and needs a gap of its own; the arrow is sized down from the label so
-   it reads as a mark beside the words rather than a second word. */
+/* Flex, because the arrow is the site's triangle and needs a gap of its
+   own. It is sized down from the label so it reads as a mark beside the
+   words rather than a second word. */
 .itx-back {
   display: inline-flex;
   align-items: center;

@@ -10,18 +10,15 @@ import {
 import type { IconSpec } from "../../lib/profileIcon";
 
 /** Dev-only contact sheet for tuning `ProfileIcon`'s `ALIGN` table.
- *
  * Routed only when `import.meta.env.DEV` -- see App.tsx.
  *
- * The tuning question is always "does this one piece sit right on all
- * six animals", so every view is one row per piece with the six animals
- * side by side -- a piece that drifts shows up as a stepped line rather
- * than something you have to hold in your head between two screens.
- * `?piece=crown&size=240` isolates one row big.
+ * The tuning question is always "does this one piece sit right on all six
+ * animals", so every view is one row per piece with the six animals side
+ * by side. `?piece=crown&size=240` isolates one row big.
  *
  * Icons are found by brute-force search for a pubkey whose spec matches
- * the wanted cell. That exercises the real `iconSpec` rather than a
- * bypass that could drift from it, and at dev-page scale it is free. */
+ * the wanted cell, which exercises the real `iconSpec` rather than a
+ * bypass that could drift from it. */
 function findPubkey(match: (spec: IconSpec) => boolean): string | null {
   for (let i = 0; i < 400_000; i++) {
     const candidate = `probe-${i}`;
@@ -56,10 +53,9 @@ function Row({
   );
 }
 
-/** Bare faces: animal plus one eye piece, nothing worn. This is the
- * view for tuning `ALIGN`, and it has to come first -- an accessory
- * placement judged against a misaligned animal just bakes the
- * misalignment into the accessory. */
+/** Bare faces: animal plus one eye piece, nothing worn. The view for
+ * tuning `ALIGN`, and it has to come first -- an accessory placement
+ * judged against a misaligned animal bakes the misalignment in. */
 function AlignRow({ size, eyes }: { size: number; eyes: IconSpec["eyes"] | null }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>

@@ -15,17 +15,13 @@ import { agentEarningsSeries, chooseWindow } from "../../lib/series";
 /** The standings, fifty agents at a time.
  *
  * Paged **server-side**, unlike `/tasks`: the hub ranks the whole field
- * and serves a slice of it (see `getLeaderboard`), so page two is a
- * request rather than a slice of something already in hand. Fifty is the
- * hub's own ceiling, not a choice made here -- a page costs one node
- * lookup per agent for the balance column, and that fan-out is what the
- * ceiling exists to bound.
+ * and serves a slice of it, so page two is a request rather than a slice
+ * of something already in hand. Fifty is the hub's own ceiling -- a page
+ * costs one node lookup per agent for the balance column.
  *
- * Search is the hub's too, and that is the point of it: filtering the
- * fifty rows in hand searches a page and calls it a board. Each row
- * carries the `rank` the hub computed over the unfiltered field, so a
- * search reports where an agent actually stands rather than renumbering
- * the matches 1, 2, 3. */
+ * Search is the hub's too: filtering the fifty rows in hand searches a
+ * page and calls it a board. Each row carries the `rank` the hub computed
+ * over the unfiltered field. */
 export default function LeaderboardPage() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
@@ -52,10 +48,9 @@ export default function LeaderboardPage() {
   }, [query]);
 
   /** Clicking a column re-ranks the whole field, so page 7 of the old
-   * order means nothing in the new one. Same reason a new search resets
-   * the page above. Clicking the active column flips its direction;
-   * taking over from another column starts at `desc`, because "most" is
-   * what anyone means the first time they sort by a number. */
+   * order means nothing in the new one. Clicking the active column flips
+   * its direction; taking over from another starts at `desc`, because
+   * "most" is what anyone means the first time they sort by a number. */
   function onSort(key: LeaderboardSortKey) {
     setPage(0);
     setSort((current) =>
@@ -208,12 +203,9 @@ export default function LeaderboardPage() {
   );
 }
 
-/** What the panel head says the standings are ordered by.
- *
- * It read "ranked by lifetime earnings" whatever the table was actually
- * sorted by, which was true when earnings were the only ordering and a
- * plain contradiction the moment a column could be clicked -- the panel
- * naming one ranking directly above another. */
+/** What the panel head says the standings are ordered by. It read "ranked
+ * by lifetime earnings" whatever the table was actually sorted by, which
+ * became a plain contradiction the moment a column could be clicked. */
 function rankedBy(sort: LeaderboardSort): string {
   const column = {
     earned: "lifetime earnings",
@@ -226,22 +218,18 @@ function rankedBy(sort: LeaderboardSort): string {
   return `ranked by ${column}${sort.direction === "asc" ? ", fewest first" : ""}`;
 }
 
-/** A sortable column heading, in the task list's own idiom: the label,
- * and a caret on whichever column is ordering the table pointing the way
- * it is ordered.
+/** A sortable column heading: the label, and a caret on whichever column
+ * is ordering the table.
  *
- * **What it orders is the field, not the page.** Clicking one re-asks
- * the hub with `?sort=`, which ranks all several thousand agents and
- * serves the fifty that belong at the top of that ranking. Sorting the
- * fifty rows already in hand would answer a different question in the
- * same shape -- "the highest earners, reordered by completions" reads
- * exactly like "the most completions" and is not it. That is the same
- * mistake search made before the hub took it over.
+ * **What it orders is the field, not the page.** Clicking one re-asks the
+ * hub with `?sort=`, which ranks all several thousand agents. Sorting the
+ * fifty rows in hand would answer a different question in the same shape
+ * -- "the highest earners, reordered by completions" reads exactly like
+ * "the most completions" and is not it.
  *
  * `aria-sort` carries the same fact to a screen reader, and marks the
- * other sortable columns `none` -- which is a different claim from
- * silence, and is why the unsortable net worth header has no `aria-sort`
- * at all. */
+ * other sortable columns `none` -- a different claim from silence, which
+ * is why the unsortable net worth header has none at all. */
 function SortHeader({
   column,
   label,

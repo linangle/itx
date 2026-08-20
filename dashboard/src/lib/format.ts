@@ -5,17 +5,15 @@
  *
  * `btclib`'s `INITIAL_REWARD` is 50 and documented as "multiply by 10^8 to
  * get satoshis" (`lib/src/lib.rs`), so the chain's base unit is 1e-8 of a
- * coin, exactly like Bitcoin. Every amount the hub reports -- bounties,
- * `total_earned`, `net_worth`, `HUB_TRANSACTION_FEE` -- is in these base
- * units. For scale: the faucet grants 50_000_000 base units, which is
- * 0.5 ITX. */
+ * coin, exactly like Bitcoin. Every amount the hub reports is in these
+ * base units. */
 export const UNITS_PER_ITX = 100_000_000;
 
 /** Renders a base-unit amount as ITX.
  *
  * Trailing zeros are trimmed but at least two decimals are kept, so a
  * column of amounts stays visually aligned without padding every row out
- * to the full eight decimal places a base unit technically allows. */
+ * to the full eight decimal places. */
 function assemble(itx: number, decimalPlaces: number): string {
   const [whole, raw] = itx.toFixed(decimalPlaces).split(".");
   // Strip every trailing zero first, then pad back up to the two-decimal
@@ -27,17 +25,14 @@ function assemble(itx: number, decimalPlaces: number): string {
 
 /** Renders a base-unit amount as ITX for display in a column.
  *
- * Capped at four decimals. A base unit is 1e-8 of a coin, so rendering
- * every amount at full precision produces things like `2.50745433` --
- * technically exact, and completely unscannable stacked forty rows deep.
- * Four decimals is the point where a column still reads as a column.
+ * Capped at four decimals: a base unit is 1e-8 of a coin, and full
+ * precision produces things like `2.50745433`, which is unscannable
+ * stacked forty rows deep.
  *
- * The exception is an amount so small that four decimals would round it
- * to zero. The flat network fee is 1_000 base units, and showing that as
- * `0.00` would make every fee in the UI look like nothing at all -- so
- * anything below the four-decimal floor falls back to full precision
- * rather than lying about being zero. Use `formatItxExact` where the
- * precise figure matters more than the alignment. */
+ * The exception is an amount so small four decimals would round it to
+ * zero -- the flat network fee is 1_000 base units, and showing that as
+ * `0.00` would make every fee look like nothing at all. Use
+ * `formatItxExact` where precision matters more than alignment. */
 export function formatItx(baseUnits: number): string {
   const itx = baseUnits / UNITS_PER_ITX;
   const rounded = assemble(itx, 4);
@@ -57,10 +52,9 @@ export function formatItxExact(baseUnits: number): string {
  * scale: 1.2K, 3.4M. Falls back to the exact figure below 1000. */
 export function formatCompactItx(baseUnits: number): string {
   const itx = baseUnits / UNITS_PER_ITX;
-  // Plain "0", not "0.00". Two decimals on a zero are two decimals of
-  // nothing, and the place this shows most is a chart's baseline label,
-  // where the axis reads `4K 3K 2K 1K 0.00` and the odd one out is the
-  // only one that isn't a quantity.
+  // Plain "0", not "0.00". The place this shows most is a chart's baseline
+  // label, where the axis reads `4K 3K 2K 1K 0.00` and the odd one out is
+  // the only one that isn't a quantity.
   if (itx === 0) return "0";
   if (Math.abs(itx) >= 1000) {
     return new Intl.NumberFormat("en-US", {
@@ -78,8 +72,8 @@ export function formatCount(n: number): string {
 /** A signed percentage, terminal style: `+1.30%`, `-1.65%`, `0.00%`.
  *
  * `null` renders as an em dash -- used wherever a change genuinely can't
- * be computed (no prior period to compare against), which is different
- * from a change that happens to be zero. */
+ * be computed, which is different from a change that happens to be
+ * zero. */
 export function formatPct(pct: number | null): string {
   if (pct === null || !Number.isFinite(pct)) return "—";
   const sign = pct > 0 ? "+" : "";
@@ -105,27 +99,20 @@ export function truncatePubkey(pubkey: string, lead = 6, tail = 4): string {
 
 /** Drops a leading capital, for text the site did not write.
  *
- * The whole surface is set in lower case -- headings, labels, market
- * names, nav. Task descriptions arrive from agents sentence-cased
- * ("Fine-tune a sentiment classifier"), so every row of the tape and
- * the task list started with the one capital letter on the page.
+ * The whole surface is set in lower case. Task descriptions arrive from
+ * agents sentence-cased, so every row of the tape started with the one
+ * capital letter on the page.
  *
  * **Only the first letter, and only when a lower-case letter follows
- * it.** Blanket `toLowerCase()` on someone else's text destroys what it
- * means: `SQL`, `GPU`, `PDF` are the words those rows are about.
- * Requiring the next character to be a lower-case letter is what tells
- * a sentence from everything else a leading capital can be -- an
+ * it.** Blanket `toLowerCase()` destroys what someone else's text means:
+ * `SQL`, `GPU`, `PDF` are the words those rows are about. Requiring the
+ * next character to be lower case is what tells a sentence from an
  * acronym (`OCR a box of notebooks`), a term of art (`A/B test the
- * checkout`), an initial. Each of those keeps its capital; only
- * "Fine-tune a classifier" loses one.
+ * checkout`), or an initial.
  *
- * Mid-sentence proper nouns are untouched regardless -- "Optimize a
- * Postgres query" becomes "optimize a Postgres query", which is the
- * house style applied to the sentence rather than to the facts in it.
- *
- * Done here rather than in CSS because `text-transform: lowercase`
- * cannot tell an acronym from a sentence, and it would rewrite the
- * accessible name that a screen reader announces. */
+ * Done here rather than in CSS because `text-transform: lowercase` cannot
+ * tell an acronym from a sentence, and it would rewrite the accessible
+ * name a screen reader announces. */
 export function lowerFirst(text: string): string {
   const [first, second] = text;
   if (!first || first === first.toLowerCase()) return text;
@@ -138,9 +125,8 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /** Short relative time, past or future: `3m`, `4h`, `2d`, `just now`.
- *
- * Unit-less by design -- the column header says whether it's age or time
- * remaining, so repeating "ago" on every row is noise. */
+ * Unit-less by design -- the column header says whether it is age or time
+ * remaining. */
 export function formatRelative(iso: string, now: number = Date.now()): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "—";
@@ -154,10 +140,9 @@ export function formatRelative(iso: string, now: number = Date.now()): string {
 /** A deadline rendered as time remaining, or as how long ago it lapsed.
  *
  * Separate from `formatRelative` because a deadline's *direction* is the
- * whole point -- "in 2h" and "2h ago" mean opposite things for a task
- * you're deciding whether to claim, and a bare "2h" hides which one it
- * is. `expired` is returned rather than baked into the string so callers
- * can colour it without re-parsing. */
+ * whole point -- "in 2h" and "2h ago" mean opposite things for a task you
+ * are deciding whether to claim. `expired` is returned rather than baked
+ * into the string so callers can colour it without re-parsing. */
 export function formatCountdown(
   iso: string,
   now: number = Date.now(),
@@ -175,13 +160,10 @@ export function formatCountdown(
 /** Absolute timestamp for tooltips and detail views, where the exact
  * moment matters more than brevity.
  *
- * Lower-cased on the way out, like everything else the site sets:
- * `Intl` capitalises the month and the meridiem ("Aug 12, 2026, 08:18
- * PM"), which left the two capitals on a detail page sitting on the
- * one line the reader is most likely to be looking at. Safe to do
- * bluntly here, unlike `lowerFirst` -- this string is a date the
- * formatter built, not prose someone wrote, so there is no acronym in
- * it to protect. */
+ * Lower-cased on the way out, like everything else the site sets: `Intl`
+ * capitalises the month and the meridiem. Safe to do bluntly here, unlike
+ * `lowerFirst` -- this is a date the formatter built, not prose someone
+ * wrote, so there is no acronym in it to protect. */
 export function formatTimestamp(iso: string): string {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return "—";
@@ -197,10 +179,9 @@ export function formatTimestamp(iso: string): string {
 }
 
 /* Lowercase at the source, like every other label on the site. The
- * micro-labels that read as small caps (table headers, panel titles,
- * fact terms) get there through `text-transform` in CSS, so authoring
- * these in sentence case only meant every caller having to
- * `.toLowerCase()` them back. */
+ * micro-labels that read as small caps get there through `text-transform`
+ * in CSS, so authoring these in sentence case only meant every caller
+ * having to `.toLowerCase()` them back. */
 const KIND_LABELS: Record<string, string> = {
   hash_match: "hash match",
   consensus: "consensus",
@@ -215,15 +196,13 @@ export function formatKind(kind: string): string {
  * rather than the protocol's.
  *
  * `hash_match` / `consensus` / `disputable` are accurate names for what
- * they are in `hub/src/board.rs`, and they say nothing at all to someone
- * who has not read it -- a visitor sees three nav entries and cannot
- * guess what any of them lists. Every one of them answers the same
- * question, *how does this task get judged correct*, so the labels name
- * the judging method: a machine check, a vote, or a challenge window.
+ * they are in `hub/src/board.rs` and say nothing to someone who has not
+ * read it. Every one of them answers the same question -- *how does this
+ * task get judged correct* -- so the labels name the judging method: a
+ * machine check, a vote, or a challenge window.
  *
- * The protocol name is never dropped, only demoted -- it stays beside
- * the plain label in the filter dropdown and on the task detail page, so
- * anyone reading the API alongside the site can still line the two up.
+ * The protocol name is never dropped, only demoted: it stays beside the
+ * plain label in the filter dropdown and on the task detail page.
  * `formatKind` is untouched and still returns the protocol name. */
 const KIND_VERIFICATION_LABELS: Record<string, string> = {
   hash_match: "automatic check",

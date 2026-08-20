@@ -12,26 +12,20 @@ import {
 
 /** One sample prediction market, drawn as a card.
  *
- * Its own module because it now has two homes: the board's carousel
+ * Its own module because it has two homes: the board's carousel
  * (`PredictionMarket`) and the full market page (`PredictionsPage`).
- * Copying three hundred lines of chart into the second one would have
- * left two cards to keep in step, and the whole point of the page is
- * that it shows the same market the board does, more of them.
  *
  * The card is layout-agnostic: it fills whatever box it is given. The
  * carousel sizes it as a flex item and the page as a grid cell — see
- * `.itx-pm-card` and `.itx-pmpage-grid` — and neither dimension is
- * decided here.
+ * `.itx-pm-card` and `.itx-pmpage-grid`.
  */
 
-/** Which way an outcome's odds lean, as the class that colours its
- * pill: the favoured side green, the other red, neither at an even
- * quote.
+/** Which way an outcome's odds lean, as the class that colours its pill.
  *
  * Derived from the odds themselves rather than from whether the row is
  * the "yes" -- in a binary market the two prices sum to 100, so this is
- * simply "is this the side above the coin flip", and it stays right if
- * a market's favourite changes. */
+ * simply "is this the side above the coin flip", and it stays right if a
+ * market's favourite changes. */
 function leaning(pct: number): "up" | "down" | "flat" {
   if (pct === 50) return "flat";
   return pct > 50 ? "up" : "down";
@@ -134,14 +128,11 @@ export default function MarketCard({ market }: { market: SampleMarket }) {
  * Drawn at real pixel coordinates for the same reason `TimeSeriesChart`
  * is -- a scaled `viewBox` stretches label text and stroke widths along
  * with the geometry -- so it measures its box and renders nothing until
- * it has a width. Stepped, not smoothed: odds move when someone trades,
- * and the discrete tick is the shape of that.
+ * it has a width. Stepped, not smoothed: odds move when someone trades.
  *
- * Hovering reads the price at that moment: a rule down the plot, a dot
- * where each line crosses it, and each outcome's odds beside its own
- * dot. Both outcomes at once rather than whichever line is nearest the
- * cursor -- in a binary market the pair *is* the quote, and a reader
- * following one line would be left to do the subtraction. */
+ * Hovering reads the price at that moment. Both outcomes at once rather
+ * than whichever line is nearest the cursor -- in a binary market the
+ * pair *is* the quote. */
 const CHART_H = 248;
 /** Room above the plot for the hovered moment, which prints centred on
  * the rule. Part of the chart's box rather than an overlay, so the
@@ -157,10 +148,9 @@ const GRID_STEP_PCT = 15;
 
 /** Roughly how wide the readout's text runs, per character, at its 13px
  * bold. Estimated rather than measured: `getComputedTextLength` forces a
- * layout read, and this runs on every pointer move to place a plate
- * whose edges are 60%-opaque and a few pixels from any glyph. Generous
- * on purpose -- a plate slightly too wide reads as padding, one too
- * narrow reads as a clipped label. */
+ * layout read, and this runs on every pointer move. Generous on purpose
+ * -- a plate slightly too wide reads as padding, one too narrow reads as
+ * a clipped label. */
 const CHAR_W = 6.9;
 const PLATE_PAD = 7;
 
@@ -168,13 +158,11 @@ function readoutWidth(text: string): number {
   return text.length * CHAR_W + PLATE_PAD * 2;
 }
 
-/** How close the two readouts may sit before they are parted.
- *
- * They are pinned to their own lines, and the lines cross -- at a
- * crossing the two labels land on top of each other and neither can be
- * read, which is exactly the moment the chart is most worth reading.
- * When that happens the *labels* separate about the midpoint while the
- * dots stay on their lines, so nothing misreports where a price is. */
+/** How close the two readouts may sit before they are parted. They are
+ * pinned to their own lines, and the lines cross -- at a crossing the two
+ * labels land on top of each other, which is exactly the moment the chart
+ * is most worth reading. The *labels* separate about the midpoint while
+ * the dots stay on their lines. */
 const MIN_LABEL_GAP = 22;
 
 function OddsChart({ market }: { market: SampleMarket }) {
@@ -190,10 +178,10 @@ function OddsChart({ market }: { market: SampleMarket }) {
     const plotW = width - PAD_LEFT - PAD_RIGHT;
     const plotH = CHART_H - PAD_TOP - PAD_BOTTOM;
 
-    // The domain hugs the data the way the reference's does, rather
-    // than spanning 0-100: gridlines at the first step-multiples that
-    // clear the lines' extremes, so two lines at 72/28 use the plot's
-    // height instead of its middle half.
+    // The domain hugs the data the way the reference's does, rather than
+    // spanning 0-100: gridlines at the first step-multiples that clear
+    // the lines' extremes, so two lines at 72/28 use the plot's height
+    // instead of its middle half.
     const values = series.flatMap((v) => [v, 100 - v]);
     const lo = Math.max(0, Math.floor((Math.min(...values) - 4) / GRID_STEP_PCT) * GRID_STEP_PCT);
     const hi = Math.min(100, Math.ceil((Math.max(...values) + 4) / GRID_STEP_PCT) * GRID_STEP_PCT);
@@ -243,9 +231,8 @@ function OddsChart({ market }: { market: SampleMarket }) {
     ].map((row) => ({ ...row, text: `${row.label} ${row.pct}%`, labelY: row.y }));
 
     // Part the labels at a crossing -- see MIN_LABEL_GAP. Ordered by
-    // height rather than by outcome, so the upper line keeps the upper
-    // label and the pair never swaps sides as the pointer moves through
-    // the crossing.
+    // height rather than by outcome, so the pair never swaps sides as the
+    // pointer moves through the crossing.
     if (Math.abs(rows[0].y - rows[1].y) < MIN_LABEL_GAP) {
       const middle = (rows[0].y + rows[1].y) / 2;
       const [above, below] = rows[0].y <= rows[1].y ? [rows[0], rows[1]] : [rows[1], rows[0]];

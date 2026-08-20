@@ -6,13 +6,11 @@ const THEME_KEY = "itx-theme";
 
 /** The theme, as a module-level store rather than component state.
  *
- * It used to live in `Shell`, which was enough while only the terminal
- * pages could be themed. Now the toggle sits in the masthead -- on every
- * surface -- and two roots read the answer: the masthead's button and
- * whichever page root is mounted. Component state in one of them cannot
- * be seen by the other without threading a provider through both trees,
- * and there is only ever one theme per document, so a store is the
- * honest shape for it.
+ * The toggle sits in the masthead -- on every surface -- and two roots
+ * read the answer: the masthead's button and whichever page root is
+ * mounted. Component state in one cannot be seen by the other without
+ * threading a provider through both trees, and there is only ever one
+ * theme per document.
  *
  * `useSyncExternalStore` rather than a context: no provider to place, and
  * every subscriber re-renders on the same tick. */
@@ -42,28 +40,18 @@ export function getTheme(): Theme {
  *
  * Deliberately longer than the 170ms transition in sitebar.css. Taking
  * the class off is what ends the transition, so if the two were equal a
- * timer that fired a frame early would cancel the cross-fade at 95% and
- * snap the last of it -- the exact thing this is here to remove. The
- * slack costs nothing: with no transition left to run, the class is
- * inert for its last 60ms. */
+ * timer firing a frame early would snap the last of the cross-fade. */
 const SHIFT_CLASS = "itx-theme-shift";
 const SHIFT_MS = 230;
 let shiftTimer: number | undefined;
 
-/** Colour transitions are worth having only on the switch itself.
- *
- * Left on permanently they would also catch every hover, every arriving
- * row and every panel that repaints on a poll -- a page where nothing
- * quite lands when it changes. So the flag goes on for the length of the
- * cross-fade and comes off again, and the rest of the time the surface
- * is as immediate as it was. */
+/** Colour transitions are worth having only on the switch itself. Left on
+ * permanently they would also catch every hover, every arriving row and
+ * every panel that repaints on a poll. */
 function startShift(): void {
-  // No forced reflow between this and the token change, deliberately.
-  // The usual trick would be to flush styles here so the "before" style
-  // already declares the transition -- but a transition is started from
-  // the *after*-change style, so declaring it in the same recalc as the
-  // new colours is enough. Verified in the browser: the panels report
-  // six running transitions either way.
+  // No forced reflow between this and the token change, deliberately: a
+  // transition is started from the *after*-change style, so declaring it
+  // in the same recalc as the new colours is enough.
   document.body.classList.add(SHIFT_CLASS);
 
   window.clearTimeout(shiftTimer);
@@ -107,10 +95,9 @@ export function useTheme(): Theme {
  * that page is mounted, and clears both on the way out.
  *
  * The body needs them because the page root does not reach the whole
- * document: overscroll at either end bounces against the body, and a
- * dark page on a white body shows as a flash of white. They are applied
- * per page rather than globally so the three legacy dashboard pages,
- * which render outside both themed roots, keep their bare styling. */
+ * document: overscroll bounces against the body, and a dark page on a
+ * white body shows as a flash of white. Applied per page so the three
+ * legacy dashboard pages keep their bare styling. */
 export function useThemedBody(className: string): Theme {
   const theme = useTheme();
 

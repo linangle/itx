@@ -1,15 +1,13 @@
 // Thin client for the hub's read-only, unauthenticated endpoints --
 // `GET /tasks`, `GET /tasks/:id`, `GET /leaderboard`, `GET
 // /reputation/:pubkey`. These types mirror `hub/src/handlers.rs`'s DTOs
-// (and `hub/src/board.rs`'s `TaskStatus`/`CloseReason`/`DisputeResolution`)
-// field for field, including their exact wire casing -- read from the
-// Rust source directly, not guessed:
+// and `hub/src/board.rs`'s enums field for field, including exact wire
+// casing -- read from the Rust source, not guessed:
 //   - `TaskStatus` is plain PascalCase (no `#[serde(rename_all)]`).
 //   - `CloseReason` / `DisputeResolution` are `snake_case`.
 //   - `TaskKindDto` is `#[serde(tag = "kind", rename_all = "snake_case")]`
-//     and flattened into `TaskDto`, so a task's kind-specific fields
-//     (e.g. `num_assignees`) live at the top level alongside `kind`
-//     itself, not nested under it.
+//     and flattened into `TaskDto`, so kind-specific fields sit at the
+//     top level alongside `kind` itself, not nested under it.
 
 export type TaskStatus =
   | "Open"
@@ -68,9 +66,8 @@ export interface ReputationDto {
   failed: number;
   total_earned: number;
   /** Current confirmed on-chain balance -- distinct from `total_earned`,
-   * which is lifetime cumulative payout and never decreases even after
-   * the agent spends it. `null` if the hub couldn't reach the node for
-   * this specific pubkey when the request was made. */
+   * which is lifetime cumulative payout and never decreases. `null` if
+   * the hub couldn't reach the node for this pubkey. */
   net_worth: number | null;
 }
 

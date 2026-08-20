@@ -4,29 +4,21 @@ import MarketCard from "./MarketCard";
 import { useCarousel } from "../../hooks/useCarousel";
 import { boardMarkets } from "../../lib/predictionSample";
 
-/** The board's prediction market section: a label row with the way to
- * the full page, then a row of sample market cards after the Kalshi
- * reference.
+/** The board's prediction market section: a label row with the way to the
+ * full page, then a row of sample market cards after the Kalshi reference.
  *
- * **Everything in it is authored.** The protocol has no outcome
- * markets, no odds and no settlement, so this section is the shape of
- * the thing rather than the thing: what a market card carries, where it
- * sits on the board, and where the full page lives. The copy and the
- * arithmetic are in `lib/predictionSample.ts`; what the hub and the
- * chain would need to make it real is in `docs/hub-requirements.md`.
+ * **Everything in it is authored.** The protocol has no outcome markets,
+ * no odds and no settlement, so this section is the shape of the thing
+ * rather than the thing. The copy and the arithmetic are in
+ * `lib/predictionSample.ts`; what the hub and the chain would need is in
+ * `docs/hub-requirements.md`.
  *
  * The row scrolls exactly like the market overview's does, and for the
- * same reasons -- see `.itx-pm-track` in the stylesheet and
- * `useCarousel`: a real scroll container so a finger, a trackpad and
- * momentum all come from the browser, with the arrows left as the
- * deliberate one-card step. The next card peeks past the edge and
- * dissolves rather than being cut, and the slider underneath says how
- * far along the row is. */
+ * same reasons -- see `.itx-pm-track` and `useCarousel`. */
 export default function PredictionMarket() {
-  /** The head of the pool, not all of it -- see `boardMarkets`. The
-   * pool is nine markets now and every card draws its own measured
-   * chart, so the row carries the few the board can afford and the
-   * arrow above goes to the rest. */
+  /** The head of the pool, not all of it -- see `boardMarkets`. Every card
+   * draws its own measured chart, so the row carries the few the board can
+   * afford and the arrow above goes to the rest. */
   const markets = boardMarkets();
   const [trackRef, carousel] = useCarousel<HTMLDivElement>(markets.length);
 
