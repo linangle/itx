@@ -477,18 +477,19 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_a_pending_deposit_including_its_private_key() {
+    fn round_trips_a_pending_deposit_without_persisting_any_key_material() {
         let path = temp_db_path("pending_deposit_roundtrip");
         let store = HubStore::open_or_create(&path).unwrap();
 
+        let secret = crate::escrow_key::EscrowSecret::generate();
         let depositor = PrivateKey::new_key().public_key();
-        let deposit_private_key = PrivateKey::new_key();
-        let deposit_pubkey = deposit_private_key.public_key();
+        let id = Uuid::new_v4();
+        let deposit_pubkey = secret.derive(id).public_key();
         let deposit = crate::board::PendingDeposit {
-            id: Uuid::new_v4(),
+            id,
             depositor,
             deposit_pubkey: deposit_pubkey.clone(),
-            deposit_private_key,
+            deposit_private_key: None,
             required_amount: 500,
             purpose: crate::board::EscrowPurpose::FundHashMatchTask(crate::board::TaskIntent {
                 description: "t".to_string(),
@@ -508,12 +509,18 @@ mod tests {
         assert_eq!(loaded[0].id, deposit.id);
         assert_eq!(loaded[0].deposit_pubkey, deposit_pubkey);
         assert_eq!(loaded[0].required_amount, 500);
-        // the private key itself must round-trip too -- it's the whole
-        // point of persisting this before the address is ever handed out
+        assert!(
+            loaded[0].deposit_private_key.is_none(),
+            "the store must never hold escrow key material -- a leaked database would \
+             otherwise be a leaked treasury"
+        );
+        // What replaces it: the key is reproducible from the secret and
+        // the deposit's own id, so a restarted hub can still sweep this
+        // address even though nothing about the key was written down.
         assert_eq!(
-            loaded[0].deposit_private_key.public_key(),
+            loaded[0].private_key(&secret).public_key(),
             deposit_pubkey,
-            "the persisted private key must still correspond to the same address"
+            "the derived key must still control the address the depositor was given"
         );
 
         std::fs::remove_file(&path).ok();

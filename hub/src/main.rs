@@ -2,6 +2,7 @@ use tracing::*;
 
 mod auth;
 mod board;
+mod escrow_key;
 mod handlers;
 mod names;
 mod node_client;
@@ -14,6 +15,7 @@ use axum::http::{HeaderName, Method};
 use axum::routing::{get, post};
 use axum::Router;
 use board::{PendingDeposit, Reputation, Task, TaskBoard, TaskStatus};
+use escrow_key::EscrowSecret;
 use btclib::crypto::{PrivateKey, PublicKey};
 use btclib::util::Saveable;
 use names::NameRegistry;
@@ -74,6 +76,12 @@ pub struct AppState {
     /// different UTXO set, no reason to serialize exchange withdrawals
     /// against unrelated operator payouts (or vice versa).
     pub exchange_custody_payout_lock: Mutex<()>,
+    /// The master secret every one-time escrow deposit key is derived
+    /// from (see `escrow_key`). Held here rather than on `TaskBoard`
+    /// because the board is a pure in-memory state machine that holds no
+    /// key material of its own -- the same reason `operator_private_key`
+    /// lives here and not there.
+    pub escrow_secret: EscrowSecret,
     /// Per-client-IP request counters for `rate_limit::middleware`. Same
     /// instance-scoping reasoning as `payout_lock` -- see
     /// `rate_limit::RateLimitTable`'s own doc comment for why this can't
@@ -165,6 +173,11 @@ struct Args {
     #[argh(option, default = "String::from(\"./hub_exchange_custody.priv.cbor\")")]
     /// path to the exchange's pooled custody private key (generated on first run if missing)
     exchange_custody_key_file: String,
+    #[argh(option, default = "String::from(\"./hub_escrow_secret.bin\")")]
+    /// path to the master secret every escrow deposit key is derived from
+    /// (generated on first run if missing). Back this up: without it, any
+    /// escrow address already handed out becomes unsweepable.
+    escrow_secret_file: String,
 }
 
 fn load_or_create_key(path: &str) -> Result<PrivateKey> {
@@ -174,10 +187,35 @@ fn load_or_create_key(path: &str) -> Result<PrivateKey> {
             println!("no key found at {path}, generating a new one...");
             let key = PrivateKey::new_key();
             key.save_to_file(path)?;
+            restrict_to_owner(path)?;
             Ok(key)
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Narrows a freshly-written key file to owner-only. `PrivateKey::save_to_file`
+/// creates with the process umask, which on a default umask leaves the
+/// operator's and custody keys group- and world-readable -- the two keys that
+/// between them control the hub's treasury and every agent's exchange deposits.
+///
+/// This runs after the write rather than as part of it (unlike
+/// `escrow_key::EscrowSecret`, which opens with the mode set), because the
+/// write itself belongs to btclib and is shared with the wallet and miner.
+/// The gap that leaves is bounded by first-run only, and is closed the moment
+/// this returns; making it airtight means changing `save_to_file` for every
+/// caller in the workspace, which is a separate change.
+fn restrict_to_owner(path: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 /// Periodically reopens abandoned claims, retries paying out any task
@@ -345,12 +383,18 @@ async fn main() -> Result<()> {
     let operator_public_key = operator_private_key.public_key();
     let exchange_custody_private_key = load_or_create_key(&args.exchange_custody_key_file)?;
     let exchange_custody_public_key = exchange_custody_private_key.public_key();
+    let escrow_secret = EscrowSecret::load_or_create(&args.escrow_secret_file)?;
     println!("================================================================");
     println!("hub operator address -- fund this so the hub can pay out tasks/faucet grants:");
     println!("{operator_public_key}");
     println!("exchange custody address -- watch this for solvency (its on-chain balance");
     println!("should always be >= the sum of every ExchangeAccount.base_balance):");
     println!("{exchange_custody_public_key}");
+    println!(
+        "escrow deposit keys are derived from {} -- back it up; without it every\n\
+         escrow address already handed out becomes unsweepable:",
+        args.escrow_secret_file
+    );
     println!("================================================================");
 
     let store = HubStore::open_or_create(&args.store_file)?;
@@ -425,6 +469,7 @@ async fn main() -> Result<()> {
         exchange_custody_private_key,
         exchange_custody_public_key,
         exchange_custody_payout_lock: Mutex::new(()),
+        escrow_secret,
         rate_limits: rate_limit::new_table(),
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
@@ -731,6 +776,7 @@ mod tests {
             exchange_custody_private_key,
             exchange_custody_public_key,
             exchange_custody_payout_lock: Mutex::new(()),
+            escrow_secret: EscrowSecret::generate(),
             rate_limits: rate_limit::new_table(),
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
@@ -3281,6 +3327,7 @@ mod tests {
         let deposit = {
             let mut board = hub.state.board.write().await;
             board.reserve_escrow(
+                &hub.state.escrow_secret,
                 agent_key.public_key(),
                 1,
                 board::EscrowPurpose::FundExchangeAccount,

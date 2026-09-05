@@ -899,6 +899,7 @@ pub async fn create_task_escrow(
     };
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
+        &state.escrow_secret,
         pubkey,
         required_amount,
         EscrowPurpose::FundHashMatchTask(intent),
@@ -942,6 +943,7 @@ pub async fn create_consensus_task_escrow(
     };
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
+        &state.escrow_secret,
         pubkey,
         required_amount,
         EscrowPurpose::FundConsensusTask(intent),
@@ -975,6 +977,7 @@ pub async fn create_disputable_task_escrow(
     };
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
+        &state.escrow_secret,
         pubkey,
         required_amount,
         EscrowPurpose::FundDisputableTask(intent),
@@ -1073,6 +1076,7 @@ pub async fn create_dispute_escrow(
     let required_amount = bounty + HUB_TRANSACTION_FEE;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
+        &state.escrow_secret,
         pubkey,
         required_amount,
         EscrowPurpose::DisputeBond { task_id, reason: envelope.payload.reason.clone() },
@@ -1563,7 +1567,7 @@ async fn settle_escrow_funded_task(
 
     if let Err(e) = pay_from(
         state,
-        &deposit.deposit_private_key,
+        &deposit.private_key(&state.escrow_secret),
         &deposit.deposit_pubkey,
         &still_owed,
         &deposit.depositor,
@@ -1661,7 +1665,7 @@ async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: 
     if balance > HUB_TRANSACTION_FEE {
         if let Err(e) = pay_from(
             state,
-            &deposit.deposit_private_key,
+            &deposit.private_key(&state.escrow_secret),
             &deposit.deposit_pubkey,
             &[(recipient.clone(), net_amount)],
             recipient,
@@ -1859,6 +1863,7 @@ pub async fn create_exchange_deposit(
     let pubkey = envelope.verify()?;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
+        &state.escrow_secret,
         pubkey,
         MIN_EXCHANGE_DEPOSIT,
         EscrowPurpose::FundExchangeAccount,

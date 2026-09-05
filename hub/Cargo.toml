@@ -15,6 +15,12 @@ axum = "0.7"
 chrono = { workspace = true }
 ciborium = { workspace = true }
 dashmap = "5.5.3"
+# Escrow deposit keys are derived rather than stored -- see
+# `src/escrow_key.rs`. Both are RustCrypto crates on the same `digest 0.10`
+# generation the `k256`/`ecdsa` stack btclib already builds on, so this adds
+# no second copy of any hashing primitive to the tree.
+hkdf = "0.12"
+sha2 = "0.10"
 redb = "2"
 serde = { workspace = true }
 serde_json = "1.0"

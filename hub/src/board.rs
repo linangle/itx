@@ -1,5 +1,6 @@
 use tracing::*;
 
+use crate::escrow_key::EscrowSecret;
 use btclib::crypto::{PrivateKey, PublicKey};
 use btclib::sha256::Hash;
 use chrono::{DateTime, Utc};
@@ -470,20 +471,46 @@ pub struct DisputableTaskIntent {
 /// an arbitrary agent's on-chain payment to a specific intent at all
 /// (a plain `TransactionOutput` carries no sender field, and there is no
 /// message in the wire protocol to look up an arbitrary past transaction
-/// by id). The hub generates and durably persists this keypair *before*
-/// ever handing the address out -- see `reserve_escrow`'s own doc comment
-/// for why that ordering is non-negotiable.
+/// by id). The address is derived from the hub's escrow secret and this
+/// deposit's own `id` -- see `reserve_escrow` and
+/// `crate::escrow_key::EscrowSecret`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingDeposit {
     pub id: Uuid,
     pub depositor: PublicKey,
     pub deposit_pubkey: PublicKey,
-    pub deposit_private_key: PrivateKey,
+    /// `None` for every deposit reserved since escrow keys became derived:
+    /// the key is recomputed on demand from the escrow secret and `id`
+    /// (see `private_key`), so the store holds no key material at all.
+    ///
+    /// `Some` only for deposits reserved by an older build, whose key was
+    /// randomly generated and so *had* to be persisted to be recoverable.
+    /// Those are read back and honoured unchanged: re-deriving a key for
+    /// one of them would produce a different address than the one its
+    /// depositor was already told to pay, stranding real money. They age
+    /// out naturally as the deposits they belong to settle or expire.
+    #[serde(default)]
+    pub deposit_private_key: Option<PrivateKey>,
     pub required_amount: u64,
     pub purpose: EscrowPurpose,
     pub status: EscrowStatus,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+}
+
+impl PendingDeposit {
+    /// The private key controlling this deposit's address: the stored one
+    /// if this is a legacy deposit that carries it, otherwise derived from
+    /// `secret` and `id`. Every settlement path -- disbursing to a winner,
+    /// refunding a depositor, sweeping into custody -- goes through here
+    /// rather than reading the field directly, so neither case can be
+    /// forgotten at a call site.
+    pub fn private_key(&self, secret: &EscrowSecret) -> PrivateKey {
+        match &self.deposit_private_key {
+            Some(stored) => stored.clone(),
+            None => secret.derive(self.id),
+        }
+    }
 }
 
 /// What successfully confirming a `PendingDeposit` produced -- what the
@@ -775,36 +802,37 @@ impl TaskBoard {
         Ok(())
     }
 
-    /// Reserves a fresh single-use escrow deposit for `depositor`,
-    /// generating a new keypair to hand out as the deposit address (see
-    /// `PendingDeposit`'s own doc comment for why a one-time address is
-    /// the only workable design here). Inserted into the board's
-    /// in-memory state immediately, same as `create_task` -- but callers
-    /// carry a stricter obligation than `create_task`'s own equivalent
-    /// (`state.store.save_task`): the returned deposit (which holds the
-    /// only copy of `deposit_private_key` outside this process's memory)
-    /// **must** be durably persisted via `HubStore::save_pending_deposit`
-    /// before its address is ever returned in an HTTP response. If the
-    /// process crashes after generating this keypair but before that
-    /// write commits, and the response still somehow reached the caller,
-    /// any funds later sent there become permanently unrecoverable --
-    /// strictly worse than any existing failure mode in this codebase
-    /// (today's worst persistence failure loses a task record, never
-    /// money).
+    /// Reserves a fresh single-use escrow deposit for `depositor`, whose
+    /// address is derived from `escrow_secret` and the deposit's own
+    /// freshly-minted `id` (see `PendingDeposit`'s doc comment for why a
+    /// one-time address is the only workable design here). Inserted into
+    /// the board's in-memory state immediately, same as `create_task`.
+    ///
+    /// Callers must still persist the returned deposit via
+    /// `HubStore::save_pending_deposit` before its address is returned in
+    /// an HTTP response, but what that write now protects is the deposit's
+    /// *intent* -- who is paying, how much is required, and what the money
+    /// is for -- rather than the only copy of a secret. A crash between
+    /// this call and that commit no longer strands funds permanently:
+    /// whoever holds the escrow secret can re-derive the key for any id
+    /// and sweep whatever arrived. What is lost without the record is the
+    /// hub's ability to attribute the payment on its own, which is reason
+    /// enough to keep the ordering.
     pub fn reserve_escrow(
         &mut self,
+        escrow_secret: &EscrowSecret,
         depositor: PublicKey,
         required_amount: u64,
         purpose: EscrowPurpose,
         expires_at: DateTime<Utc>,
     ) -> PendingDeposit {
-        let deposit_private_key = PrivateKey::new_key();
-        let deposit_pubkey = deposit_private_key.public_key();
+        let id = Uuid::new_v4();
+        let deposit_pubkey = escrow_secret.derive(id).public_key();
         let deposit = PendingDeposit {
-            id: Uuid::new_v4(),
+            id,
             depositor,
             deposit_pubkey,
-            deposit_private_key,
+            deposit_private_key: None,
             required_amount,
             purpose,
             status: EscrowStatus::Reserved,
@@ -2016,6 +2044,101 @@ mod tests {
         PrivateKey::new_key().public_key()
     }
 
+    /// A throwaway escrow secret for tests that only need `reserve_escrow`
+    /// to produce *some* address. Tests that care which key an address
+    /// belongs to hold onto one secret and pass it to both `reserve_escrow`
+    /// and `PendingDeposit::private_key` themselves.
+    fn escrow_secret() -> EscrowSecret {
+        EscrowSecret::generate()
+    }
+
+    /// A `TaskIntent` for tests that only need `EscrowPurpose` to hold
+    /// something well-formed.
+    fn any_intent(bounty: u64) -> TaskIntent {
+        TaskIntent {
+            description: "t".to_string(),
+            bounty,
+            expected_output_hash: Hash::hash_bytes(b"x"),
+            min_reputation: 0,
+            capabilities: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_reserved_escrow_carries_no_key_and_derives_the_address_it_handed_out() {
+        let mut board = TaskBoard::new();
+        let secret = EscrowSecret::generate();
+
+        let deposit = board.reserve_escrow(
+            &secret,
+            pubkey(),
+            100,
+            EscrowPurpose::FundHashMatchTask(any_intent(100)),
+            Utc::now() + chrono::Duration::minutes(30),
+        );
+
+        assert!(deposit.deposit_private_key.is_none());
+        assert_eq!(
+            deposit.private_key(&secret).public_key(),
+            deposit.deposit_pubkey,
+            "the derived key must control the address the depositor is told to pay"
+        );
+    }
+
+    /// The compatibility guarantee that lets this change ship against a
+    /// store that already has deposits in flight. Older builds serialized
+    /// `deposit_private_key` as a bare `PrivateKey`; this build reads the
+    /// same bytes into an `Option` and must see `Some`, then keep using
+    /// that stored key rather than deriving a different address for money
+    /// somebody was already told to send.
+    #[test]
+    fn reads_back_a_deposit_written_before_keys_were_derived() {
+        #[derive(Serialize)]
+        struct LegacyPendingDeposit {
+            id: Uuid,
+            depositor: PublicKey,
+            deposit_pubkey: PublicKey,
+            deposit_private_key: PrivateKey,
+            required_amount: u64,
+            purpose: EscrowPurpose,
+            status: EscrowStatus,
+            created_at: DateTime<Utc>,
+            expires_at: DateTime<Utc>,
+        }
+
+        let legacy_key = PrivateKey::new_key();
+        let legacy_pubkey = legacy_key.public_key();
+        let legacy = LegacyPendingDeposit {
+            id: Uuid::new_v4(),
+            depositor: pubkey(),
+            deposit_pubkey: legacy_pubkey.clone(),
+            deposit_private_key: legacy_key,
+            required_amount: 500,
+            purpose: EscrowPurpose::FundHashMatchTask(any_intent(500)),
+            status: EscrowStatus::Reserved,
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(30),
+        };
+
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&legacy, &mut bytes).unwrap();
+        let restored: PendingDeposit = ciborium::from_reader(bytes.as_slice()).unwrap();
+
+        assert!(
+            restored.deposit_private_key.is_some(),
+            "an old deposit's stored key must survive the field becoming optional"
+        );
+        // And it must be *that* key that gets used, not a freshly derived
+        // one -- deriving here would point settlement at an address the
+        // depositor never funded.
+        let unrelated_secret = EscrowSecret::generate();
+        assert_eq!(
+            restored.private_key(&unrelated_secret).public_key(),
+            legacy_pubkey,
+            "a legacy deposit must keep settling against its own stored key"
+        );
+    }
+
     #[test]
     fn full_task_lifecycle_pays_out_and_updates_reputation() {
         let mut board = TaskBoard::new();
@@ -2650,7 +2773,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             depositor.clone(),
             100,
             EscrowPurpose::FundHashMatchTask(intent),
@@ -2675,7 +2798,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             depositor.clone(),
             500,
             EscrowPurpose::FundHashMatchTask(intent),
@@ -2708,7 +2831,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             depositor.clone(),
             900,
             EscrowPurpose::FundConsensusTask(intent),
@@ -2733,7 +2856,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             500,
             EscrowPurpose::FundHashMatchTask(intent),
@@ -2759,7 +2882,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             100,
             EscrowPurpose::FundHashMatchTask(intent),
@@ -2782,7 +2905,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             100,
             EscrowPurpose::FundHashMatchTask(intent),
@@ -2816,9 +2939,9 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let expired = board.reserve_escrow(pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent(100)), now - chrono::Duration::seconds(1));
-        let still_fresh = board.reserve_escrow(pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent(100)), now + chrono::Duration::minutes(30));
-        let expired_but_confirmed = board.reserve_escrow(pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent(100)), now - chrono::Duration::seconds(1));
+        let expired = board.reserve_escrow(&escrow_secret(), pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent(100)), now - chrono::Duration::seconds(1));
+        let still_fresh = board.reserve_escrow(&escrow_secret(), pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent(100)), now + chrono::Duration::minutes(30));
+        let expired_but_confirmed = board.reserve_escrow(&escrow_secret(), pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent(100)), now - chrono::Duration::seconds(1));
         board.confirm_escrow(expired_but_confirmed.id, 100, now - chrono::Duration::seconds(2)).unwrap();
 
         let overdue: Vec<Uuid> = board.overdue_reserved_escrows(now).iter().map(|d| d.id).collect();
@@ -2837,7 +2960,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent), Utc::now() - chrono::Duration::seconds(1));
+        let deposit = board.reserve_escrow(&escrow_secret(), pubkey(), 100, EscrowPurpose::FundHashMatchTask(intent), Utc::now() - chrono::Duration::seconds(1));
 
         board.mark_escrow_refunded(deposit.id).unwrap();
         assert_eq!(board.get_pending_deposit(deposit.id).unwrap().status, EscrowStatus::Refunded);
@@ -2856,7 +2979,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(pubkey(), 900, EscrowPurpose::FundHashMatchTask(intent), Utc::now() + chrono::Duration::minutes(30));
+        let deposit = board.reserve_escrow(&escrow_secret(), pubkey(), 900, EscrowPurpose::FundHashMatchTask(intent), Utc::now() + chrono::Duration::minutes(30));
         board.confirm_escrow(deposit.id, 900, Utc::now()).unwrap();
 
         assert_eq!(board.allocated_bounty(), 100, "the escrow-funded task's bounty must not count against the operator");
@@ -2901,7 +3024,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(pubkey(), 10, EscrowPurpose::FundHashMatchTask(intent), Utc::now() + chrono::Duration::minutes(30));
+        let deposit = board.reserve_escrow(&escrow_secret(), pubkey(), 10, EscrowPurpose::FundHashMatchTask(intent), Utc::now() + chrono::Duration::minutes(30));
         let EscrowConfirmation::TaskCreated(task) = board.confirm_escrow(deposit.id, 10, Utc::now()).unwrap();
 
         assert_eq!(board.escrow_for_task(task.id).unwrap().id, deposit.id);
@@ -2929,7 +3052,7 @@ mod tests {
     /// own escrow id (a *different* escrow than the task's own).
     fn file_dispute(board: &mut TaskBoard, task_id: Uuid, challenger: PublicKey, reason: &str) -> Uuid {
         let bounty = board.get_task(task_id).unwrap().bounty;
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             challenger,
             bounty,
             EscrowPurpose::DisputeBond { task_id, reason: reason.to_string() },
@@ -2979,7 +3102,7 @@ mod tests {
         let claimant = pubkey();
         let task_id = create_and_submit_disputable_task(&mut board, pubkey(), claimant.clone(), 900, 30);
 
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             claimant, // the assignee itself, trying to dispute its own submission
             900,
             EscrowPurpose::DisputeBond { task_id, reason: "self-dispute attempt".to_string() },
@@ -3002,7 +3125,7 @@ mod tests {
         // elsewhere in this file for the analogous Consensus-side race.
         let task_id = create_and_submit_disputable_task(&mut board, pubkey(), claimant, 900, -1);
 
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             challenger,
             900,
             EscrowPurpose::DisputeBond { task_id, reason: "too late".to_string() },
@@ -3025,7 +3148,7 @@ mod tests {
         file_dispute(&mut board, task_id, pubkey(), "first challenge");
 
         let second_challenger = pubkey();
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             second_challenger,
             900,
             EscrowPurpose::DisputeBond { task_id, reason: "second challenge".to_string() },
@@ -3130,7 +3253,7 @@ mod tests {
     fn confirm_exchange_deposit_credits_net_of_fee() {
         let mut board = TaskBoard::new();
         let depositor = pubkey();
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             depositor.clone(),
             1,
             EscrowPurpose::FundExchangeAccount,
@@ -3156,7 +3279,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             100,
             EscrowPurpose::FundHashMatchTask(intent),
@@ -3172,7 +3295,7 @@ mod tests {
     #[test]
     fn confirm_exchange_deposit_rejects_underfunded() {
         let mut board = TaskBoard::new();
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             1_001,
             EscrowPurpose::FundExchangeAccount,
@@ -3190,7 +3313,7 @@ mod tests {
         let mut board = TaskBoard::new();
         let now = Utc::now();
         let deposit =
-            board.reserve_escrow(pubkey(), 1, EscrowPurpose::FundExchangeAccount, now + chrono::Duration::minutes(5));
+            board.reserve_escrow(&escrow_secret(), pubkey(), 1, EscrowPurpose::FundExchangeAccount, now + chrono::Duration::minutes(5));
 
         assert!(matches!(
             board.confirm_exchange_deposit(deposit.id, 10_000, 0, now + chrono::Duration::minutes(6)),
@@ -3201,7 +3324,7 @@ mod tests {
     #[test]
     fn confirm_exchange_deposit_rejects_already_consumed() {
         let mut board = TaskBoard::new();
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             1,
             EscrowPurpose::FundExchangeAccount,
@@ -3227,7 +3350,7 @@ mod tests {
     #[test]
     fn confirm_escrow_rejects_a_fund_exchange_account_purpose() {
         let mut board = TaskBoard::new();
-        let deposit = board.reserve_escrow(
+        let deposit = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             1,
             EscrowPurpose::FundExchangeAccount,
@@ -3243,13 +3366,13 @@ mod tests {
     #[test]
     fn unswept_exchange_deposits_lists_only_consumed_exchange_deposits() {
         let mut board = TaskBoard::new();
-        let confirmed = board.reserve_escrow(
+        let confirmed = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             1,
             EscrowPurpose::FundExchangeAccount,
             Utc::now() + chrono::Duration::minutes(30),
         );
-        let still_reserved = board.reserve_escrow(
+        let still_reserved = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             1,
             EscrowPurpose::FundExchangeAccount,
@@ -3262,7 +3385,7 @@ mod tests {
             min_reputation: 0,
             capabilities: BTreeSet::new(),
         };
-        let unrelated = board.reserve_escrow(
+        let unrelated = board.reserve_escrow(&escrow_secret(),
             pubkey(),
             100,
             EscrowPurpose::FundHashMatchTask(intent),
