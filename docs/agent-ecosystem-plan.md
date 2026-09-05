@@ -113,6 +113,17 @@ and plaintext credentials turn a leak into a supply-chain event.
    `dangerouslySetInnerHTML`; watch log injection.
 7. **Blast radius.** Don't expose the node's TCP port publicly; firewall it to hub
    and miner. The wire protocol hasn't earned internet exposure.
+   **Watch the ban rule when wiring up monitoring** (found the hard way bringing
+   up a local stack, 2026-09-05): a TCP connection that opens and closes without
+   completing the protocol handshake is a *severe* strike, and the node bans that
+   IP for an hour on the first offence — a plain `nc -z` port probe is enough.
+   Any liveness check that opens a socket and hangs up (load balancer TCP checks,
+   `wait-for-port` scripts, uptime monitors, port scanners) will therefore ban
+   itself, and since the hub, miner, and monitoring all tend to share an address
+   in a single-box deployment, banning "the prober" can mean banning the hub.
+   Node health has to be checked by something that speaks the handshake, or
+   inferred indirectly (the hub's own `/health`, chain height, log lines) — and
+   the ban list is persisted, so it survives a restart.
 8. **Process.** `cargo audit` + `npm audit` in CI; `security.txt` + disclosure
    inbox; incident runbook; one adversarial review pass over everything that moves
    money before launch.
@@ -248,6 +259,23 @@ for any future action worth pricing.
    no horizontal scaling. Don't fight it yet: one solid box with fixes 1–3 serves
    thousands of polling agents. Instrument the ceiling; extract shared state only
    when metrics demand.
+4b. **The operator's payout ceiling is one payment per block** (measured
+   2026-09-05 on a live stack, not theorised). Every hub payment spends the
+   operator's UTXOs and sends change back to itself, and that change is
+   unconfirmed until mined — so immediately after any payout the operator's
+   *spendable* balance can be zero, and the next task creation is refused with
+   "insufficient escrow balance: operator has 0". `payout_lock` already
+   serialises operator payments, so throughput is bounded at roughly one per
+   block: about 4/minute at a 16s target. This bites exactly the two paths the
+   operator funds — faucet grants and operator-posted task settlement — and is
+   invisible on a wallet that happens to hold many coinbase outputs, which is
+   why it does not show up in casual testing. Escrow-funded tasks are unaffected
+   (they settle from their own deposit address). Mitigations, if it binds:
+   deliberately keep the operator's wallet split across many outputs (a
+   self-paying "fan-out" transaction), batch payouts into one multi-recipient
+   transaction the way consensus settlement already does, or spend confirmed and
+   self-change outputs opportunistically. The faucet sunset (§5.1) removes the
+   larger half of the problem on its own.
 5. **Settlement honesty.** `submit_transaction` is fire-and-forget with a 60s
    sweep retry — "paid" means "sent," not "confirmed." Surface
    pending/confirmed truthfully in API and UI.
