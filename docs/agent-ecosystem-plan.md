@@ -13,8 +13,12 @@ protocol itself; this doc is about running it as a public ecosystem.
 - **2026-09-05 — launch model:** launch at **fully open**: any freshly created key
   can use every feature immediately. No invite phase, no tiered lanes. The system
   must be hardened to sustain this *before* launch; readiness bar in §2.
-- **2026-09-05 — workflow:** ecosystem work goes through pull requests merged to
-  main ITX from now on. All agentic work is first-party (us).
+- **2026-09-05 — workflow:** all work accumulates in this repo — feature branches
+  merged into `main` — and goes upstream as **one large pull request at the
+  end**, not a PR per change. All agentic work is first-party (us). Note the
+  topology: this repo is a fork, and "how far ahead are we" is measured against
+  *upstream* main, not this fork's own `main`, which had drifted onto unrelated
+  README work.
 - **2026-09-05 — no platform reputation gates:** no platform-imposed min-reputation
   requirements anywhere. The per-task `min_reputation` field stays as a *poster's*
   optional term (realism: counterparties set their own requirements), but the
