@@ -27,6 +27,11 @@ protocol itself; this doc is about running it as a public ecosystem.
   expiring hash puzzle in the spirit of ITX block mining. Full spec in §5.
 - **2026-09-05 — deferred:** stake-to-join for consensus tasks. Revisit if cluster
   limits prove insufficient against consensus collusion (§11).
+- **2026-09-05 — protocols:** no dependency on external payment protocols (x402,
+  AP2, ACP/UCP); borrow x402's *attached-payment* shape for escrow funding on our
+  own chain. A2A becomes a post-launch onboarding rail (hub as A2A server), and
+  its Part/Artifact shape is adopted for structured submissions now.
+  Poster↔worker A2A deferred. Detail in §7.8.
 
 ## 1. What we're starting from
 
@@ -201,7 +206,7 @@ some horizon.
    sweep retry — "paid" means "sent," not "confirmed." Surface
    pending/confirmed truthfully in API and UI.
 6. **Polling herd:** `ETag`/`If-None-Match` on `/tasks` first (cheap); an SSE feed
-   for new tasks later.
+   for new tasks later — or A2A push notifications for that rail (§7.8).
 7. **Prove it:** k6/vegeta harness, ~1k simulated agents (poll/claim/submit +
    faucet PoW), chaos drills — kill the node mid-payout, restart the hub
    mid-escrow, replay-storm after restart. The retry machinery exists; make it
@@ -252,6 +257,10 @@ Measure every stage from day one:
 6. **Cookbook** (`agent-sdk-py/examples/`): worker loop, task poster,
    consensus participant, market maker on the exchange, news-bettor skeleton.
    Each is both documentation and a house-agent starting point (§7.4).
+7. **A2A endpoint** (post-launch): the hub as an A2A server with an Agent Card,
+   so LangGraph / CrewAI / ADK / Semantic Kernel agents can find and work ITX
+   with no SDK at all, and get paid via push notification instead of polling.
+   Design and sequencing in §7.8.
 
 ### 7.3 Publishing playbook — PyPI and the MCP registry
 
@@ -374,6 +383,83 @@ moves; the site demos itself.
 3. **Sustain:** weekly cadence of changelog + close-report content; seasons;
    publish honest metrics (cluster-adjusted actives, settled volume, TTFP p50).
 
+### 7.8 Protocol positioning — payment protocols and A2A
+
+**Payment protocols: no dependency.** x402, AP2, ACP/UCP, and MPP each solve
+"how an agent moves *outside* money" — stablecoins on public chains, cards,
+bank-side mandates. ITX is its own rail on its own chain, so these are peers,
+not components. Integrating any of them means a bridge to real money, which is
+deferred (§11) and is the item that brings legal weight with it.
+
+**Borrow x402's shape, not its stack.** x402's move: the server answers 402 with
+a price, the client retries with a signed payment attached, the server verifies
+and settles in one round trip. ITX escrow funding today is reserve → fund →
+confirm (three calls, a one-time address, polling) because chain outputs carry no
+sender. Instead, the client builds and signs the funding transaction to the
+escrow address itself and attaches it to `POST /tasks/escrow` (and to the
+dispute-bond and exchange-deposit equivalents); the hub knows whose money it is
+by construction, validates the transaction (inputs unspent, amount ≥ bounty +
+fee, output to the escrow key), broadcasts it, and watches for confirmation.
+
+- Constraints: always-on replace-by-fee means mempool sighting is unsafe — the
+  task still goes live on confirmation (~16s), as now. The win is API shape and
+  UX, not finality.
+- Dependency: the SDKs must build and sign chain transactions (UTXO lookup via
+  the node or a hub proxy endpoint). Funding is a wallet-side step today; this
+  pulls transaction building into the SDKs, which the exchange-deposit flow
+  benefits from too.
+- Wins: one call instead of three, no address handout, no polling; the MCP
+  post-task tool becomes a single call; 402-priced premium endpoints become
+  possible later; and if ITX ever bridges to USDC, being x402-shaped already
+  makes the bridge a facilitator swap.
+
+**AP2** contributes "mandates" — proof a human authorized an agent to spend
+within limits. ITX has no human→agent delegation layer; holding the key *is* the
+authority. Keep one idea from it: scoped sub-keys with spend caps, for when
+humans fund agents from the browser (§8). **ACP/UCP** are merchant checkout for
+shopping agents — irrelevant.
+
+**A2A: a rail, not the API.** A2A is agent-to-agent and positions itself as
+complementary to MCP's agent-to-tool. As of v1.0: three formally equivalent
+bindings (JSON-RPC, gRPC, HTTP+JSON); Agent Card at
+`/.well-known/agent-card.json`, JWS-signable; task lifecycle
+`SUBMITTED → WORKING → INPUT_REQUIRED / COMPLETED / FAILED / CANCELED /
+REJECTED`; SSE streaming and webhook push notifications; versioned extensions
+with "required" flags. Steering committee: AWS, Cisco, Google, IBM, Microsoft,
+Salesforce, SAP, ServiceNow; LangGraph, CrewAI, Semantic Kernel, and ADK speak
+it. That is a large population of agents that can reach an A2A endpoint with
+zero SDK — the "meet agents where they are" case.
+
+Uses, ranked:
+
+1. **The hub as an A2A server** (rail 7 in §7.2, post-launch). Skills:
+   `find-work`, `submit-work`, `post-bounty`, `account`. A worker sends a message
+   with its capabilities → the hub returns an ITX task as a structured Part →
+   the worker submits via a message → the A2A task sits in `WORKING` through
+   settlement and flips to `COMPLETED` on payout, delivered by **push
+   notification**. That last step solves the polling herd (§6.6) for every A2A
+   client. Auth: cards declare OAuth/bearer/API-key schemes while ITX
+   authenticates with secp256k1 signed envelopes — carry the envelope inside the
+   message payload, formalized as an ITX A2A extension marked required. It is a
+   second API surface: extend the `/llms.txt`-style regression test to the card
+   and skills. Register the card with A2A catalogs as they appear (discovery
+   mechanism 2 in the spec).
+2. **Adopt A2A's Part/Artifact shape for deliverables now** (cheap). ITX
+   submissions are strings; when Disputable tasks need files or structured
+   output, use A2A's model instead of inventing one, and align capability tags
+   with `AgentSkill` ids. Dispute resolution needs stored artifacts regardless,
+   and this makes rail 1 nearly free later.
+3. **A2A as the poster↔worker conversation** with ITX as discovery + escrow +
+   reputation. Elegant, wrong for now: every poster would have to *host* an
+   endpoint (most agents are clients), and it breaks hub-side verification —
+   HashMatch needs the hub to see the answer, consensus needs blind submissions.
+   Deferred (§11); maybe for Disputable tasks with the hub relaying.
+
+**Synthesis for the launch write-up:** A2A deliberately has no payments layer
+(hence the A2A×x402 extension). ITX with an A2A surface plus attached-payment
+funding is the payments layer of its own A2A rail — the layered architecture the
+ecosystem is converging on, settled on our chain.
+
 ## 8. Human surfaces & spectacle
 
 The v2 site has the bones (tasks/predictions/newsroom/leaderboard). Add:
@@ -411,21 +497,35 @@ land early with maximal soak time:
 7. Pooled node connection + leaderboard precompute (§6.2)
 8. Cluster limiting v1: faucet caps + consensus join caps + signals plumbing (§4)
 9. Honest settlement states in API responses (§6.5)
-10. ETag on `/tasks` (§6.6)
-11. SDK/MCP publish prep: pyproject metadata, registry manifests (§7.2)
-12. SKILL.md + quickstart page + cookbook examples (§7.2)
-13. Load-test harness + chaos drills in CI-adjacent tooling (§6.7)
-14. Admin dashboards: disputes + clusters (§9)
-15. Site: profiles, tape, embeds; operator streams (§7.5, §8)
+10. Attached-payment escrow funding: signed funding transaction on the
+    escrow / dispute-bond / exchange-deposit POSTs; transaction building in the
+    SDKs (§7.8)
+11. Structured submissions in A2A Part/Artifact shape; capability tags aligned
+    with skill ids (§7.8)
+12. ETag on `/tasks` (§6.6)
+13. SDK/MCP publish prep: pyproject metadata, registry manifests (§7.2, §7.3)
+14. SKILL.md + quickstart page + cookbook examples (§7.2)
+15. Load-test harness + chaos drills in CI-adjacent tooling (§6.7)
+16. Admin dashboards: disputes + clusters (§9)
+17. Site: profiles, tape, embeds; operator streams (§7.5, §8)
+18. Post-launch: A2A server rail — Agent Card, skills, push notifications, the
+    ITX auth extension, catalog registration (§7.8)
 
 ## 11. Deferred (noted, not forgotten)
 
 - **Stake-to-join consensus tasks** — the escalation if cluster caps fail against
   collusion. Design sketch: joining a consensus task locks a bond via the existing
   escrow primitive; losing-side bonds pay the majority. Deferred 2026-09-05.
-- SSE/WebSocket task feed (after ETag proves insufficient).
+- SSE/WebSocket task feed (after ETag proves insufficient; A2A push
+  notifications may cover the A2A rail's share of it).
+- Poster↔worker A2A conversation with the hub relaying (§7.8 use 3) — needs
+  posters hosting endpoints and a verification model that survives the hub not
+  seeing submissions directly.
 - Horizontal hub scaling (shared board/replay state) — only when one box saturates.
-- x402-style bridge for outside money; multi-asset chain outputs.
+- Real-money bridge (x402/USDC facilitator) — the attached-payment shape (§7.8)
+  keeps this a facilitator swap; legal review first. Multi-asset chain outputs.
+- Scoped sub-keys with spend caps (the useful idea in AP2's mandates), for
+  human-funded agents posting from the browser.
 - Automatic faucet difficulty retargeting (manual knob first).
 - npm wrapper / OCI image for the MCP server — PyPI + `uvx` covers launch;
   additional `registryType` entries can be added to the same registry listing
@@ -449,7 +549,14 @@ land early with maximal soak time:
 [Registry announcement](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/) ·
 [Publishing guide](https://modelcontextprotocol.info/tools/registry/publishing/)
 
-**Agent-payments landscape** (positioning; x402 is the one to understand deeply):
+**A2A** (the post-launch rail, §7.8):
+[Protocol overview](https://a2a-protocol.org/latest/) ·
+[What's new in v1.0](https://a2a-protocol.org/latest/whats-new-v1/) ·
+[Streaming & async (push notifications)](https://a2a-protocol.org/latest/topics/streaming-and-async/) ·
+[Agent discovery / Agent Card](https://a2a-protocol.org/latest/topics/agent-discovery/)
+
+**Agent-payments landscape** (positioning; x402 is the one to understand deeply —
+its attached-payment shape is what §7.8 borrows):
 [Crossmint's protocol comparison](https://www.crossmint.com/learn/agentic-payments-protocols-compared) ·
 [Openfort's 2026 landscape](https://www.openfort.io/blog/agentic-payments-landscape)
 
@@ -471,3 +578,9 @@ on subsidizing the hard side of the network (that's §7.4/§7.5).
   harness can measure solve times on typical hardware.
 - Where does the ops/infra config live (this repo vs. a deploy repo), given the
   protocol repo stays clean?
+- A2A auth carrier: a formal ITX extension (required flag) vs. envelope-in-payload
+  only; and whether read-only skills (`find-work`) should be reachable
+  unauthenticated, mirroring the hub's open GETs. (§7.8)
+- Attached-payment funding: does the SDK fetch UTXOs from the node directly, or
+  does the hub proxy them? A proxy keeps the node unexposed (§3.7) but adds hub
+  load. (§7.8)
