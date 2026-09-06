@@ -8,8 +8,8 @@ use crate::board::{
 };
 use crate::rate_limit::{charge_pubkey, QuotaExceeded};
 use crate::AppState;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{OriginalUri, Path, Query, State};
+use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use btclib::crypto::{PrivateKey, PublicKey};
@@ -823,9 +823,13 @@ pub async fn get_task(
 
 pub async fn create_task(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<CreateTaskPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
     validate_text_field(&envelope.payload.description, "description")?;
@@ -851,9 +855,13 @@ pub async fn create_task(
 
 pub async fn create_consensus_task(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<CreateConsensusTaskPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
     validate_text_field(&envelope.payload.description, "description")?;
@@ -905,9 +913,13 @@ pub async fn create_consensus_task(
 /// the deposit is persisted *before* its address is ever returned here.
 pub async fn create_task_escrow(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<EscrowTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     let expected_output_hash = parse_hex_hash(&envelope.payload.expected_output_hash)?;
@@ -937,9 +949,13 @@ pub async fn create_task_escrow(
 /// Same as `create_task_escrow`, for a `Consensus` task instead.
 pub async fn create_consensus_task_escrow(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<EscrowConsensusTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     if envelope.payload.num_assignees < 2 {
@@ -985,9 +1001,13 @@ pub async fn create_consensus_task_escrow(
 /// squarely the agent-to-agent case escrow exists for.
 pub async fn create_disputable_task_escrow(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<EscrowDisputableTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     validate_positive_minutes(envelope.payload.dispute_window_minutes, "dispute_window_minutes")?;
@@ -1023,6 +1043,10 @@ pub async fn create_disputable_task_escrow(
 pub async fn confirm_task_escrow(
     State(state): State<Arc<AppState>>,
     Path(escrow_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<ConfirmEscrowPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     if envelope.payload.escrow_id != escrow_id {
@@ -1030,7 +1054,7 @@ pub async fn confirm_task_escrow(
             "escrow id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
 
     let deposit_pubkey = {
@@ -1075,6 +1099,10 @@ pub async fn confirm_task_escrow(
 pub async fn create_dispute_escrow(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<DisputeEscrowPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
     if envelope.payload.task_id != task_id {
@@ -1082,7 +1110,7 @@ pub async fn create_dispute_escrow(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.reason, "reason")?;
 
@@ -1124,6 +1152,10 @@ pub async fn create_dispute_escrow(
 pub async fn confirm_dispute_escrow(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<ConfirmDisputeEscrowPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     if envelope.payload.task_id != task_id {
@@ -1131,7 +1163,7 @@ pub async fn confirm_dispute_escrow(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     let escrow_id = envelope.payload.escrow_id;
 
@@ -1180,6 +1212,10 @@ pub async fn confirm_dispute_escrow(
 pub async fn resolve_dispute(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<ResolveDisputePayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     if envelope.payload.task_id != task_id {
@@ -1187,7 +1223,7 @@ pub async fn resolve_dispute(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
 
@@ -1214,6 +1250,10 @@ pub async fn resolve_dispute(
 pub async fn claim_task(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<ClaimPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     if envelope.payload.task_id != task_id {
@@ -1221,7 +1261,7 @@ pub async fn claim_task(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
 
     let task = {
@@ -1252,6 +1292,10 @@ pub async fn claim_task(
 pub async fn cancel_task(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<CancelPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     if envelope.payload.task_id != task_id {
@@ -1259,7 +1303,7 @@ pub async fn cancel_task(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
 
@@ -1276,6 +1320,10 @@ pub async fn cancel_task(
 pub async fn submit_task(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<SubmitPayload>>,
 ) -> Result<Json<SubmitResultDto>, ApiError> {
     if envelope.payload.task_id != task_id {
@@ -1283,7 +1331,7 @@ pub async fn submit_task(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.output, "output")?;
 
@@ -1892,9 +1940,13 @@ async fn settle_one_payout_inner(
 /// (see `confirm_exchange_deposit`).
 pub async fn create_exchange_deposit(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<()>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
@@ -1920,6 +1972,10 @@ pub async fn create_exchange_deposit(
 pub async fn confirm_exchange_deposit(
     State(state): State<Arc<AppState>>,
     Path(escrow_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<ConfirmExchangeDepositPayload>>,
 ) -> Result<Json<ExchangeAccountDto>, ApiError> {
     if envelope.payload.escrow_id != escrow_id {
@@ -1927,7 +1983,7 @@ pub async fn confirm_exchange_deposit(
             "escrow id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
 
     let deposit_pubkey = {
@@ -2017,9 +2073,13 @@ async fn persist_order_and_related(state: &AppState, order: &Order, trades: &[Tr
 /// lock/settle reconciliation rules.
 pub async fn place_order(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<PlaceOrderPayload>>,
 ) -> Result<Json<OrderDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     let (order, trades) = state.board.write().await.place_order(
         pubkey,
@@ -2070,6 +2130,10 @@ async fn credit_taker_fees_to_operator(state: &AppState, trades: &[Trade]) {
 pub async fn cancel_order(
     State(state): State<Arc<AppState>>,
     Path(order_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<CancelOrderPayload>>,
 ) -> Result<Json<OrderDto>, ApiError> {
     if envelope.payload.order_id != order_id {
@@ -2077,7 +2141,7 @@ pub async fn cancel_order(
             "order id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     let order = state.board.write().await.cancel_order(order_id, &pubkey)?;
     if let Err(e) = state.store.save_order(&order) {
@@ -2117,9 +2181,13 @@ pub async fn get_exchange_account(
 /// unpersisted withdrawal never silently loses the caller's balance.
 pub async fn withdraw(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<WithdrawPayload>>,
 ) -> Result<Json<ExchangeAccountDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
     let amount = envelope.payload.amount;
     {
@@ -2159,9 +2227,13 @@ pub async fn list_trades(
 
 pub async fn faucet_claim(
     State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<()>>,
 ) -> Result<Json<FaucetResultDto>, ApiError> {
-    let pubkey = envelope.verify(&state.replay_guard)?;
+    let pubkey = envelope.verify(&state.replay_guard, method.as_str(), uri.path())?;
     charge_pubkey(&state, &pubkey)?;
 
     // Reserve first: this is what makes two concurrent claims from the
@@ -3049,9 +3121,26 @@ Every state-changing request body is a "signed envelope":
     }}
 
 To produce the signature: build the exact string
-"{{pubkey}}:{{timestamp}}:{{payload_as_compact_json}}", SHA256 it, and sign
-that hash with your private key. `timestamp` must be within 120 seconds of
-the server's clock, and each signature may only be used once. If you'd
+"{{pubkey}}:{{timestamp}}:{{METHOD}} {{path}}:{{payload_as_compact_json}}",
+SHA256 it, and sign that hash with your private key.
+
+`METHOD` is the uppercase HTTP method ("POST" for every authenticated route
+here) and `path` is the request path you are about to call -- exactly as it
+will appear in the request line, so "/tasks/{{id}}/claim" with the real id
+substituted, no scheme, no host, and no query string. They are NOT fields you
+send; they are context the signature commits to, and the server rebuilds them
+from the request it actually received. Sign the path you POST to: signing one
+and sending to another is a 401, not a subtle bug.
+
+This is what stops a signed request being replayed at a different endpoint.
+Several routes here accept the same payload shape -- POST /faucet and
+POST /exchange/deposit are both payload-less, POST /tasks/{{id}}/claim and
+POST /tasks/{{id}}/cancel both take just a task id -- so without the path in
+the signature, an envelope for one is a valid envelope for the other.
+
+`timestamp` must be within 120 seconds of the server's clock, and each
+signature may only be used once (the server remembers accepted signatures
+across restarts, so a replay after a redeploy is still rejected). If you'd
 rather not reimplement this from scratch, this project's own repo ships
 reference implementations in Rust (`sdk/`) and Python (`agent-sdk-py/`),
 cross-verified byte-for-byte against each other and against this hub.

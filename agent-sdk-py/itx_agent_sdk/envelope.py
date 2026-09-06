@@ -120,11 +120,32 @@ class Agent:
         digest = _digest_to_sign(message)
         return _sign_digest(self._signing_key, digest).hex()
 
-    def build_envelope(self, payload: Any, timestamp: Optional[datetime] = None) -> dict:
-        """Signs ``payload``, producing a ready-to-send envelope dict --
-        ``requests.post(url, json=agent.build_envelope(payload))``.
-        Mirrors ``btclib::envelope::SignedEnvelope::new`` (``new_at`` if
+    def build_envelope(
+        self,
+        method: str,
+        path: str,
+        payload: Any,
+        timestamp: Optional[datetime] = None,
+    ) -> dict:
+        """Signs ``payload`` *for one specific endpoint*, producing a
+        ready-to-send envelope dict. Mirrors
+        ``btclib::envelope::SignedEnvelope::new`` (``new_at`` if
         ``timestamp`` is given explicitly, e.g. for reproducible tests).
+
+        ``method`` is the uppercase HTTP method and ``path`` the request
+        path exactly as it will appear in the request line -- no scheme,
+        no host, no query string, and with any id already substituted
+        (``"/tasks/<uuid>/claim"``, not ``"/tasks/:id/claim"``). Neither
+        is sent; both are bound into the signature, so an envelope built
+        for one endpoint is rejected at every other. Several hub routes
+        take identical payloads -- ``POST /faucet`` and
+        ``POST /exchange/deposit`` are both payload-less -- and this is
+        what keeps an envelope for one from being spent at the other.
+
+        **Pass the same path you POST to.** ``Client`` does that for you
+        by construction (see ``_signed_post``); a caller signing by hand
+        that gets it wrong sees a 401 on the first request rather than
+        anything subtle.
 
         ``payload`` must be a JSON-serializable value whose dict keys (if
         any) are already in the *same order* the corresponding hub-side
@@ -139,7 +160,7 @@ class Agent:
         ts = timestamp or datetime.now(timezone.utc)
         timestamp_str = _format_rfc3339(ts)
         payload_json = _canonical_json(payload)
-        signing_string = f"{self.pubkey_hex}:{timestamp_str}:{payload_json}"
+        signing_string = f"{self.pubkey_hex}:{timestamp_str}:{method} {path}:{payload_json}"
         return {
             "pubkey": self.pubkey_hex,
             "timestamp": timestamp_str,

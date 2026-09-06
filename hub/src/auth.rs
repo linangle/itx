@@ -178,11 +178,26 @@ fn cleanup_replay_guard(seen: &DashMap<Vec<u8>, DateTime<Utc>>, cutoff: DateTime
 /// `envelope.verify()` call site in `handlers.rs` needed no changes
 /// beyond importing this trait and passing the hub's guard.
 pub trait VerifyEnvelope {
-    fn verify(&self, guard: &ReplayGuard) -> Result<PublicKey, AuthError>;
+    fn verify(
+        &self,
+        guard: &ReplayGuard,
+        method: &str,
+        path: &str,
+    ) -> Result<PublicKey, AuthError>;
 }
 
 impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
-    fn verify(&self, guard: &ReplayGuard) -> Result<PublicKey, AuthError> {
+    /// `method`/`path` must come from the request as it actually arrived
+    /// -- `axum::http::Method` and `OriginalUri`'s path -- never from
+    /// anything the handler knows about its own route. A handler passing
+    /// the route it *expects* rather than the one it got would rebuild
+    /// the endpoint-confusion gap that binding them closed.
+    fn verify(
+        &self,
+        guard: &ReplayGuard,
+        method: &str,
+        path: &str,
+    ) -> Result<PublicKey, AuthError> {
         let now = Utc::now();
 
         // Before the ECDSA verify, not after: this is a constant-time
@@ -194,7 +209,7 @@ impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
             return Err(AuthError::GuardWarmingUp);
         }
 
-        let pubkey = self.verify_signature(now)?;
+        let pubkey = self.verify_signature(now, method, path)?;
 
         // Only claim the signature once it's confirmed genuine --
         // otherwise anyone could burn arbitrary signature slots (and,
@@ -254,14 +269,14 @@ mod tests {
     #[test]
     fn the_window_is_reported_as_its_own_error_not_as_a_replay() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, ());
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
         let guard = ReplayGuard::booting(Utc::now());
-        assert!(matches!(envelope.verify(&guard), Err(AuthError::GuardWarmingUp)));
+        assert!(matches!(envelope.verify(&guard, "POST", "/faucet"), Err(AuthError::GuardWarmingUp)));
 
         // ...and the same envelope sails through once the window closes,
         // proving the refusal was the window and nothing else.
         let guard = ReplayGuard::open();
-        assert_eq!(envelope.verify(&guard).unwrap(), key.public_key());
+        assert_eq!(envelope.verify(&guard, "POST", "/faucet").unwrap(), key.public_key());
     }
 
     /// The hole this whole module exists to close: an envelope accepted
@@ -273,17 +288,17 @@ mod tests {
     fn a_replayed_envelope_is_still_rejected_after_a_restart() {
         let (store, path) = temp_store();
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, ());
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
 
         let (before, restored) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
         assert_eq!(restored, 0, "a fresh store has nothing to restore");
-        assert_eq!(envelope.verify(&before).unwrap(), key.public_key());
+        assert_eq!(envelope.verify(&before, "POST", "/faucet").unwrap(), key.public_key());
         drop(before);
 
         let (after, restored) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
         assert_eq!(restored, 1, "the accepted signature must come back from disk");
         assert!(
-            matches!(envelope.verify(&after), Err(AuthError::Replayed)),
+            matches!(envelope.verify(&after, "POST", "/faucet"), Err(AuthError::Replayed)),
             "an envelope accepted before the restart must not be accepted after it"
         );
 
@@ -352,11 +367,13 @@ mod tests {
         let stale = SignedEnvelope::new_at(
             &key,
             Utc::now() - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1),
+            "POST",
+            "/faucet",
             (),
         );
 
         let (guard, _) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
-        assert!(matches!(stale.verify(&guard), Err(AuthError::ClockDrift)));
+        assert!(matches!(stale.verify(&guard, "POST", "/faucet"), Err(AuthError::ClockDrift)));
         // ...and it was rejected without being recorded, so a drift
         // rejection cannot be used to burn disk.
         assert!(store.load_recent_signatures(i64::MIN).unwrap().is_empty());
@@ -370,9 +387,9 @@ mod tests {
     #[test]
     fn an_open_guard_still_rejects_a_replay_within_one_process() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, ());
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
         let guard = ReplayGuard::open();
-        assert!(envelope.verify(&guard).is_ok());
-        assert!(matches!(envelope.verify(&guard), Err(AuthError::Replayed)));
+        assert!(envelope.verify(&guard, "POST", "/faucet").is_ok());
+        assert!(matches!(envelope.verify(&guard, "POST", "/faucet"), Err(AuthError::Replayed)));
     }
 }

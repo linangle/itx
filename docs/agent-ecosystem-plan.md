@@ -126,39 +126,35 @@ and plaintext credentials turn a leak into a supply-chain event.
    at all. The restart hole is closed; the single-instance ceiling (§6, §11)
    is not, and its blocker now has a name.
 
-   **Finding — the signing string does not bind the target endpoint.** The
-   recipe is `"{pubkey}:{timestamp}:{payload_as_compact_json}"`: no method, no
-   path. Five route pairs therefore produce byte-identical signing strings,
-   meaning one signed envelope is a valid envelope for either route in the
-   pair:
+   **The signing string now binds the target endpoint — done 2026-09-05**
+   (branch `endpoint-binding`), closing the finding this section opened. The
+   recipe is now
+   `"{pubkey}:{timestamp}:{METHOD} {path}:{payload_as_compact_json}"`. Method
+   and path are not carried on the wire: each side supplies them
+   independently — the client names the request it is about to send, the
+   verifier passes the request it actually received — so a signature
+   authorizes one endpoint and nothing else. The path is the concrete one
+   (`/tasks/<uuid>/claim`, not the route template), so it pins the resource
+   as well as the route, and a hand-written client signs the URL it is
+   about to call rather than having to know our routing table.
 
-   | payload | routes |
-   |---|---|
-   | `()` → `null` | `POST /faucet`, `POST /exchange/deposit` |
-   | `CreateTaskPayload` ≡ `EscrowTaskPayload` | `POST /tasks`, `POST /tasks/escrow` |
-   | `CreateConsensusTaskPayload` ≡ `EscrowConsensusTaskPayload` | `POST /tasks/consensus`, `POST /tasks/consensus/escrow` |
-   | `{task_id}` | `POST /tasks/:id/claim`, `POST /tasks/:id/cancel` |
-   | `{escrow_id}` | `POST /tasks/escrow/:id/confirm`, `POST /exchange/deposit/:id/confirm` |
+   All five colliding pairs are separated; the test that used to record the
+   collisions now asserts they are gone, and one fixture pair differs in
+   nothing but the path so the cross-language check would fail against any
+   implementation that ignored it.
 
-   Not exploitable today, but nothing in the design is what stops it. Four
-   unrelated accidents do: every handler with a path param already rejects a
-   URL id that disagrees with the signed payload (so the *resource* is bound
-   even though the route isn't); `cancel` requires the operator, which blocks
-   the claim→cancel direction; both confirm routes check the deposit's
-   recorded `EscrowPurpose` and answer `WrongEscrowPurpose`; and the replay
-   guard itself means a diverted envelope only works if the attacker beats the
-   legitimate request to the hub — load-bearing work the guard was never
-   designed to do. Relax `cancel` to "the poster may cancel their own task",
-   an obvious future change, and the claim→cancel pair goes live.
+   **There is no compatible transition, by design.** Accepting the old
+   payload-only recipe during a deprecation window would leave exactly the
+   bypass being closed — an attacker would simply sign the old way. So this
+   is a hard break, which is why it had to land before §7.3 publishes the
+   SDKs: after third parties pin a version, this stops being an edit across
+   five files we control and becomes a migration.
 
-   The fix is to bind method and path into the signing string. **Not done
-   here, deliberately:** the recipe is mirrored byte-for-byte in `lib`
-   (`envelope.rs`), `sdk/`, `agent-sdk-py/itx_agent_sdk/envelope.py`, asserted
-   by the cross-language fixture in `agent-sdk-py/tests/`, and published to
-   agents in `/llms.txt`. It cannot be changed unilaterally from the hub. The
-   deadline that matters is **before the SDKs are published** (§7.3) — after
-   third parties pin a version, a recipe change stops being a coordinated
-   edit and becomes a migration.
+   Operational note for §3.2: the path is taken from the request as
+   received, so a reverse proxy that rewrites or normalizes paths
+   (collapsing `//`, decoding `%2F`) will break every signature. It fails
+   loudly as a 401, not silently. Pass paths through untouched.
+
 4. **DoS economics.** Every signed request costs an ECDSA verify, attacker-chosen
    within the IP budget. **Done:** per-IP buckets tiered by what a route costs
    (health / read / local write / chain write, each its own bucket so exhausting
