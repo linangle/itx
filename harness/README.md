@@ -153,7 +153,25 @@ The `node-crash` baseline is the one that matters most. Plan §6.5's
 confirmation design should make the gap between `itx_hub_reported_paid` and
 `itx_landed_on_chain` recoverable — the sweep sees the recipient's output
 absent and the spent inputs unmarked, and resubmits. Re-run this drill after
-that lands and compare against `harness/baselines/node-crash.json`.
+that lands and compare against `harness/baselines/node-crash.json`. A concrete
+example of what that looks like, run against a hand-edited "fixed" report:
+
+```
+--- Kill the node mid-payout
+  itx_landed_after_one_sweep: 0 -> 6000000
+  itx_lost: 6000000 -> 0
+  gone: Killing the node with payouts in the mempool destroyed 6000000 ITX ...
+```
+
+`escrow-restart` is the exception, and the reason is worth reading before
+trusting it: its hard-kill phase samples a race rather than proving one, so a
+run that finds nothing reports **inconclusive** and must not be read as a fix
+being verified. See its entry below.
+
+Every baseline records `dirty`, which is scoped to `*.rs` and `*.toml` rather
+than the whole tree — a run writes its own report into the repo, so a
+whole-tree check would flag every run after the first for a reason that has
+nothing to do with the binaries under test.
 
 ## What will need updating
 
