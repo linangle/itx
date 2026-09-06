@@ -2613,6 +2613,18 @@ mod tests {
     /// and three strikes in ten minutes bans this box from its own node
     /// (plan §6.2). Marking it paid would be the original lie. So the
     /// hub waits, and keeps saying it is waiting.
+    ///
+    /// This particular staging turns out to be *doubly* defended, which
+    /// is worth knowing rather than assuming: even if the three-way rule
+    /// were broken so that this read as lost, `build_multi_payment`
+    /// skips outputs the mempool has marked, so the rebuild would fail
+    /// for want of funds rather than duplicate the payment. That is the
+    /// same property §6.5 names as load-bearing, doing real work on a
+    /// path it was not written for. It also means this test alone does
+    /// not prove the rule -- see
+    /// `a_bounty_the_recipient_already_spent_is_never_paid_a_second_time`
+    /// for the ambiguous case where the operator does have spendable
+    /// change and a wrong answer really does pay twice.
     #[tokio::test]
     async fn an_unresolvable_payout_stays_submitted_and_is_never_resent() {
         let operator_key = PrivateKey::new_key();
