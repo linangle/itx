@@ -658,6 +658,16 @@ mod tests {
         // same reason as `handlers::PAYOUT_IN_FLIGHT`: `PublicKey` has no
         // `Hash` impl.
         balances: Arc<AsyncMutex<std::collections::HashMap<String, u64>>>,
+        /// How many TCP connections this fake has accepted over its
+        /// lifetime. The figure the connection-pooling tests assert on:
+        /// with a pool, a run of operations should cost far fewer
+        /// connections than it has operations.
+        connections: Arc<std::sync::atomic::AtomicUsize>,
+        /// When set, each connection serves exactly one message and then
+        /// closes -- standing in for a node that dropped a pooled
+        /// connection while it sat idle, which is the case a pooled
+        /// client has to notice and recover from.
+        hang_up_after_one: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeNode {
@@ -667,15 +677,21 @@ mod tests {
             let submitted = Arc::new(AsyncMutex::new(Vec::new()));
             let balances: Arc<AsyncMutex<std::collections::HashMap<String, u64>>> =
                 Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+            let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let submitted_for_accept_loop = submitted.clone();
             let balances_for_accept_loop = balances.clone();
+            let connections_for_accept_loop = connections.clone();
+            let hang_up_for_accept_loop = hang_up_after_one.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else {
                         return;
                     };
+                    connections_for_accept_loop.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let submitted = submitted_for_accept_loop.clone();
                     let balances = balances_for_accept_loop.clone();
+                    let hang_up_after_one = hang_up_for_accept_loop.clone();
                     tokio::spawn(async move {
                         if btclib::network::perform_handshake_acceptor(&mut socket)
                             .await
@@ -719,11 +735,26 @@ mod tests {
                                 }
                                 _ => return,
                             }
+                            if hang_up_after_one.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
                         }
                     });
                 }
             });
-            FakeNode { addr, submitted, balances }
+            FakeNode { addr, submitted, balances, connections, hang_up_after_one }
+        }
+
+        /// How many TCP connections this fake has accepted so far.
+        fn connections_accepted(&self) -> usize {
+            self.connections.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        /// Makes every connection from here on serve one message and then
+        /// close, the way a real node's connection would eventually be
+        /// dropped while a pooled client was not using it.
+        fn hang_up_after_every_exchange(&self) {
+            self.hang_up_after_one.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         /// Convenience constructor for the single-funded-pubkey case every
@@ -797,6 +828,145 @@ mod tests {
     async fn node_client_fails_when_every_address_is_unreachable() {
         let client = NodeClient::new(vec![dead_address().await, dead_address().await]);
         assert!(client.chain_tip().await.is_err());
+    }
+
+    /// The change this pooling exists for: a run of operations should not
+    /// cost a TCP connection and a handshake apiece.
+    #[tokio::test]
+    async fn sequential_operations_share_one_pooled_connection() {
+        let agent_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(agent_key.public_key(), 12_345).await;
+        let client = NodeClient::new(vec![fake_node.addr.clone()]);
+
+        for _ in 0..10 {
+            assert_eq!(client.balance(&agent_key.public_key()).await.unwrap(), 12_345);
+        }
+        client.chain_tip().await.unwrap();
+
+        assert_eq!(
+            fake_node.connections_accepted(),
+            1,
+            "eleven operations in sequence must reuse one connection, not open eleven"
+        );
+    }
+
+    /// The pool is also a ceiling. Before it, every concurrent request
+    /// opened its own socket to the node; only the net-worth sweep was
+    /// bounded, and only against itself.
+    #[tokio::test]
+    async fn a_concurrent_fan_out_opens_no_more_connections_than_the_pool_allows() {
+        let agent_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(agent_key.public_key(), 500).await;
+        let client = NodeClient::with_pool_size(vec![fake_node.addr.clone()], 4);
+
+        let mut lookups = tokio::task::JoinSet::new();
+        for _ in 0..50 {
+            let client = client.clone();
+            let pubkey = agent_key.public_key();
+            lookups.spawn(async move { client.balance(&pubkey).await });
+        }
+        while let Some(result) = lookups.join_next().await {
+            assert_eq!(result.unwrap().unwrap(), 500);
+        }
+
+        assert!(
+            fake_node.connections_accepted() <= 4,
+            "a pool of 4 must never open more than 4 connections, opened {}",
+            fake_node.connections_accepted()
+        );
+    }
+
+    /// The failure this design is really guarding against. Two operations
+    /// sharing a socket must not read each other's replies -- a caller
+    /// that got the wrong agent's balance would be told a wrong number
+    /// with no error anywhere to show for it. Distinct balances per key
+    /// are what make a misattributed reply visible.
+    #[tokio::test]
+    async fn concurrent_lookups_on_a_shared_pool_each_receive_their_own_answer() {
+        let fake_node = FakeNode::spawn_empty().await;
+        let mut agents = Vec::new();
+        for i in 0..20u64 {
+            let key = PrivateKey::new_key();
+            let balance = 1_000 + i;
+            fake_node.fund(key.public_key(), balance).await;
+            agents.push((key.public_key(), balance));
+        }
+        // Deliberately fewer connections than callers, so every caller
+        // after the first few is reusing a socket someone else just
+        // finished with.
+        let client = NodeClient::with_pool_size(vec![fake_node.addr.clone()], 3);
+
+        let mut lookups = tokio::task::JoinSet::new();
+        for (pubkey, expected) in agents {
+            let client = client.clone();
+            lookups.spawn(async move {
+                let seen = client.balance(&pubkey).await.unwrap();
+                (expected, seen)
+            });
+        }
+        while let Some(result) = lookups.join_next().await {
+            let (expected, seen) = result.unwrap();
+            assert_eq!(
+                seen, expected,
+                "a lookup received another lookup's answer -- replies are being misattributed"
+            );
+        }
+    }
+
+    /// A pooled connection is only known to be dead once it is used. The
+    /// client must notice and retry on a fresh one rather than surfacing
+    /// the node's hangup as a failure to its caller.
+    #[tokio::test]
+    async fn a_connection_the_node_closed_while_idle_is_retried_not_reported() {
+        let agent_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(agent_key.public_key(), 7_777).await;
+        fake_node.hang_up_after_every_exchange();
+        let client = NodeClient::new(vec![fake_node.addr.clone()]);
+
+        // Each of these pools a connection the fake node has already
+        // closed behind it, so every call after the first starts by
+        // failing on a dead socket.
+        for _ in 0..5 {
+            assert_eq!(
+                client.balance(&agent_key.public_key()).await.unwrap(),
+                7_777,
+                "a stale pooled connection must be replaced, not returned as an error"
+            );
+        }
+    }
+
+    /// Failover still works with a pool in the way, and the client that
+    /// failed over settles on a single connection to the node that
+    /// answered rather than redialling the dead one every time.
+    ///
+    /// The related invariant -- that a pool never holds connections to
+    /// two nodes at once, which is what would turn ordered failover into
+    /// load-balancing -- is checked directly on `Pool` in
+    /// `node_client::tests`, where the two addresses can be driven
+    /// without needing a node to die on cue.
+    #[tokio::test]
+    async fn a_failed_over_client_settles_on_one_connection_to_the_surviving_node() {
+        let agent_key = PrivateKey::new_key();
+        let primary = FakeNode::spawn(agent_key.public_key(), 100).await;
+        let secondary = FakeNode::spawn(agent_key.public_key(), 200).await;
+
+        // Start on the primary and pool a connection to it.
+        let client = NodeClient::new(vec![primary.addr.clone(), secondary.addr.clone()]);
+        assert_eq!(client.balance(&agent_key.public_key()).await.unwrap(), 100);
+        assert_eq!(primary.connections_accepted(), 1);
+
+        // A second client standing in for "the primary is now gone":
+        // same pool, but the primary address no longer answers.
+        let failed_over = NodeClient::new(vec![dead_address().await, secondary.addr.clone()]);
+        assert_eq!(failed_over.balance(&agent_key.public_key()).await.unwrap(), 200);
+        for _ in 0..5 {
+            assert_eq!(failed_over.balance(&agent_key.public_key()).await.unwrap(), 200);
+        }
+        assert_eq!(
+            secondary.connections_accepted(),
+            1,
+            "after failover the pool must settle on one connection to the surviving node"
+        );
     }
 
     struct TestHub {

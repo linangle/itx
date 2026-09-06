@@ -4,44 +4,184 @@ use anyhow::{Context, Result};
 use btclib::crypto::PublicKey;
 use btclib::network::Message;
 use btclib::types::{Transaction, TransactionOutput};
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::{Mutex, Semaphore};
 
-/// A lightweight client for talking to a running blockchain node.
+/// How many connections the hub keeps open to the node it is talking to.
 ///
-/// Deliberately opens a fresh TCP connection (and performs the handshake)
-/// for every single operation rather than holding one persistent
-/// connection open: the hub serves many concurrent HTTP requests, and a
-/// shared connection would either need its own mutex (serializing every
-/// node interaction behind one lock) or reconnect-with-backoff logic to
-/// recover from a dropped connection. Paying for a fresh handshake per
-/// call is cheap at this scale, and it means a single failed request
-/// never affects any other in-flight one.
+/// This one number spans the whole design space. At 1 the client is a
+/// single persistent connection with everything queued behind it -- the
+/// shape `wallet/src/core.rs` uses. At a large value it is close to the
+/// old connect-per-call client, minus the handshakes. The value below was
+/// chosen by measuring the leaderboard's balance fan-out, the worst case
+/// on the hub, rather than picked as a plausible-looking default; the
+/// numbers are in the commit that introduced it.
 ///
-/// Holds an ordered list of node addresses rather than one: `connect()`
-/// always tries `addresses[0]` first and only falls through to the next
-/// on failure. This is deliberately *not* load-balanced/round-robin --
+/// It also does something the old client did not: it bounds how many
+/// sockets the hub can have open to the node *at all*. Before this, only
+/// the net-worth sweep was bounded (by its own semaphore, and only
+/// against itself); every other path could open as many connections as it
+/// had concurrent requests.
+const MAX_POOLED_CONNECTIONS: usize = 8;
+
+/// A client for talking to a running blockchain node, over a small pool of
+/// persistent connections.
+///
+/// **This reverses an earlier decision, so the earlier reasoning is worth
+/// stating.** The client used to open a fresh TCP connection and run the
+/// handshake for every single operation, on the grounds that a shared
+/// connection would need either a mutex (serializing every node
+/// interaction behind one lock) or reconnect logic, and that a per-call
+/// connection means one failed request can never affect another. That was
+/// a fair trade at the time. What changed is the measurement: ranking the
+/// leaderboard by net worth fans out one balance lookup per agent, so a
+/// single refresh of a fifty-agent field opened fifty TCP connections and
+/// ran fifty handshakes against one node -- three round trips of protocol
+/// to ask one question (§6.2 of the ecosystem plan).
+///
+/// Each of the three objections is answered rather than ignored:
+///
+/// - *Serialization.* A pool of `MAX_POOLED_CONNECTIONS` keeps real
+///   concurrency; only a pool of one would serialize.
+/// - *Reconnect logic.* It exists, and is one rule: an operation that
+///   fails on a connection **taken from the pool** is retried once on a
+///   fresh one, because a pooled socket the node closed while it sat idle
+///   is indistinguishable from a live one until it is used. A failure on
+///   a freshly-dialled connection is a real failure and is returned.
+/// - *Isolation.* A caller **owns** its connection for the length of an
+///   exchange -- it is moved out of the pool, not borrowed under a lock --
+///   and a connection that errors is dropped instead of returned. So a
+///   failed request cannot hand a half-read reply to the next caller.
+///   This is stronger than the mutex-across-send-and-receive pattern in
+///   `wallet/src/core.rs`: a task cancelled between its send and its
+///   receive (an HTTP client hanging up mid-request, which the hub sees
+///   routinely and the wallet never does) releases that mutex with the
+///   unread half of a reply still in the socket. Here, cancellation drops
+///   the connection, which is the correct thing to do with it.
+///
+/// Retrying is safe for all three operations because each is idempotent
+/// with respect to a *failed* attempt. The reads plainly are.
+/// `submit_transaction` is the one worth spelling out: it is
+/// fire-and-forget, so the only way it reports failure is the send itself
+/// failing, which means the node did not accept the bytes -- and
+/// resubmitting is not a thing to do casually here, since the node
+/// rejects a duplicate transaction (equal fee on an already-spoken-for
+/// input) and *strikes* the peer for it.
+///
+/// Holds an ordered list of node addresses rather than one: a fresh
+/// connection always tries `addresses[0]` first and only falls through to
+/// the next on failure. This is deliberately *not* load-balanced --
 /// the hub's double-spend safety (`payout_lock`/`exchange_custody_payout_lock`)
 /// assumes every call sees one consistent mempool view, so spreading
 /// normal traffic across two independently-converging node mempools would
-/// reintroduce race risk. With ordered failover, all traffic goes to the
-/// primary in the healthy case (identical behavior to a single-node
-/// setup), and a secondary only takes over during an actual primary
-/// outage.
+/// reintroduce race risk. Pooling makes that invariant something to
+/// maintain rather than something that holds for free, so the pool
+/// enforces it directly: it holds connections to **one** address at a
+/// time, and adopting a new address discards the connections to the old
+/// one (see `Pool::adopt`). Without that, a hub that failed over and then
+/// saw its primary come back would sit on a mix of connections to both
+/// nodes and quietly become load-balanced.
 #[derive(Clone)]
 pub struct NodeClient {
     addresses: Vec<String>,
+    pool: Arc<Pool>,
+}
+
+/// The idle connections, and the permit that bounds how many exist.
+struct Pool {
+    idle: Mutex<PoolState>,
+    /// One permit per connection the client may have open. Acquired for
+    /// the whole of an operation, so `idle` can never grow past the
+    /// permit count: a connection only exists while someone holds a
+    /// permit for it.
+    permits: Semaphore,
+}
+
+#[derive(Default)]
+struct PoolState {
+    /// The node address every connection in `connections` was dialled to.
+    /// `None` before the first successful dial.
+    address: Option<String>,
+    connections: Vec<TcpStream>,
+}
+
+impl Pool {
+    fn new(size: usize) -> Self {
+        Pool {
+            idle: Mutex::new(PoolState::default()),
+            permits: Semaphore::new(size),
+        }
+    }
+
+    /// Takes an idle connection, if there is one, along with the address
+    /// it goes to.
+    async fn take(&self) -> Option<(String, TcpStream)> {
+        let mut state = self.idle.lock().await;
+        let stream = state.connections.pop()?;
+        // Only `Some` once a connection exists, and `pop` just proved one
+        // does.
+        let address = state.address.clone()?;
+        Some((address, stream))
+    }
+
+    /// Returns a healthy connection for reuse -- unless the pool has since
+    /// moved to a different node, in which case it is dropped. Keeping it
+    /// would mean serving later requests from two nodes at once, which is
+    /// exactly what the ordered-failover design exists to prevent.
+    async fn put(&self, address: &str, stream: TcpStream) {
+        let mut state = self.idle.lock().await;
+        if state.address.as_deref() == Some(address) {
+            state.connections.push(stream);
+        }
+    }
+
+    /// Points the pool at `address`, discarding every connection to a
+    /// previous one. Called after each successful dial, so the pool
+    /// follows whichever node `connect` actually reached.
+    async fn adopt(&self, address: &str) {
+        let mut state = self.idle.lock().await;
+        if state.address.as_deref() != Some(address) {
+            if state.address.is_some() {
+                info!(
+                    "node connections now go to {address}; dropping {} pooled connection(s) to {}",
+                    state.connections.len(),
+                    state.address.as_deref().unwrap_or("-"),
+                );
+            }
+            state.connections.clear();
+            state.address = Some(address.to_string());
+        }
+    }
 }
 
 impl NodeClient {
     pub fn new(addresses: Vec<String>) -> Self {
-        NodeClient { addresses }
+        Self::with_pool_size(addresses, MAX_POOLED_CONNECTIONS)
     }
 
-    async fn connect(&self) -> Result<TcpStream> {
+    /// A client with a pool of exactly `size` connections. Exists so tests
+    /// (and the benchmark that chose `MAX_POOLED_CONNECTIONS`) can pin the
+    /// size instead of inheriting whatever the default happens to be --
+    /// notably size 1, where the pool is a single persistent connection
+    /// and every caller queues behind it.
+    pub fn with_pool_size(addresses: Vec<String>, size: usize) -> Self {
+        NodeClient {
+            addresses,
+            pool: Arc::new(Pool::new(size.max(1))),
+        }
+    }
+
+    /// Dials a node, preferring earlier addresses, and points the pool at
+    /// whichever one answered.
+    async fn connect(&self) -> Result<(String, TcpStream)> {
         let mut last_err = None;
         for address in &self.addresses {
             match Self::connect_one(address).await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    self.pool.adopt(address).await;
+                    return Ok((address.clone(), stream));
+                }
                 Err(e) => {
                     warn!("node at {address} unreachable, trying next: {e}");
                     last_err = Some(e);
@@ -61,15 +201,82 @@ impl NodeClient {
         Ok(stream)
     }
 
+    /// Sends `message` and waits for the node's reply, on a pooled
+    /// connection where one is available.
+    ///
+    /// The connection is held for the whole exchange and only returned to
+    /// the pool once the reply has been read, which is what keeps two
+    /// concurrent operations from interleaving their bytes on one socket.
+    async fn request(&self, message: &Message) -> Result<Message> {
+        let _permit = self
+            .pool
+            .permits
+            .acquire()
+            .await
+            .expect("the node client's semaphore is never closed");
+
+        if let Some((address, mut stream)) = self.pool.take().await {
+            match Self::exchange(&mut stream, message).await {
+                Ok(reply) => {
+                    self.pool.put(&address, stream).await;
+                    return Ok(reply);
+                }
+                Err(e) => {
+                    // Dropping `stream` rather than returning it is the
+                    // point: a failed exchange may have left an unread
+                    // reply (or half of one) in the socket, and the next
+                    // caller would read it as their own answer.
+                    debug!("pooled connection to {address} failed ({e}); retrying on a fresh one");
+                }
+            }
+        }
+
+        let (address, mut stream) = self.connect().await?;
+        let reply = Self::exchange(&mut stream, message).await?;
+        self.pool.put(&address, stream).await;
+        Ok(reply)
+    }
+
+    /// Sends `message` with no reply expected. Same pooling and same
+    /// single retry; see the type's doc comment for why retrying a send
+    /// is safe even for `SubmitTransaction`.
+    async fn send(&self, message: &Message) -> Result<()> {
+        let _permit = self
+            .pool
+            .permits
+            .acquire()
+            .await
+            .expect("the node client's semaphore is never closed");
+
+        if let Some((address, mut stream)) = self.pool.take().await {
+            match message.send_async(&mut stream).await {
+                Ok(()) => {
+                    self.pool.put(&address, stream).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    debug!("pooled connection to {address} failed ({e}); retrying on a fresh one");
+                }
+            }
+        }
+
+        let (address, mut stream) = self.connect().await?;
+        message.send_async(&mut stream).await?;
+        self.pool.put(&address, stream).await;
+        Ok(())
+    }
+
+    async fn exchange(stream: &mut TcpStream, message: &Message) -> Result<Message> {
+        message.send_async(stream).await?;
+        Ok(Message::receive_async(stream).await?)
+    }
+
     /// Current chain height, from whichever configured node answers first
     /// -- see `connect()`'s doc comment for the failover order. Used by
     /// `GET /health` to prove the hub can actually reach a node, not just
     /// that its own process is alive.
     pub async fn chain_tip(&self) -> Result<u32> {
-        let mut stream = self.connect().await?;
-        let message = Message::AskChainTip;
-        message.send_async(&mut stream).await?;
-        match Message::receive_async(&mut stream).await? {
+        match self.request(&Message::AskChainTip).await? {
             Message::ChainTip(height, _work) => Ok(height),
             other => anyhow::bail!("unexpected response from node: {other:?}"),
         }
@@ -79,10 +286,7 @@ impl NodeClient {
     /// node -- including whether the node's own mempool view considers
     /// each one already spoken for (`marked`).
     pub async fn fetch_utxos(&self, pubkey: &PublicKey) -> Result<Vec<(bool, TransactionOutput)>> {
-        let mut stream = self.connect().await?;
-        let message = Message::FetchUTXOs(pubkey.clone());
-        message.send_async(&mut stream).await?;
-        match Message::receive_async(&mut stream).await? {
+        match self.request(&Message::FetchUTXOs(pubkey.clone())).await? {
             Message::UTXOs(utxos) => Ok(utxos
                 .into_iter()
                 .map(|(output, marked)| (marked, output))
@@ -108,9 +312,197 @@ impl NodeClient {
     /// forget behavior), so success here means "accepted for delivery,"
     /// not "confirmed."
     pub async fn submit_transaction(&self, transaction: Transaction) -> Result<()> {
-        let mut stream = self.connect().await?;
-        let message = Message::SubmitTransaction(transaction);
-        message.send_async(&mut stream).await?;
+        self.send(&Message::SubmitTransaction(transaction)).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// A connected `TcpStream` with nothing meaningful on the other end.
+    /// These tests are about the pool's bookkeeping -- which connections
+    /// it keeps and which it discards -- not about what travels over one,
+    /// so any real socket will do.
+    async fn dummy_stream() -> TcpStream {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stream, _) = tokio::join!(
+            async { TcpStream::connect(addr).await.unwrap() },
+            async { listener.accept().await.unwrap() }
+        );
+        stream
+    }
+
+    #[tokio::test]
+    async fn a_returned_connection_is_available_to_the_next_caller() {
+        let pool = Pool::new(4);
+        pool.adopt("node-a").await;
+        pool.put("node-a", dummy_stream().await).await;
+
+        let taken = pool.take().await;
+        assert!(taken.is_some(), "a connection put back must be reusable");
+        assert_eq!(taken.unwrap().0, "node-a");
+        assert!(
+            pool.take().await.is_none(),
+            "the pool held one connection, so a second take must find nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopting_a_new_node_discards_the_connections_to_the_old_one() {
+        // The failover invariant: the hub's double-spend safety assumes
+        // every call sees one node's mempool. A pool that kept both sets
+        // after a failover would quietly load-balance across two.
+        let pool = Pool::new(4);
+        pool.adopt("node-a").await;
+        pool.put("node-a", dummy_stream().await).await;
+        pool.put("node-a", dummy_stream().await).await;
+
+        pool.adopt("node-b").await;
+
+        assert!(
+            pool.take().await.is_none(),
+            "connections to the node we failed away from must not survive the switch"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_finishing_after_a_failover_is_dropped_rather_than_pooled() {
+        // The other half of the same invariant, and the easier half to
+        // miss: an operation already in flight against the old node when
+        // the switch happened still has a connection to hand back.
+        let pool = Pool::new(4);
+        pool.adopt("node-a").await;
+        pool.adopt("node-b").await;
+
+        pool.put("node-a", dummy_stream().await).await;
+
+        assert!(
+            pool.take().await.is_none(),
+            "a late return from the previous node must be discarded, not pooled"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_reports_the_address_a_pooled_connection_belongs_to() {
+        // `request` needs this to put the connection back under the right
+        // address; getting it wrong would defeat the check above.
+        let pool = Pool::new(2);
+        pool.adopt("node-b").await;
+        pool.put("node-b", dummy_stream().await).await;
+
+        assert_eq!(pool.take().await.unwrap().0, "node-b");
+    }
+}
+
+/// The benchmark that chose `MAX_POOLED_CONNECTIONS`, and the one to
+/// re-run if it is ever revisited. Ignored by default because it needs a
+/// real node; point it at one and run:
+///
+/// ```text
+/// ITX_BENCH_NODE=127.0.0.1:9000 \
+///   cargo test -p hub -- --ignored --nocapture node_pool_benchmark
+/// ```
+///
+/// It measures the hub's worst case -- the leaderboard's net-worth
+/// fan-out, one balance lookup per agent -- against the *old* client's
+/// behaviour and against a pool of each candidate size. The baseline is
+/// not an approximation of the old code: `connect_per_call` below is the
+/// old code path, built from the same two private primitives the pooled
+/// client uses.
+#[cfg(test)]
+mod benchmark {
+    use super::*;
+    use btclib::crypto::PrivateKey;
+
+    /// One net-worth sweep's worth of lookups, issued concurrently the
+    /// way `handlers::net_worth_snapshot` issues them.
+    const FIELD: usize = 50;
+    const ROUNDS: usize = 10;
+
+    /// Exactly what `NodeClient` did before pooling: dial, handshake,
+    /// one exchange, drop the connection.
+    async fn connect_per_call(address: &str, pubkey: &PublicKey) -> Result<()> {
+        let mut stream = NodeClient::connect_one(address).await?;
+        NodeClient::exchange(&mut stream, &Message::FetchUTXOs(pubkey.clone())).await?;
         Ok(())
+    }
+
+    async fn timed<F, Fut>(rounds: usize, round: F) -> f64
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            round().await;
+        }
+        started.elapsed().as_secs_f64() * 1000.0 / rounds as f64
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn node_pool_benchmark() {
+        let Ok(address) = std::env::var("ITX_BENCH_NODE") else {
+            println!("set ITX_BENCH_NODE=<host:port> to run this against a live node");
+            return;
+        };
+
+        let field: Vec<PublicKey> = (0..FIELD).map(|_| PrivateKey::new_key().public_key()).collect();
+
+        let baseline = timed(ROUNDS, || {
+            let address = address.clone();
+            let field = field.clone();
+            async move {
+                let mut lookups = tokio::task::JoinSet::new();
+                for pubkey in field {
+                    let address = address.clone();
+                    lookups.spawn(async move { connect_per_call(&address, &pubkey).await });
+                }
+                while let Some(result) = lookups.join_next().await {
+                    result.unwrap().unwrap();
+                }
+            }
+        })
+        .await;
+        println!("connect-per-call (the old client): {baseline:7.2}ms per {FIELD}-agent sweep");
+
+        for size in [1usize, 2, 4, 8, 16, 32, 64] {
+            let client = NodeClient::with_pool_size(vec![address.clone()], size);
+            // A warm round first, so what follows is steady-state reuse
+            // rather than the cost of filling an empty pool.
+            let field_for_warmup = field.clone();
+            let warm = client.clone();
+            let mut warmup = tokio::task::JoinSet::new();
+            for pubkey in field_for_warmup {
+                let warm = warm.clone();
+                warmup.spawn(async move { warm.balance(&pubkey).await });
+            }
+            while let Some(result) = warmup.join_next().await {
+                result.unwrap().unwrap();
+            }
+
+            let elapsed = timed(ROUNDS, || {
+                let client = client.clone();
+                let field = field.clone();
+                async move {
+                    let mut lookups = tokio::task::JoinSet::new();
+                    for pubkey in field {
+                        let client = client.clone();
+                        lookups.spawn(async move { client.balance(&pubkey).await });
+                    }
+                    while let Some(result) = lookups.join_next().await {
+                        result.unwrap().unwrap();
+                    }
+                }
+            })
+            .await;
+            println!(
+                "pool of {size:>2}: {elapsed:7.2}ms per {FIELD}-agent sweep  ({:.2}x the old client)",
+                baseline / elapsed
+            );
+        }
     }
 }
