@@ -127,8 +127,13 @@ async fn phase(
     poster: &PrivateKey,
     label: &'static str,
     hard: bool,
-    samples: &mut Vec<Sample>,
 ) -> Result<Section> {
+    // Each phase keeps its own samples. Pooling them across both would
+    // put SIGTERM's timings under a section titled SIGKILL, and the two
+    // are being compared -- a table that mixes them answers neither
+    // question.
+    let mut samples: Vec<Sample> = Vec::new();
+    let samples = &mut samples;
     let hub = harness.stack.hub_client()?;
     let chain = harness.stack.chain();
 
@@ -277,7 +282,8 @@ async fn phase(
     .fact("recovered_by_retry", recovered)
     .fact("deposits_funding_two_tasks", duplicated)
     .fact("deposits_stranded", stranded)
-    .fact("tasks_before", before.len());
+    .fact("tasks_before", before.len())
+    .latency(summarize(samples, None));
 
     if duplicated > 0 {
         section = section
@@ -343,15 +349,14 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .await?;
     anyhow::ensure!(funded >= needed, "could not fund the drill's poster");
 
-    let mut samples = Vec::new();
-    let graceful = phase(&mut harness, &poster, "sigterm", false, &mut samples).await?;
-    let crash = phase(&mut harness, &poster, "sigkill", true, &mut samples).await?;
+    let graceful = phase(&mut harness, &poster, "sigterm", false).await?;
+    let crash = phase(&mut harness, &poster, "sigkill", true).await?;
 
     harness.stack.shutdown().await;
 
     let mut report = Report::new("drill: escrow-restart", harness.environment);
     report.push(graceful);
-    report.push(crash.latency(summarize(&samples, None)));
+    report.push(crash);
     Ok(report)
 }
 
