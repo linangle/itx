@@ -107,13 +107,19 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    it was before item 10 landed the same day, and the number the fix is
    scored against.
 
-   **"Passing" is not yet true, and this item should not be ticked until it
-   is.** One open bug is left of the three failures — §6.5b — and it has a
-   checked-in drill that finds it, which is how its fix gets signed off
-   rather than argued about. Note the drill's own caveat: it reproduces a
-   one-step-wide race and reports *inconclusive* rather than clean when it
-   finds nothing, so a green run is not a signature. §6.5 was the other open
-   bug and is now fixed: re-run against the merged tree, `node-crash` reports
+   **All three failures are now closed, and this item can be ticked once the
+   drills are re-run against the merged tree.** §6.5b was the last of them,
+   fixed 2026-09-06 on branch `escrow`: all three escrow confirm handlers now
+   commit their effect and the deposit's `Consumed` status in one redb
+   transaction. Note the drill's own caveat, which still stands and was
+   deliberately left in place: it reproduces a one-step-wide race and reports
+   *inconclusive* rather than clean when it finds nothing, so a green run is
+   not a signature. What signed §6.5b off instead was the shape of the fix (a
+   single transaction has no interval to land in), a store-level test that a
+   partial commit is impossible, and a five-run A/B against the pre-fix build
+   on the same machine — five duplicates pre-fix, none after, with duplicates
+   exactly equal to drill coverage in every pre-fix run. Detail in §6.5b.
+   §6.5 was the other open bug and is also fixed: re-run against the merged tree, `node-crash` reports
    **REFUTED** with `itx_lost: 0` and all six payouts on the chain, which is
    the fix signed off in the harness's own terms rather than in its author's.
    That re-run also corrected the drill, which had kept a 75-second wait from
@@ -756,60 +762,136 @@ for any future action worth pricing.
    no operator. **What is not fixed:** faucet grants, escrow disbursement and
    exchange withdrawals still submit and assume, each being the same fix
    against a different status field. And §6.5b below is the deposit-side twin,
-   which this work does not touch. Detail in §6.5.
+   which this work does not touch — it was fixed separately the same day, by a
+   redb transaction rather than by chain evidence, because a deposit's problem
+   is two local commits and a payout's is a write to another process. Detail in
+   §6.5.
 
-5b. **Escrow confirmation is not crash-safe — found 2026-09-06 by
-   `harness drill escrow-restart`, not fixed.** One escrow deposit can fund
-   two tasks.
+5b. **Escrow confirmation was not crash-safe — found 2026-09-06 by
+   `harness drill escrow-restart`, fixed the same day (branch `escrow`).** One
+   escrow deposit could fund two tasks. All three confirm handlers are now
+   crash-safe; this closes the last of §6.7's three failures.
 
-   `confirm_task_escrow` does four things in order: read the pending deposit,
-   ask the node what landed at the derived address, create the task in memory
-   and persist it, and then persist the deposit's new `Consumed` status. The
-   last two are separate writes, and a process that stops between them leaves
-   a task on disk beside a deposit that still reads `Reserved`. On restart the
-   board loads both. The depositor can then confirm the same escrow again —
-   with a fresh envelope, since the replay guard has spent the old one — and
-   gets a second task funded by a deposit that was only ever paid once. Only
-   the depositor can do it, which bounds who is exposed and does not make the
-   books any less wrong.
+   **What was wrong.** `confirm_task_escrow` did four things in order: read the
+   pending deposit, ask the node what landed at the derived address, create the
+   task in memory and persist it, and then persist the deposit's new `Consumed`
+   status. The last two were separate redb writes, and a process that stopped
+   between them left a task on disk beside a deposit that still read
+   `Reserved`. On restart the board loaded both. The depositor could then
+   confirm the same escrow again — with a fresh envelope, since the replay
+   guard had spent the old one — and get a second task funded by a deposit that
+   was only ever paid once. Only the depositor could do it, which bounded who
+   was exposed and did not make the books any less wrong.
 
-   Measured: confirmations interrupted by `SIGKILL` mid-handler produced one
-   deposit backing two `Open` tasks of 1,000,000 ITX each — verified
-   independently of the drill by restarting a hub against its store and
-   listing tasks, which showed the same description twice with two ids. The
-   others were clean: no task, and the retry recreates it. The `SIGTERM`
-   phase, which the hub drains, lost nothing in any run. So this is
+   Measured before the fix: confirmations interrupted by `SIGKILL` mid-handler
+   produced one deposit backing two `Open` tasks of 1,000,000 ITX each —
+   verified independently of the drill by restarting a hub against its store
+   and listing tasks, which showed the same description twice with two ids. The
+   `SIGTERM` phase, which the hub drains, lost nothing in any run. So this was
    specifically a crash, not a deploy.
 
-   **The reproduction is probabilistic and the drill says so.** The interval
-   is one step wide, so whether a `SIGKILL` lands inside it is chance. It
-   reproduced in three runs of six across three versions of the drill; the
-   version now in the tree — a dozen confirmations staggered across one
-   measured handler's duration, so that each is at a different point in it
-   when the process dies — caught it on its first attempt, but the three
-   runs that found nothing are exactly why this cannot be trusted either
-   way. Its hard-kill phase therefore reports *inconclusive* rather
-   than confirmed when it finds nothing, because it can demonstrate the bug
-   and cannot demonstrate its absence. **Do not sign the fix off on a green
-   drill run.** The hub has no fault-injection point that would make this
-   deterministic, and adding one was out of scope for the harness — but the
-   fix below removes the need for one, because a single transaction leaves
-   no interval to land in.
+   `confirm_exchange_deposit` and `confirm_dispute_escrow` had the same shape
+   and neither was ever drilled. Both persisted their effect — a credited
+   exchange account, a settled dispute bond — and only then the deposit.
 
-   It is the deposit-side twin of §6.5. Both come from a durable state machine
-   whose steps are separate commits with no ordering that makes an interrupted
-   sequence unambiguous, and both end with the hub's books disagreeing with the
-   chain. §6.5's fix does not touch this path.
+   #### What was built
 
-   Two ways out, and the second is better. Persist the deposit's `Consumed`
-   status *before* the task rather than after: a crash then loses the task and
-   strands the deposit, which is recoverable and visible, instead of
-   duplicating it, which is neither. Or write both in one transaction — the
-   store is redb, which has them, and this is exactly what they are for.
-   Whoever takes this should fix `confirm_exchange_deposit` and
-   `confirm_dispute_escrow` in the same pass: both persist their effect — a
-   credited exchange account, a settled dispute bond — and only then persist
-   the deposit, so both have this bug too. Neither was drilled.
+   **One redb transaction, which was the second of the two options and the
+   better one.** `HubStore::save_task_and_deposit` and
+   `save_exchange_account_and_deposit` commit the effect and the deposit's
+   `Consumed` status together; all three handlers now call one of them. Both
+   are built on a small `in_one_write_txn` primitive that commits only if every
+   staged write succeeded.
+
+   The cheaper option — persist the deposit *before* the effect, so that a
+   crash strands the deposit instead of duplicating it — was rejected even
+   though it is a real improvement, because it only makes the failure a better
+   failure. It leaves an interval whose safety depends on nobody ever adding a
+   step between the two writes, and it makes a stranded deposit the expected
+   outcome of a crash rather than something that cannot happen. A single
+   transaction has no interval at all, and it removes the stranded case too:
+   the drill's `deposits_stranded` count is now structurally zero rather than
+   merely observed to be zero.
+
+   The handlers also read the deposit back **under the same write lock that
+   consumed it**, rather than reacquiring the lock afterwards as the old code
+   did. That is what makes the pair internally consistent; the previous shape
+   could in principle persist whatever a concurrent caller had left behind
+   between the two acquisitions.
+
+   One behavioural change worth naming: persisting the deposit used to be
+   best-effort — it logged an error and still returned 200. It is now part of
+   the same fallible write as the effect, so a store failure returns 500 with
+   nothing committed, and a restart reverts to a `Reserved` deposit the
+   depositor can simply retry.
+
+   #### How it was proved, and how it was not
+
+   **Not by a green drill run, and the drill still says so.** Its hard-kill
+   phase reports *inconclusive* rather than confirmed when it finds nothing,
+   and that behaviour is deliberately unchanged: the fix does not make a
+   deterministic verdict possible, because absence of an interval is not
+   something a sampling run can observe. Three things carry the weight instead.
+
+   **The argument from shape, which is the strongest available.** A single
+   transaction has no interval for a `SIGKILL` to land in. This is a property
+   of the code rather than of a sample, and it is why the fix is a transaction
+   and not a reordering.
+
+   **A store-level test that the two writes cannot be observed apart.**
+   `a_failure_after_staging_both_records_commits_neither` stages both records
+   and then fails — the crash, hit deterministically on every run rather than
+   by chance — and asserts neither survived. Two companions:
+   `a_task_and_its_deposit_are_never_visible_apart` (and its exchange twin)
+   checks against a read snapshot taken before the write that no reader ever
+   sees one record without the other, and
+   `two_separate_commits_leave_a_window_where_the_task_exists_alone` makes the
+   *old* shape's window executable, so the suite states the mechanism of the
+   bug rather than only describing it. Suite went 342 → 346.
+
+   Note the one thing no test covers, because it cannot: nothing catches
+   `save_task_and_deposit` being rewritten back into two commits. Two commits
+   differ from one only in the existence of a window nothing can be scheduled
+   inside on demand, which is the original problem restated. The method's doc
+   comment carries that, not the suite.
+
+   **An A/B against the drill, which is better evidence than a clean run.**
+   Five runs of `harness drill escrow-restart` against the fix, then five more
+   on the same machine in the same session against the pre-fix hub sources
+   (`d0d2ed0`, checked out over the tree and rebuilt), everything else
+   identical:
+
+   | | SIGKILL verdicts | deposits funding two tasks | deposits stranded | handlers that committed a task at all |
+   |---|---|---|---|---|
+   | Pre-fix control | 4 refuted, 1 inconclusive | 2, 1, 0, 1, 1 — **5 total** | 0 | 2, 1, 0, 1, 1 |
+   | With the fix | 5 inconclusive | 0, 0, 0, 0, 0 — **0 total** | 0 | 1, 0, 0, 0, 1 |
+
+   The column that matters is the last one against the second. Pre-fix, the two
+   were **equal in every single run**: every handler that got as far as
+   committing a task produced a duplicate, five for five, because committing
+   the task is precisely what opens the window. With the fix, two handlers got
+   that far and neither duplicated. That is a conditional rate of 5/5 falling
+   to 0/2 — evidence, not proof, and the sample on the clean side is small
+   because the drill's coverage is low, but it is a great deal more than "a run
+   that found nothing."
+
+   It also settles a red herring. The `SIGTERM` phase reports one confirmation
+   dropped without an answer in most runs, which the baseline (a single run
+   from a different session) does not show. The control reproduces it at the
+   same rate — three runs of five pre-fix, four of five post-fix — so it is
+   pre-existing variance in the drain, not something this change introduced. It
+   costs nothing: the escrow is not consumed and the retry recovers it.
+
+   `harness compare` against `harness/baselines/escrow-restart.json` reports
+   `verdict: refuted -> inconclusive`, `deposits_funding_two_tasks: 1 -> 0` and
+   the finding `gone`, for all five runs. The baseline itself is deliberately
+   **not** refreshed, following `node-crash`, whose baseline still holds its
+   pre-fix `itx_lost: 6000000` after §6.5 landed: a baseline is the "before"
+   and the comparison is the sign-off. Worth knowing about that convention,
+   though — because this drill's stored verdict stays `refuted`, a future
+   regression would compare refuted-to-refuted and `harness compare` would exit
+   0. That is a gap in the convention rather than in this fix, and it is left
+   for whoever revisits the baselines as a set.
 
 6. **Polling herd:** `ETag`/`If-None-Match` on `/tasks` first (cheap); an SSE feed
    for new tasks later — or A2A push notifications for that rail (§7.8).
@@ -831,13 +913,16 @@ for any future action worth pricing.
    `node_client`'s pooling benchmark has, that the comparison can be re-run
    rather than re-argued.
 
-   **What the drills found.** Six of eight claims held.
+   **What the drills found**, as measured on 2026-09-06 before that day's
+   fixes. Six of eight claims held. Of the two that did not: §6.5b was a bug
+   and is now fixed, and §6.3 was a claim about where the write path's time
+   goes, corrected in place rather than fixed.
 
    | Drill | Claim | Result |
    |---|---|---|
    | `node-crash` | §6.5 loses money silently | Confirmed — 6,000,000 ITX destroyed |
    | `escrow-restart` (SIGTERM) | A drained restart is safe | Confirmed |
-   | `escrow-restart` (SIGKILL) | A crash leaves consistent state | **Refuted** — one deposit funded two tasks (3 runs of 6) |
+   | `escrow-restart` (SIGKILL) | A crash leaves consistent state | **Refuted** — one deposit funded two tasks (3 runs of 6). Fixed the same day; re-runs report inconclusive with zero duplicates, see §6.5b |
    | `replay-storm` | §3.3's guard survives a crash | Confirmed — 0 of 30 accepted |
    | `rate-limit-tiers` | §3.4's buckets are independent | Confirmed — 120 and 59 served exactly |
    | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |
@@ -1516,6 +1601,13 @@ Settlement owns the settlement path and the faucet work owns the faucet
 handler, so the two touch `handlers.rs` in different places. Metrics stays out
 of `handlers.rs` entirely in this wave — per-endpoint counters come after,
 because instrumenting every handler collides with everything.
+
+**Wave one's follow-up, done 2026-09-06 (branch `escrow`).** Escrow crash
+safety (§6.5b) was not on this list because the harness had not found it yet.
+It was the last open money bug and the last of §6.7's three failures: all three
+escrow confirm handlers now commit their effect and the deposit together. It
+owned the three confirm handlers in `handlers.rs` and the new pair-writers in
+`store.rs`, which is why it could run beside the faucet and metrics work.
 
 **Wave two — after wave one merges.** Both of these change code wave one is
 actively rewriting, so starting them early buys conflicts rather than time.
