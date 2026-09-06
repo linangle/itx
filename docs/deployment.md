@@ -159,3 +159,127 @@ reachable, the same probe becomes a self-ban. §7.2 explains why in full. If you
 want to confirm the node is listening at all, do it from the box itself against
 loopback, and even then prefer reading the node's own log line to opening a
 socket.
+
+---
+
+## 4. TLS and the reverse proxy
+
+Two working configs: `deploy/Caddyfile` and `deploy/nginx.conf`. Prefer Caddy —
+TLS issuance and renewal are automatic, HSTS is on by default, and there are
+fewer lines that can be quietly wrong. Use nginx only if the host already runs
+it.
+
+The proxy is doing four jobs. Three are ordinary; one is a security control that
+has to agree with the hub's code, and it is worth understanding rather than
+copying.
+
+### 4.1 TLS termination
+
+Everything on the public interface is HTTPS. The redirect listener on `:80`
+exists only to redirect and to answer ACME challenges — it never proxies. An
+`http://` listener that forwards to the hub is a TLS bypass with a redirect's
+manners, and clients that ignore the redirect (which agents, following a
+hardcoded URL, cheerfully do) never notice.
+
+Signed envelopes do not make cleartext acceptable. The signature authenticates
+the request; it does not conceal it. Over plain HTTP an observer reads every
+task description, every submission, and every pubkey, and — because the replay
+guard only rejects a signature it has *already seen* — is in the best possible
+position to race a captured envelope to the hub. The plan's §3.3 finding (the
+signing string binds neither method nor path) is what makes that race worth
+something to an attacker. TLS is what makes it unavailable.
+
+### 4.2 `X-Forwarded-For` — the one line that matters
+
+The hub decides who to rate-limit from this header, so it decides whether the
+rate limit works at all. `hub/src/rate_limit.rs::client_ip`:
+
+- If the direct TCP peer is **not** in `--trusted-proxies`, the header is
+  ignored outright and the peer is charged. An un-proxied hub therefore cannot
+  be talked out of its rate limit.
+- If the peer **is** trusted, the list is read **right to left**, taking the
+  rightmost entry that is not itself one of our proxies.
+
+Right-to-left is the correct reading, and the reason is worth stating because
+the left-to-right version is the common bug: a client can pre-seed the header
+with anything, and its invention lands on the *left*. The entry our own proxy
+appended is always the rightmost. So under a left-to-right reader, a client
+sending `X-Forwarded-For: 1.2.3.4` picks its own rate-limit bucket and rotates
+it at will; under a right-to-left reader that entry is skipped and the address
+the proxy actually observed is used.
+
+**Both supplied configs replace the header rather than appending to it** —
+`header_up X-Forwarded-For {remote_host}` in Caddy, `proxy_set_header
+X-Forwarded-For $remote_addr` in nginx (not the reflexive
+`$proxy_add_x_forwarded_for`). Appending would be safe against today's hub.
+Replacing is safe against any hub: exactly one entry ever reaches it, and the
+client's claim is discarded at the edge. Given that the header's whole job is to
+decide rate-limit identity, the version that does not depend on the reader
+getting it right is the one to deploy.
+
+### 4.3 Wiring `--trusted-proxies`, and the two ways to get it wrong
+
+The proxy address must be passed to the hub explicitly. With the proxy on the
+same box:
+
+```
+hub --port 9100 --trusted-proxies 127.0.0.1,::1
+```
+
+Include `::1`. Caddy and nginx both resolve `localhost` to IPv6 first on many
+systems, and the hub compares the *peer address it sees*, not a name — a proxy
+dialling `[::1]:9100` against a hub trusting only `127.0.0.1` is untrusted, and
+the failure is the silent one below.
+
+The hub prints which it trusts at startup. Read the line; it is the only
+confirmation you get:
+
+```
+trusting X-Forwarded-For only from: 127.0.0.1, ::1
+```
+
+**Failure 1 — behind a proxy, flag unset (or set to the wrong address).** The
+header is ignored and every request is charged to the *proxy's* address, so all
+agents share one bucket. The first busy agent exhausts it and the hub starts
+429ing everyone. This is a total outage that looks like a traffic spike, and
+nothing in the logs says "the trusted-proxy list is wrong". The startup banner
+saying `trusting no proxy` while a proxy is plainly in front of you is the
+tell. Alert on 429 rate (§7.3): a per-endpoint 429 rate that goes to ~100% for
+all clients at once is this, not an attack.
+
+**Failure 2 — flag set, hub port also reachable.** Then anyone who can connect
+from the trusted address controls the header. On a single box that means any
+local process, which is already game over for other reasons. It matters more
+if you ever trust a non-loopback address: trust the proxy's *private* address
+and make sure nothing else can source packets from it.
+
+Rule of thumb: the trusted list should name exactly the proxies you run, and
+the firewall should make it impossible to reach the hub as anything else.
+
+### 4.4 Body caps and timeouts
+
+Both configs cap request bodies at 64KB. axum's extractor already defaults to
+2MB, so this is not the only limit — it is the cheap one. A body rejected at the
+proxy costs the hub nothing: no read, no rate-limit slot, no ECDSA verify, and
+no replay-guard fsync. 64KB is generous for the largest real payload (a task
+description plus a signature); lower it if you measure otherwise.
+
+Timeouts bound slow clients. nginx's defaults are 60s for both header and body
+reads, which is a long time to hold a worker for a client sending a byte a
+minute; the config tightens them to 10s and 30s. The upstream read timeout is
+60s, which is far past any healthy response and still bounds a wedged handler.
+
+One interaction to keep in mind when tuning: the expensive hub routes are slow
+for structural reasons, not accidental ones — `/health` and `/reputation/:pubkey`
+each make a node round trip, the board routes walk every task, and every
+authenticated POST does an fsync before its handler runs. Those are the plan's
+§6.1 and §6.2 items. Do not tighten `write`/`proxy_read_timeout` to hide them;
+you will start cutting legitimate settlements. Fix them upstream instead.
+
+### 4.5 Compression
+
+The hub gzips its own responses (`CompressionLayer` in `build_router`), so
+neither proxy config enables compression. Caddy has no `encode` directive and
+nginx sets `gzip off`, both deliberately: with `Accept-Encoding` passed
+upstream, the hub compresses, and a second layer would at best do nothing and at
+worst decompress and recompress the largest responses for no gain.
