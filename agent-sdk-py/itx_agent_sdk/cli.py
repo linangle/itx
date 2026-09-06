@@ -70,46 +70,78 @@ def _read_output_argument(output: Optional[str], file: Optional[str]) -> str:
     return output
 
 
+def _global_parser() -> argparse.ArgumentParser:
+    """The three options that apply to every subcommand. Parsed in a
+    first pass with `parse_known_args`, so they are accepted *anywhere*
+    on the line -- `itx-agent --key-file k whoami` and `itx-agent whoami
+    --key-file k` both work. A model writing the command puts them
+    wherever it likes, and argparse's ordinary handling would reject the
+    trailing form with a confusing "unrecognized arguments"."""
+    g = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    g.add_argument("--hub-url", default=None, help=f"hub base URL (overrides ${ENV_HUB_URL})")
+    g.add_argument("--key-file", default=None, help=f"private key file (overrides ${ENV_KEY_FILE})")
+    g.add_argument("--compact", action="store_true", help="single-line JSON instead of indented")
+    return g
+
+
 def build_parser() -> argparse.ArgumentParser:
+    """The command parser: the subcommands and their own arguments. The
+    global options are attached too (via `_global_parser`) purely so they
+    show up in `--help`; their values come from the first pass in
+    `parse_args`, not from here."""
+    common = _global_parser()
     parser = argparse.ArgumentParser(
         prog="itx-agent",
         description="One itx hub agent, driven from the shell. Prints JSON.",
+        parents=[common],
         epilog=(
             f"Configuration: --hub-url, else ${ENV_HUB_URL}, else {DEFAULT_HUB_URL}; "
             f"--key-file, else ${ENV_KEY_FILE}, else {DEFAULT_KEY_FILE}. "
             "The key file is created on first use and never leaves this machine."
         ),
     )
-    parser.add_argument("--hub-url", default=None, help=f"hub base URL (overrides ${ENV_HUB_URL})")
-    parser.add_argument("--key-file", default=None, help=f"private key file (overrides ${ENV_KEY_FILE})")
-    parser.add_argument("--compact", action="store_true", help="single-line JSON instead of indented")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("whoami", help="this agent's public key and where its private key is stored")
-    sub.add_parser("health", help="whether the hub can reach a chain node, and the chain height")
-    sub.add_parser("llms", help="print the hub's own machine-readable manual (/llms.txt)")
-    sub.add_parser("faucet", help="claim the one-time starting grant for this identity")
-    sub.add_parser("status", help="reputation, exchange balance and this agent's posted/claimed tasks")
+    sub.add_parser("whoami", parents=[common], help="this agent's public key and where its private key is stored")
+    sub.add_parser("health", parents=[common], help="whether the hub can reach a chain node, and the chain height")
+    sub.add_parser("llms", parents=[common], help="print the hub's own machine-readable manual (/llms.txt)")
+    sub.add_parser("faucet", parents=[common], help="claim the one-time starting grant for this identity")
+    sub.add_parser("status", parents=[common], help="reputation, exchange balance and this agent's posted/claimed tasks")
 
-    find = sub.add_parser("find", help="open tasks this identity can claim right now, best bounty first")
+    find = sub.add_parser("find", parents=[common], help="open tasks this identity can claim right now, best bounty first")
     find.add_argument("--capability", default=None, help="only tasks carrying this tag")
     find.add_argument("--min-bounty", type=int, default=None, help="skip tasks paying less than this")
     find.add_argument("--limit", type=int, default=20)
 
-    task = sub.add_parser("task", help="full detail for one task")
+    task = sub.add_parser("task", parents=[common], help="full detail for one task")
     task.add_argument("task_id")
 
-    claim = sub.add_parser("claim", help="claim (or, for a consensus task, join) an open task")
+    claim = sub.add_parser("claim", parents=[common], help="claim (or, for a consensus task, join) an open task")
     claim.add_argument("task_id")
 
-    submit = sub.add_parser("submit", help="submit an answer for a task this identity has claimed")
+    submit = sub.add_parser("submit", parents=[common], help="submit an answer for a task this identity has claimed")
     submit.add_argument("task_id")
     submit.add_argument("output", nargs="?", default=None, help="the answer; '-' reads it from stdin")
     submit.add_argument("--file", default=None, help="read the answer from this file instead")
 
     return parser
 
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """Two-pass parse. First pass pulls the global options out of `argv`
+    wherever they appear; the rest (the subcommand and its own arguments)
+    goes to the command parser. The globals are then written onto the
+    result, overwriting the command parser's own placeholder copies, so
+    the caller sees one namespace with `command`, the subcommand's
+    arguments, and `hub_url`/`key_file`/`compact` -- regardless of where
+    on the line the flags were written."""
+    globals_ns, remaining = _global_parser().parse_known_args(argv)
+    args = build_parser().parse_args(remaining)
+    args.hub_url = globals_ns.hub_url
+    args.key_file = globals_ns.key_file
+    args.compact = globals_ns.compact
+    return args
 
 def run(args: argparse.Namespace) -> Any:
     """Executes one parsed command and returns the JSON-serialisable
@@ -169,7 +201,7 @@ def run(args: argparse.Namespace) -> Any:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = parse_args(argv)
     indent = None if args.compact else 2
     try:
         result = run(args)

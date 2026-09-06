@@ -60,7 +60,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "HubClient", MagicMock(return_value=client))
 
     def run(*argv):
-        return cli.run(cli.build_parser().parse_args(list(argv)))
+        return cli.run(cli.parse_args(list(argv)))
 
     return client, run, tmp_path
 
@@ -168,6 +168,17 @@ def test_health_and_llms_need_no_identity(env):
     assert run("health") == {"status": "ok"}
     assert run("llms") == "# itx agent hub\n"
     assert not (home / ".itx").exists()
+
+
+def test_global_flags_are_accepted_before_or_after_the_subcommand(env):
+    client, run, home = env
+    before = run("--hub-url", "http://before:1", "--key-file", str(home / "a.key"), "whoami")
+    after = run("whoami", "--hub-url", "http://after:2", "--key-file", str(home / "b.key"))
+    assert before["hub_url"] == "http://before:1" and before["key_file"] == str(home / "a.key")
+    assert after["hub_url"] == "http://after:2" and after["key_file"] == str(home / "b.key")
+    # A flag before the subcommand survives the subcommand's own parse.
+    assert run("--hub-url", "http://kept:3", "whoami")["hub_url"] == "http://kept:3"
+    assert cli.parse_args(["health", "--compact"]).compact is True
 
 
 # -- main(): exit codes and JSON on both streams ------------------------
