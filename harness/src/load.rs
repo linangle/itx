@@ -62,6 +62,15 @@ const CORRECT_ANSWER: &str = "the answer is 42";
 /// them, and the operator's coin is finite.
 const SEEDED_BOUNTY: u64 = 10_000;
 
+/// One seeded task in five carries the `compute` capability.
+///
+/// Not decoration. A task tagged `compute` pays its winner in the
+/// tradeable compute asset on top of the bounty, and that settlement is
+/// the *only* way compute is ever issued -- so without some of these on
+/// the board, a whole branch of the settlement path never runs. See the
+/// note on the exchange leg below for what that means for order flow.
+const COMPUTE_TASK_EVERY: usize = 5;
+
 /// How many agents get a faucet grant during setup, purely to measure the
 /// rate. Deliberately tiny -- see the module note.
 const FAUCET_SAMPLE: usize = 3;
@@ -183,7 +192,11 @@ async fn seed_tasks(
             bounty: SEEDED_BOUNTY,
             expected_output_hash: expected_output_hash.clone(),
             min_reputation: 0,
-            capabilities: Vec::new(),
+            capabilities: if ids.len() % COMPUTE_TASK_EVERY == 0 {
+                vec!["compute".to_string()]
+            } else {
+                Vec::new()
+            },
         };
         // Posting a task is a chain-tier write, budgeted at twenty a
         // minute per source address. Seeding a two-hundred-task board
@@ -279,11 +292,20 @@ async fn fund_makers(
         ) else {
             continue;
         };
+        // `required_amount` on an exchange deposit is a *floor*
+        // (`MIN_EXCHANGE_DEPOSIT`, which is a thousand and one), not a
+        // target the way a task escrow's is -- any amount at or above it
+        // is credited. Paying the floor is what the first version of this
+        // did, and it funded every maker with one unit of base after the
+        // custody-sweep fee came off, so every order it placed was
+        // refused for insufficient balance and the exchange leg measured
+        // the rejection path.
         let required = reserved
             .body
             .get("required_amount")
             .and_then(Value::as_u64)
-            .unwrap_or(amount);
+            .unwrap_or(amount)
+            .max(amount);
         let deposit_pubkey = btclib::crypto::PublicKey::from_sec1_bytes(&hex::decode(address)?)?;
 
         chain.pay(funder, &deposit_pubkey, required, 1_000).await?;
@@ -366,14 +388,23 @@ async fn act(agent: &mut Agent, tasks: &[String], correct_rate: f64) -> Result<(
                 .await?;
             agent.record("POST /exchange/orders/:id/cancel", &reply);
         } else {
-            let side = if agent.rng.gen_bool(0.5) { "buy" } else { "sell" };
+            // Buys only, and this is a fact about the market rather than a
+            // simplification. A sell locks `quantity` of the compute
+            // asset, and compute is issued by exactly one thing: settling
+            // a task tagged `compute`. A funded maker therefore holds base
+            // and no compute, so every sell it could place would be
+            // refused for insufficient balance and would measure the
+            // rejection path rather than the book. Fills are consequently
+            // not exercised here either -- there is nothing on the other
+            // side to fill against until compute-tagged tasks have
+            // actually settled. Place-and-cancel is the honest subset.
             let reply = agent
                 .client
                 .post_signed(
                     &agent.key,
                     "/exchange/orders",
                     PlaceOrderPayload {
-                        side,
+                        side: "buy",
                         price: agent.rng.gen_range(90..110),
                         quantity: agent.rng.gen_range(1..10),
                     },
