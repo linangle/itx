@@ -113,9 +113,14 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    rather than argued about. Note the drill's own caveat: it reproduces a
    one-step-wide race and reports *inconclusive* rather than clean when it
    finds nothing, so a green run is not a signature. §6.5 was the other open
-   bug and is now fixed; re-running `harness drill node-crash` against the
-   merged tree is the check that says so in the harness's own terms, and
-   `harness compare` will show it as `itx_lost: 6000000 -> 0`.
+   bug and is now fixed: re-run against the merged tree, `node-crash` reports
+   **REFUTED** with `itx_lost: 0` and all six payouts on the chain, which is
+   the fix signed off in the harness's own terms rather than in its author's.
+   That re-run also corrected the drill, which had kept a 75-second wait from
+   when a lost payout was never revisited. Recovery is now a sequence — grace,
+   sweep, resend, grace, sweep — and stopping at 75 seconds reported two of
+   six million lost against a hub that went on to recover all of it. The wait
+   is 260 seconds and the derivation is in the drill.
 10. Honest settlement states (pending/confirmed) in API responses (§6.5) —
     **done** 2026-09-06. `Submitted` between `Verified` and `Paid`, resolved
     against the chain by the sweep, plus `bounty_confirmed`/`bounty_pending` on
@@ -1545,12 +1550,30 @@ launch-blocking work rather than first (§7.3, §13).
   session's JSON.
 - Launch nodes, miners and hubs as background tasks, not `nohup ... &`, which
   gets reaped when the call's process group is cleaned up.
-- The built binary path is shared even when the compiled units are not. Before
-  trusting an end-to-end run, confirm the binary contains a string you just
-  added.
-- Disk is the real constraint: the shared target directory is around 4 GB and
-  the volume has been sitting near 98% full. Prefer one shared target directory
-  and accept that cargo serialises, over private ones that do not fit.
+- **A shared target directory serves one worktree's test binary to another,
+  and this is worse than it sounds.** Corrected 2026-09-06 after it produced a
+  false result. Running `cargo test -p hub` in the load-test worktree reported
+  275 passing against a tree containing 256 test attributes; the binary it ran
+  held `PayoutAttempt`, a symbol that existed only in the settlement worktree.
+  Cargo did not rebuild, because the metadata hash it keys the binary by came
+  out identical across the two checkouts. The earlier note here — that cargo
+  keys build units by absolute package path, so sharing costs parallelism and
+  not correctness — was tested once and is wrong.
+
+  So: **give each worktree its own `CARGO_TARGET_DIR` when the worktrees
+  differ in Rust source.** Sharing is only safe for a worktree that changes no
+  Rust at all. Where disk forces sharing, treat every cross-worktree test
+  count as unverified until the binary is checked.
+- The built binary path is shared even when the compiled units are not, which
+  is the same hazard on the release side. `harness` handles it correctly and is
+  the pattern to copy: it never launches out of `target/`, it copies the
+  binaries into the run's own directory first, and it records the SHA-256 of
+  each in the report, so what was measured is a fixed set of bytes whatever
+  anyone else rebuilds mid-run.
+- Disk is the real constraint and it now pulls against the rule above: the
+  shared target directory is around 8 GB and the volume has been sitting near
+  96% full, so a private directory per worktree does not fit for four sessions.
+  That is the actual argument for running two at a time rather than four.
 
 ## 11. Deferred (noted, not forgotten)
 
