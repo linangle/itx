@@ -228,4 +228,40 @@ mod tests {
         let total_multi: u64 = multi.outputs.iter().map(|o| o.value).sum();
         assert_eq!(total_single, total_multi);
     }
+
+    /// The property the hub's settlement confirmation rests on: two
+    /// builds of the *same* payment -- same recipient, same amount, same
+    /// inputs -- produce outputs with different hashes, because every
+    /// `TransactionOutput` carries a fresh `unique_id`.
+    ///
+    /// Without it an output hash would identify "a payment of this size
+    /// to this key" rather than one specific attempt, and the hub could
+    /// not tell a payout that confirmed from an earlier, identical one
+    /// that did -- which is exactly the distinction
+    /// `hub::board::PayoutAttempt::resolve` makes to decide whether
+    /// rebuilding a lost payout is safe.
+    #[test]
+    fn two_builds_of_the_same_payment_have_different_output_hashes() {
+        let owner = PrivateKey::new_key();
+        let recipient = PrivateKey::new_key().public_key();
+        let available = vec![(false, utxo(100, owner.public_key()))];
+
+        let first =
+            build_payment(&available, &owner, recipient.clone(), 40, 5, owner.public_key()).unwrap();
+        let second =
+            build_payment(&available, &owner, recipient.clone(), 40, 5, owner.public_key()).unwrap();
+
+        let to_recipient = |tx: &Transaction| {
+            tx.outputs
+                .iter()
+                .find(|o| o.pubkey == recipient && o.value == 40)
+                .expect("the payment output is always present")
+                .hash()
+        };
+        assert_ne!(
+            to_recipient(&first),
+            to_recipient(&second),
+            "identical payments must still be distinguishable attempts"
+        );
+    }
 }
