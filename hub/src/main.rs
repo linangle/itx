@@ -172,6 +172,15 @@ struct Args {
     #[argh(option, default = "9100")]
     /// port to listen on
     port: u16,
+    #[argh(option, default = "String::from(\"0.0.0.0\")")]
+    /// address to listen on. Defaults to `0.0.0.0`, which is every
+    /// interface -- keep that only for a hub reachable directly. Behind a
+    /// reverse proxy on the same box, set `127.0.0.1`: the hub speaks
+    /// cleartext HTTP, so on the default the host firewall is not defence
+    /// in depth for it, it is the only thing between signed envelopes and
+    /// the internet, and a flushed ruleset exposes them. See
+    /// `docs/deployment.md` §1.
+    bind: String,
     #[argh(option, default = "String::from(\"127.0.0.1:9000\")")]
     /// comma-separated addresses of blockchain nodes to talk to. The first
     /// is used for every call unless it's unreachable, in which case the
@@ -532,11 +541,60 @@ async fn main() -> Result<()> {
 
     let app = build_router(state);
 
-    let addr = format!("0.0.0.0:{}", args.port);
+    let addr = format!("{}:{}", args.bind, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("hub listening on {addr}");
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    if args.bind == "0.0.0.0" {
+        println!(
+            "  (listening on every interface in cleartext -- behind a proxy, pass --bind 127.0.0.1)"
+        );
+    }
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    println!("hub stopped accepting connections; in-flight requests have finished");
     Ok(())
+}
+
+/// Resolves on the first `SIGTERM` or `SIGINT`, so `axum::serve` can stop
+/// accepting new connections and let the ones already in flight finish.
+///
+/// This is not politeness. The replay guard claims and fsyncs a request's
+/// signature *before* its handler runs (`auth::ReplayGuard::claim`), so a
+/// request killed mid-handler has already spent its envelope: the client
+/// cannot retry it, because the signature is now recorded as used, and
+/// must sign a new one. Worse, a claimed envelope whose handler never ran
+/// is a request the caller believes failed and the hub has no record of
+/// having done -- for a payout or a withdrawal, exactly the ambiguity
+/// this codebase works to avoid elsewhere. `systemctl restart` sends
+/// `SIGTERM`, so every ordinary deploy hit this.
+///
+/// Draining does not make a restart free. A request that arrives after
+/// the listener closes is refused at the socket, which is a clean failure
+/// the client can retry with the same envelope; that is the outcome we
+/// want, and the one this produces.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("could not listen for SIGTERM ({e}); shutdown will not be graceful");
+            return std::future::pending().await;
+        }
+    };
+    let mut interrupt = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("could not listen for SIGINT ({e}); shutdown will not be graceful");
+            return std::future::pending().await;
+        }
+    };
+
+    tokio::select! {
+        _ = terminate.recv() => println!("SIGTERM received, draining in-flight requests"),
+        _ = interrupt.recv() => println!("SIGINT received, draining in-flight requests"),
+    }
 }
 
 /// Wires up every route against the given state. Pulled out of `main` so

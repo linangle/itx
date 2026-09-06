@@ -837,13 +837,23 @@ and gives item 11 its runbook. Four findings from writing it are recorded below.
 
 **Findings from writing the deployment docs (2026-09-05):**
 
-- **The hub has no bind-address flag.** `main.rs` hardcodes `0.0.0.0`, so it
-  cannot be told to listen on loopback while sitting behind a proxy. The host
-  firewall is therefore not defence in depth for the hub's cleartext port — it
-  is the only control, and a flushed ruleset means signed envelopes travelling
-  in the clear. A `--bind` flag is a small change and worth making before
-  launch. The node binds `0.0.0.0` for the same reason with worse consequences
-  (§3.7).
+- **The hub had no bind-address flag — added 2026-09-06.** `main.rs`
+  hardcoded `0.0.0.0`, so the hub could not be told to listen on loopback
+  while sitting behind a proxy, and the host firewall was not defence in depth
+  for its cleartext port but the only control: a flushed ruleset meant signed
+  envelopes travelling in the clear. `--bind` now exists, still defaulting to
+  `0.0.0.0` so a directly-reachable hub is unchanged, and the systemd unit
+  passes `127.0.0.1`. The node still binds `0.0.0.0` with worse consequences
+  (§3.7), and its port stays firewall-only.
+- **Restarting the hub used to burn the requests in flight — fixed
+  2026-09-06.** The replay guard claims and fsyncs an envelope's signature
+  before the handler runs, which is the right order, but the hub served with
+  no graceful shutdown. So every `systemctl restart` — each deploy, each
+  config change — killed in-flight requests whose envelopes were already
+  spent: the client could not retry, because the guard now rejected that
+  signature, and had to re-sign. The hub drains on SIGTERM now. A request
+  refused during the drain costs nothing, since no envelope was claimed. A
+  hard kill still has the old behaviour, which is the honest limit of the fix.
 - **A TCP health check on the node bans the box for an hour, invisibly.** A
   failed handshake is a *severe* strike, which bans on the first offence; a
   connection that opens and closes fails the handshake. Verified end to end:

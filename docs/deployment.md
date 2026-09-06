@@ -44,24 +44,27 @@ The Moltbook comparison in the plan's §3 is the right frame: one config mistake
 Nothing about ITX is structurally safer. It is smaller, and it has not been
 looked at yet.
 
-### The one control that is not defence in depth
+### Bind the hub to loopback, and keep the firewall anyway
 
-**The hub has no bind-address flag.** `hub/src/main.rs` hardcodes
-`format!("0.0.0.0:{}", args.port)` — there is no `--bind` or `--host`. You
-cannot tell it to listen on loopback only, which is what you would normally do
-for a service that always sits behind a proxy.
+**Pass `--bind 127.0.0.1`.** The hub defaults to `0.0.0.0` — every
+interface — because a hub reachable directly is a legitimate way to run one.
+Behind a proxy on the same box it is the wrong default, and the unit in
+`deploy/itx-hub.service` overrides it.
 
-That means the host firewall is not a second layer protecting the hub's plain
-HTTP port. **It is the only layer.** If it is misconfigured or flushed, agents
-reach `:9100` directly, in cleartext, bypassing TLS and the proxy entirely —
-signed envelopes and all their payloads travelling in the clear. Rate limiting
-survives (a direct peer is not a trusted proxy, so it is charged its own
-address), but confidentiality does not.
+This matters because the hub speaks cleartext HTTP. Without the flag the host
+firewall is not a second layer protecting that port, **it is the only layer**:
+misconfigure or flush it and agents reach `:9100` directly, bypassing TLS and
+the proxy, with signed envelopes and their payloads travelling in the clear.
+Rate limiting survives (a direct peer is not a trusted proxy, so it is charged
+its own address), but confidentiality does not.
 
-Treat the firewall rules in §3 as load-bearing, verify them from off-box after
-every change, and alert on the hub port being reachable from outside. A
-`--bind` flag would make this ordinary defence in depth; it is worth adding
-before launch.
+With the flag the firewall goes back to being what it should be, a second
+layer. Keep it: `--bind` protects the hub's port, not the node's, and it is one
+`ExecStart` edit away from being lost. Verify the rules in §3 from off-box after
+every change, and alert on the hub port being reachable from outside.
+
+The node still has no equivalent, and there the consequences are worse (§3.7),
+so its port stays firewall-only.
 
 ---
 
@@ -293,7 +296,7 @@ above is reasoned rather than measured.** The hub binds `0.0.0.0`, which is
 IPv4-only, so nothing ever connects to it over IPv6: a proxy configured with
 `localhost` finds the `::1` connection refused and falls back to `127.0.0.1`,
 and the peer is an IPv4 address either way. Include `::1` anyway — it costs
-nothing, and it is already correct on the day the hub gains a `--bind` flag
+nothing, and it stays correct now that the hub binds loopback
 (§1) and someone binds it dual-stack.
 
 The hub prints which it trusts at startup. Read the line; it is the only
@@ -498,10 +501,11 @@ Notes that are not boilerplate:
   terminal — so without this the journal stores escape sequences around every
   level and target, and §8.4's greps stop matching. Verified against
   tracing-subscriber 0.3.23, which is what `Cargo.lock` pins.
-- **A hub restart is not free to clients, and it fails in a specific way.** See
-  §9.9: the hub has no graceful shutdown and the replay guard claims an
-  envelope's signature *before* the handler runs, so a request in flight at
-  `systemctl restart itx-hub` dies with its envelope already spent.
+- **A hub restart drains, and a hard kill does not.** See §9.9: the replay
+  guard claims an envelope's signature *before* the handler runs, so a request
+  killed mid-handler dies with its envelope already spent and cannot be
+  retried. `systemctl restart itx-hub` sends SIGTERM and the hub finishes what
+  it is doing first; `kill -9` does not.
 - **Stopping the node is not free either, and it is much worse.** See §7.2:
   the mempool is memory-only, so a node restart destroys every transaction
   submitted since the last mined block — including payouts the hub has already
@@ -1383,40 +1387,36 @@ Set `Contact:` to an inbox someone actually reads and `Expires:` to a real date
 under a year out, then put its renewal on a calendar. An expired `security.txt`
 is worse than none — it advertises that the contact was maintained once.
 
-### 9.9 Restarting the hub burns the requests in flight
+### 9.9 What a restart costs the requests in flight
 
-Every `systemctl restart itx-hub` — §9.3's step 3, every deploy, every config
-change — fails the authenticated requests that were in flight, **and those
-clients cannot retry them.** They have to re-sign.
+`systemctl restart itx-hub` sends SIGTERM, and the hub drains on it: it stops
+accepting connections, lets the requests already running finish, and then
+exits. Requests that arrive during the drain are refused at the socket.
 
-Two facts combine:
+That distinction matters more here than it does for most services, because of
+how authentication works. `hub/src/auth.rs` claims an envelope's signature in
+the replay guard **before the handler runs**, and fsyncs it
+(`record_seen_signature`). The ordering is deliberate and correct — a signature
+must be spent before the work it authorises, or a crash between the two leaves
+a replayable envelope that has already moved money — but it means a request
+killed mid-handler has already spent its envelope. The client would see a
+connection reset, retry the identical envelope the way any sensible HTTP client
+does, and be rejected as a replay. The request would neither have happened nor
+be repeatable; only a *new* signature would work.
 
-- `hub/src/main.rs` calls `axum::serve(...)` with no `.with_graceful_shutdown`.
-  On SIGTERM the process goes away with open connections mid-handler; there is
-  no drain.
-- `hub/src/auth.rs` claims an envelope's signature in the replay guard **before
-  the handler runs**, and fsyncs it (`record_seen_signature`). That ordering is
-  deliberate and correct — a signature must be spent before the work it
-  authorises, or a crash between the two is a replayable envelope — but it means
-  the signature of a request killed mid-flight is already recorded as used.
+Draining is what keeps that from happening on an ordinary restart. A connection
+refused before it is accepted costs nothing: no envelope was claimed, and the
+client can retry the same one.
 
-So the client sees a connection reset, retries the identical envelope the way
-any sensible HTTP client would, and gets rejected as a replay. The request
-neither happened nor can be repeated. Only a *new* signature works.
+Two things still to know:
 
-What to do about it:
-
-- **Say so.** Anyone operating an agent against this hub needs to know that a
-  `409`/replay rejection right after a connection reset means re-sign, not
-  back off. It belongs in the SDK docs as much as here.
-- **Restart deliberately**, at a quiet moment, not as a reflex mid-incident.
-  Reads are unaffected, so there is rarely a reason to hurry.
-- **Do not "fix" it client-side by reusing the envelope.** That is the attack
-  the replay guard exists to stop.
-
-A graceful shutdown in the hub (drain, then exit) would reduce this to the
-requests still running at the drain deadline. That is a hub change, not a deploy
-one, and it is not done.
+- **A hard kill is different.** `SIGKILL`, an OOM kill, or a power loss gives no
+  drain, and the requests in flight lose their envelopes exactly as described
+  above. Prefer `systemctl restart`; do not `kill -9` the hub to hurry it.
+- **Clients should still handle it.** A replay rejection immediately after a
+  connection reset means re-sign, not back off, and it belongs in the SDK docs
+  as much as here. Never "fix" it client-side by reusing the envelope — that is
+  the attack the replay guard exists to stop.
 
 ---
 
@@ -1573,7 +1573,7 @@ observed against this hub, which binds `0.0.0.0` and so never accepts an IPv6
 connection at all — a Caddy upstream written as `localhost` finds `[::1]:9100`
 refused and falls back to IPv4. §4.3 now states the pair as reasoned, and the
 advice to include `::1` in `--trusted-proxies` is unchanged: it is free, and it
-is right the day the hub gains a `--bind` flag.
+is right now that the hub binds loopback.
 
 **Also observed in passing:** the node logs `Listening on 0.0.0.0:9500` and
 binds IPv4 only — same as the hub, and the same reason §1 leans on the firewall.

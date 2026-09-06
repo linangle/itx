@@ -36,6 +36,7 @@ StateDirectory=itx itx/secrets
 StateDirectoryMode=0700
 
 ExecStart=/usr/local/bin/itx-hub \
+    --bind 127.0.0.1 \
     --port 9100 \
     --node-addresses 127.0.0.1:9000 \
     --store-file /var/lib/itx/hub.redb \
@@ -44,12 +45,14 @@ ExecStart=/usr/local/bin/itx-hub \
     --escrow-secret-file /var/lib/itx/secrets/hub_escrow_secret.bin \
     --trusted-proxies 127.0.0.1,::1
 
-# A restart is not free to clients, and it is worth knowing which way it
-# fails. hub/src/main.rs serves with no graceful shutdown, and
+# A restart is not free to clients, but it is no longer destructive.
 # hub/src/auth.rs claims and fsyncs an envelope's signature BEFORE the
-# handler runs -- so a request in flight at `systemctl restart` dies with
-# its envelope already spent. The client cannot retry it; the replay
-# guard will reject the same signature. It has to re-sign. See
+# handler runs, so a request killed mid-flight would die with its
+# envelope already spent -- unretryable, because the replay guard now
+# rejects that signature. The hub drains on SIGTERM, which is what
+# `systemctl restart` sends, so in-flight requests finish first.
+# Requests arriving during the drain are refused at the socket, which is
+# a clean failure the client can retry with the same envelope. See
 # docs/deployment.md §9.9.
 Restart=always
 RestartSec=5s
