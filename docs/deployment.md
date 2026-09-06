@@ -892,3 +892,80 @@ curl -sS https://itx.example.com/.well-known/security.txt
 Set `Contact:` to an inbox someone actually reads and `Expires:` to a real date
 under a year out, then put its renewal on a calendar. An expired `security.txt`
 is worse than none — it advertises that the contact was maintained once.
+
+---
+
+## 10. Operational ceilings you will hit
+
+Two limits that are not bugs, are not fixable by configuration, and will each
+look like an outage the first time. Whoever runs this should read them before
+they happen rather than during.
+
+### 10.1 The operator pays out about once per block
+
+**Symptom:** the faucet stops granting. Task creation is refused with
+`insufficient escrow balance: operator has 0` — while the operator address
+plainly holds a large balance. Wait a block and it works again. Under sustained
+load it looks like the faucet is broken half the time.
+
+**Cause** (plan §6.4b, measured on a live stack, not theorised): every hub
+payment spends the operator's UTXOs and sends change back to the operator. That
+change is **unconfirmed until mined**. So immediately after any payout, the
+operator's *spendable* balance can be zero — everything it owns is tied up in an
+unconfirmed change output. `payout_lock` already serialises operator payments,
+so the ceiling is roughly **one payout per block**: about 4/minute at a 16s
+target, and about 1.7/minute at the ~35s cadence a local stack actually runs.
+
+What this does and does not affect:
+
+- **Affected:** faucet grants and settlement of operator-posted tasks — the two
+  paths the operator funds.
+- **Not affected:** escrow-funded tasks. They settle from their own deposit
+  address, which has its own UTXO set.
+
+It is invisible in casual testing, because a wallet holding many separate
+coinbase outputs has other UTXOs to spend. It appears the moment the operator's
+balance has been consolidated into one output — which is exactly what a busy
+period does.
+
+**If it binds** (all from plan §6.4b): keep the operator's wallet deliberately
+split across many outputs with a self-paying fan-out transaction; batch payouts
+into one multi-recipient transaction the way consensus settlement already does;
+or spend confirmed and self-change outputs opportunistically. The faucet sunset
+(plan §5.1) removes the larger half of the problem on its own.
+
+**Operationally, before any of that:** do not page on it, and do not "fix" it by
+raising the faucet grant — that makes each grant larger and the ceiling no
+looser. If the faucet stalls under launch load, this is the first thing to check
+and §9.4 points here.
+
+### 10.2 One hub, and the reason is now specific
+
+The hub cannot be run as two instances. This has always been true of the
+in-memory board, but since the replay guard gained its durable half (plan §3.3)
+the blocker has a precise name: the durable replay log is a redb table, redb is
+single-process, and a second hub instance **cannot open the file at all**. It
+will not start.
+
+So there is no horizontal scaling path today, and no "just run two behind the
+proxy" available under load. Vertical scaling and the plan's §6.1/§6.2 fixes are
+the whole answer until shared state is extracted.
+
+The same property shows up in ordinary operations, which is where you will
+actually meet it: backups must stop the hub to copy `hub.redb` consistently
+(§7.2), a restore must not open the file while the hub holds it (§9.7), and the
+drill works on a copy in a scratch directory for exactly that reason (§7.4).
+
+### 10.3 Settlement says "sent", not "confirmed"
+
+`submit_transaction` is fire-and-forget with a 60s sweep retry, so a task marked
+paid means the transaction was *sent*, not that it confirmed (plan §6.5). The
+sweep loop retries stuck payouts, and its retries are the `warn` lines §8.3
+counts as payout retry depth.
+
+For operations this means: a rising count of `payout for task … failed, will
+retry` is the early signal that the node is unhealthy or the operator is out of
+spendable balance (§10.1) — often before `/health` notices. Honest
+pending/confirmed states in the API are a readiness-bar item (plan §2 item 10)
+and not yet implemented, so until then the log lines are the only place the
+distinction is visible at all.
