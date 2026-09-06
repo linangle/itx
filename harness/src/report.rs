@@ -46,9 +46,15 @@ pub enum Verdict {
 #[derive(Debug, Clone, Serialize)]
 pub struct Environment {
     pub commit: String,
-    /// Whether the worktree had uncommitted changes. A dirty tree does not
-    /// invalidate a number, but it does mean the commit alone will not
-    /// reproduce it.
+    /// Whether the worktree's *code* differed from `commit`.
+    ///
+    /// Scoped to sources and manifests rather than the whole tree, and
+    /// that is not laziness. A run writes its own report into the repo,
+    /// so a whole-tree check reports every run after the first as dirty
+    /// on the strength of the previous run's output — which says nothing
+    /// about whether the binaries under test matched the commit, and
+    /// trains a reader to ignore the flag. Prose edits are excluded for
+    /// the same reason: they cannot change a measurement.
     pub dirty: bool,
     /// `debug` or `release`. Load numbers from a debug build are worth
     /// recording and worth nothing as an absolute, so this is reported
@@ -63,8 +69,10 @@ pub struct Environment {
 impl Environment {
     pub fn capture(repo: &Path) -> Self {
         let commit = git(repo, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-        let dirty = git(repo, &["status", "--porcelain"])
+        let dirty = git(repo, &["status", "--porcelain", "--", "*.rs", "*.toml"])
             .map(|out| !out.is_empty())
+            // Unknown is reported as dirty: a flag that cannot be
+            // established should not read as a clean bill of health.
             .unwrap_or(true);
         Self {
             commit,
