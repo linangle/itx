@@ -400,10 +400,23 @@ for any future action worth pricing.
    touches the retry machinery.
 
    Still open here: the leaderboard read still triggers the fan-out at request
-   time when the 30s snapshot is cold. Precomputing it in the sweep loop
-   (build-sequence item 7's other half) would take it off the request path
-   entirely, and is untouched. `GET /reputation/:pubkey` remains an
-   uncached, unauthenticated node round trip (§3.4).
+   time when the 30s snapshot is cold. Precomputing it (build-sequence item
+   7's other half) is deliberately *not* done, and the reason is worth
+   recording, because "precompute it in the sweep loop" does not work as
+   written: the sweep runs every 60s and the snapshot's TTL is 30s, so a
+   sweep-driven refresh leaves half of every minute cold and changes nothing
+   for the request that lands there. Actually taking the fan-out off the
+   request path needs a refresh interval *below* the TTL — which means the
+   hub pays for a full fan-out every ~25s forever, on a field of whatever
+   size, including on a hub nobody is looking at. That is a straight trade of
+   "cost on read" for "cost always", and which side wins depends on read
+   traffic this deployment does not have yet. Pooling has also taken most of
+   the urgency out of it: a cold 50-agent sweep is now ~3ms rather than
+   ~6ms, so the request-time cost is no longer the thing that breaks first.
+   Decide it with real traffic, not in advance.
+
+   `GET /reputation/:pubkey` remains an uncached, unauthenticated node round
+   trip (§3.4) — cheaper per call now, but still one call per request.
 3. **Signature-verify CPU** — §3.4.
 4. **The single-instance ceiling.** In-memory board + process replay guard means
    no horizontal scaling. Don't fight it yet: one solid box with fixes 1–3 serves
