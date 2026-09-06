@@ -1820,6 +1820,43 @@ mod tests {
         }
     }
 
+    /// `/llms.txt` is the onboarding manual an agent reads instead of
+    /// asking a human, so the distinction between a payout that was sent
+    /// and one that landed has to be *in it* -- an agent told `paid:
+    /// true` and left to infer the rest will treat a submission as a
+    /// settlement, which is the mistake the hub itself used to make.
+    #[tokio::test]
+    async fn llms_txt_explains_that_sent_is_not_confirmed() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        let llms = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        for expected in [
+            "Submitted",
+            "PayoutFailed",
+            "bounty_confirmed",
+            "bounty_pending",
+            // The three claims an agent actually needs: what Paid now
+            // means, that an abandoned payout is still owed, and that
+            // reputation only counts confirmed money.
+            "seen the payment on chain",
+            "still owed to you",
+            "only ever counts confirmed payments",
+        ] {
+            assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
+        }
+    }
+
     #[tokio::test]
     async fn llms_txt_mentions_the_exchange() {
         let operator_key = PrivateKey::new_key();
@@ -2487,6 +2524,92 @@ mod tests {
             1,
             "confirming must never put a second transaction on the wire"
         );
+    }
+
+    /// The wire shape agents actually read. A task whose payout is in
+    /// flight must say so on the wire, not just in the hub's memory --
+    /// `status` for which of the three reasons the money is outstanding,
+    /// and the two totals for how much.
+    #[tokio::test]
+    async fn a_task_reports_pending_against_confirmed_over_http() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let (task_id, _claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        let task_dto = |id: Uuid| {
+            let hub_client = hub.client.clone();
+            let base_url = hub.base_url.clone();
+            async move {
+                hub_client
+                    .get(format!("{base_url}/tasks/{id}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json::<Value>()
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let before = task_dto(task_id).await;
+        assert_eq!(before["status"], "Verified");
+        assert_eq!(before["bounty_pending"], 1_000, "owed, and nothing sent yet");
+        assert_eq!(before["bounty_confirmed"], 0);
+
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        let in_flight = task_dto(task_id).await;
+        assert_eq!(in_flight["status"], "Submitted");
+        assert_eq!(
+            in_flight["bounty_pending"], 1_000,
+            "sent is not confirmed -- the money is still outstanding"
+        );
+        assert_eq!(in_flight["bounty_confirmed"], 0);
+
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+        let settled = task_dto(task_id).await;
+        assert_eq!(settled["status"], "Paid");
+        assert_eq!(settled["bounty_pending"], 0);
+        assert_eq!(settled["bounty_confirmed"], 1_000);
+    }
+
+    /// The new states have to be selectable, or `GET /tasks` cannot show
+    /// an operator what is stuck -- which is most of what the states are
+    /// for.
+    #[tokio::test]
+    async fn status_filter_accepts_the_settlement_states() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let (task_id, _) = seed_verified_task(&hub.state, 1_000).await;
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+
+        let listed: Value = hub
+            .client
+            .get(format!("{}/tasks?status=submitted", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], task_id.to_string());
+
+        for status in ["payoutfailed", "PayoutFailed", "Submitted"] {
+            let resp = hub
+                .client
+                .get(format!("{}/tasks?status={status}", hub.base_url))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::OK,
+                "?status={status} must be accepted, case-insensitively like every other"
+            );
+        }
     }
 
     /// The failure this whole mechanism exists for: a transaction the

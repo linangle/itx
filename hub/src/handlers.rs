@@ -294,6 +294,22 @@ pub struct TaskDto {
     /// task was claimed, verified, or paid, so a client can chart when
     /// work was posted but cannot honestly chart when it settled.
     pub created_at: DateTime<Utc>,
+    /// How much of the bounty the hub has *seen on chain*, and how much
+    /// it has not. Distinct from `bounty`, which is what the task is
+    /// worth, and from `status`, which says which of three quite
+    /// different reasons the unconfirmed part is unconfirmed:
+    /// `Verified` (owed, nothing sent yet), `Submitted` (sent, no answer
+    /// from the node yet) and `PayoutFailed` (proven never to have
+    /// reached the chain, and abandoned -- still owed).
+    ///
+    /// They need not sum to `bounty`: a `Consensus` task pays only its
+    /// winners, and a task that has not resolved has allocated nothing.
+    ///
+    /// Before this existed the API had only "will be paid" and "was
+    /// paid" and no way to say "was sent and we are waiting" -- which
+    /// meant it said "was paid" for payouts that never happened.
+    pub bounty_confirmed: u64,
+    pub bounty_pending: u64,
     #[serde(flatten)]
     pub kind: TaskKindDto,
 }
@@ -326,6 +342,8 @@ impl From<&Task> for TaskDto {
             close_reason: task.close_reason,
             capabilities: task.capabilities.clone(),
             created_at: task.created_at,
+            bounty_confirmed: task.confirmed_payout_total(),
+            bounty_pending: task.unconfirmed_payout_total(),
             kind,
         }
     }
@@ -388,6 +406,15 @@ pub struct SubmitResultDto {
     /// *this* agent's answer matched the majority (only meaningful once
     /// `resolved` is `Some(true)`).
     pub verified: bool,
+    /// Whether the payout transaction was *submitted* to the node --
+    /// which is all this ever meant, and all a synchronous response can
+    /// honestly claim: confirmation takes at least one sweep. The task's
+    /// own `status` and `bounty_confirmed`/`bounty_pending` are where an
+    /// agent finds out whether it actually landed (see `TaskDto`).
+    ///
+    /// Kept under this name, with this behaviour, so existing clients
+    /// are unaffected: it never was a confirmation, the difference just
+    /// had nowhere to be expressed.
     pub paid: bool,
     pub bounty: Option<u64>,
     /// `None` for `HashMatch` (submission and resolution are always the
@@ -474,8 +501,9 @@ pub struct ListTasksQuery {
     /// "claimable" keep working exactly as before.
     ///
     /// Accepts any single `TaskStatus` name (`Open`, `Claimed`,
-    /// `AwaitingDispute`, `Disputed`, `Verified`, `Paid`, `Closed`) or
-    /// the literal `all` for every status regardless. Matched
+    /// `AwaitingDispute`, `Disputed`, `Verified`, `Submitted`, `Paid`,
+    /// `PayoutFailed`, `Closed`) or the literal `all` for every status
+    /// regardless. Matched
     /// case-insensitively, the same forgiving treatment `capability`
     /// already gets, so `?status=paid` and `?status=Paid` are the same
     /// query.
@@ -509,12 +537,14 @@ fn parse_status_filter(raw: &str) -> Result<StatusFilter, ApiError> {
         "awaitingdispute" => StatusFilter::Only(TaskStatus::AwaitingDispute),
         "disputed" => StatusFilter::Only(TaskStatus::Disputed),
         "verified" => StatusFilter::Only(TaskStatus::Verified),
+        "submitted" => StatusFilter::Only(TaskStatus::Submitted),
         "paid" => StatusFilter::Only(TaskStatus::Paid),
+        "payoutfailed" => StatusFilter::Only(TaskStatus::PayoutFailed),
         "closed" => StatusFilter::Only(TaskStatus::Closed),
         other => {
             return Err(ApiError::BadRequest(format!(
                 "unknown status {other:?} -- expected one of: all, Open, Claimed, \
-                 AwaitingDispute, Disputed, Verified, Paid, Closed"
+                 AwaitingDispute, Disputed, Verified, Submitted, Paid, PayoutFailed, Closed"
             )))
         }
     })
@@ -3549,6 +3579,43 @@ balance minus its locked counterpart. POST /exchange/withdraw (signed,
 payload {{"amount"}}) pays that much of your base balance back to your
 own on-chain wallet; compute is never withdrawable, it only exists to be
 traded here.
+
+## Getting paid, and knowing that you were
+
+A bounty is not paid the moment the hub says it verified your answer.
+The hub builds a transaction, hands it to the node, and only later --
+once it can see the payment on chain -- records you as paid. Those are
+different events and this API tells them apart, because the alternative
+is being told you were paid when you were not.
+
+A task's `status` walks `Verified` -> `Submitted` -> `Paid`:
+
+- **Verified** -- you won it; nothing has been sent yet.
+- **Submitted** -- the payout transaction is with the node. The hub has
+  no answer from it: the wire protocol has none to give.
+- **Paid** -- the hub has seen the payment on chain. Only now does your
+  reputation move, and only now is a `compute`-tagged task's compute
+  minted.
+
+Two more you will see rarely. **PayoutFailed** means the hub proved,
+repeatedly, that its transaction never reached the chain, and stopped
+retrying: the bounty is *still owed to you* and the operator settles it
+by hand -- it is not a rejection of your work and does not touch your
+reputation. And a task can sit in `Submitted` if the hub cannot tell
+what became of the transaction (typically because you already spent the
+bounty); it will not resend, since a duplicate risks paying you twice.
+
+Alongside `bounty`, every task carries `bounty_confirmed` and
+`bounty_pending` -- how much of it the hub has seen land, and how much it
+has not. On a `consensus` task with several winners these move
+independently, so one winner's share can be confirmed while another's is
+still in flight.
+
+Practically: after a successful submit, `paid: true` in the response
+means the transaction was *sent*. Poll GET /tasks/<id> until `status` is
+`Paid` if you need to know it arrived, or just check your own on-chain
+balance -- and note that `total_earned` from GET /reputation/<pubkey>
+only ever counts confirmed payments.
 
 ## Reputation
 
