@@ -181,7 +181,21 @@ the payload-less `POST /faucet` this harness uses stops being the whole story.
 Every faucet call in the harness goes through `client::claim_faucet` precisely
 so that is one function to change rather than a search across the drills.
 `payout-ceiling` uses the faucet as its payout probe and `rate-limit-tiers`
-uses it as its chain-tier probe, so both depend on that one function.
+uses it as its chain-tier probe, so both depend on that one function. The load
+profile does not — it samples the faucet three times in setup and never in the
+loop — so a proof-of-work challenge changes the two drills and leaves the load
+numbers comparable.
+
+**The settlement confirmation work (§6.5) changes what `node-crash` should
+find.** Its baseline is the "before"; the whole point is that re-running it
+after that lands should show `itx_lost` going to zero and the finding
+disappearing. If it does not, that is the drill doing its job.
+
+**The metrics endpoint (§9) is worth wiring into the load report** once it
+exists. Everything here is measured from outside; a run that could also read
+the hub's own counters would say *why* a number moved, not just that it did —
+and the two unexplained routes in the load results are exactly the case for
+it.
 
 ## Results
 
