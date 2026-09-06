@@ -29,9 +29,18 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ToolAnnotations
+try:
+    from mcp.server import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
+    from mcp.types import ToolAnnotations
+except ModuleNotFoundError as e:  # pragma: no cover - depends on how the package was installed
+    # Reachable through a bare `uvx itx-agent-sdk`, which resolves the
+    # console script but installs the package without its `mcp` extra.
+    # The stock "No module named 'mcp'" says nothing about the extra.
+    raise ModuleNotFoundError(
+        "the itx MCP server needs this package's `mcp` extra, which is not installed. "
+        'Install `itx-agent-sdk[mcp]`, or run `uvx --from "itx-agent-sdk[mcp]" itx-agent-sdk`.'
+    ) from e
 
 from . import analytics
 from .client import HubClient, HubError
@@ -69,58 +78,142 @@ RESERVES_ADDRESS = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
 )
 
-# Stay comfortably under the hub's own cap (`MAX_REQUESTS_PER_WINDOW` in
-# `hub/src/rate_limit.rs`, 120 requests/60s/IP, fixed-window) so a single
-# agent process throttles itself before ever drawing a 429, and so it
-# still has headroom left for whatever else shares its IP (a dashboard,
-# another local agent).
+# The hub does not have one rate limit; it has five, and a client that
+# models it as a single number is protected against none of them. Per IP,
+# per 60-second fixed window (`hub/src/rate_limit.rs`):
+#
+#     health  GET /health                                        120
+#     read    every other GET                                    120
+#     write   signed POSTs served from memory and redb            60
+#             (claim, cancel, place/cancel order, reserve escrow)
+#     chain   signed POSTs that reach the chain node or move      20
+#             coins (post a task, confirm any escrow, submit
+#             work, faucet, withdraw)
+#
+# and, on top of those, 60 signed requests per *verified pubkey* per
+# window across every route -- an axis a per-IP budget cannot cover,
+# since keys are free and addresses are many.
+#
+# So `chain` is the real constraint on a working agent: twenty a minute,
+# and one agent process is one pubkey. The client budgets below sit under
+# each of those with room to spare, both because the hub's window and
+# this one are not aligned (a burst can straddle a boundary and land as
+# two windows' worth in one of the hub's) and because whatever else
+# shares this IP -- a dashboard, a second local agent -- is spending from
+# the same buckets.
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
-_RATE_LIMIT_BUDGET = 100
+_HUB_LIMITS = {"health": 120, "read": 120, "write": 60, "chain": 20, "signed": 60}
+_CLIENT_BUDGETS = {"health": 90, "read": 90, "write": 45, "chain": 15, "signed": 45}
 
 
-class _RateLimiter:
-    """Fixed-window client-side throttle, mirroring the hub's own
-    algorithm (see `rate_limit.rs`'s doc comment: simple, not a precise
-    leaky bucket). `before_request` blocks -- rather than raising -- once
-    the window's budget is used up, since a synchronous tool call has
-    nothing useful to do with a rejection except wait anyway.
+def _tier_for(method: str, path: str) -> str:
+    """Which per-IP budget the hub will charge this request to. A direct
+    mirror of `rate_limit.rs::tier_for`, including its fall-through: an
+    unrecognised write is `write`, the safe direction to be wrong in.
+    """
+    segments = [s for s in path.split("/") if s]
+    if method in ("GET", "HEAD"):
+        return "health" if segments == ["health"] else "read"
+    if segments in (["tasks"], ["tasks", "consensus"], ["faucet"], ["exchange", "withdraw"]):
+        return "chain"
+    if len(segments) == 4 and segments[0] == "tasks" and segments[1] == "escrow" and segments[3] == "confirm":
+        return "chain"
+    if len(segments) == 3 and segments[0] == "tasks" and segments[2] == "submit":
+        return "chain"
+    if (
+        len(segments) == 4
+        and segments[0] == "tasks"
+        and segments[2] == "dispute"
+        and segments[3] in ("confirm", "resolve")
+    ):
+        return "chain"
+    if len(segments) == 4 and segments[:2] == ["exchange", "deposit"] and segments[3] == "confirm":
+        return "chain"
+    return "write"
+
+
+class _FixedWindow:
+    """One counted budget, fixed-window, mirroring the hub's own
+    algorithm (see `rate_limit.rs`: simple, deliberately not a precise
+    leaky bucket). `charge` blocks -- rather than raising -- once the
+    window's budget is used up, since a synchronous tool call has nothing
+    useful to do with a rejection except wait anyway.
+
+    The MCP runtime runs synchronous tools on worker threads, so several
+    callers really do arrive at once. The window start therefore never
+    moves into the future: a caller that finds the budget spent waits for
+    the *current* window to end and then re-contends for the new one
+    under the lock. Advancing the start optimistically instead would let
+    the next caller compute a negative elapsed time, conclude the budget
+    was fresh, and go straight through -- which is how a client-side
+    limiter quietly stops limiting anything.
     """
 
-    def __init__(self, budget: int = _RATE_LIMIT_BUDGET, window_seconds: float = _RATE_LIMIT_WINDOW_SECONDS):
+    def __init__(self, budget: int, window_seconds: float = _RATE_LIMIT_WINDOW_SECONDS):
         self._budget = budget
         self._window_seconds = window_seconds
         self._lock = threading.Lock()
         self._window_started_at = time.monotonic()
         self._count = 0
 
-    def before_request(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            elapsed = now - self._window_started_at
-            if elapsed >= self._window_seconds:
-                self._window_started_at = now
-                self._count = 0
-                elapsed = 0.0
-            if self._count >= self._budget:
-                sleep_for = self._window_seconds - elapsed
-                self._window_started_at = now + sleep_for
-                self._count = 0
-            else:
-                sleep_for = 0.0
-            self._count += 1
-        if sleep_for > 0:
-            time.sleep(sleep_for)
+    def charge(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                if now - self._window_started_at >= self._window_seconds:
+                    self._window_started_at = now
+                    self._count = 0
+                if self._count < self._budget:
+                    self._count += 1
+                    return
+                wait_for = self._window_started_at + self._window_seconds - now
+            time.sleep(max(wait_for, 0.0))
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
             elapsed = time.monotonic() - self._window_started_at
-            remaining_window = max(0.0, self._window_seconds - elapsed)
-            used = self._count if elapsed < self._window_seconds else 0
+            if elapsed >= self._window_seconds:
+                used, resets_in = 0, self._window_seconds
+            else:
+                used, resets_in = self._count, self._window_seconds - elapsed
         return {
             "requests_used_this_window": used,
             "requests_remaining": max(0, self._budget - used),
-            "window_resets_in_seconds": round(remaining_window, 1),
+            "window_resets_in_seconds": round(resets_in, 1),
+            "client_budget": self._budget,
         }
+
+
+class _RateLimiter:
+    """The client-side throttle as a whole: one `_FixedWindow` per budget
+    the hub actually keeps, charged the way the hub charges them. A
+    signed write draws from two at once -- its endpoint tier and the
+    per-pubkey quota -- because the hub charges both, and a client that
+    only watched the tier would still trip the quota.
+    """
+
+    def __init__(self, budgets: Optional[Dict[str, int]] = None, window_seconds: float = _RATE_LIMIT_WINDOW_SECONDS):
+        self._window_seconds = window_seconds
+        self._buckets = {
+            name: _FixedWindow(budget, window_seconds)
+            for name, budget in (budgets or _CLIENT_BUDGETS).items()
+        }
+
+    def before_request(self, method: str, path: str, signed: bool = False) -> None:
+        # Charged in this order so the scarcer, endpoint-specific budget
+        # is the one a caller usually waits on; either way both are spent
+        # before the request goes out.
+        self._buckets[_tier_for(method, path)].charge()
+        if signed:
+            self._buckets["signed"].charge()
+
+    def status(self) -> Dict[str, Any]:
+        buckets = {}
+        for name, bucket in self._buckets.items():
+            entry = bucket.status()
+            entry["hub_limit"] = _HUB_LIMITS[name]
+            buckets[name] = entry
+        return {"window_seconds": self._window_seconds, "buckets": buckets}
 
 
 class _ThrottledHubClient(HubClient):
@@ -142,21 +235,24 @@ class _ThrottledHubClient(HubClient):
         self._rate_limiter = rate_limiter
 
     def _get(self, path, params=None):
-        self._rate_limiter.before_request()
+        self._rate_limiter.before_request("GET", path)
         try:
             return super()._get(path, params)
         except HubError as e:
             raise ToolError(f"hub returned {e.status_code}: {e.body}") from e
 
     def _get_with_total(self, path, params=None):
-        self._rate_limiter.before_request()
+        self._rate_limiter.before_request("GET", path)
         try:
             return super()._get_with_total(path, params)
         except HubError as e:
             raise ToolError(f"hub returned {e.status_code}: {e.body}") from e
 
     def _post(self, path, envelope):
-        self._rate_limiter.before_request()
+        # Every POST this client makes carries a signed envelope (they all
+        # come through `HubClient._signed_post`), so every one of them
+        # also draws on the per-pubkey quota.
+        self._rate_limiter.before_request("POST", path, signed=True)
         try:
             return super()._post(path, envelope)
         except HubError as e:
@@ -508,7 +604,12 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         """
         reputation = client.get_reputation(agent.pubkey_hex)
         exchange_account = client.get_exchange_account(agent.pubkey_hex)
-        all_tasks, _ = client.list_tasks_page(0, 500, None, "all")
+        # Every status, so the whole board history -- which the hub serves
+        # oldest-first in pages of at most 200. `list_tasks_scan` pages to
+        # the newest end, because this agent's own recent work is what the
+        # question is about and a single oversized request would have
+        # returned the oldest 200 rows of the board instead.
+        all_tasks, _ = client.list_tasks_scan(status="all")
         posted = [t for t in all_tasks if t.get("poster") == agent.pubkey_hex]
         claimed = [t for t in all_tasks if t.get("claimant") == agent.pubkey_hex]
         return {
@@ -537,7 +638,7 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         completed = reputation.get("completed", 0)
         # `status` omitted defaults to open tasks only, matching the hub's
         # own default -- this tool is specifically about what's claimable.
-        items, _ = client.list_tasks_page(0, 500, capability, None)
+        items, _ = client.list_tasks_scan(capability=capability)
         candidates = [
             t
             for t in items
@@ -554,7 +655,12 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         first -- the same "what's happening right now" signal the
         dashboard's news ticker shows a human.
         """
-        items, _ = client.list_tasks_page(0, limit, None, "all")
+        # `/tasks` is sorted oldest first, so offset 0 is the *start* of
+        # the board's history, not its end: asking for the first `limit`
+        # rows and sorting them descending returns the oldest tasks in a
+        # convincingly recent-looking order. `list_tasks_scan` takes the
+        # tail instead, which is the thing this tool claims to return.
+        items, _ = client.list_tasks_scan(status="all", max_tasks=max(1, limit))
         return sorted(items, key=lambda t: t.get("created_at", ""), reverse=True)[:limit]
 
     # -- market analytics tools ---------------------------------------------
@@ -613,12 +719,25 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
 
     @server.tool(annotations=LOCAL_READ_ONLY)
     def get_rate_limit_status() -> dict:
-        """This process's own view of its client-side throttle against the
-        hub's 120-requests/minute/IP cap: requests used and remaining in
-        the current window, and seconds until it resets. Every hub call
-        this server makes (action or information tool alike) counts
-        against it; a heavy polling loop should watch this rather than
-        find out by tripping a 429.
+        """This process's own view of its client-side throttle, one entry
+        per budget the hub keeps. Each carries `requests_used_this_window`,
+        `requests_remaining`, `window_resets_in_seconds`, this client's
+        `client_budget` and the hub's own `hub_limit`.
+
+        The hub's limits are per IP per 60-second window and are tiered by
+        what a request costs it: `health` 120 (GET /health), `read` 120
+        (every other GET), `write` 60 (signed writes served from memory),
+        `chain` 20 (signed writes that reach the chain node or move coins
+        -- posting a task, confirming an escrow, submitting work, the
+        faucet, withdrawing). On top of that, `signed` is a per-pubkey
+        quota of 60 signed requests per window across every route, and
+        this process is one pubkey.
+
+        `chain` is the budget an active agent actually runs out of: twenty
+        a minute. Every hub call this server makes counts against one of
+        these (a signed write against two), and this server blocks rather
+        than lets a budget go over -- so a polling loop that suddenly
+        feels slow should read this instead of guessing.
         """
         return rate_limiter.status()
 

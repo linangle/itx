@@ -9,6 +9,8 @@ own code paths (including the analytics-backed tools) without a node."""
 
 import asyncio
 import json
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
@@ -17,7 +19,7 @@ mcp = pytest.importorskip("mcp")
 
 from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
-from itx_agent_sdk import Agent, HubError, mcp_server  # noqa: E402
+from itx_agent_sdk import Agent, HubClient, HubError, mcp_server  # noqa: E402
 
 OTHER = "03" + "cd" * 32
 
@@ -156,7 +158,16 @@ class FakeHub:
         return {"status": "ok", "chain_height": 7}
 
     def list_tasks_page(self, offset, limit, capability, status) -> Tuple[List[dict], Optional[int]]:
-        return [_task("t1"), _task("t2")], 2
+        board = [_task("t1"), _task("t2")]
+        # Honours `offset`/`limit` the way the hub does, so a pager
+        # driving this fake terminates instead of looping on page one.
+        end = len(board) if limit is None else offset + limit
+        return board[offset:end], len(board)
+
+    # The shipped pager, driven by this fake's own `list_tasks_page`, so
+    # the tools' board scans exercise the real paging rather than a second
+    # copy of it written to agree with them.
+    list_tasks_scan = HubClient.list_tasks_scan
 
     def leaderboard_page(self, *a) -> Tuple[List[dict], Optional[int]]:
         return [{"pubkey": OTHER, "earned": 100}], 1
@@ -328,3 +339,191 @@ def test_main_resolves_hub_url_and_key_file_from_the_environment(monkeypatch, tm
     monkeypatch.setattr("sys.argv", ["itx-agent-mcp-server", "--hub-url", "http://flag:2"])
     mcp_server.main()
     assert captured["hub_url"] == "http://flag:2"
+
+
+# -- the client-side throttle ---------------------------------------------
+
+
+def test_the_budget_holds_when_callers_arrive_at_once():
+    """The MCP runtime runs synchronous tools on worker threads, so this
+    is the ordinary case, not a corner. A limiter that moves its window
+    start into the future on exhaustion lets the next caller compute a
+    negative elapsed time, decide the window is fresh, and go straight
+    through -- the budget then bounds nothing at all.
+    """
+    budget, window = 5, 0.4
+    limiter = mcp_server._FixedWindow(budget, window_seconds=window)
+    started = time.monotonic()
+    admitted_at = []
+    guard = threading.Lock()
+
+    def caller():
+        limiter.charge()
+        with guard:
+            admitted_at.append(time.monotonic() - started)
+
+    threads = [threading.Thread(target=caller) for _ in range(budget * 2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in threads), "a caller never came back"
+
+    assert len(admitted_at) == budget * 2
+    in_first_window = [t for t in admitted_at if t < window]
+    assert len(in_first_window) == budget, (
+        f"{len(in_first_window)} of {budget * 2} callers got through a budget of {budget}: "
+        f"{sorted(round(t, 3) for t in admitted_at)}"
+    )
+
+
+def test_a_throttled_window_reports_no_budget_and_a_reset_inside_the_window():
+    """What `get_rate_limit_status` says while a caller is actually being
+    held back is the number an agent paces itself by. It used to report a
+    reset longer than the whole window -- 3.9 seconds for a 2-second one
+    -- and claim budget remained at the same time, so both numbers were
+    wrong in the direction that invites more requests.
+    """
+    window = 0.6
+    limiter = mcp_server._FixedWindow(3, window_seconds=window)
+    for _ in range(3):
+        limiter.charge()
+
+    blocked = threading.Thread(target=limiter.charge, daemon=True)
+    blocked.start()
+    time.sleep(0.05)
+    status = limiter.status()
+    blocked.join(timeout=5)
+
+    assert status["requests_remaining"] == 0
+    assert status["requests_used_this_window"] == 3
+    assert 0.0 < status["window_resets_in_seconds"] <= window
+
+
+def test_the_window_refreshes_once_it_has_elapsed():
+    limiter = mcp_server._FixedWindow(2, window_seconds=0.2)
+    limiter.charge()
+    limiter.charge()
+    assert limiter.status()["requests_remaining"] == 0
+
+    limiter.charge()  # blocks until the window rolls over
+
+    status = limiter.status()
+    assert status["requests_used_this_window"] == 1
+    assert status["requests_remaining"] == 1
+
+
+@pytest.mark.parametrize(
+    "method,path,tier",
+    [
+        ("GET", "/health", "health"),
+        ("GET", "/tasks", "read"),
+        ("GET", "/exchange/orders", "read"),
+        ("POST", "/tasks", "chain"),
+        ("POST", "/tasks/consensus", "chain"),
+        ("POST", "/faucet", "chain"),
+        ("POST", "/tasks/escrow/e1/confirm", "chain"),
+        ("POST", "/tasks/t1/submit", "chain"),
+        ("POST", "/tasks/t1/dispute/confirm", "chain"),
+        ("POST", "/tasks/t1/dispute/resolve", "chain"),
+        ("POST", "/exchange/deposit/e1/confirm", "chain"),
+        ("POST", "/exchange/withdraw", "chain"),
+        ("POST", "/tasks/t1/claim", "write"),
+        ("POST", "/tasks/t1/cancel", "write"),
+        ("POST", "/tasks/escrow", "write"),
+        ("POST", "/tasks/t1/dispute/escrow", "write"),
+        ("POST", "/exchange/orders", "write"),
+        ("POST", "/exchange/orders/o1/cancel", "write"),
+        ("POST", "/exchange/deposit", "write"),
+    ],
+)
+def test_requests_are_classified_into_the_same_tiers_the_hub_charges(method, path, tier):
+    """Mirrors `hub/src/rate_limit.rs::tier_for`. Getting this wrong in
+    the generous direction is what makes a client-side throttle useless:
+    the `chain` budget is 20 a minute and the `read` one is 120.
+    """
+    assert mcp_server._tier_for(method, path) == tier
+
+
+def test_the_client_budgets_stay_under_every_limit_the_hub_enforces():
+    for name, budget in mcp_server._CLIENT_BUDGETS.items():
+        assert budget < mcp_server._HUB_LIMITS[name], name
+
+
+def test_a_signed_write_is_charged_to_its_tier_and_to_the_per_key_quota():
+    """The hub charges both: the endpoint's per-IP tier before the
+    handler runs, and the verified pubkey's own quota once the signature
+    checks out. A client watching only the tier still trips the quota.
+    """
+    limiter = mcp_server._RateLimiter()
+    before = limiter.status()["buckets"]
+
+    limiter.before_request("POST", "/faucet", signed=True)
+    after = limiter.status()["buckets"]
+
+    assert after["chain"]["requests_used_this_window"] == before["chain"]["requests_used_this_window"] + 1
+    assert after["signed"]["requests_used_this_window"] == before["signed"]["requests_used_this_window"] + 1
+    assert after["read"]["requests_used_this_window"] == before["read"]["requests_used_this_window"]
+
+
+def test_rate_limit_status_reports_every_budget_next_to_the_hubs_own(server):
+    srv, _, _ = server
+    result = _call(srv, "get_rate_limit_status", {}).model_dump(by_alias=True)
+    structured = result.get("structuredContent") or json.loads(result["content"][0]["text"])
+    status = structured.get("result", structured)
+
+    assert set(status["buckets"]) == {"health", "read", "write", "chain", "signed"}
+    assert status["buckets"]["chain"]["hub_limit"] == 20
+    assert status["buckets"]["signed"]["hub_limit"] == 60
+    for name, bucket in status["buckets"].items():
+        assert bucket["client_budget"] < bucket["hub_limit"], name
+
+
+# -- the composed board tools ---------------------------------------------
+
+
+def test_get_activity_feed_returns_the_newest_tasks_not_the_oldest(server, monkeypatch):
+    """`/tasks` is sorted oldest first, so offset 0 is the start of the
+    board's history. Reading page one and sorting it descending returns
+    the oldest tasks in a convincingly recent-looking order.
+    """
+    board = [
+        dict(_task(f"t{i}"), created_at=f"2026-09-{(i % 28) + 1:02d}T00:00:00+00:00")
+        for i in range(500)
+    ]
+
+    def list_tasks_page(self, offset, limit, capability, status):
+        limit = 200 if limit is None else min(limit, 200)
+        return board[offset : offset + limit], len(board)
+
+    monkeypatch.setattr(FakeHub, "list_tasks_page", list_tasks_page)
+    srv, _, _ = server
+
+    result = _call(srv, "get_activity_feed", {"limit": 5}).model_dump(by_alias=True)
+    structured = result.get("structuredContent") or json.loads(result["content"][0]["text"])
+    feed = structured.get("result", structured)
+
+    assert {t["id"] for t in feed} <= {t["id"] for t in board[-5:]}, "these are not the newest tasks"
+
+
+def test_the_board_tools_page_instead_of_asking_for_one_oversized_page(server, monkeypatch):
+    """The hub truncates any page to 200 rows without saying so, so a
+    single `limit=500` request quietly answered with the oldest 200.
+    """
+    requested = []
+    board = [_task(f"t{i}") for i in range(450)]
+
+    def list_tasks_page(self, offset, limit, capability, status):
+        requested.append((offset, limit))
+        limit = 200 if limit is None else min(limit, 200)
+        return board[offset : offset + limit], len(board)
+
+    monkeypatch.setattr(FakeHub, "list_tasks_page", list_tasks_page)
+    srv, _, _ = server
+
+    for tool in ("get_my_status", "find_matching_tasks"):
+        requested.clear()
+        result = _call(srv, tool, {}).model_dump(by_alias=True)
+        assert not result.get("isError"), (tool, result)
+        assert all(limit is None or limit <= 200 for _, limit in requested), (tool, requested)
+        assert len(requested) > 1, f"{tool} did not page past the hub's cap: {requested}"

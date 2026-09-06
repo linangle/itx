@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from itx_agent_sdk import Agent, HubError, cli
+from itx_agent_sdk import Agent, HubClient, HubError, cli
 
 OWN = "02" + "ab" * 32
 OTHER = "03" + "cd" * 32
@@ -101,12 +101,12 @@ def test_find_scans_the_open_board_with_the_capability_filter(env):
     client, run, _ = env
     own_pubkey = run("whoami")["pubkey"]
     client.get_reputation.return_value = {"completed": 1, "failed": 0}
-    client.list_tasks_page.return_value = (
+    client.list_tasks_scan.return_value = (
         [task("a", bounty=5), task("b", bounty=7), task("c", poster=own_pubkey, bounty=99)],
         3,
     )
     result = run("find", "--capability", "python", "--limit", "1")
-    client.list_tasks_page.assert_called_once_with(0, cli._BOARD_SCAN_LIMIT, "python", None)
+    client.list_tasks_scan.assert_called_once_with(capability="python")
     assert [t["id"] for t in result] == ["b"]
 
 
@@ -115,12 +115,12 @@ def test_status_splits_posted_and_claimed_tasks(env):
     own_pubkey = run("whoami")["pubkey"]
     client.get_reputation.return_value = {"completed": 0, "failed": 0}
     client.get_exchange_account.return_value = {"base_balance": 0}
-    client.list_tasks_page.return_value = (
+    client.list_tasks_scan.return_value = (
         [task("posted", poster=own_pubkey), task("claimed", claimant=own_pubkey), task("other")],
         3,
     )
     result = run("status")
-    client.list_tasks_page.assert_called_once_with(0, cli._BOARD_SCAN_LIMIT, None, "all")
+    client.list_tasks_scan.assert_called_once_with(status="all")
     assert [t["id"] for t in result["posted_tasks"]] == ["posted"]
     assert [t["id"] for t in result["claimed_tasks"]] == ["claimed"]
 
@@ -200,3 +200,34 @@ def test_main_reports_hub_errors_as_json_on_stderr(env, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert json.loads(captured.err) == {"error": {"error": "no reachable node"}, "status": 503}
+
+
+def test_a_corrupt_key_file_is_reported_as_json_not_a_traceback(env, capsys, tmp_path):
+    """The skill parses stderr as JSON on failure. `ecdsa` raises
+    `MalformedPointError`, which subclasses `AssertionError` rather than
+    `ValueError`, so a truncated key file used to escape `main`'s handler
+    entirely and print a traceback instead.
+    """
+    key_file = tmp_path / "corrupt.key"
+    key_file.write_text("ab" * 31, encoding="utf-8")
+
+    assert cli.main(["--compact", "--key-file", str(key_file), "whoami"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    payload = json.loads(captured.err)
+    assert set(payload) == {"error"}, "a local failure carries no hub status"
+    assert "ab" * 31 not in payload["error"]
+
+
+def test_a_base_url_with_a_path_prefix_is_reported_as_json(env, monkeypatch, capsys):
+    """`HubClient` refuses it at construction; `main` has to turn that
+    into the documented error shape rather than a traceback.
+    """
+    monkeypatch.setattr(cli, "HubClient", HubClient)
+    monkeypatch.setenv(cli.ENV_HUB_URL, "https://hub.test/api")
+
+    assert cli.main(["--compact", "health"]) == 1
+
+    payload = json.loads(capsys.readouterr().err)
+    assert "no path, query or fragment" in payload["error"]

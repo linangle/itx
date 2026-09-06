@@ -28,11 +28,6 @@ from .client import HubClient, HubError
 from .config import DEFAULT_HUB_URL, DEFAULT_KEY_FILE, ENV_HUB_URL, ENV_KEY_FILE, resolve_hub_url, resolve_key_file
 from .identity import load_or_create_agent
 
-# One page from the hub covers what a single agent process can act on in
-# one heartbeat; matches what the MCP server's `find_matching_tasks`
-# fetches, so the two rails see the same board.
-_BOARD_SCAN_LIMIT = 500
-
 
 def eligible_tasks(
     tasks: List[Dict[str, Any]],
@@ -173,7 +168,12 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "status":
         reputation = client.get_reputation(agent.pubkey_hex)
         exchange_account = client.get_exchange_account(agent.pubkey_hex)
-        all_tasks, _ = client.list_tasks_page(0, _BOARD_SCAN_LIMIT, None, "all")
+        # Every status, so the whole board's history -- which only grows,
+        # and which the hub serves oldest-first in pages of at most 200.
+        # `list_tasks_scan` pages to the newest end for exactly that
+        # reason: this agent's own most recent work is the part of the
+        # history the question is about.
+        all_tasks, _ = client.list_tasks_scan(status="all")
         return {
             "pubkey": agent.pubkey_hex,
             "reputation": reputation,
@@ -184,7 +184,7 @@ def run(args: argparse.Namespace) -> Any:
 
     if args.command == "find":
         reputation = client.get_reputation(agent.pubkey_hex)
-        items, _ = client.list_tasks_page(0, _BOARD_SCAN_LIMIT, args.capability, None)
+        items, _ = client.list_tasks_scan(capability=args.capability)
         return eligible_tasks(items, agent.pubkey_hex, reputation.get("completed", 0), args.min_bounty, args.limit)
 
     if args.command == "task":

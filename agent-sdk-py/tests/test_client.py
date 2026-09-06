@@ -425,3 +425,237 @@ def test_llms_txt_returns_plain_text_not_json():
 
     assert result == "# itx agent hub"
     client.session.get.assert_called_once_with("http://hub.test/llms.txt", timeout=ANY)
+
+
+# -- redirects on signed writes -------------------------------------------
+
+
+def test_signed_posts_do_not_follow_redirects():
+    """`requests` rewrites a redirected POST as a GET, so a signed write
+    to an http:// hub behind a redirecting proxy would land as a *read* of
+    the same route and return the reply as if the write had happened.
+    """
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"id": "o1"})
+
+    client.place_order(Agent.generate(), "buy", 100, 5)
+
+    _, kwargs = client.session.post.call_args
+    assert kwargs["allow_redirects"] is False
+
+
+def test_a_redirected_signed_post_raises_and_explains_the_http_base_url():
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response(
+        None, status_code=301, headers={"location": "https://hub.test/exchange/orders"}
+    )
+
+    with pytest.raises(HubError) as excinfo:
+        client.place_order(Agent.generate(), "buy", 100, 5)
+
+    assert excinfo.value.status_code == 301
+    body = excinfo.value.body
+    assert "https://hub.test/exchange/orders" in body
+    assert "http://" in body and "signature binds the request path" in body
+
+
+def test_unsigned_reads_still_follow_redirects():
+    """Nothing is bound to a path and no credential rides along, so a GET
+    that gets redirected http->https should just get where it was going.
+    """
+    client = make_client_with_mock_session()
+    client.session.get.return_value = mock_response({"status": "ok"})
+    client.get_health()
+    _, kwargs = client.session.get.call_args
+    assert "allow_redirects" not in kwargs, "reads use requests' default, which follows"
+
+
+# -- base URL validation ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    ["https://hub.test/api", "https://hub.test/api/", "https://hub.test?token=x", "https://hub.test#frag"],
+)
+def test_a_base_url_with_a_path_query_or_fragment_is_rejected_at_construction(bad_url):
+    """`HubClient` signs the bare route but sends `base_url + route`, so a
+    prefix signs one path and posts another -- an unexplained 401 on every
+    signed call, discovered at the worst possible moment.
+    """
+    with pytest.raises(ValueError, match="no path, query or fragment"):
+        HubClient(bad_url)
+
+
+def test_a_plain_host_base_url_is_accepted_with_or_without_a_trailing_slash():
+    assert HubClient("https://hub.test").base_url == "https://hub.test"
+    assert HubClient("https://hub.test/").base_url == "https://hub.test"
+    assert HubClient("http://127.0.0.1:9100").base_url == "http://127.0.0.1:9100"
+
+
+# -- id normalization ------------------------------------------------------
+
+CANONICAL_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+
+@pytest.mark.parametrize(
+    "written_as",
+    [
+        CANONICAL_ID,
+        CANONICAL_ID.upper(),
+        CANONICAL_ID.replace("-", ""),
+        "{" + CANONICAL_ID + "}",
+        "urn:uuid:" + CANONICAL_ID,
+    ],
+)
+def test_task_ids_are_canonicalised_in_both_the_signed_path_and_the_payload(written_as):
+    """The hub recomputes the signing string from the *parsed* `Uuid`, so
+    an unusually spelled id would produce a different string on each side
+    and come back 401 rather than 404.
+    """
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"id": CANONICAL_ID})
+
+    client.claim_task(Agent.generate(), written_as)
+
+    args, kwargs = client.session.post.call_args
+    assert args[0] == f"http://hub.test/tasks/{CANONICAL_ID}/claim"
+    assert kwargs["json"]["payload"] == {"task_id": CANONICAL_ID}
+
+
+def test_every_signed_route_that_carries_an_id_canonicalises_it():
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"ok": True})
+    agent = Agent.generate()
+    loud = CANONICAL_ID.upper()
+
+    for call, expected_path in [
+        (lambda: client.submit_task(agent, loud, "42"), f"/tasks/{CANONICAL_ID}/submit"),
+        (lambda: client.cancel_task(agent, loud), f"/tasks/{CANONICAL_ID}/cancel"),
+        (lambda: client.confirm_task_escrow(agent, loud), f"/tasks/escrow/{CANONICAL_ID}/confirm"),
+        (lambda: client.create_dispute_escrow(agent, loud, "why"), f"/tasks/{CANONICAL_ID}/dispute/escrow"),
+        (lambda: client.confirm_dispute_escrow(agent, loud, loud), f"/tasks/{CANONICAL_ID}/dispute/confirm"),
+        (lambda: client.resolve_dispute(agent, loud, "assignee_wins"), f"/tasks/{CANONICAL_ID}/dispute/resolve"),
+        (lambda: client.confirm_exchange_deposit(agent, loud), f"/exchange/deposit/{CANONICAL_ID}/confirm"),
+        (lambda: client.cancel_order(agent, loud), f"/exchange/orders/{CANONICAL_ID}/cancel"),
+    ]:
+        call()
+        args, kwargs = client.session.post.call_args
+        assert args[0] == f"http://hub.test{expected_path}"
+        for key, value in kwargs["json"]["payload"].items():
+            if key.endswith("_id"):
+                assert value == CANONICAL_ID, key
+
+
+def test_an_id_that_is_not_a_uuid_is_passed_through_untouched():
+    """A bad id should earn the hub's own 400/404, not a client-side
+    crash -- and the tests above use short ids like "t1" for readability.
+    """
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"ok": True})
+    client.claim_task(Agent.generate(), "not-a-uuid")
+    args, _ = client.session.post.call_args
+    assert args[0] == "http://hub.test/tasks/not-a-uuid/claim"
+
+
+# -- list_tasks_scan -------------------------------------------------------
+
+
+def paged_board(size: int, page_cap: int = 200):
+    """A `list_tasks_page` stand-in over a board of `size` tasks numbered
+    oldest first, truncating any page to `page_cap` the way the hub does.
+    Records the (offset, limit) of every call it served.
+    """
+    board = [{"id": f"t{i}"} for i in range(size)]
+    calls = []
+
+    def list_tasks_page(offset, limit, capability, status):
+        calls.append((offset, limit))
+        limit = page_cap if limit is None else min(limit, page_cap)
+        return board[offset : offset + limit], len(board)
+
+    return list_tasks_page, calls
+
+
+def test_scan_pages_past_the_hubs_200_row_cap():
+    client = make_client_with_mock_session()
+    client.list_tasks_page, calls = paged_board(450)
+
+    items, total = client.list_tasks_scan()
+
+    assert [t["id"] for t in items] == [f"t{i}" for i in range(450)]
+    assert total == 450
+    assert len(calls) == 3, calls
+
+
+def test_scan_never_asks_for_more_than_the_hub_will_serve():
+    client = make_client_with_mock_session()
+    client.list_tasks_page, calls = paged_board(450)
+    client.list_tasks_scan()
+    assert all(limit <= 200 for _, limit in calls), calls
+
+
+def test_scan_keeps_the_newest_tasks_when_the_board_is_bigger_than_the_bound():
+    """The hub sorts oldest first and the board only grows, so a bounded
+    scan that started at offset 0 would return pure history and drop the
+    very tasks a "what is my status" question is about.
+    """
+    client = make_client_with_mock_session()
+    client.list_tasks_page, _ = paged_board(1300)
+
+    items, total = client.list_tasks_scan(max_tasks=500)
+
+    assert total == 1300
+    assert [t["id"] for t in items] == [f"t{i}" for i in range(800, 1300)]
+
+
+def test_scan_stops_at_one_page_when_the_whole_board_fits():
+    client = make_client_with_mock_session()
+    client.list_tasks_page, calls = paged_board(12)
+
+    items, total = client.list_tasks_scan()
+
+    assert len(items) == 12 and total == 12
+    assert len(calls) == 1, "a board smaller than one page costs one request"
+
+
+def test_scan_only_fetches_as_much_as_it_was_asked_for():
+    client = make_client_with_mock_session()
+    client.list_tasks_page, calls = paged_board(1000)
+
+    items, _ = client.list_tasks_scan(max_tasks=20)
+
+    assert [t["id"] for t in items] == [f"t{i}" for i in range(980, 1000)]
+    assert all(limit <= 20 for _, limit in calls), calls
+
+
+def test_scan_falls_back_to_a_forward_walk_when_the_hub_sends_no_total():
+    """Without `X-Total-Count` there is no way to find the far end of the
+    board, so forward from the start is all that is left -- but it must
+    still page rather than trusting one oversized request.
+    """
+    client = make_client_with_mock_session()
+    board = [{"id": f"t{i}"} for i in range(350)]
+
+    def list_tasks_page(offset, limit, capability, status):
+        limit = 200 if limit is None else min(limit, 200)
+        return board[offset : offset + limit], None
+
+    client.list_tasks_page = list_tasks_page
+
+    items, total = client.list_tasks_scan()
+
+    assert total is None
+    assert [t["id"] for t in items] == [f"t{i}" for i in range(350)]
+
+
+def test_scan_passes_the_filters_through():
+    client = make_client_with_mock_session()
+    seen = []
+
+    def list_tasks_page(offset, limit, capability, status):
+        seen.append((capability, status))
+        return [], 0
+
+    client.list_tasks_page = list_tasks_page
+    client.list_tasks_scan(capability="python", status="all")
+    assert seen == [("python", "all")]

@@ -7,13 +7,32 @@ directly, not guessed; if a hub-side struct's field order ever changes,
 the matching method here must change with it.
 """
 
-from typing import Any, Dict, Iterable, Optional, Tuple
+import uuid
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import requests
 
 from .envelope import Agent
 
 DEFAULT_TIMEOUT_SECONDS = 30
+
+# `GET /tasks` never returns more rows than this in one response, whatever
+# `limit` asks for -- see `MAX_TASKS_PAGE_SIZE` in `hub/src/handlers.rs`.
+# Asking for more is not an error, it is silently truncated, which is
+# exactly how a caller ends up believing it holds the whole board when it
+# holds the oldest 200 rows of it.
+HUB_MAX_TASKS_PAGE_SIZE = 200
+
+# How many tasks `HubClient.list_tasks_scan` will pull before it stops:
+# five full pages, so a whole-board scan costs at most six requests. The
+# hub sorts oldest first and the board only ever grows, so on a board
+# larger than this the scan keeps the *newest* `MAX_BOARD_SCAN` tasks and
+# still reports the hub's true `total` alongside them -- a caller that
+# cares can compare the two and see it is looking at a window rather than
+# the whole history. Scanning from offset 0 instead would drop precisely
+# the recent activity a question like "what is my status" is about.
+MAX_BOARD_SCAN = 1000
 
 
 class HubError(Exception):
@@ -27,6 +46,68 @@ class HubError(Exception):
         super().__init__(f"hub returned {status_code}: {body}")
 
 
+def _canonical_id(value: str) -> str:
+    """Normalizes a task/escrow/order id to the exact spelling the hub
+    will compare against.
+
+    Every one of these ids is a ``Uuid`` on the hub side, and the hub
+    recomputes the signing string from the *deserialized* payload -- so a
+    ``task_id`` written ``"7B9A...-..."`` or without hyphens round-trips
+    through serde as canonical lowercase-hyphenated and no longer matches
+    the string the client signed. The request then fails the signature
+    check and comes back 401, which reads as "your key is wrong" rather
+    than "your id was spelled unusually". Models produce both spellings
+    often enough to be worth normalizing here.
+
+    Anything that isn't a UUID is passed through untouched, so a
+    genuinely bad id still earns the hub's own 400/404 instead of a
+    client-side crash.
+    """
+    try:
+        return str(uuid.UUID(value))
+    except (AttributeError, ValueError):
+        return value
+
+
+def _validated_base_url(base_url: str) -> str:
+    """Strips the trailing slash and refuses a base URL the signing
+    protocol cannot work behind.
+
+    A path prefix is the trap worth catching here. ``HubClient`` signs the
+    bare route (``/faucet``) but sends it to ``base_url + route``, so
+    ``HubClient("https://host/api")`` signs ``/faucet`` while the hub
+    verifies against the ``/api/faucet`` it received. Every signed call
+    then fails with a bare 401 that points at the key rather than at the
+    URL. A query string or fragment on a base URL is equally meaningless
+    and equally silent, so both are rejected too.
+    """
+    trimmed = base_url.rstrip("/")
+    split = urlsplit(trimmed)
+    if split.path or split.query or split.fragment:
+        raise ValueError(
+            f"hub base URL must be a scheme and host with no path, query or fragment: {trimmed!r}. "
+            "Signed requests bind the route path into the signature, so a prefix like '/api' would "
+            "sign one path and send another, and every signed call would fail with a 401."
+        )
+    return trimmed
+
+
+def _redirect_explanation(resp: requests.Response) -> str:
+    """The message a redirected signed write raises with. Names the most
+    likely cause first, because it almost always is the cause: an
+    ``http://`` base URL in front of a proxy that redirects to
+    ``https://``.
+    """
+    location = resp.headers.get("location") or "(no Location header)"
+    return (
+        f"the hub redirected this signed request to {location!r}; it was not followed. "
+        "The signature binds the request path, so the envelope cannot be replayed at the new "
+        "location, and following a 301/302 would also downgrade the POST to a GET. The usual "
+        "cause is an http:// hub base URL in front of a proxy that redirects to https:// -- "
+        "use the https:// URL directly."
+    )
+
+
 class HubClient:
     """A thin client for one hub base URL. Doesn't hold any agent
     identity itself -- every signed call takes the `Agent` to sign with
@@ -36,11 +117,16 @@ class HubClient:
     """
 
     def __init__(self, base_url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _validated_base_url(base_url)
         self.timeout = timeout
         self.session = requests.Session()
 
     def _get(self, path: str, params: Optional[dict] = None) -> Any:
+        # Unsigned reads follow redirects (`requests`' default). Nothing
+        # here is bound to a path or replayed, a redirected GET stays a
+        # GET, and no credential rides along to leak to the new location
+        # -- so following an http->https hop just gets the caller to the
+        # right place. Signed writes cannot do the same; see `_post`.
         resp = self.session.get(f"{self.base_url}{path}", params=params, timeout=self.timeout)
         return self._handle(resp)
 
@@ -65,7 +151,17 @@ class HubClient:
         return body, total
 
     def _post(self, path: str, envelope: dict) -> Any:
-        resp = self.session.post(f"{self.base_url}{path}", json=envelope, timeout=self.timeout)
+        # `allow_redirects=False` is load-bearing, not caution. `requests`
+        # honours the browser rule that a 301/302 turns a POST into a GET,
+        # so a signed write to a hub fronted by the shipped nginx config
+        # (plain http answers `return 301 https://...`) would silently
+        # become a *read* of the same route -- `place_order` returning the
+        # order book as if it were the placed order, with no error
+        # anywhere. `_handle` turns the redirect into a `HubError` that
+        # says so instead.
+        resp = self.session.post(
+            f"{self.base_url}{path}", json=envelope, timeout=self.timeout, allow_redirects=False
+        )
         return self._handle(resp)
 
     def _signed_post(self, path: str, signer: Agent, payload: Any) -> Any:
@@ -83,6 +179,13 @@ class HubClient:
 
     @staticmethod
     def _handle(resp: requests.Response) -> Any:
+        # A 3xx only reaches here from a request sent with
+        # `allow_redirects=False`, i.e. a signed write. It is a hard
+        # failure rather than something to chase: the envelope's signature
+        # binds the request path, so the same envelope cannot legitimately
+        # be re-sent to wherever `Location` points.
+        if 300 <= resp.status_code < 400:
+            raise HubError(resp.status_code, _redirect_explanation(resp))
         if not resp.ok:
             try:
                 body = resp.json()
@@ -139,8 +242,59 @@ class HubClient:
             params["status"] = status
         return self._get_with_total("/tasks", params=params)
 
+    def list_tasks_scan(
+        self,
+        capability: Optional[str] = None,
+        status: Optional[str] = None,
+        max_tasks: int = MAX_BOARD_SCAN,
+    ) -> Tuple[List[dict], Optional[int]]:
+        """The newest ``max_tasks`` tasks matching the filters, gathered
+        across as many pages as that takes, plus the hub's own count of
+        everything matching before pagination.
+
+        Use this, not ``list_tasks_page`` with a big ``limit``, whenever
+        the question is "what is on the board": the hub silently truncates
+        any page to `HUB_MAX_TASKS_PAGE_SIZE`, so one oversized request
+        answers with the oldest 200 rows and no indication that it did.
+
+        Returned oldest first, the order the hub sorts in. Beyond
+        ``max_tasks`` matches the scan stops and the returned ``total``
+        exceeds ``len(items)``; the tasks dropped are the *oldest* ones,
+        which is the survivable direction to lose history in.
+        """
+        max_tasks = max(1, max_tasks)
+        first_page_size = min(HUB_MAX_TASKS_PAGE_SIZE, max_tasks)
+        first, total = self.list_tasks_page(0, first_page_size, capability, status)
+
+        if total is None or total <= max_tasks:
+            # Either the whole matching set fits inside the bound, or the
+            # hub sent no `X-Total-Count` to steer by and forward is the
+            # only direction available. Keep the page already in hand.
+            items = list(first)
+            start = 0
+            want = max_tasks if total is None else min(total, max_tasks)
+        else:
+            # More matches than the bound. Skip straight to the tail
+            # rather than filling up on history; the page just fetched is
+            # what bought us `total`, so it is not wasted so much as spent.
+            items = []
+            start = total - max_tasks
+            want = max_tasks
+
+        while len(items) < want:
+            page, _ = self.list_tasks_page(
+                start + len(items),
+                min(HUB_MAX_TASKS_PAGE_SIZE, want - len(items)),
+                capability,
+                status,
+            )
+            if not page:
+                break
+            items.extend(page)
+        return items[:want], total
+
     def get_task(self, task_id: str) -> dict:
-        return self._get(f"/tasks/{task_id}")
+        return self._get(f"/tasks/{_canonical_id(task_id)}")
 
     def get_reputation(self, pubkey_hex: str) -> dict:
         return self._get(f"/reputation/{pubkey_hex}")
@@ -326,31 +480,42 @@ class HubClient:
         return self._signed_post("/tasks/disputable/escrow", agent, payload)
 
     def confirm_task_escrow(self, agent: Agent, escrow_id: str) -> dict:
+        escrow_id = _canonical_id(escrow_id)
         payload = {"escrow_id": escrow_id}
         return self._signed_post(f"/tasks/escrow/{escrow_id}/confirm", agent, payload)
 
     # -- claiming / submitting / cancelling -------------------------------
+    #
+    # Every id below goes through `_canonical_id` before it is used, so
+    # the string signed and the string the hub recomputes from the parsed
+    # `Uuid` are the same one -- see that function for why an unusually
+    # spelled id otherwise comes back as a mystifying 401.
 
     def claim_task(self, agent: Agent, task_id: str) -> dict:
+        task_id = _canonical_id(task_id)
         payload = {"task_id": task_id}
         return self._signed_post(f"/tasks/{task_id}/claim", agent, payload)
 
     def submit_task(self, agent: Agent, task_id: str, output: str) -> dict:
+        task_id = _canonical_id(task_id)
         payload = {"task_id": task_id, "output": output}
         return self._signed_post(f"/tasks/{task_id}/submit", agent, payload)
 
     def cancel_task(self, agent: Agent, task_id: str) -> dict:
+        task_id = _canonical_id(task_id)
         payload = {"task_id": task_id}
         return self._signed_post(f"/tasks/{task_id}/cancel", agent, payload)
 
     # -- disputes ----------------------------------------------------------
 
     def create_dispute_escrow(self, agent: Agent, task_id: str, reason: str) -> dict:
+        task_id = _canonical_id(task_id)
         payload = {"task_id": task_id, "reason": reason}
         return self._signed_post(f"/tasks/{task_id}/dispute/escrow", agent, payload)
 
     def confirm_dispute_escrow(self, agent: Agent, task_id: str, escrow_id: str) -> dict:
-        payload = {"task_id": task_id, "escrow_id": escrow_id}
+        task_id = _canonical_id(task_id)
+        payload = {"task_id": task_id, "escrow_id": _canonical_id(escrow_id)}
         return self._signed_post(f"/tasks/{task_id}/dispute/confirm", agent, payload)
 
     def resolve_dispute(self, operator: Agent, task_id: str, outcome: str) -> dict:
@@ -359,6 +524,7 @@ class HubClient:
         "snake_case")]`, so these exact strings (not e.g.
         ``"ChallengerWins"``) are what it expects on the wire.
         """
+        task_id = _canonical_id(task_id)
         payload = {"task_id": task_id, "outcome": outcome}
         return self._signed_post(f"/tasks/{task_id}/dispute/resolve", operator, payload)
 
@@ -378,6 +544,7 @@ class HubClient:
         return self._signed_post("/exchange/deposit", agent, None)
 
     def confirm_exchange_deposit(self, agent: Agent, escrow_id: str) -> dict:
+        escrow_id = _canonical_id(escrow_id)
         payload = {"escrow_id": escrow_id}
         return self._signed_post(f"/exchange/deposit/{escrow_id}/confirm", agent, payload)
 
@@ -395,6 +562,7 @@ class HubClient:
         return self._signed_post("/exchange/orders", agent, payload)
 
     def cancel_order(self, agent: Agent, order_id: str) -> dict:
+        order_id = _canonical_id(order_id)
         payload = {"order_id": order_id}
         return self._signed_post(f"/exchange/orders/{order_id}/cancel", agent, payload)
 
