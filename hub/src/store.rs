@@ -1,6 +1,6 @@
 use tracing::*;
 
-use crate::board::{ExchangeAccount, Order, PendingDeposit, Reputation, Task, Trade};
+use crate::board::{ExchangeAccount, Order, PayoutAttempt, PendingDeposit, Reputation, Task, Trade};
 use btclib::crypto::PublicKey;
 use redb::{ReadableTable, TableDefinition};
 use std::path::Path;
@@ -50,6 +50,28 @@ const AGENT_NAMES_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("ag
 // check, and the sweep prunes it (see `prune_seen_signatures`). Without
 // that it would grow by one row per authenticated request forever.
 const REPLAY_GUARD_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("replay_guard");
+// task uuid bytes ++ recipient sec1 bytes -> serialized PayoutAttempt.
+// A composite key rather than a nested map because that is the unit the
+// record is written and deleted at: one payout to one recipient,
+// resolved and dropped on its own even when several were paid by one
+// transaction (see `PayoutAttempt`). Uuid bytes are fixed-width, so the
+// concatenation parses back unambiguously, and it sorts by task, which
+// is the order anything reading a whole task's payouts wants.
+//
+// Additive in exactly the way PENDING_DEPOSITS_TABLE and
+// REPLAY_GUARD_TABLE were, and no SCHEMA_VERSION bump for the same
+// reason: a store written before this table existed gains it empty on
+// the first open by a build that knows about it, and a build that does
+// not know about it never looks. Pinned by
+// `a_store_from_a_build_without_the_payout_attempts_table_still_opens`.
+//
+// Unlike a task or a deposit, a record here is a claim about the *chain*
+// and not about the hub's own bookkeeping: it exists only while the hub
+// is waiting to find out what became of a transaction, and is deleted
+// the moment it knows. It cannot grow without bound -- there is at most
+// one row per unpaid payout, and every row leaves within
+// `MAX_PAYOUT_SUBMISSIONS` sweeps of resolving.
+const PAYOUT_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("payout_attempts");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -58,6 +80,15 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 // after the fact (rather than before the first real store exists) is
 // exactly the mistake this project already made once with BlockStore.
 const SCHEMA_VERSION: u32 = 1;
+
+/// The `PAYOUT_ATTEMPTS_TABLE` key for one payout: the task's uuid
+/// followed by the recipient's SEC1 bytes. Uuid bytes are fixed-width,
+/// so no separator is needed for the two halves to be unambiguous.
+fn payout_attempt_key(task_id: uuid::Uuid, recipient: &PublicKey) -> Vec<u8> {
+    let mut key = task_id.as_bytes().to_vec();
+    key.extend_from_slice(&recipient.to_sec1_bytes());
+    key
+}
 
 #[derive(Debug, Error)]
 pub enum HubStoreError {
@@ -106,6 +137,7 @@ impl HubStore {
             write_txn.open_table(TRADES_TABLE)?;
             write_txn.open_table(AGENT_NAMES_TABLE)?;
             write_txn.open_table(REPLAY_GUARD_TABLE)?;
+            write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
             let stored_version = match meta.get(SCHEMA_VERSION_KEY)? {
@@ -420,6 +452,66 @@ impl HubStore {
                 Ok((pubkey, value.value().to_string()))
             })
             .collect()
+    }
+
+    /// Persists a payout the hub has handed to the node and is waiting
+    /// to see confirmed.
+    ///
+    /// Must commit **before** the transaction goes onto the wire, the
+    /// same ordering rule `save_pending_deposit` and
+    /// `record_seen_signature` both document, and for the same reason
+    /// pointed the other way: a crash between submitting and writing
+    /// leaves a payout in flight that nothing in the hub knows to look
+    /// for, which is precisely the silent loss this whole mechanism
+    /// exists to end. Writing first can at worst leave a record of a
+    /// transaction that was never sent, and the sweep resolves that
+    /// correctly on its own -- the inputs are still unspent, so it reads
+    /// as `NeverLanded` and is simply sent.
+    pub fn save_payout_attempt(&self, attempt: &PayoutAttempt) -> Result<()> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(attempt, &mut bytes)
+            .map_err(|e| HubStoreError::Serialization(e.to_string()))?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
+            table.insert(
+                payout_attempt_key(attempt.task_id, &attempt.recipient).as_slice(),
+                bytes.as_slice(),
+            )?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Drops a payout the sweep has resolved. Deleting rather than
+    /// flagging: the record's only purpose is to say what the hub is
+    /// still waiting on, and a resolved one answers nothing. What
+    /// actually happened is recorded on the task itself, which is
+    /// durable and is what anyone reads afterwards.
+    pub fn delete_payout_attempt(&self, task_id: uuid::Uuid, recipient: &PublicKey) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
+            table.remove(payout_attempt_key(task_id, recipient).as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Every unresolved payout, read at boot to refill the board. The
+    /// key is not parsed back apart -- each record carries its own
+    /// `task_id` and `recipient`, so the key is purely an index.
+    pub fn load_all_payout_attempts(&self) -> Result<Vec<PayoutAttempt>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
+        let mut attempts = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let attempt: PayoutAttempt = ciborium::from_reader(value.value())
+                .map_err(|e| HubStoreError::Serialization(e.to_string()))?;
+            attempts.push(attempt);
+        }
+        Ok(attempts)
     }
 
     /// Durably records that `signature` has been accepted, so a restart
@@ -864,6 +956,77 @@ mod tests {
         // Usable immediately, not just openable.
         store.record_seen_signature(b"sig", Utc::now().timestamp()).unwrap();
         assert_eq!(store.load_recent_signatures(i64::MIN).unwrap().len(), 1);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The payout-attempts table is purely additive, so a store written
+    /// before it existed must open on this build untouched -- no version
+    /// bump, no migration, the table simply arrives empty. The same
+    /// property `a_store_from_a_build_without_the_replay_table_still_opens`
+    /// pins for the replay guard, and it matters more here: a hub that
+    /// refused to open after an upgrade is a settlement outage, and the
+    /// table it would be refusing over holds money in flight.
+    #[test]
+    fn a_store_from_a_build_without_the_payout_attempts_table_still_opens() {
+        let path = temp_db_path("older_build_no_payouts");
+        let agent = PrivateKey::new_key().public_key();
+        {
+            // Exactly what a build from before this change did: the
+            // tables it knew about, stamped with the same schema version
+            // it stamps today.
+            let db = redb::Database::create(&path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                write_txn.open_table(TASKS_TABLE).unwrap();
+                write_txn.open_table(REPUTATION_TABLE).unwrap();
+                write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
+                write_txn.open_table(REPLAY_GUARD_TABLE).unwrap();
+                let mut meta = write_txn.open_table(META_TABLE).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice()).unwrap();
+                let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
+                grants.insert(agent.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let store = HubStore::open_or_create(&path).unwrap();
+        assert!(
+            store.load_all_payout_attempts().unwrap().is_empty(),
+            "the new table must arrive empty rather than failing to open"
+        );
+        assert_eq!(
+            store.load_all_faucet_grants().unwrap(),
+            vec![agent],
+            "and the store's existing contents must survive untouched"
+        );
+
+        // Usable immediately, not just openable -- and round-tripping,
+        // since a payout the hub cannot read back at boot is a payout it
+        // has silently stopped waiting for.
+        let attempt = PayoutAttempt {
+            task_id: uuid::Uuid::new_v4(),
+            recipient: PrivateKey::new_key().public_key(),
+            amount: 100,
+            output_hash: btclib::sha256::Hash::hash_bytes(b"output"),
+            spent_inputs: vec![btclib::sha256::Hash::hash_bytes(b"input")],
+            source: PrivateKey::new_key().public_key(),
+            submitted_at: Utc::now(),
+            submissions: 1,
+        };
+        store.save_payout_attempt(&attempt).unwrap();
+        assert_eq!(store.load_all_payout_attempts().unwrap(), vec![attempt.clone()]);
+
+        // Re-saving is a replace, not a second row: a resubmission
+        // supersedes the attempt it replaces, and two rows for one
+        // payout would leave the sweep resolving a transaction already
+        // ruled out.
+        let resubmitted = PayoutAttempt { submissions: 2, ..attempt.clone() };
+        store.save_payout_attempt(&resubmitted).unwrap();
+        assert_eq!(store.load_all_payout_attempts().unwrap(), vec![resubmitted]);
+
+        store.delete_payout_attempt(attempt.task_id, &attempt.recipient).unwrap();
+        assert!(store.load_all_payout_attempts().unwrap().is_empty());
 
         std::fs::remove_file(&path).ok();
     }
