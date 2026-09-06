@@ -1,0 +1,4 @@
+# Where a run writes its reports. The checked-in reference copies that
+# `harness compare` diffs against live in `baselines/` and are committed
+# deliberately; anything a local run produces is scratch.
+results/
