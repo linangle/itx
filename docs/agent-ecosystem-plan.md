@@ -70,7 +70,8 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
 6. Cluster limiting v1 enforced on faucet and consensus joins (§4).
 7. Unbounded-read fixes: pagination on every list route, archival of terminal
    tasks/orders, caching on board endpoints (§6.1).
-8. Pooled node connection; leaderboard fan-out tamed (§6.2).
+8. Pooled node connection (§6.2) — **done** 2026-09-05; the leaderboard's
+   request-time fan-out is cheaper but still a fan-out, see §6.2.
 9. Load test at ~1k simulated agents + chaos drills passing (§6.7).
 10. Honest settlement states (pending/confirmed) in API responses (§6.5).
 11. Incident basics: monitoring/alerts, `security.txt`, runbook, encrypted backups
@@ -339,10 +340,79 @@ for any future action worth pricing.
    `status=any` collects-then-sorts everything; nothing is archived, so all of it
    degrades monotonically. Pagination everywhere, short-TTL caches, archive
    terminal tasks/orders out of the hot set. First real scaling PR.
-2. **Node connection churn.** `node_client` opens a fresh TCP handshake per
-   operation; the leaderboard fans out up to 50 balance lookups. One pooled,
-   mutex-guarded persistent connection (the wallet already does this), longer
-   net-worth cache, precompute in the sweep.
+2. **Node connection churn — pooling done 2026-09-05** (branch
+   `node-connection-pooling`). `node_client` opened a fresh TCP connection and
+   handshake per operation — three round trips to ask one question — and the
+   leaderboard fans out one balance lookup per agent. `NodeClient` now keeps a
+   pool of 8 persistent connections; a caller owns one for the length of an
+   exchange and returns it only on success.
+
+   **The recommendation this section made was wrong, and measuring is what
+   caught it.** "One pooled, mutex-guarded persistent connection (the wallet
+   already does this)" is *slower than the churn it replaces*. Against a live
+   node, a 50-agent fan-out (the leaderboard's shape) costs 4.9–6.8ms with the
+   old connect-per-call client and a very stable ~8.2ms through a single
+   pooled connection: serialising fifty lookups behind one socket costs more
+   than fifty handshakes save. A pool of 8 lands at 2.8–3.4ms, and 16/32/64
+   are flat within noise — so 8, which takes essentially the whole win while
+   holding a third of the sockets 32 would. The benchmark that produced these
+   is kept as `hub/src/node_client.rs`'s ignored `node_pool_benchmark`; its
+   baseline is the real old code path, so the comparison can be re-run rather
+   than re-argued.
+
+   Three things pooling made load-bearing that were previously free:
+
+   - **Ordered failover is now an invariant to maintain, not a consequence.**
+     The double-spend guards assume one consistent mempool view. A pool that
+     kept connections to a primary *and* a secondary after a failover-and-
+     recovery would quietly be load-balancing across two mempools. The pool
+     therefore holds connections to one address at a time and drops the rest
+     when it adopts a new one.
+   - **A cancelled request must drop its socket, not release it.** The
+     connection is moved out of the pool rather than held under a mutex, so a
+     task cancelled between its send and its receive cannot hand the unread
+     half of a reply to the next caller. `wallet/src/core.rs`, the pattern
+     this was modelled on, holds a mutex across send and receive instead —
+     correct for the wallet, which never sees cancellation, and not
+     transferable to a hub whose HTTP clients hang up routinely.
+   - **Reconnecting.** An operation that fails on a *reused* connection is
+     retried once on a fresh one; a failure on a fresh connection is real.
+     Safe for all three operations, because each is idempotent with respect
+     to a *failed* attempt — see the finding below for why that qualifier is
+     doing real work.
+
+   **Finding — a duplicate transaction is not merely rejected, it is
+   punished.** Resubmitting a transaction the node already holds fails
+   `add_to_mempool` (equal fee on an already-spoken-for input), and the node
+   answers with `strike(peer, severe: false)` and closes the connection.
+   Three non-severe strikes inside ten minutes is a one-hour ban of that IP.
+   In a single-box deployment the hub, miner and monitoring share an address,
+   so a payout path that retried a submission three times in ten minutes could
+   ban the whole stack from its own node. Nothing does that today — the retry
+   in the pooled client fires only when the *send* failed, which means the
+   node never received the bytes — but "don't resubmit an accepted
+   transaction" is now a rule the payout and sweep paths depend on rather than
+   an incidental property. Worth a look when §6.5's settlement honesty work
+   touches the retry machinery.
+
+   Still open here: the leaderboard read still triggers the fan-out at request
+   time when the 30s snapshot is cold. Precomputing it (build-sequence item
+   7's other half) is deliberately *not* done, and the reason is worth
+   recording, because "precompute it in the sweep loop" does not work as
+   written: the sweep runs every 60s and the snapshot's TTL is 30s, so a
+   sweep-driven refresh leaves half of every minute cold and changes nothing
+   for the request that lands there. Actually taking the fan-out off the
+   request path needs a refresh interval *below* the TTL — which means the
+   hub pays for a full fan-out every ~25s forever, on a field of whatever
+   size, including on a hub nobody is looking at. That is a straight trade of
+   "cost on read" for "cost always", and which side wins depends on read
+   traffic this deployment does not have yet. Pooling has also taken most of
+   the urgency out of it: a cold 50-agent sweep is now ~3ms rather than
+   ~6ms, so the request-time cost is no longer the thing that breaks first.
+   Decide it with real traffic, not in advance.
+
+   `GET /reputation/:pubkey` remains an uncached, unauthenticated node round
+   trip (§3.4) — cheaper per call now, but still one call per request.
 3. **Signature-verify CPU** — §3.4.
 4. **The single-instance ceiling.** In-memory board + process replay guard means
    no horizontal scaling. Don't fight it yet: one solid box with fixes 1–3 serves
@@ -701,7 +771,7 @@ land early with maximal soak time:
 4. Replay-guard durability (§3.3) — **done**; endpoint binding split out, see §3.3
 5. Faucet PoW challenge — table, endpoints, sweep, llms.txt update (§5)
 6. Pagination + terminal-task/order archival + board caching (§6.1)
-7. Pooled node connection + leaderboard precompute (§6.2)
+7. Pooled node connection (§6.2) — **done**; leaderboard precompute still open
 8. Cluster limiting v1: faucet caps + consensus join caps + signals plumbing (§4)
 9. Honest settlement states in API responses (§6.5)
 10. Attached-payment escrow funding: signed funding transaction on the
