@@ -147,6 +147,7 @@ async fn seed_tasks(
     client: &HubClient,
     funder: Option<&PrivateKey>,
     want: usize,
+    distinct_sources: bool,
 ) -> Result<Vec<String>> {
     let mut ids = open_task_ids(client).await?;
 
@@ -164,7 +165,17 @@ async fn seed_tasks(
             min_reputation: 0,
             capabilities: Vec::new(),
         };
-        let reply = client.post_signed(funder, "/tasks", payload).await?;
+        // Posting a task is a chain-tier write, budgeted at twenty a
+        // minute per source address. Seeding a two-hundred-task board
+        // from one address would spend nine minutes being told 429 for
+        // work that is setup rather than measurement, so the seeding
+        // spreads itself the same way the agents will.
+        let poster = if distinct_sources {
+            client.from_source(&synthetic_source(100_000 + ids.len()))
+        } else {
+            client.clone()
+        };
+        let reply = poster.post_signed(funder, "/tasks", payload).await?;
         if !reply.ok() {
             // Almost always "insufficient escrow balance" -- the
             // operator's change is unconfirmed until mined (§6.4b), so
@@ -412,7 +423,15 @@ pub async fn run(config: &LoadConfig) -> Result<Section> {
         .next()
         .map(|s| s.p50_ms);
 
-    let tasks = Arc::new(seed_tasks(&base, funder.as_ref(), config.task_pool).await?);
+    let tasks = Arc::new(
+        seed_tasks(
+            &base,
+            funder.as_ref(),
+            config.task_pool,
+            config.distinct_sources,
+        )
+        .await?,
+    );
 
     let mut agents: Vec<Agent> = (0..config.agents)
         .map(|index| Agent {

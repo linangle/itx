@@ -329,7 +329,14 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     chain
         .wait_for_utxo_count(&operator.public_key(), 3, Duration::from_secs(300))
         .await?;
-    let needed = (BOUNTY + FEE) * (BATCH as u64 + 1) * 2 + FEE;
+    // Twelve escrows at a bounty and a fee apiece, and then an order of
+    // magnitude on top. The first version of this funded almost exactly
+    // what the arithmetic said and ran dry on the last escrow: a deposit
+    // address may ask for more than the bounty, each payment burns a fee,
+    // and every one of them is a separate transaction. The operator holds
+    // fifty coins per block, so being generous here costs nothing and
+    // being exact costs a six-minute run.
+    let needed = (BOUNTY + FEE) * (BATCH as u64 + 1) * 2 * 10;
     chain.pay(&operator, &poster.public_key(), needed, FEE).await?;
     let funded = chain
         .wait_for_balance(&poster.public_key(), needed, Duration::from_secs(180))

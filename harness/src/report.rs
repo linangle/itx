@@ -272,3 +272,177 @@ impl Report {
         Ok(())
     }
 }
+
+/// Compares a fresh report against a checked-in baseline.
+///
+/// This is what makes the baselines more than a file nobody opens. The
+/// pooling benchmark in `hub/src/node_client.rs` keeps the old code path
+/// beside the new one so the comparison can be *run*; a report on disk
+/// only gets that property if something reads it. Sections are matched by
+/// title and facts by key, which is why both are meant to stay stable
+/// across runs even when the prose around them changes.
+///
+/// Returns the rendered comparison and whether anything got worse -- a
+/// verdict that went from confirmed to refuted, or a finding that was not
+/// there before.
+pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (String, bool) {
+    let empty = Vec::new();
+    let sections = |report: &serde_json::Value| -> Vec<Value> {
+        report
+            .get("sections")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty)
+            .clone()
+    };
+    let by_title = |report: &serde_json::Value| -> BTreeMap<String, Value> {
+        sections(report)
+            .into_iter()
+            .filter_map(|section| {
+                Some((section.get("title")?.as_str()?.to_string(), section))
+            })
+            .collect()
+    };
+
+    let before = by_title(baseline);
+    let after = by_title(current);
+    let mut out = String::new();
+    let mut worse = false;
+
+    out.push_str(&format!(
+        "baseline: {} at {}\ncurrent:  {} at {}\n",
+        baseline
+            .pointer("/environment/commit")
+            .and_then(Value::as_str)
+            .unwrap_or("?"),
+        baseline.get("started_at").and_then(Value::as_str).unwrap_or("?"),
+        current
+            .pointer("/environment/commit")
+            .and_then(Value::as_str)
+            .unwrap_or("?"),
+        current.get("started_at").and_then(Value::as_str).unwrap_or("?"),
+    ));
+
+    for (title, new_section) in &after {
+        out.push_str(&format!("\n--- {title}\n"));
+        let Some(old_section) = before.get(title) else {
+            out.push_str("  (not in the baseline)\n");
+            continue;
+        };
+
+        let old_verdict = old_section.get("verdict").and_then(Value::as_str);
+        let new_verdict = new_section.get("verdict").and_then(Value::as_str);
+        if old_verdict != new_verdict {
+            out.push_str(&format!(
+                "  verdict: {} -> {}\n",
+                old_verdict.unwrap_or("none"),
+                new_verdict.unwrap_or("none")
+            ));
+            // Only one direction is a regression. Going from refuted to
+            // confirmed is somebody's fix landing, and should not fail a
+            // comparison.
+            if new_verdict == Some("refuted") && old_verdict != Some("refuted") {
+                worse = true;
+            }
+        }
+
+        let facts = |section: &Value| -> BTreeMap<String, Value> {
+            section
+                .get("facts")
+                .and_then(Value::as_object)
+                .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default()
+        };
+        let old_facts = facts(old_section);
+        for (key, new_value) in facts(new_section) {
+            match old_facts.get(&key) {
+                Some(old_value) if old_value == &new_value => {}
+                Some(old_value) => {
+                    out.push_str(&format!("  {key}: {old_value} -> {new_value}\n"))
+                }
+                None => out.push_str(&format!("  {key}: (new) {new_value}\n")),
+            }
+        }
+
+        let findings = |section: &Value| -> Vec<String> {
+            section
+                .get("findings")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|f| f.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let old_findings = findings(old_section);
+        for finding in findings(new_section) {
+            if !old_findings.contains(&finding) {
+                out.push_str(&format!("  NEW FINDING: {finding}\n"));
+                worse = true;
+            }
+        }
+        for finding in &old_findings {
+            if !findings(new_section).contains(finding) {
+                out.push_str(&format!("  gone: {finding}\n"));
+            }
+        }
+    }
+
+    (out, worse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn report(verdict: &str, findings: Vec<&str>, count: i64) -> Value {
+        json!({
+            "environment": {"commit": "abc"},
+            "started_at": "2026-09-06T00:00:00Z",
+            "sections": [{
+                "title": "A drill",
+                "verdict": verdict,
+                "facts": {"itx_lost": count},
+                "findings": findings,
+            }],
+        })
+    }
+
+    #[test]
+    fn a_new_finding_is_a_regression() {
+        let (rendered, worse) = compare(
+            &report("confirmed", vec![], 0),
+            &report("confirmed", vec!["money vanished"], 5),
+        );
+        assert!(worse);
+        assert!(rendered.contains("NEW FINDING: money vanished"));
+        assert!(rendered.contains("itx_lost: 0 -> 5"));
+    }
+
+    #[test]
+    fn a_finding_going_away_is_not() {
+        // The whole point of a baseline here is that somebody lands a fix
+        // and the drill stops finding the bug. That must not fail.
+        let (rendered, worse) = compare(
+            &report("confirmed", vec!["money vanished"], 5),
+            &report("confirmed", vec![], 0),
+        );
+        assert!(!worse);
+        assert!(rendered.contains("gone: money vanished"));
+    }
+
+    #[test]
+    fn confirmed_turning_into_refuted_is_a_regression() {
+        let (_, worse) = compare(&report("confirmed", vec![], 0), &report("refuted", vec![], 0));
+        assert!(worse);
+    }
+
+    #[test]
+    fn a_section_missing_from_the_baseline_is_reported_not_ignored() {
+        let baseline = json!({"sections": []});
+        let (rendered, worse) = compare(&baseline, &report("confirmed", vec![], 0));
+        assert!(!worse);
+        assert!(rendered.contains("(not in the baseline)"));
+    }
+}

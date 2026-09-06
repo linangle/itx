@@ -27,6 +27,23 @@ enum Command {
     Load(LoadArgs),
     Drill(DrillArgs),
     Stack(StackArgs),
+    Compare(CompareArgs),
+}
+
+#[derive(FromArgs)]
+/// Diff a fresh report against a checked-in baseline.
+///
+/// Exits non-zero if anything got worse: a verdict that turned into a
+/// refutation, or a finding that was not there before. A finding going
+/// away is somebody's fix landing and is not a failure.
+#[argh(subcommand, name = "compare")]
+struct CompareArgs {
+    #[argh(option)]
+    /// the checked-in baseline report
+    baseline: PathBuf,
+    #[argh(option)]
+    /// the report from the run being judged
+    against: PathBuf,
 }
 
 #[derive(FromArgs)]
@@ -126,7 +143,22 @@ async fn main() -> Result<()> {
         Command::Load(load_args) => run_load(load_args).await,
         Command::Drill(drill_args) => run_drills(drill_args).await,
         Command::Stack(stack_args) => run_stack(stack_args).await,
+        Command::Compare(compare_args) => run_compare(compare_args),
     }
+}
+
+fn run_compare(args: CompareArgs) -> Result<()> {
+    let read = |path: &PathBuf| -> Result<serde_json::Value> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        Ok(serde_json::from_str(&text)?)
+    };
+    let (rendered, worse) = harness::report::compare(&read(&args.baseline)?, &read(&args.against)?);
+    println!("{rendered}");
+    if worse {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 async fn run_stack(args: StackArgs) -> Result<()> {
