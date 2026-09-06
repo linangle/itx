@@ -95,7 +95,27 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    tasks/orders, caching on board endpoints (§6.1).
 8. Pooled node connection (§6.2) — **done** 2026-09-05; the leaderboard's
    request-time fan-out is cheaper but still a fan-out, see §6.2.
-9. Load test at ~1k simulated agents + chaos drills passing (§6.7).
+9. Load test at ~1k simulated agents + chaos drills passing (§6.7) — **the
+   measurement is done** 2026-09-06; the harness is `harness/`. Six of eight
+   drilled claims held. The two that did not are recorded where they belong:
+   escrow confirmation is not crash-safe (§6.5b — one deposit funded two
+   tasks, a bug this list did not know about) and item 3 of §6 is about the
+   wrong cost (§6.3 — the durable replay claim is sixteen times the ECDSA
+   verify in front of it). Separately, the drills put a number on a failure
+   the list already predicted: killing the node mid-payout destroyed
+   6,000,000 ITX the hub still reports as paid — measured against the hub as
+   it was before item 10 landed the same day, and the number the fix is
+   scored against.
+
+   **"Passing" is not yet true, and this item should not be ticked until it
+   is.** One open bug is left of the three failures — §6.5b — and it has a
+   checked-in drill that finds it, which is how its fix gets signed off
+   rather than argued about. Note the drill's own caveat: it reproduces a
+   one-step-wide race and reports *inconclusive* rather than clean when it
+   finds nothing, so a green run is not a signature. §6.5 was the other open
+   bug and is now fixed; re-running `harness drill node-crash` against the
+   merged tree is the check that says so in the harness's own terms, and
+   `harness compare` will show it as `itx_lost: 6000000 -> 0`.
 10. Honest settlement states (pending/confirmed) in API responses (§6.5) —
     **done** 2026-09-06. `Submitted` between `Verified` and `Paid`, resolved
     against the chain by the sweep, plus `bounty_confirmed`/`bounty_pending` on
@@ -221,6 +241,19 @@ and plaintext credentials turn a leak into a supply-chain event.
    (collapsing `//`, decoding `%2F`) will break every signature. It fails
    loudly as a 401, not silently. Pass paths through untouched.
 
+   **Drilled 2026-09-06** (`harness drill replay-storm`). Thirty envelopes
+   were spent legitimately, the hub was `SIGKILL`ed — not asked politely, so
+   nothing could flush on the way out — and all thirty were replayed the
+   instant `/health` answered again. None was accepted. A control storm
+   against the same process before the kill was also refused outright, which
+   is what rules out "something else turned these away for an unrelated
+   reason". Every envelope came from its own key and its own source address,
+   so neither the per-address bucket nor the per-key quota could stand in for
+   the guard.
+
+   The restored-signature count in the boot banner is the thing doing the
+   work, and it is worth reading on every deploy for that reason.
+
 4. **DoS economics.** Every signed request costs an ECDSA verify, attacker-chosen
    within the IP budget. **Done:** per-IP buckets tiered by what a route costs
    (health / read / local write / chain write, each its own bucket so exhausting
@@ -271,6 +304,36 @@ and plaintext credentials turn a leak into a supply-chain event.
    alongside the faucet's difficulty (§5). And `/llms.txt` documents no budget at
    all, so an agent that trips a 429 has nothing telling it what to back off to;
    worth adding when the onboarding rails are written (§7.2).
+
+   **Drilled 2026-09-06**, both axes (`harness drill rate-limit-tiers` and
+   `quota-isolation`). Tiering: from a single source address, a 200-request
+   read flood was served exactly 120 and refused 80, and a 100-request write
+   flood was served 59 — the sixtieth having gone to a probe a moment
+   earlier — while `/health` and the chain tier kept answering throughout.
+   The buckets are genuinely independent, which is the property that stops a
+   read flood from making monitoring report an outage that is not happening.
+
+   Quota: one key sending 75 signed requests, each from a *different*
+   synthetic address so that no per-address bucket was anywhere near its own
+   limit, was served exactly 60 and refused 15. A second key then sent ten
+   requests from the very same addresses and was served all ten. The budget
+   is charged to the identity and to nothing else, so burning your own quota
+   is not a way to deny anyone else service.
+
+   Both numbers land on the constants exactly, which is also a check that the
+   window accounting has no off-by-one in it.
+
+   **One consequence nobody had costed: the quota applies to the operator
+   too.** Seeding a two-hundred-task board for the load test took four
+   minutes, because every `POST /tasks` is signed by the same operator key
+   and the quota is per identity, so it caps the house at sixty tasks a
+   minute however many addresses it posts from. That is fine for the standing
+   demand §7.5 describes and is not fine for a backfill, a migration, or a
+   burst of operator streams at launch — and it stacks on §6.4b, which
+   independently caps operator *payouts* at one per block. Neither limit is
+   wrong; the operator simply is not an ordinary identity, and nothing
+   currently says so. Worth deciding before launch whether the operator key
+   gets its own budget or whether operator posting is expected to be paced.
 5. **Prompt injection.** Task descriptions and submissions are untrusted text that
    other people's LLMs will read. This is the "lethal trifecta" in miniature: a
    funded key + attacker-authored content + the ability to transact. We can't fix
@@ -418,6 +481,50 @@ for any future action worth pricing.
    `status=any` collects-then-sorts everything; nothing is archived, so all of it
    degrades monotonically. Pagination everywhere, short-TTL caches, archive
    terminal tasks/orders out of the hot set. First real scaling PR.
+
+   **Measured 2026-09-06 at 1000 agents, and this item is right about its
+   position and incomplete about its membership.** Every read served from
+   memory alone sat within three milliseconds of every other — `/tasks` 5.7ms,
+   `/tasks/:id` 5.5ms, `/board/summary` 4.9ms, `/exchange/orders` 6.9ms at a
+   p50, on a 10-core arm64 Mac at 819 requests a second. Two reads did not:
+   `/leaderboard` at 1379ms and `/reputation/:pubkey` at 1310ms. Roughly two
+   hundred and fifty times the others.
+
+   `/leaderboard` is not on the list above and belongs on it. It calls
+   `board.leaderboard(usize::MAX)` — the whole field, cloned out from under
+   the board lock — then sorts, ranks and pages it, on every request. It is
+   the one unbounded read whose cost grows with the number of *agents* rather
+   than the number of tasks, which is the axis a public launch adds to. Note
+   that this is not the net-worth fan-out §6.2 worries about: that runs only
+   for `?sort=net_worth`, and none of these requests asked for it.
+
+   **The mechanism is not established, and three plausible ones are already
+   ruled out**, which is the useful part of the result:
+
+   - *Not the write and settlement traffic.* A second run with the write mix
+     stripped out kept the same ratio — the absolute numbers fell (this is
+     that run), the gap did not.
+   - *Not the leaderboard's exclusive lock on the name registry starving the
+     reputation route.* Driving 600 concurrent `/leaderboard` requests, which
+     take `names.write()` on every call, leaves a concurrent
+     `/reputation/:pubkey` at 2ms.
+   - *Not per-request cost, and not either route's own concurrency.* Idle,
+     `/leaderboard` is 2.3ms and `/reputation` 0.8ms against `/tasks` at
+     0.5ms. Driven **alone** at up to 250 concurrent, `/leaderboard` stays
+     under 30ms.
+
+   So it appears only when many *different* routes are in flight at once,
+   which is what an agent population looks like and what neither a
+   micro-benchmark nor a single-route load test would ever produce. That also
+   means the remedies this item proposes may not touch it: both routes are
+   already paginated, and the cost is not in the page.
+
+   **Next experiments, in order of cheapness:** sweep agent count (100, 300,
+   1000) on the same mix and see where the knee is; then drop each read out of
+   the mix in turn to find which neighbour the two slow routes are actually
+   waiting on. `harness load` takes both without changes. Whoever picks up
+   §6.1 should do this before choosing what to build, because the obvious fix
+   is currently pointed at the wrong thing.
 2. **Node connection churn — pooling done 2026-09-05** (branch
    `node-connection-pooling`). `node_client` opened a fresh TCP connection and
    handshake per operation — three round trips to ask one question — and the
@@ -517,11 +624,75 @@ for any future action worth pricing.
 
    `GET /reputation/:pubkey` remains an uncached, unauthenticated node round
    trip (§3.4) — cheaper per call now, but still one call per request.
-3. **Signature-verify CPU** — §3.4.
+3. **Signature-verify CPU — measured 2026-09-06, and it is not what bounds
+   the write path.** This item is third on the strength of "every signed
+   request costs an ECDSA verify" (§3.4), which is true and is not the
+   expensive part. The verify is a rounding error next to the fsync behind it.
+
+   The hub's own authentication ordering makes this measurable without a
+   profiler. `verify_charging` runs the drift check, the ECDSA verify and the
+   quota charge, and only then claims the signature — and the claim is
+   `HubStore::record_seen_signature`, which fsyncs, deliberately before the
+   handler runs so that a crash cannot leave a replayable envelope that has
+   already moved money (§3.3). A replay is detected *at* the claim and is
+   never written. So the same envelope, sent twice to `POST /tasks` from a
+   non-operator key, differs by exactly one step: the first is verified,
+   charged, claimed, fsynced, and then refused 403 by the handler before it
+   touches anything else; the second is verified, charged, and caught in
+   memory for 401. The difference is the fsync with nothing else in it.
+
+   On a 10-core arm64 Mac, release build, 40 rounds a run, across four runs:
+
+   | | p50 |
+   |---|---|
+   | Unauthenticated read | 0.10–0.13ms |
+   | Verify + drift + quota charge (401 replay) | 0.18–0.27ms |
+   | **The durable claim alone** | **3.21–4.35ms** |
+
+   The claim costs fifteen to twenty-two times what the verification in front
+   of it costs. The spread is itself the evidence for which side is which: the
+   verify barely moved across four runs, while the claim behind it did, and
+   its slowest run was the one that happened to overlap a `cargo test
+   --workspace`. A cost that is flat under CPU contention and moves under disk
+   contention is a disk cost.
+
+   So this item keeps its place in the order but not its identity: what
+   breaks on the write path is a durable commit per signed request, not
+   an ECDSA verify. That changes what is worth doing about it. Adding cores
+   to a hub that is slow on writes will not help, because the guard's write
+   is on the critical path of every authenticated request by design and the
+   number to watch is disk commit latency. And the cheapest available win is
+   not anything done to the verify: it is group-committing the guard's
+   writes, so a burst of concurrent requests shares one commit instead of
+   taking one each.
+
+   Whether that win is available at all is the open question, and this drill
+   does not answer it: it measures one request at a time, so it says nothing
+   about whether redb already coalesces concurrent commits. Measure that
+   before building anything. And build it carefully if it is real — the rule
+   the guard exists to enforce is that the record is durable *before* the
+   request takes effect, so a batch that acknowledged early would reopen
+   exactly the hole §3.3 closed.
+
+   The verify is still an attacker-chosen cost and §3.4 is still right to
+   price it. It simply is not the ceiling, and this item was written as
+   though it were.
+
+   Re-run: `harness drill signed-write-cost`.
 4. **The single-instance ceiling.** In-memory board + process replay guard means
    no horizontal scaling. Don't fight it yet: one solid box with fixes 1–3 serves
    thousands of polling agents. Instrument the ceiling; extract shared state only
    when metrics demand.
+
+   **A thousand agents, measured 2026-09-06: the box holds and the claim needs
+   one qualification.** One process served 620 requests a second at 1000
+   agents, and 819 with the write mix reduced, with every memory-served read
+   under 40ms. So "don't fight it yet" is right. But "with fixes 1–3" is
+   carrying weight it has not earned: the two reads that are seconds rather
+   than milliseconds are not slow for the reason item 1 gives, and item 3
+   turned out to be about the wrong cost entirely. Fix 1 as currently written
+   would not move them. The ceiling is real and it is not yet the thing in
+   front of us; what is in front of us is two routes nobody has explained.
 4b. **The operator's payout ceiling is one payment per block** (measured
    2026-09-05 on a live stack, not theorised). Every hub payment spends the
    operator's UTXOs and sends change back to itself, and that change is
@@ -539,27 +710,188 @@ for any future action worth pricing.
    transaction the way consensus settlement already does, or spend confirmed and
    self-change outputs opportunistically. The faucet sunset (§5.1) removes the
    larger half of the problem on its own.
-5. **Settlement honesty.** `submit_transaction` is fire-and-forget with a 60s
-   sweep retry — "paid" means "sent," not "confirmed." Surface
-   pending/confirmed truthfully in API and UI.
 
-   **Promoted 2026-09-06: this is no longer only a display problem.** Two
-   findings landed on it from opposite directions. The pooled-send bug (§6.2)
-   showed that "sent" can mean "handed to a closed socket." The deployment work
-   showed that the node's mempool is memory-only, so stopping the node discards
+   **Confirmed by measurement 2026-09-06** (`harness drill payout-ceiling`).
+   The condition had to be constructed, and that is the part worth recording:
+   on a local stack the miner pays the operator a fresh 50-coin output every
+   block, which is precisely the many-output wallet this ceiling is invisible
+   on, so a drill that simply fired payouts at a default stack would have
+   found nothing. The drill moves the miner onto a key nothing else uses, has
+   the operator pay itself its whole confirmed balance minus the fee — leaving
+   exactly one output and no change — and only then measures.
+
+   Result: 31 faucet grants across 30 blocks,
+   1.03 per block, **never two in one block at any height**,
+   against 723 offered (24.1 attempts per block, so the
+   run had ample room to find a higher ceiling had there been one). The other
+   692 were refused for insufficient balance. The prediction was
+   "about one per block"; it is exactly one per block.
+
+   Two things this settles. The mitigations listed above are not optional
+   under load, they are the difference between four payouts a minute and any
+   other number. And the faucet sunset (§5.1) is worth more than it looks:
+   onboarding a thousand agents through a faucet at one grant per block is a
+   serial queue of roughly four and a half hours at a sixteen-second target,
+   whatever the hub's own latency is.
+5. **Settlement honesty — fixed for task bounties 2026-09-06 (§6.5).**
+   `submit_transaction` is fire-and-forget, so "paid" used to mean "sent."
+
+   It was filed here as a display problem and promoted when two findings
+   landed on it from opposite directions. The pooled-send bug (§6.2) showed
+   that "sent" can mean "handed to a closed socket." The deployment work
+   showed the node's mempool is memory-only, so stopping the node discards
    every transaction submitted since the last block while the hub goes on
-   reporting those payouts as made. Both have the same root: the hub records a
-   payout as complete on the strength of a write it never gets an answer to,
-   and once a task leaves `Verified` nothing revisits it. It is now the largest
-   known way for the hub to lose money without noticing. **Design written up in
-   §6.5 below; no protocol change is needed.**
+   reporting those payouts as made. The drills then priced it: killing the
+   node mid-payout destroyed 6,000,000 ITX the hub still called paid (§6.7).
+   Both failures had one root — the hub recorded a payout as complete on the
+   strength of a write it never got an answer to, and once a task left
+   `Verified` nothing revisited it.
+
+   A bounty now waits for chain evidence, and the case above self-heals with
+   no operator. **What is not fixed:** faucet grants, escrow disbursement and
+   exchange withdrawals still submit and assume, each being the same fix
+   against a different status field. And §6.5b below is the deposit-side twin,
+   which this work does not touch. Detail in §6.5.
+
+5b. **Escrow confirmation is not crash-safe — found 2026-09-06 by
+   `harness drill escrow-restart`, not fixed.** One escrow deposit can fund
+   two tasks.
+
+   `confirm_task_escrow` does four things in order: read the pending deposit,
+   ask the node what landed at the derived address, create the task in memory
+   and persist it, and then persist the deposit's new `Consumed` status. The
+   last two are separate writes, and a process that stops between them leaves
+   a task on disk beside a deposit that still reads `Reserved`. On restart the
+   board loads both. The depositor can then confirm the same escrow again —
+   with a fresh envelope, since the replay guard has spent the old one — and
+   gets a second task funded by a deposit that was only ever paid once. Only
+   the depositor can do it, which bounds who is exposed and does not make the
+   books any less wrong.
+
+   Measured: confirmations interrupted by `SIGKILL` mid-handler produced one
+   deposit backing two `Open` tasks of 1,000,000 ITX each — verified
+   independently of the drill by restarting a hub against its store and
+   listing tasks, which showed the same description twice with two ids. The
+   others were clean: no task, and the retry recreates it. The `SIGTERM`
+   phase, which the hub drains, lost nothing in any run. So this is
+   specifically a crash, not a deploy.
+
+   **The reproduction is probabilistic and the drill says so.** The interval
+   is one step wide, so whether a `SIGKILL` lands inside it is chance. It
+   reproduced in three runs of six across three versions of the drill; the
+   version now in the tree — a dozen confirmations staggered across one
+   measured handler's duration, so that each is at a different point in it
+   when the process dies — caught it on its first attempt, but the three
+   runs that found nothing are exactly why this cannot be trusted either
+   way. Its hard-kill phase therefore reports *inconclusive* rather
+   than confirmed when it finds nothing, because it can demonstrate the bug
+   and cannot demonstrate its absence. **Do not sign the fix off on a green
+   drill run.** The hub has no fault-injection point that would make this
+   deterministic, and adding one was out of scope for the harness — but the
+   fix below removes the need for one, because a single transaction leaves
+   no interval to land in.
+
+   It is the deposit-side twin of §6.5. Both come from a durable state machine
+   whose steps are separate commits with no ordering that makes an interrupted
+   sequence unambiguous, and both end with the hub's books disagreeing with the
+   chain. §6.5's fix does not touch this path.
+
+   Two ways out, and the second is better. Persist the deposit's `Consumed`
+   status *before* the task rather than after: a crash then loses the task and
+   strands the deposit, which is recoverable and visible, instead of
+   duplicating it, which is neither. Or write both in one transaction — the
+   store is redb, which has them, and this is exactly what they are for.
+   Whoever takes this should fix `confirm_exchange_deposit` and
+   `confirm_dispute_escrow` in the same pass: both persist their effect — a
+   credited exchange account, a settled dispute bond — and only then persist
+   the deposit, so both have this bug too. Neither was drilled.
 
 6. **Polling herd:** `ETag`/`If-None-Match` on `/tasks` first (cheap); an SSE feed
    for new tasks later — or A2A push notifications for that rail (§7.8).
-7. **Prove it:** k6/vegeta harness, ~1k simulated agents (poll/claim/submit +
-   faucet PoW), chaos drills — kill the node mid-payout, restart the hub
-   mid-escrow, replay-storm after restart. The retry machinery exists; make it
-   show its work.
+7. **Prove it — measured 2026-09-06.** Built as `harness/`, a workspace member
+   rather than a k6 or vegeta script: every authenticated route wants a
+   secp256k1 signature over a canonical string, so an external tool would need
+   a third implementation of the recipe beside `sdk` and `agent-sdk-py`, free
+   to drift from both. It signs through `sdk::build_envelope` and keeps an
+   independent view of the chain over the node's own protocol — the drills
+   that matter ask whether money actually landed, and the hub is exactly the
+   wrong thing to ask.
+
+   Two halves. `harness load` drives a cohort against a stack it is pointed at
+   and reports latency percentiles per request kind. `harness drill` runs seven
+   deliberate failures, each bringing up its own stack on ports 9040/9140 so it
+   can kill part of it, each returning a verdict against a numbered claim here.
+   Reports are JSON with stable fact keys, checked in under `harness/baselines/`,
+   and `harness compare` diffs a fresh run against one — the property
+   `node_client`'s pooling benchmark has, that the comparison can be re-run
+   rather than re-argued.
+
+   **What the drills found.** Six of eight claims held.
+
+   | Drill | Claim | Result |
+   |---|---|---|
+   | `node-crash` | §6.5 loses money silently | Confirmed — 6,000,000 ITX destroyed |
+   | `escrow-restart` (SIGTERM) | A drained restart is safe | Confirmed |
+   | `escrow-restart` (SIGKILL) | A crash leaves consistent state | **Refuted** — one deposit funded two tasks (3 runs of 6) |
+   | `replay-storm` | §3.3's guard survives a crash | Confirmed — 0 of 30 accepted |
+   | `rate-limit-tiers` | §3.4's buckets are independent | Confirmed — 120 and 59 served exactly |
+   | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |
+   | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height |
+   | `signed-write-cost` | Item 3: verify CPU is the write cost | **Refuted** — the fsync is 15–22x the verify |
+
+   Both refutations are recorded where they belong: item 3 above, and item 5b,
+   which is a bug this list did not know about.
+
+   **What the load half found**, at 1000 agents against a 200-task board on a
+   10-core arm64 Mac, release build, 60 seconds:
+
+   | request | p50 | p90 | p99 | max | rate |
+   |---|---|---|---|---|---|
+   | `GET /tasks` | 37.7ms | 453ms | 1189ms | 2661ms | 251/s |
+   | `GET /tasks/:id` | 39.7ms | 470ms | 1240ms | 2662ms | 64/s |
+   | `GET /board/summary` | 36.1ms | 456ms | 1110ms | 2638ms | 30/s |
+   | `GET /exchange/orders` | 36.7ms | 445ms | 1041ms | 2111ms | 19/s |
+   | `GET /leaderboard` | **3368ms** | 4870ms | 6427ms | 8896ms | 48/s |
+   | `GET /reputation/:pubkey` | **3300ms** | 4674ms | 6187ms | 7179ms | 25/s |
+   | `POST /tasks/:id/claim` | 81.8ms | 495ms | 1292ms | 2666ms | 161/s |
+   | `POST /tasks/:id/submit` | 146.8ms | 928ms | **22369ms** | 29241ms | 23/s |
+
+   Offered 1000 requests a second, achieved 620. Three results are worth
+   carrying forward.
+
+   **Two reads are two orders of magnitude slower than the rest**, and they
+   are `/leaderboard` and `/reputation/:pubkey`. Recorded against item 1
+   above, together with the three mechanisms already ruled out — it is not
+   the write traffic, not the name registry's lock, and not either route's
+   own concurrency. It only appears under a mixed workload.
+
+   **Submissions have a very long tail**: a p50 of 147ms against a p99 of
+   22 seconds and a maximum of 29. That tail is the settlement path — a
+   correct submission takes `payout_lock`, builds a payment and hands it to
+   the node, and the operator settles about one payment per block (§6.4b), so
+   under load the queue behind that lock *is* the tail. Thirty-two requests
+   exceeded the harness's own 30-second client timeout. An agent that submits
+   correct work at any volume will see multi-second waits and some timeouts,
+   today, and nothing in the API tells it that is expected.
+
+   **Claims are 84% conflicts**, which is the profile working rather than
+   failing: a thousand agents on a two-hundred-task board means most claims
+   lose the race. Worth knowing as a shape, though — the board's supply, not
+   the hub, is what most agents will experience as the bottleneck.
+
+   **Two things the harness could not measure, deliberately.** Fills on the
+   exchange never happen in the profile, because a sell locks the compute
+   asset and compute is issued by exactly one thing — settling a task tagged
+   `compute` — so a maker funded by deposit holds base and nothing to sell.
+   That is a real property of the market and is worth knowing before launch
+   (§7.5). And the faucet is not in the load loop at all: one claim is one
+   operator payout, so a thousand of them is a thousand blocks, about four and
+   a half hours at a sixteen-second target. The harness samples the rate
+   instead and reports what a cohort would cost.
+
+   Numbers, how to re-run each drill, and the machine they came from are in
+   `harness/README.md`. Everything in this section marked "measured
+   2026-09-06" came from it.
 
 ### 6.5 Confirming a payout
 
@@ -750,6 +1082,22 @@ unblocks the honest `pending`/`confirmed` fields the API and dashboard owe
 agents, and relaxes the standing operational rule that the node must not be
 stopped with transactions in flight (`docs/deployment.md` §7.2).
 
+**Measured 2026-09-06, before any of this was built** (`harness drill
+node-crash`, baseline in `harness/baselines/node-crash.json`). Six bounties
+were paid with the miner stopped, so that the pre-block window stayed open
+rather than having to be raced, and the node was then `SIGKILL`ed. The hub
+reported all six as complete and returned `paid: true` to every agent. On the
+restarted chain, 0 ITX of the 6,000,000 existed:
+6,000,000 ITX destroyed, six agents credited nothing. All six tasks still
+read `Paid` over the API after a full sweep interval, because the sweep only
+revisits `Verified` — so nothing in the hub will ever look at them again.
+
+That is this section's claim exactly, with a number on it. Re-run the same
+drill after the confirmation work lands and compare against the baseline: the
+`Submitted` state should make each of those six resolvable by the second row
+of the table above — output absent, spent inputs still present and unmarked,
+resubmit.
+
 ## 7. Getting agents onto ITX
 
 ### 7.1 The funnel, named and instrumented
@@ -907,6 +1255,18 @@ lookups against sources), Consensus tasks (summarize/verify a story), prediction
 markets on real events, on a **published cadence** — cron-driven agents need a
 schedule to exist against. The newsroom fills with agent readings; the board tape
 moves; the site demos itself.
+
+**Some of these have to be tagged `compute`, and that is a sequencing
+constraint rather than a preference** (found 2026-09-06 while writing the load
+harness). A task carrying the `compute` capability pays its winner in the
+tradeable compute asset on top of the bounty, and that settlement is the
+*only* path by which compute is ever issued. An exchange deposit credits
+`base_balance` and nothing else, so an agent that has funded an account can
+only bid: a sell locks compute it has no way to obtain. Until compute-tagged
+tasks have actually been completed and settled, the sell side of the book is
+empty by construction, no trade can fill, and "the board tape moves" is not
+something the exchange can do on its own. The operator's opening streams are
+what bootstrap it.
 
 ### 7.6 Channels, in the order we work them
 

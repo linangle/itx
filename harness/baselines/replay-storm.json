@@ -1,0 +1,75 @@
+{
+  "name": "drill: replay-storm",
+  "started_at": "2026-09-06T10:06:01.439630Z",
+  "environment": {
+    "commit": "540b6dd389d2f00fc15d19cbbe89fce12327e4f0",
+    "dirty": false,
+    "profile": "release",
+    "host": "Darwin arm64",
+    "cpus": 10,
+    "binaries": {
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+    }
+  },
+  "sections": [
+    {
+      "title": "Replay storm immediately after a restart",
+      "plan_item": "§3.3",
+      "verdict": "confirmed",
+      "facts": {
+        "accepted_on_first_use": 30,
+        "accepted_on_replay_after_restart": 0,
+        "accepted_on_replay_same_process": 0,
+        "envelopes": 30
+      },
+      "notes": [
+        "Every envelope came from its own key and its own source address, so a refusal cannot be the rate limiter or the per-key quota standing in for the replay guard.",
+        "Nothing got through, before or after the hub was killed. The guard's durable half is doing the work it was added for: the in-memory set was empty on boot and every one of these signatures came back off disk."
+      ],
+      "findings": [],
+      "latency": [
+        {
+          "label": "first use",
+          "requests": 30,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 30
+          },
+          "p50_ms": 7.952374999999999,
+          "p90_ms": 10.572583999999999,
+          "p99_ms": 20.279584,
+          "max_ms": 20.279584,
+          "per_second": null
+        },
+        {
+          "label": "replay (after restart)",
+          "requests": 30,
+          "success_rate": 0.0,
+          "by_status": {
+            "401": 30
+          },
+          "p50_ms": 0.193417,
+          "p90_ms": 0.228167,
+          "p99_ms": 0.621792,
+          "max_ms": 0.621792,
+          "per_second": null
+        },
+        {
+          "label": "replay (same process)",
+          "requests": 30,
+          "success_rate": 0.0,
+          "by_status": {
+            "401": 30
+          },
+          "p50_ms": 0.18116700000000002,
+          "p90_ms": 0.20266699999999999,
+          "p99_ms": 0.236458,
+          "max_ms": 0.236458,
+          "per_second": null
+        }
+      ]
+    }
+  ]
+}

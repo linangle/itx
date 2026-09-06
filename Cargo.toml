@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "harness",
     "hub",
     "lib",
     "miner",

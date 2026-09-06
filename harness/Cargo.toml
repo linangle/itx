@@ -1,0 +1,38 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "harness"
+path = "src/lib.rs"
+
+[[bin]]
+name = "harness"
+path = "src/main.rs"
+
+[dependencies]
+btclib = { path = "../lib" }
+# The harness signs exactly the way a real agent does, through the same
+# reference implementation the Python SDK is kept conformant with. A
+# hand-rolled signer here would be a third implementation of the recipe,
+# free to drift, and a load test that drifts measures nothing.
+sdk = { path = "../sdk" }
+anyhow = "1.0.86"
+argh = "0.1.12"
+chrono = { workspace = true }
+hex = { workspace = true }
+# For SIGTERM specifically. `Child::kill` sends SIGKILL, and the difference
+# between the two is the subject of one of the drills: SIGKILL is what the
+# node-crash drill needs, SIGTERM is what an ordinary deploy sends and what
+# the hub drains on.
+libc = "0.2"
+rand = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { workspace = true }
+serde_json = "1.0"
+# Used only to fingerprint the binaries a run launched, so a number can be
+# tied to the code that produced it. Already in the tree via `hub`.
+sha2 = "0.10"
+tokio = { version = "1.37.0", features = ["full"] }
+uuid = { workspace = true }

@@ -1,0 +1,196 @@
+{
+  "name": "load: 1000 agents",
+  "started_at": "2026-09-06T09:49:04.219676Z",
+  "environment": {
+    "commit": "667e95a611570d5940e74c6fc1906b6a5457b47b",
+    "dirty": false,
+    "profile": "release",
+    "host": "Darwin arm64",
+    "cpus": 10,
+    "binaries": {}
+  },
+  "sections": [
+    {
+      "title": "Load: 1000 agents",
+      "plan_item": "§6.7",
+      "verdict": null,
+      "facts": {
+        "achieved_rps": 620.3,
+        "agents": 1000,
+        "distinct_sources": true,
+        "duration_s": 61.822431666,
+        "faucet_cohort_minutes_at_one_per_block": 267.0,
+        "faucet_p50_ms": 9.2,
+        "funded_makers": 8,
+        "offered_rps": 1000.0,
+        "sample_errors": {
+          "POST /tasks/:id/claim": "409: task is not open"
+        },
+        "seeded_tasks": 200
+      },
+      "notes": [
+        "A faucet claim is one operator payout, and the operator settles about one payment per block (§6.4b). Onboarding 1000 agents through it is therefore a serial queue of roughly 267 minutes at a 16s block target, whatever the hub's own latency is."
+      ],
+      "findings": [],
+      "latency": [
+        {
+          "label": "GET /board/summary",
+          "requests": 1854,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 1854
+          },
+          "p50_ms": 36.094458,
+          "p90_ms": 456.380625,
+          "p99_ms": 1110.280917,
+          "max_ms": 2638.1740000000004,
+          "per_second": 29.989114792772376
+        },
+        {
+          "label": "GET /exchange/orders",
+          "requests": 1166,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 1166
+          },
+          "p50_ms": 36.678917,
+          "p90_ms": 444.472834,
+          "p99_ms": 1041.043208,
+          "max_ms": 2110.5395,
+          "per_second": 18.860468095130848
+        },
+        {
+          "label": "GET /leaderboard",
+          "requests": 2953,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 2953
+          },
+          "p50_ms": 3368.113167,
+          "p90_ms": 4869.53075,
+          "p99_ms": 6427.424875,
+          "max_ms": 8896.327667,
+          "per_second": 47.76583386356895
+        },
+        {
+          "label": "GET /reputation/:pubkey",
+          "requests": 1532,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 1532
+          },
+          "p50_ms": 3300.219083,
+          "p90_ms": 4674.204709,
+          "p99_ms": 6187.284625,
+          "max_ms": 7178.609541,
+          "per_second": 24.780649332538985
+        },
+        {
+          "label": "GET /tasks",
+          "requests": 15496,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 15496
+          },
+          "p50_ms": 37.657542,
+          "p90_ms": 452.99195799999995,
+          "p99_ms": 1188.72675,
+          "max_ms": 2660.9608749999998,
+          "per_second": 250.65335643408886
+        },
+        {
+          "label": "GET /tasks/:id",
+          "requests": 3942,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 3942
+          },
+          "p50_ms": 39.6605,
+          "p90_ms": 469.694792,
+          "p99_ms": 1239.586292,
+          "max_ms": 2661.8375840000003,
+          "per_second": 63.763263491428646
+        },
+        {
+          "label": "POST /exchange/orders",
+          "requests": 20,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 20
+          },
+          "p50_ms": 99.986334,
+          "p90_ms": 635.81175,
+          "p99_ms": 1543.013625,
+          "max_ms": 1543.013625,
+          "per_second": 0.32350717144306773
+        },
+        {
+          "label": "POST /exchange/orders/:id/cancel",
+          "requests": 14,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 14
+          },
+          "p50_ms": 114.76516600000001,
+          "p90_ms": 618.9819170000001,
+          "p99_ms": 1073.3826669999999,
+          "max_ms": 1073.3826669999999,
+          "per_second": 0.2264550200101474
+        },
+        {
+          "label": "POST /faucet",
+          "requests": 3,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 3
+          },
+          "p50_ms": 9.174458,
+          "p90_ms": 9.522542,
+          "p99_ms": 9.522542,
+          "max_ms": 9.522542,
+          "per_second": 0.04852607571646016
+        },
+        {
+          "label": "POST /tasks/:id/claim",
+          "requests": 9931,
+          "success_rate": 0.1546672037055684,
+          "by_status": {
+            "200": 1536,
+            "409": 8395
+          },
+          "p50_ms": 81.828625,
+          "p90_ms": 495.203791,
+          "p99_ms": 1291.706375,
+          "max_ms": 2665.469208,
+          "per_second": 160.63748598005526
+        },
+        {
+          "label": "POST /tasks/:id/submit",
+          "requests": 1411,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 1411
+          },
+          "p50_ms": 146.826916,
+          "p90_ms": 928.034,
+          "p99_ms": 22369.365334000002,
+          "max_ms": 29240.699791,
+          "per_second": 22.823430945308427
+        },
+        {
+          "label": "transport error",
+          "requests": 32,
+          "success_rate": 0.0,
+          "by_status": {
+            "0": 32
+          },
+          "p50_ms": 0.0,
+          "p90_ms": 0.0,
+          "p99_ms": 0.0,
+          "max_ms": 0.0,
+          "per_second": 0.5176114743089083
+        }
+      ]
+    }
+  ]
+}
