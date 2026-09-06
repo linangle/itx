@@ -87,6 +87,13 @@ pub struct AppState {
     /// `rate_limit::RateLimitTable`'s own doc comment for why this can't
     /// be a global static.
     pub rate_limits: rate_limit::RateLimitTable,
+    /// The part of the signed-envelope replay guard that belongs to this
+    /// hub's own lifetime rather than to the process -- see
+    /// `auth::ReplayGuard`. The seen-signature set itself stays a
+    /// process-wide static, which its doc comment explains is safe
+    /// precisely because signatures (unlike client IPs) are unique per
+    /// request.
+    pub replay_guard: auth::ReplayGuard,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -471,9 +478,15 @@ async fn main() -> Result<()> {
         exchange_custody_payout_lock: Mutex::new(()),
         escrow_secret,
         rate_limits: rate_limit::new_table(),
+        replay_guard: auth::ReplayGuard::booting(chrono::Utc::now()),
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
     });
+    println!(
+        "authenticated writes are refused for the next {}s while the post-restart replay \n\
+         window closes; read routes are unaffected",
+        btclib::envelope::MAX_REQUEST_DRIFT_SECONDS,
+    );
 
     tokio::spawn(sweep_loop(state.clone()));
 
@@ -778,6 +791,7 @@ mod tests {
             exchange_custody_payout_lock: Mutex::new(()),
             escrow_secret: EscrowSecret::generate(),
             rate_limits: rate_limit::new_table(),
+            replay_guard: auth::ReplayGuard::open(),
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
         });
