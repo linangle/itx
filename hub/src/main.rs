@@ -1728,6 +1728,72 @@ mod tests {
         assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
     }
 
+    /// What the quota is *for*: bounding how often one key can make the
+    /// hub fsync.
+    ///
+    /// The replay guard records every accepted signature durably before
+    /// its handler runs, so an authenticated request costs a disk write.
+    /// The per-key quota is the thing that bounds that for a holder of a
+    /// valid key -- but only if it is charged before the write. It used
+    /// to be charged after, on a separate line in each handler once
+    /// verification had already claimed and flushed the signature, so a
+    /// key past its limit still bought a write per request and the quota
+    /// bounded nothing but the handler body.
+    ///
+    /// The second assertion is the half a caller notices: an envelope
+    /// turned away for quota must not have been claimed, or it is burned
+    /// and the client has to re-sign rather than simply retry when its
+    /// window rolls over.
+    #[tokio::test]
+    async fn a_request_over_quota_costs_no_disk_write_and_does_not_burn_its_envelope() {
+        let operator_key = PrivateKey::new_key();
+        let trusted = rate_limit::parse_trusted_proxies("127.0.0.1").unwrap();
+        let hub = spawn_hub_with_trusted_proxies(operator_key, dead_address().await, trusted).await;
+
+        let agent = PrivateKey::new_key();
+        let task_id = Uuid::new_v4();
+        let path = format!("/tasks/{task_id}/claim");
+
+        for i in 0..rate_limit::MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW {
+            let status = hub
+                .client
+                .post(format!("{}{path}", hub.base_url))
+                .header("x-forwarded-for", format!("203.0.113.{}", i % 256))
+                .json(&envelope(&agent, &path, handlers::ClaimPayload { task_id }))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "these are within quota");
+        }
+
+        let rejected = envelope(&agent, &path, handlers::ClaimPayload { task_id });
+        let signature = hex::decode(rejected["signature"].as_str().unwrap()).unwrap();
+        let before = hub.state.store.load_recent_signatures(i64::MIN).unwrap().len();
+
+        let status = hub
+            .client
+            .post(format!("{}{path}", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.200")
+            .json(&rejected)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+        let after = hub.state.store.load_recent_signatures(i64::MIN).unwrap();
+        assert_eq!(
+            after.len(),
+            before,
+            "a request rejected for quota must not have reached the durable replay write"
+        );
+        assert!(
+            !after.iter().any(|(recorded, _)| *recorded == signature),
+            "the rejected envelope must survive so the caller can retry it, not be spent"
+        );
+    }
+
     /// The dashboard polls the full task list on a timer, and that JSON
     /// gzips well -- so the compression layer is load-bearing for the
     /// site's latency, not an optimization detail. reqwest here has no

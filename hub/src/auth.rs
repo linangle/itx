@@ -1,6 +1,8 @@
 use tracing::*;
 
+use crate::rate_limit::{charge_pubkey, QuotaExceeded};
 use crate::store::{HubStore, HubStoreError};
+use crate::AppState;
 use btclib::crypto::PublicKey;
 pub use btclib::envelope::{EnvelopeError as AuthError, SignedEnvelope};
 use btclib::envelope::MAX_REQUEST_DRIFT_SECONDS;
@@ -178,15 +180,9 @@ fn cleanup_replay_guard(seen: &DashMap<Vec<u8>, DateTime<Utc>>, cutoff: DateTime
 /// `envelope.verify()` call site in `handlers.rs` needed no changes
 /// beyond importing this trait and passing the hub's guard.
 pub trait VerifyEnvelope {
-    fn verify(
-        &self,
-        guard: &ReplayGuard,
-        method: &str,
-        path: &str,
-    ) -> Result<PublicKey, AuthError>;
-}
-
-impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
+    /// Verifies this envelope and charges its key's quota, in the one
+    /// order that is correct. Handlers call this and nothing else.
+    ///
     /// `method`/`path` must come from the request as it actually arrived
     /// -- `axum::http::Method` and `OriginalUri`'s path -- never from
     /// anything the handler knows about its own route. A handler passing
@@ -194,10 +190,93 @@ impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
     /// the endpoint-confusion gap that binding them closed.
     fn verify(
         &self,
+        state: &AppState,
+        method: &str,
+        path: &str,
+    ) -> Result<PublicKey, VerifyError> {
+        self.verify_charging(&state.replay_guard, method, path, |pubkey| {
+            charge_pubkey(state, pubkey)
+        })
+    }
+
+    /// The same checks with no quota charged. Test-only, because a
+    /// handler that skipped the charge would be the bug this trait's
+    /// shape exists to prevent: there is deliberately no way for
+    /// production code to verify an envelope without paying for it.
+    #[cfg(test)]
+    fn verify_unmetered(
+        &self,
         guard: &ReplayGuard,
         method: &str,
         path: &str,
     ) -> Result<PublicKey, AuthError> {
+        self.verify_charging(guard, method, path, |_| Ok(())).map_err(|e| match e {
+            VerifyError::Auth(e) => e,
+            VerifyError::Quota(_) => unreachable!("the unmetered path charges nothing"),
+        })
+    }
+
+    /// The whole sequence, with the quota charge supplied as a step
+    /// rather than left to the caller to remember.
+    ///
+    /// The ordering is three constraints meeting, and each one rules out
+    /// an arrangement that looks fine:
+    ///
+    /// 1. **The charge comes after the signature check**, because the
+    ///    pubkey on an unverified envelope is a string the sender chose.
+    ///    Charging first would let anyone burn a victim's quota by
+    ///    putting the victim's key on junk requests.
+    /// 2. **The charge comes before the claim**, because the claim is
+    ///    the fsync (`HubStore::record_seen_signature`) and the quota is
+    ///    what bounds how often a key can make the hub fsync. Charging
+    ///    afterwards -- which is what the handlers used to do, on their
+    ///    own line after this returned -- meant the write always
+    ///    happened first and the quota bounded nothing but the handler
+    ///    body. A key over its limit still got a disk write per request.
+    /// 3. **The claim comes before the handler runs at all**, which is
+    ///    `record_seen_signature`'s own rule: the record has to be
+    ///    durable before the request takes effect, or a crash in between
+    ///    leaves a replayable envelope that has already moved money.
+    ///
+    /// A request rejected for quota is therefore not claimed, so the
+    /// envelope survives and the caller can retry it once its window
+    /// rolls over. A replay, by contrast, is charged before it is
+    /// detected -- deliberately: a replay flood should cost the key that
+    /// sends it.
+    fn verify_charging<F>(
+        &self,
+        guard: &ReplayGuard,
+        method: &str,
+        path: &str,
+        charge: F,
+    ) -> Result<PublicKey, VerifyError>
+    where
+        F: FnOnce(&PublicKey) -> Result<(), QuotaExceeded>;
+}
+
+/// Why a signed request was turned away: it failed authentication, or
+/// its key is out of budget. One type so a handler can `?` the whole of
+/// `verify` on one line, which is what keeps the steps inside it from
+/// being reordered or dropped by a call site.
+#[derive(Debug, thiserror::Error)]
+pub enum VerifyError {
+    #[error(transparent)]
+    Auth(#[from] AuthError),
+    #[error(transparent)]
+    Quota(#[from] QuotaExceeded),
+}
+
+impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
+    fn verify_charging<F>(
+        &self,
+        guard: &ReplayGuard,
+        method: &str,
+        path: &str,
+        charge: F,
+    ) -> Result<PublicKey, VerifyError>
+    where
+        F: FnOnce(&PublicKey) -> Result<(), QuotaExceeded>,
+    {
         let now = Utc::now();
 
         // Before the ECDSA verify, not after: this is a constant-time
@@ -206,10 +285,12 @@ impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
         // costs us.
         if guard.refuses_at(now) {
             debug!("refusing an authenticated request inside the post-restart replay window");
-            return Err(AuthError::GuardWarmingUp);
+            return Err(AuthError::GuardWarmingUp.into());
         }
 
         let pubkey = self.verify_signature(now, method, path)?;
+
+        charge(&pubkey)?;
 
         // Only claim the signature once it's confirmed genuine --
         // otherwise anyone could burn arbitrary signature slots (and,
@@ -271,12 +352,12 @@ mod tests {
         let key = PrivateKey::new_key();
         let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
         let guard = ReplayGuard::booting(Utc::now());
-        assert!(matches!(envelope.verify(&guard, "POST", "/faucet"), Err(AuthError::GuardWarmingUp)));
+        assert!(matches!(envelope.verify_unmetered(&guard, "POST", "/faucet"), Err(AuthError::GuardWarmingUp)));
 
         // ...and the same envelope sails through once the window closes,
         // proving the refusal was the window and nothing else.
         let guard = ReplayGuard::open();
-        assert_eq!(envelope.verify(&guard, "POST", "/faucet").unwrap(), key.public_key());
+        assert_eq!(envelope.verify_unmetered(&guard, "POST", "/faucet").unwrap(), key.public_key());
     }
 
     /// The hole this whole module exists to close: an envelope accepted
@@ -292,13 +373,13 @@ mod tests {
 
         let (before, restored) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
         assert_eq!(restored, 0, "a fresh store has nothing to restore");
-        assert_eq!(envelope.verify(&before, "POST", "/faucet").unwrap(), key.public_key());
+        assert_eq!(envelope.verify_unmetered(&before, "POST", "/faucet").unwrap(), key.public_key());
         drop(before);
 
         let (after, restored) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
         assert_eq!(restored, 1, "the accepted signature must come back from disk");
         assert!(
-            matches!(envelope.verify(&after, "POST", "/faucet"), Err(AuthError::Replayed)),
+            matches!(envelope.verify_unmetered(&after, "POST", "/faucet"), Err(AuthError::Replayed)),
             "an envelope accepted before the restart must not be accepted after it"
         );
 
@@ -373,7 +454,7 @@ mod tests {
         );
 
         let (guard, _) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
-        assert!(matches!(stale.verify(&guard, "POST", "/faucet"), Err(AuthError::ClockDrift)));
+        assert!(matches!(stale.verify_unmetered(&guard, "POST", "/faucet"), Err(AuthError::ClockDrift)));
         // ...and it was rejected without being recorded, so a drift
         // rejection cannot be used to burn disk.
         assert!(store.load_recent_signatures(i64::MIN).unwrap().is_empty());
@@ -389,7 +470,7 @@ mod tests {
         let key = PrivateKey::new_key();
         let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
         let guard = ReplayGuard::open();
-        assert!(envelope.verify(&guard, "POST", "/faucet").is_ok());
-        assert!(matches!(envelope.verify(&guard, "POST", "/faucet"), Err(AuthError::Replayed)));
+        assert!(envelope.verify_unmetered(&guard, "POST", "/faucet").is_ok());
+        assert!(matches!(envelope.verify_unmetered(&guard, "POST", "/faucet"), Err(AuthError::Replayed)));
     }
 }
