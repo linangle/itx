@@ -870,11 +870,20 @@ mod tests {
         }
     }
 
-    fn envelope_at<T: Serialize>(key: &PrivateKey, payload: T, timestamp: DateTime<Utc>) -> Value {
+    /// Hand-rolls the signing recipe rather than calling `sdk`, on
+    /// purpose: it is a second independent implementation, so these tests
+    /// also catch the hub and the SDK drifting apart. `path` is bound in
+    /// alongside the method the same way a real client must bind it.
+    fn envelope_at<T: Serialize>(
+        key: &PrivateKey,
+        path: &str,
+        payload: T,
+        timestamp: DateTime<Utc>,
+    ) -> Value {
         let pubkey_hex = key.public_key().to_string();
         let timestamp_str = timestamp.to_rfc3339();
         let payload_json = serde_json::to_string(&payload).unwrap();
-        let signing_string = format!("{pubkey_hex}:{timestamp_str}:{payload_json}");
+        let signing_string = format!("{pubkey_hex}:{timestamp_str}:POST {path}:{payload_json}");
         let hash = Hash::hash_bytes(signing_string.as_bytes());
         let signature = Signature::sign_hash(&hash, key);
         json!({
@@ -885,8 +894,8 @@ mod tests {
         })
     }
 
-    fn envelope<T: Serialize>(key: &PrivateKey, payload: T) -> Value {
-        envelope_at(key, payload, Utc::now())
+    fn envelope<T: Serialize>(key: &PrivateKey, path: &str, payload: T) -> Value {
+        envelope_at(key, path, payload, Utc::now())
     }
 
     /// Drives `board` directly (bypassing HTTP entirely) through
@@ -924,7 +933,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/faucet", hub.base_url))
-            .json(&envelope(&agent_key, ()))
+            .json(&envelope(&agent_key, "/faucet", ()))
             .send()
             .await
             .unwrap();
@@ -936,7 +945,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/faucet", hub.base_url))
-            .json(&envelope(&agent_key, ()))
+            .json(&envelope(&agent_key, "/faucet", ()))
             .send()
             .await
             .unwrap();
@@ -953,7 +962,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -964,7 +973,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(&agent_key, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&agent_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -974,7 +983,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
             .json(&envelope(
-                &agent_key,
+                &agent_key, &format!("/tasks/{task_id}/submit"),
                 handlers::SubmitPayload { task_id, output: "wrong answer".to_string() },
             ))
             .send()
@@ -985,7 +994,7 @@ mod tests {
 
         hub.client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(&agent_key, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&agent_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap()
@@ -996,7 +1005,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
             .json(&envelope(
-                &agent_key,
+                &agent_key, &format!("/tasks/{task_id}/submit"),
                 handlers::SubmitPayload { task_id, output: "42".to_string() },
             ))
             .send()
@@ -1050,7 +1059,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&impostor, payload))
+            .json(&envelope(&impostor, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -1073,7 +1082,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -1086,7 +1095,7 @@ mod tests {
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let agent_key = PrivateKey::new_key();
-        let env = envelope(&agent_key, ());
+        let env = envelope(&agent_key, "/faucet", ());
 
         let first = hub
             .client
@@ -1121,95 +1130,103 @@ mod tests {
         );
     }
 
-    /// A record of a known gap, not a desired property: the signing
-    /// string is `"{pubkey}:{timestamp}:{payload_json}"` with no method
-    /// and no path, so any two routes taking the same payload shape
-    /// accept each other's envelopes. See docs/agent-ecosystem-plan.md
-    /// §3.3 for what stops that being exploitable today and why the
-    /// recipe was not changed from the hub alone.
-    ///
-    /// This test exists to fail loudly the day someone binds the route
-    /// in -- at which point these assertions should be inverted rather
-    /// than deleted -- and to stop a sixth pair being added silently.
+    /// The five route pairs that used to share a signing string, now
+    /// asserted to be separated. Before the recipe bound method and path,
+    /// each of these pairs took a byte-identical payload, so one signed
+    /// envelope was valid at either route in the pair; what stopped that
+    /// mattering was a chain of unrelated accidents (see
+    /// docs/agent-ecosystem-plan.md §3.3). This is the same test inverted:
+    /// it was a tripwire recording the gap, and is now the regression
+    /// guard that the gap stayed shut.
     #[test]
-    fn route_pairs_that_currently_share_a_signing_string() {
-        // The signing string differs only in its payload for a fixed
-        // key and timestamp, so comparing serialized payloads compares
-        // exactly what the signature commits to.
-        let same = |a: String, b: String, pair: &str| {
-            assert_eq!(a, b, "{pair} no longer collide -- update §3.3 and this test");
-        };
-
-        // POST /faucet and POST /exchange/deposit
-        same(
-            serde_json::to_string(&()).unwrap(),
-            serde_json::to_string(&()).unwrap(),
-            "/faucet and /exchange/deposit",
-        );
-
-        // POST /tasks and POST /tasks/escrow
-        let create = handlers::CreateTaskPayload {
-            description: "t".into(),
-            bounty: 1,
-            expected_output_hash: "ab".into(),
-            min_reputation: 2,
-            capabilities: Default::default(),
-        };
-        let escrow = handlers::EscrowTaskPayload {
-            description: "t".into(),
-            bounty: 1,
-            expected_output_hash: "ab".into(),
-            min_reputation: 2,
-            capabilities: Default::default(),
-        };
-        same(
-            serde_json::to_string(&create).unwrap(),
-            serde_json::to_string(&escrow).unwrap(),
-            "/tasks and /tasks/escrow",
-        );
-
-        // POST /tasks/consensus and POST /tasks/consensus/escrow
-        let consensus = handlers::CreateConsensusTaskPayload {
-            description: "t".into(),
-            bounty: 1,
-            num_assignees: 3,
-            join_window_minutes: 10,
-            submission_window_minutes: 20,
-            min_reputation: 2,
-            capabilities: Default::default(),
-        };
-        let consensus_escrow = handlers::EscrowConsensusTaskPayload {
-            description: "t".into(),
-            bounty: 1,
-            num_assignees: 3,
-            join_window_minutes: 10,
-            submission_window_minutes: 20,
-            min_reputation: 2,
-            capabilities: Default::default(),
-        };
-        same(
-            serde_json::to_string(&consensus).unwrap(),
-            serde_json::to_string(&consensus_escrow).unwrap(),
-            "/tasks/consensus and /tasks/consensus/escrow",
-        );
-
-        // POST /tasks/:id/claim and POST /tasks/:id/cancel -- and note
-        // the shared path shape, so each handler's URL-vs-payload id
-        // check passes for the other's envelope too.
+    fn route_pairs_with_identical_payloads_no_longer_share_a_signing_string() {
+        let key = PrivateKey::new_key();
         let task_id = Uuid::new_v4();
-        same(
-            serde_json::to_string(&handlers::ClaimPayload { task_id }).unwrap(),
-            serde_json::to_string(&handlers::CancelPayload { task_id }).unwrap(),
-            "/tasks/:id/claim and /tasks/:id/cancel",
+        let escrow_id = Uuid::new_v4();
+
+        // Each pair: one payload value, two routes that both accept it.
+        let claim = format!("/tasks/{task_id}/claim");
+        let cancel = format!("/tasks/{task_id}/cancel");
+        let task_confirm = format!("/tasks/escrow/{escrow_id}/confirm");
+        let exchange_confirm = format!("/exchange/deposit/{escrow_id}/confirm");
+        let pairs: Vec<(&str, &str, Value)> = vec![
+            ("/faucet", "/exchange/deposit", json!(null)),
+            ("/tasks", "/tasks/escrow", json!({
+                "description": "t", "bounty": 1, "expected_output_hash": "ab",
+                "min_reputation": 2, "capabilities": []
+            })),
+            ("/tasks/consensus", "/tasks/consensus/escrow", json!({
+                "description": "t", "bounty": 1, "num_assignees": 3,
+                "join_window_minutes": 10, "submission_window_minutes": 20,
+                "min_reputation": 2, "capabilities": []
+            })),
+            (
+                &claim,
+                &cancel,
+                json!({ "task_id": task_id }),
+            ),
+            (
+                &task_confirm,
+                &exchange_confirm,
+                json!({ "escrow_id": escrow_id }),
+            ),
+        ];
+
+        for (left, right, payload) in pairs {
+            let envelope = btclib::envelope::SignedEnvelope::new(&key, "POST", left, payload);
+            assert!(
+                envelope.verify_signature(Utc::now(), "POST", left).is_ok(),
+                "an envelope must verify at the route it was signed for ({left})"
+            );
+            assert!(
+                matches!(
+                    envelope.verify_signature(Utc::now(), "POST", right),
+                    Err(btclib::envelope::EnvelopeError::BadSignature)
+                ),
+                "an envelope signed for {left} must not verify at {right}"
+            );
+        }
+    }
+
+    /// The finding, closed at the HTTP layer rather than only in the
+    /// recipe: `/faucet` and `/exchange/deposit` both take a payload-less
+    /// envelope, so before the path was bound in, one signed envelope was
+    /// accepted at either. The signature is genuine and unexpired here --
+    /// the only thing wrong with it is the door it is being presented at.
+    #[tokio::test]
+    async fn an_envelope_signed_for_one_route_is_rejected_at_another() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent_key = PrivateKey::new_key();
+
+        let for_faucet = envelope(&agent_key, "/faucet", ());
+        let resp = hub
+            .client
+            .post(format!("{}/exchange/deposit", hub.base_url))
+            .json(&for_faucet)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "an envelope signed for /faucet must not be accepted at /exchange/deposit"
         );
 
-        // POST /tasks/escrow/:id/confirm and POST /exchange/deposit/:id/confirm
-        let escrow_id = Uuid::new_v4();
-        same(
-            serde_json::to_string(&handlers::ConfirmEscrowPayload { escrow_id }).unwrap(),
-            serde_json::to_string(&handlers::ConfirmExchangeDepositPayload { escrow_id }).unwrap(),
-            "/tasks/escrow/:id/confirm and /exchange/deposit/:id/confirm",
-        );
+        // The same envelope at the route it was actually signed for still
+        // works -- so the rejection above was the binding, not a broken
+        // signature. (It also proves the failed attempt did not burn the
+        // signature: the replay guard only claims it once verification
+        // passes, junk bytes cannot spend someone else's slot.)
+        let resp = hub
+            .client
+            .post(format!("{}/faucet", hub.base_url))
+            .json(&for_faucet)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
     }
 
     #[tokio::test]
@@ -1219,7 +1236,7 @@ mod tests {
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let agent_key = PrivateKey::new_key();
 
-        let stale = envelope_at(&agent_key, (), Utc::now() - chrono::Duration::minutes(10));
+        let stale = envelope_at(&agent_key, "/faucet", (), Utc::now() - chrono::Duration::minutes(10));
         let resp = hub
             .client
             .post(format!("{}/faucet", hub.base_url))
@@ -1469,7 +1486,7 @@ mod tests {
             hub.client
                 .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
                 .header("x-forwarded-for", address)
-                .json(&envelope(&agent, handlers::ClaimPayload { task_id }))
+                .json(&envelope(&agent, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
                 .send()
         };
 
@@ -1496,7 +1513,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
             .header("x-forwarded-for", "203.0.113.1")
-            .json(&envelope(&neighbour, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&neighbour, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap()
@@ -1956,7 +1973,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/consensus", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks/consensus", payload))
             .send()
             .await
             .unwrap();
@@ -1984,7 +2001,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/consensus", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks/consensus", payload))
             .send()
             .await
             .unwrap();
@@ -2000,7 +2017,7 @@ mod tests {
             let resp = hub
                 .client
                 .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-                .json(&envelope(agent, handlers::ClaimPayload { task_id }))
+                .json(&envelope(agent, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
                 .send()
                 .await
                 .unwrap();
@@ -2025,7 +2042,7 @@ mod tests {
                 .client
                 .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
                 .json(&envelope(
-                    agent,
+                    agent, &format!("/tasks/{task_id}/submit"),
                     handlers::SubmitPayload { task_id, output: answer.to_string() },
                 ))
                 .send()
@@ -2040,7 +2057,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
             .json(&envelope(
-                &agent_c,
+                &agent_c, &format!("/tasks/{task_id}/submit"),
                 handlers::SubmitPayload { task_id, output: "disagree".to_string() },
             ))
             .send()
@@ -2094,7 +2111,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -2107,7 +2124,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(&novice, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&novice, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -2124,7 +2141,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(&veteran, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&veteran, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -2200,7 +2217,7 @@ mod tests {
             let resp = hub
                 .client
                 .post(format!("{}/tasks/consensus", hub.base_url))
-                .json(&envelope(&hub.operator_key, payload))
+                .json(&envelope(&hub.operator_key, "/tasks/consensus", payload))
                 .send()
                 .await
                 .unwrap();
@@ -2231,7 +2248,7 @@ mod tests {
             let resp = hub
                 .client
                 .post(format!("{}/tasks/consensus", hub.base_url))
-                .json(&envelope(&hub.operator_key, payload))
+                .json(&envelope(&hub.operator_key, "/tasks/consensus", payload))
                 .send()
                 .await
                 .unwrap();
@@ -2275,7 +2292,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, blocked_payload))
+            .json(&envelope(&hub.operator_key, "/tasks", blocked_payload))
             .send()
             .await
             .unwrap();
@@ -2294,7 +2311,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, now_allowed_payload))
+            .json(&envelope(&hub.operator_key, "/tasks", now_allowed_payload))
             .send()
             .await
             .unwrap();
@@ -2323,7 +2340,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/cancel", hub.base_url))
-            .json(&envelope(&impostor, handlers::CancelPayload { task_id }))
+            .json(&envelope(&impostor, &format!("/tasks/{task_id}/cancel"), handlers::CancelPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -2347,7 +2364,7 @@ mod tests {
         let task: Value = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap()
@@ -2360,7 +2377,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/cancel", hub.base_url))
-            .json(&envelope(&hub.operator_key, handlers::CancelPayload { task_id }))
+            .json(&envelope(&hub.operator_key, &format!("/tasks/{task_id}/cancel"), handlers::CancelPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -2374,7 +2391,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/cancel", hub.base_url))
-            .json(&envelope(&hub.operator_key, handlers::CancelPayload { task_id }))
+            .json(&envelope(&hub.operator_key, &format!("/tasks/{task_id}/cancel"), handlers::CancelPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -2578,7 +2595,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, python_payload))
+            .json(&envelope(&hub.operator_key, "/tasks", python_payload))
             .send()
             .await
             .unwrap();
@@ -2597,7 +2614,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, rust_payload))
+            .json(&envelope(&hub.operator_key, "/tasks", rust_payload))
             .send()
             .await
             .unwrap();
@@ -2631,7 +2648,7 @@ mod tests {
         };
         hub.client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, tagged_payload))
+            .json(&envelope(&hub.operator_key, "/tasks", tagged_payload))
             .send()
             .await
             .unwrap();
@@ -2646,7 +2663,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, untagged_payload))
+            .json(&envelope(&hub.operator_key, "/tasks", untagged_payload))
             .send()
             .await
             .unwrap();
@@ -2693,7 +2710,7 @@ mod tests {
         let task: Value = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap()
@@ -2783,7 +2800,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -2806,7 +2823,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -2830,7 +2847,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks", hub.base_url))
-            .json(&envelope(&hub.operator_key, payload))
+            .json(&envelope(&hub.operator_key, "/tasks", payload))
             .send()
             .await
             .unwrap();
@@ -2839,7 +2856,7 @@ mod tests {
 
         hub.client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(&assignee_key, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&assignee_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -2847,7 +2864,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
-            .json(&envelope(&assignee_key, handlers::SubmitPayload { task_id, output: "x".repeat(20_001) }))
+            .json(&envelope(&assignee_key, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "x".repeat(20_001) }))
             .send()
             .await
             .unwrap();
@@ -2875,7 +2892,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/escrow", hub.base_url))
-            .json(&envelope(&agent_key, payload))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
             .send()
             .await
             .unwrap();
@@ -2891,7 +2908,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&agent_key, handlers::ConfirmEscrowPayload { escrow_id }))
+            .json(&envelope(&agent_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
             .send()
             .await
             .unwrap();
@@ -2922,7 +2939,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/escrow", hub.base_url))
-            .json(&envelope(&agent_key, payload))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -2937,7 +2954,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&agent_key, handlers::ConfirmEscrowPayload { escrow_id }))
+            .json(&envelope(&agent_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
             .send()
             .await
             .unwrap();
@@ -2961,7 +2978,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/escrow", hub.base_url))
-            .json(&envelope(&poster_key, payload))
+            .json(&envelope(&poster_key, "/tasks/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -2975,7 +2992,7 @@ mod tests {
         let task: Value = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&poster_key, handlers::ConfirmEscrowPayload { escrow_id }))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
             .send()
             .await
             .unwrap()
@@ -2987,7 +3004,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(&poster_key, handlers::ClaimPayload { task_id }))
+            .json(&envelope(&poster_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -3011,7 +3028,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/escrow", hub.base_url))
-            .json(&envelope(&agent_key, payload))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -3029,7 +3046,7 @@ mod tests {
             let agent_key = &agent_key;
             async move {
                 let env = envelope_at(
-                    agent_key,
+                    agent_key, &format!("/tasks/escrow/{escrow_id}/confirm"),
                     handlers::ConfirmEscrowPayload { escrow_id },
                     Utc::now() + chrono::Duration::milliseconds(ts_offset_ms),
                 );
@@ -3067,7 +3084,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/escrow", hub.base_url))
-            .json(&envelope(&agent_key, payload))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -3103,7 +3120,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/escrow", hub.base_url))
-            .json(&envelope(&poster_key, payload))
+            .json(&envelope(&poster_key, "/tasks/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -3118,7 +3135,7 @@ mod tests {
         let task: Value = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&poster_key, handlers::ConfirmEscrowPayload { escrow_id }))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
             .send()
             .await
             .unwrap()
@@ -3130,7 +3147,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/cancel", hub.base_url))
-            .json(&envelope(&hub.operator_key, handlers::CancelPayload { task_id }))
+            .json(&envelope(&hub.operator_key, &format!("/tasks/{task_id}/cancel"), handlers::CancelPayload { task_id }))
             .send()
             .await
             .unwrap();
@@ -3170,7 +3187,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/consensus/escrow", hub.base_url))
-            .json(&envelope(&poster_key, payload))
+            .json(&envelope(&poster_key, "/tasks/consensus/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -3186,7 +3203,7 @@ mod tests {
         let task: Value = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&poster_key, handlers::ConfirmEscrowPayload { escrow_id }))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
             .send()
             .await
             .unwrap()
@@ -3198,7 +3215,7 @@ mod tests {
         for assignee in [&assignee1, &assignee2] {
             hub.client
                 .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-                .json(&envelope(assignee, handlers::ClaimPayload { task_id }))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
                 .send()
                 .await
                 .unwrap()
@@ -3207,7 +3224,7 @@ mod tests {
         }
         hub.client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
-            .json(&envelope(&assignee1, handlers::SubmitPayload { task_id, output: "42".to_string() }))
+            .json(&envelope(&assignee1, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "42".to_string() }))
             .send()
             .await
             .unwrap()
@@ -3215,7 +3232,7 @@ mod tests {
             .unwrap();
         hub.client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
-            .json(&envelope(&assignee2, handlers::SubmitPayload { task_id, output: "42".to_string() }))
+            .json(&envelope(&assignee2, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "42".to_string() }))
             .send()
             .await
             .unwrap()
@@ -3255,7 +3272,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/disputable/escrow", hub.base_url))
-            .json(&envelope(poster_key, payload))
+            .json(&envelope(poster_key, "/tasks/disputable/escrow", payload))
             .send()
             .await
             .unwrap()
@@ -3270,7 +3287,7 @@ mod tests {
         let task: Value = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(poster_key, handlers::ConfirmEscrowPayload { escrow_id }))
+            .json(&envelope(poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
             .send()
             .await
             .unwrap()
@@ -3281,7 +3298,7 @@ mod tests {
 
         hub.client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(assignee_key, handlers::ClaimPayload { task_id }))
+            .json(&envelope(assignee_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap()
@@ -3289,7 +3306,7 @@ mod tests {
             .unwrap();
         hub.client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
-            .json(&envelope(assignee_key, handlers::SubmitPayload { task_id, output: "my answer".to_string() }))
+            .json(&envelope(assignee_key, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "my answer".to_string() }))
             .send()
             .await
             .unwrap()
@@ -3311,7 +3328,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
-            .json(&envelope(challenger_key, handlers::DisputeEscrowPayload { task_id, reason: reason.to_string() }))
+            .json(&envelope(challenger_key, &format!("/tasks/{task_id}/dispute/escrow"), handlers::DisputeEscrowPayload { task_id, reason: reason.to_string() }))
             .send()
             .await
             .unwrap()
@@ -3325,7 +3342,7 @@ mod tests {
 
         hub.client
             .post(format!("{}/tasks/{task_id}/dispute/confirm", hub.base_url))
-            .json(&envelope(challenger_key, handlers::ConfirmDisputeEscrowPayload { task_id, escrow_id }))
+            .json(&envelope(challenger_key, &format!("/tasks/{task_id}/dispute/confirm"), handlers::ConfirmDisputeEscrowPayload { task_id, escrow_id }))
             .send()
             .await
             .unwrap()
@@ -3379,7 +3396,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
-            .json(&envelope(&assignee_key, handlers::DisputeEscrowPayload { task_id, reason: "self-dispute".to_string() }))
+            .json(&envelope(&assignee_key, &format!("/tasks/{task_id}/dispute/escrow"), handlers::DisputeEscrowPayload { task_id, reason: "self-dispute".to_string() }))
             .send()
             .await
             .unwrap();
@@ -3415,7 +3432,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
             .json(&envelope(
-                &hub.operator_key,
+                &hub.operator_key, &format!("/tasks/{task_id}/dispute/resolve"),
                 handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::ChallengerWins },
             ))
             .send()
@@ -3474,7 +3491,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
             .json(&envelope(
-                &hub.operator_key,
+                &hub.operator_key, &format!("/tasks/{task_id}/dispute/resolve"),
                 handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::AssigneeWins },
             ))
             .send()
@@ -3534,7 +3551,7 @@ mod tests {
             .client
             .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
             .json(&envelope(
-                &impostor_key,
+                &impostor_key, &format!("/tasks/{task_id}/dispute/resolve"),
                 handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::ChallengerWins },
             ))
             .send()
@@ -3579,7 +3596,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/exchange/deposit", hub.base_url))
-            .json(&envelope(&agent_key, ()))
+            .json(&envelope(&agent_key, "/exchange/deposit", ()))
             .send()
             .await
             .unwrap()
@@ -3594,7 +3611,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/exchange/deposit/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&agent_key, handlers::ConfirmExchangeDepositPayload { escrow_id }))
+            .json(&envelope(&agent_key, &format!("/exchange/deposit/{escrow_id}/confirm"), handlers::ConfirmExchangeDepositPayload { escrow_id }))
             .send()
             .await
             .unwrap();
@@ -3623,7 +3640,7 @@ mod tests {
         let reservation: Value = hub
             .client
             .post(format!("{}/exchange/deposit", hub.base_url))
-            .json(&envelope(&agent_key, ()))
+            .json(&envelope(&agent_key, "/exchange/deposit", ()))
             .send()
             .await
             .unwrap()
@@ -3639,7 +3656,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/exchange/deposit/{escrow_id}/confirm", hub.base_url))
-            .json(&envelope(&agent_key, handlers::ConfirmExchangeDepositPayload { escrow_id }))
+            .json(&envelope(&agent_key, &format!("/exchange/deposit/{escrow_id}/confirm"), handlers::ConfirmExchangeDepositPayload { escrow_id }))
             .send()
             .await
             .unwrap();
@@ -3695,7 +3712,7 @@ mod tests {
             .client
             .post(format!("{}/exchange/orders", hub.base_url))
             .json(&envelope(
-                &seller_key,
+                &seller_key, "/exchange/orders",
                 handlers::PlaceOrderPayload { side: board::Side::Sell, price: 8, quantity: 50 },
             ))
             .send()
@@ -3707,7 +3724,7 @@ mod tests {
             .client
             .post(format!("{}/exchange/orders", hub.base_url))
             .json(&envelope(
-                &buyer_key,
+                &buyer_key, "/exchange/orders",
                 handlers::PlaceOrderPayload { side: board::Side::Buy, price: 10, quantity: 50 },
             ))
             .send()
@@ -3751,7 +3768,7 @@ mod tests {
         hub.client
             .post(format!("{}/exchange/orders", hub.base_url))
             .json(&envelope(
-                &seller_key,
+                &seller_key, "/exchange/orders",
                 handlers::PlaceOrderPayload { side: board::Side::Sell, price: 10, quantity: 5_000 },
             ))
             .send()
@@ -3764,7 +3781,7 @@ mod tests {
             .client
             .post(format!("{}/exchange/orders", hub.base_url))
             .json(&envelope(
-                &buyer_key,
+                &buyer_key, "/exchange/orders",
                 handlers::PlaceOrderPayload { side: board::Side::Buy, price: 10, quantity: 5_000 },
             ))
             .send()
@@ -3824,7 +3841,7 @@ mod tests {
             .client
             .post(format!("{}/exchange/orders", hub.base_url))
             .json(&envelope(
-                &owner_key,
+                &owner_key, "/exchange/orders",
                 handlers::PlaceOrderPayload { side: board::Side::Buy, price: 10, quantity: 20 },
             ))
             .send()
@@ -3845,7 +3862,7 @@ mod tests {
             .client
             .post(format!("{}/exchange/orders", hub.base_url))
             .json(&envelope(
-                &owner_key,
+                &owner_key, "/exchange/orders",
                 handlers::PlaceOrderPayload { side: board::Side::Buy, price: 10, quantity: 50 },
             ))
             .send()
@@ -3859,7 +3876,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/exchange/orders/{order_id}/cancel", hub.base_url))
-            .json(&envelope(&owner_key, handlers::CancelOrderPayload { order_id }))
+            .json(&envelope(&owner_key, &format!("/exchange/orders/{order_id}/cancel"), handlers::CancelOrderPayload { order_id }))
             .send()
             .await
             .unwrap();
@@ -3890,7 +3907,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/exchange/withdraw", hub.base_url))
-            .json(&envelope(&owner_key, handlers::WithdrawPayload { amount: 2_000 }))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 2_000 }))
             .send()
             .await
             .unwrap();
@@ -3917,7 +3934,7 @@ mod tests {
         let resp = hub
             .client
             .post(format!("{}/exchange/withdraw", hub.base_url))
-            .json(&envelope(&owner_key, handlers::WithdrawPayload { amount: 101 }))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 101 }))
             .send()
             .await
             .unwrap();

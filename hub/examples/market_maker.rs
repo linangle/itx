@@ -88,7 +88,7 @@ async fn one_cycle(
                     let order_id = order["id"].as_str().unwrap().to_string();
                     let resp = client
                         .post(format!("{base_url}/exchange/orders/{order_id}/cancel"))
-                        .json(&build_envelope(key, CancelOrderPayload { order_id: order_id.clone() }))
+                        .json(&build_envelope(key, "POST", &format!("/exchange/orders/{order_id}/cancel"), CancelOrderPayload { order_id: order_id.clone() }))
                         .send()
                         .await?;
                     if !resp.status().is_success() {
@@ -135,7 +135,7 @@ async fn place_order(
 ) -> Result<()> {
     let resp = client
         .post(format!("{base_url}/exchange/orders"))
-        .json(&build_envelope(key, PlaceOrderPayload { side, price, quantity }))
+        .json(&build_envelope(key, "POST", "/exchange/orders", PlaceOrderPayload { side, price, quantity }))
         .send()
         .await?;
     if !resp.status().is_success() {

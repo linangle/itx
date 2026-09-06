@@ -68,6 +68,19 @@ class HubClient:
         resp = self.session.post(f"{self.base_url}{path}", json=envelope, timeout=self.timeout)
         return self._handle(resp)
 
+    def _signed_post(self, path: str, signer: Agent, payload: Any) -> Any:
+        """Signs for ``path`` and posts to ``path`` -- one string, used
+        twice, right here.
+
+        The hub binds the request path into the signature, so an envelope
+        signed for one endpoint is rejected at any other. That makes
+        "signed for a different path than you sent to" a real failure mode
+        for a hand-rolled client; routing every signed request through
+        this method makes it unrepresentable for users of this one, which
+        is worth more than the line it saves.
+        """
+        return self._post(path, signer.build_envelope("POST", path, payload))
+
     @staticmethod
     def _handle(resp: requests.Response) -> Any:
         if not resp.ok:
@@ -208,7 +221,7 @@ class HubClient:
     # -- faucet -----------------------------------------------------------
 
     def faucet_claim(self, agent: Agent) -> dict:
-        return self._post("/faucet", agent.build_envelope(None))
+        return self._signed_post("/faucet", agent, None)
 
     # -- operator-funded task creation ------------------------------------
 
@@ -228,7 +241,7 @@ class HubClient:
             "min_reputation": min_reputation,
             "capabilities": sorted(set(capabilities or [])),
         }
-        return self._post("/tasks", operator.build_envelope(payload))
+        return self._signed_post("/tasks", operator, payload)
 
     def create_consensus_task(
         self,
@@ -250,7 +263,7 @@ class HubClient:
             "min_reputation": min_reputation,
             "capabilities": sorted(set(capabilities or [])),
         }
-        return self._post("/tasks/consensus", operator.build_envelope(payload))
+        return self._signed_post("/tasks/consensus", operator, payload)
 
     # -- agent-funded (escrow) task creation ------------------------------
 
@@ -270,7 +283,7 @@ class HubClient:
             "min_reputation": min_reputation,
             "capabilities": sorted(set(capabilities or [])),
         }
-        return self._post("/tasks/escrow", agent.build_envelope(payload))
+        return self._signed_post("/tasks/escrow", agent, payload)
 
     def create_consensus_task_escrow(
         self,
@@ -292,7 +305,7 @@ class HubClient:
             "min_reputation": min_reputation,
             "capabilities": sorted(set(capabilities or [])),
         }
-        return self._post("/tasks/consensus/escrow", agent.build_envelope(payload))
+        return self._signed_post("/tasks/consensus/escrow", agent, payload)
 
     def create_disputable_task_escrow(
         self,
@@ -310,35 +323,35 @@ class HubClient:
             "min_reputation": min_reputation,
             "capabilities": sorted(set(capabilities or [])),
         }
-        return self._post("/tasks/disputable/escrow", agent.build_envelope(payload))
+        return self._signed_post("/tasks/disputable/escrow", agent, payload)
 
     def confirm_task_escrow(self, agent: Agent, escrow_id: str) -> dict:
         payload = {"escrow_id": escrow_id}
-        return self._post(f"/tasks/escrow/{escrow_id}/confirm", agent.build_envelope(payload))
+        return self._signed_post(f"/tasks/escrow/{escrow_id}/confirm", agent, payload)
 
     # -- claiming / submitting / cancelling -------------------------------
 
     def claim_task(self, agent: Agent, task_id: str) -> dict:
         payload = {"task_id": task_id}
-        return self._post(f"/tasks/{task_id}/claim", agent.build_envelope(payload))
+        return self._signed_post(f"/tasks/{task_id}/claim", agent, payload)
 
     def submit_task(self, agent: Agent, task_id: str, output: str) -> dict:
         payload = {"task_id": task_id, "output": output}
-        return self._post(f"/tasks/{task_id}/submit", agent.build_envelope(payload))
+        return self._signed_post(f"/tasks/{task_id}/submit", agent, payload)
 
     def cancel_task(self, agent: Agent, task_id: str) -> dict:
         payload = {"task_id": task_id}
-        return self._post(f"/tasks/{task_id}/cancel", agent.build_envelope(payload))
+        return self._signed_post(f"/tasks/{task_id}/cancel", agent, payload)
 
     # -- disputes ----------------------------------------------------------
 
     def create_dispute_escrow(self, agent: Agent, task_id: str, reason: str) -> dict:
         payload = {"task_id": task_id, "reason": reason}
-        return self._post(f"/tasks/{task_id}/dispute/escrow", agent.build_envelope(payload))
+        return self._signed_post(f"/tasks/{task_id}/dispute/escrow", agent, payload)
 
     def confirm_dispute_escrow(self, agent: Agent, task_id: str, escrow_id: str) -> dict:
         payload = {"task_id": task_id, "escrow_id": escrow_id}
-        return self._post(f"/tasks/{task_id}/dispute/confirm", agent.build_envelope(payload))
+        return self._signed_post(f"/tasks/{task_id}/dispute/confirm", agent, payload)
 
     def resolve_dispute(self, operator: Agent, task_id: str, outcome: str) -> dict:
         """``outcome`` is ``"challenger_wins"`` or ``"assignee_wins"`` --
@@ -347,7 +360,7 @@ class HubClient:
         ``"ChallengerWins"``) are what it expects on the wire.
         """
         payload = {"task_id": task_id, "outcome": outcome}
-        return self._post(f"/tasks/{task_id}/dispute/resolve", operator.build_envelope(payload))
+        return self._signed_post(f"/tasks/{task_id}/dispute/resolve", operator, payload)
 
     # -- exchange ------------------------------------------------------------
     #
@@ -362,11 +375,11 @@ class HubClient:
         `required_amount` (from the returned reservation) to
         `deposit_address`, then `confirm_exchange_deposit`.
         """
-        return self._post("/exchange/deposit", agent.build_envelope(None))
+        return self._signed_post("/exchange/deposit", agent, None)
 
     def confirm_exchange_deposit(self, agent: Agent, escrow_id: str) -> dict:
         payload = {"escrow_id": escrow_id}
-        return self._post(f"/exchange/deposit/{escrow_id}/confirm", agent.build_envelope(payload))
+        return self._signed_post(f"/exchange/deposit/{escrow_id}/confirm", agent, payload)
 
     def place_order(self, agent: Agent, side: str, price: int, quantity: int) -> dict:
         """``side`` is ``"buy"`` or ``"sell"`` -- the hub's `Side` enum is
@@ -379,11 +392,11 @@ class HubClient:
         book.
         """
         payload = {"side": side, "price": price, "quantity": quantity}
-        return self._post("/exchange/orders", agent.build_envelope(payload))
+        return self._signed_post("/exchange/orders", agent, payload)
 
     def cancel_order(self, agent: Agent, order_id: str) -> dict:
         payload = {"order_id": order_id}
-        return self._post(f"/exchange/orders/{order_id}/cancel", agent.build_envelope(payload))
+        return self._signed_post(f"/exchange/orders/{order_id}/cancel", agent, payload)
 
     def withdraw(self, agent: Agent, amount: int) -> dict:
         """Pays `amount` of the caller's own spendable base balance back
@@ -391,7 +404,7 @@ class HubClient:
         only exists to be traded here.
         """
         payload = {"amount": amount}
-        return self._post("/exchange/withdraw", agent.build_envelope(payload))
+        return self._signed_post("/exchange/withdraw", agent, payload)
 
     def get_order_book(self) -> dict:
         """`{"bids": [...], "asks": [...]}`, each an `OrderDto` list."""

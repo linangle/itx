@@ -16,11 +16,24 @@ pub use btclib::crypto::{PrivateKey, PublicKey};
 pub use btclib::envelope::{EnvelopeError, SignedEnvelope};
 
 /// Signs `payload` with `private_key`, producing a ready-to-send envelope.
-pub fn build_envelope<T>(private_key: &PrivateKey, payload: T) -> SignedEnvelope<T>
+///
+/// `method` and `path` are the request this envelope is for -- `"POST"`
+/// and e.g. `"/tasks/<uuid>/claim"`, the path exactly as it will appear
+/// in the request line, with no query string and no host. They are not
+/// sent; they are bound into the signature, so an envelope built for one
+/// endpoint is rejected at any other (see `btclib::envelope`). **Pass the
+/// same path string you POST to.** Signing one path and sending to
+/// another is not a subtle bug -- it is a 401 on the first request.
+pub fn build_envelope<T>(
+    private_key: &PrivateKey,
+    method: &str,
+    path: &str,
+    payload: T,
+) -> SignedEnvelope<T>
 where
     T: serde::Serialize,
 {
-    SignedEnvelope::new(private_key, payload)
+    SignedEnvelope::new(private_key, method, path, payload)
 }
 
 #[cfg(test)]
@@ -30,8 +43,8 @@ mod tests {
     #[test]
     fn build_envelope_produces_a_signature_that_verifies_against_the_signers_own_key() {
         let key = PrivateKey::new_key();
-        let envelope = build_envelope(&key, "hello".to_string());
-        let verified = envelope.verify_signature(chrono::Utc::now()).unwrap();
+        let envelope = build_envelope(&key, "POST", "/tasks", "hello".to_string());
+        let verified = envelope.verify_signature(chrono::Utc::now(), "POST", "/tasks").unwrap();
         assert_eq!(verified, key.public_key());
     }
 
@@ -39,8 +52,8 @@ mod tests {
     fn build_envelope_rejects_verification_against_a_different_key() {
         let key = PrivateKey::new_key();
         let other = PrivateKey::new_key();
-        let envelope = build_envelope(&key, "hello".to_string());
-        let verified = envelope.verify_signature(chrono::Utc::now()).unwrap();
+        let envelope = build_envelope(&key, "POST", "/tasks", "hello".to_string());
+        let verified = envelope.verify_signature(chrono::Utc::now(), "POST", "/tasks").unwrap();
         assert_ne!(verified, other.public_key());
     }
 }
