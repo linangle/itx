@@ -277,41 +277,44 @@ const STATUS_CLASS_NAMES: [&str; 5] = ["1xx", "2xx", "3xx", "4xx", "5xx"];
 /// The fallthrough is the important arm. Every unrecognised path collapses
 /// to a single `other` label, so a client hammering random 404s adds rows
 /// to the table exactly once rather than once per path it invents.
-pub fn route_template(method: &str, path: &str) -> &'static str {
+/// Deliberately takes no method. Every path this router serves maps to
+/// one template regardless of verb (`/tasks` is `/tasks` whether it is
+/// being listed or posted to), and the method travels as its own label
+/// anyway -- so folding it in here would only be a second way to say the
+/// same thing, with two arms per route to keep in agreement.
+pub fn route_template(path: &str) -> &'static str {
     let segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
-    let is_read = method == "GET" || method == "HEAD";
 
-    match (is_read, segments.as_slice()) {
-        (_, ["health"]) => "/health",
-        (_, ["metrics"]) => "/metrics",
-        (true, ["tasks"]) => "/tasks",
-        (false, ["tasks"]) => "/tasks",
-        (_, ["tasks", "consensus"]) => "/tasks/consensus",
-        (_, ["tasks", "escrow"]) => "/tasks/escrow",
-        (_, ["tasks", "consensus", "escrow"]) => "/tasks/consensus/escrow",
-        (_, ["tasks", "disputable", "escrow"]) => "/tasks/disputable/escrow",
-        (_, ["tasks", "escrow", _, "confirm"]) => "/tasks/escrow/:id/confirm",
-        (_, ["tasks", _]) => "/tasks/:id",
-        (_, ["tasks", _, "claim"]) => "/tasks/:id/claim",
-        (_, ["tasks", _, "submit"]) => "/tasks/:id/submit",
-        (_, ["tasks", _, "cancel"]) => "/tasks/:id/cancel",
-        (_, ["tasks", _, "dispute", "escrow"]) => "/tasks/:id/dispute/escrow",
-        (_, ["tasks", _, "dispute", "confirm"]) => "/tasks/:id/dispute/confirm",
-        (_, ["tasks", _, "dispute", "resolve"]) => "/tasks/:id/dispute/resolve",
-        (_, ["faucet"]) => "/faucet",
-        (_, ["reputation", _]) => "/reputation/:pubkey",
-        (_, ["leaderboard"]) => "/leaderboard",
-        (_, ["board", "summary"]) => "/board/summary",
-        (_, ["board", "series"]) => "/board/series",
-        (_, ["names"]) => "/names",
-        (_, ["llms.txt"]) => "/llms.txt",
-        (_, ["exchange", "deposit"]) => "/exchange/deposit",
-        (_, ["exchange", "deposit", _, "confirm"]) => "/exchange/deposit/:id/confirm",
-        (_, ["exchange", "orders"]) => "/exchange/orders",
-        (_, ["exchange", "orders", _, "cancel"]) => "/exchange/orders/:id/cancel",
-        (_, ["exchange", "account", _]) => "/exchange/account/:pubkey",
-        (_, ["exchange", "withdraw"]) => "/exchange/withdraw",
-        (_, ["exchange", "trades"]) => "/exchange/trades",
+    match segments.as_slice() {
+        ["health"] => "/health",
+        ["metrics"] => "/metrics",
+        ["tasks"] => "/tasks",
+        ["tasks", "consensus"] => "/tasks/consensus",
+        ["tasks", "escrow"] => "/tasks/escrow",
+        ["tasks", "consensus", "escrow"] => "/tasks/consensus/escrow",
+        ["tasks", "disputable", "escrow"] => "/tasks/disputable/escrow",
+        ["tasks", "escrow", _, "confirm"] => "/tasks/escrow/:id/confirm",
+        ["tasks", _] => "/tasks/:id",
+        ["tasks", _, "claim"] => "/tasks/:id/claim",
+        ["tasks", _, "submit"] => "/tasks/:id/submit",
+        ["tasks", _, "cancel"] => "/tasks/:id/cancel",
+        ["tasks", _, "dispute", "escrow"] => "/tasks/:id/dispute/escrow",
+        ["tasks", _, "dispute", "confirm"] => "/tasks/:id/dispute/confirm",
+        ["tasks", _, "dispute", "resolve"] => "/tasks/:id/dispute/resolve",
+        ["faucet"] => "/faucet",
+        ["reputation", _] => "/reputation/:pubkey",
+        ["leaderboard"] => "/leaderboard",
+        ["board", "summary"] => "/board/summary",
+        ["board", "series"] => "/board/series",
+        ["names"] => "/names",
+        ["llms.txt"] => "/llms.txt",
+        ["exchange", "deposit"] => "/exchange/deposit",
+        ["exchange", "deposit", _, "confirm"] => "/exchange/deposit/:id/confirm",
+        ["exchange", "orders"] => "/exchange/orders",
+        ["exchange", "orders", _, "cancel"] => "/exchange/orders/:id/cancel",
+        ["exchange", "account", _] => "/exchange/account/:pubkey",
+        ["exchange", "withdraw"] => "/exchange/withdraw",
+        ["exchange", "trades"] => "/exchange/trades",
         _ => "other",
     }
 }
@@ -457,16 +460,16 @@ mod tests {
     /// label.
     #[test]
     fn no_request_path_can_grow_the_route_table_without_bound() {
-        assert_eq!(route_template("GET", "/tasks/019321f0-0000-7000-8000-000000000001"), "/tasks/:id");
-        assert_eq!(route_template("GET", "/tasks/019321f0-0000-7000-8000-000000000002"), "/tasks/:id");
-        assert_eq!(route_template("GET", "/reputation/02a1b2c3d4e5f6"), "/reputation/:pubkey");
-        assert_eq!(route_template("GET", "/exchange/account/02deadbeef"), "/exchange/account/:pubkey");
-        assert_eq!(route_template("POST", "/tasks/any-id/submit"), "/tasks/:id/submit");
+        assert_eq!(route_template("/tasks/019321f0-0000-7000-8000-000000000001"), "/tasks/:id");
+        assert_eq!(route_template("/tasks/019321f0-0000-7000-8000-000000000002"), "/tasks/:id");
+        assert_eq!(route_template("/reputation/02a1b2c3d4e5f6"), "/reputation/:pubkey");
+        assert_eq!(route_template("/exchange/account/02deadbeef"), "/exchange/account/:pubkey");
+        assert_eq!(route_template("/tasks/any-id/submit"), "/tasks/:id/submit");
 
         // The fallthrough. An attacker inventing paths adds one row, once.
         let invented = ["/wp-admin", "/../../etc/passwd", "/tasks/a/b/c/d/e", "/%00", "/a/b/c/d/e/f/g"];
         for path in invented {
-            assert_eq!(route_template("GET", path), "other", "{path} must not get its own label");
+            assert_eq!(route_template(path), "other", "{path} must not get its own label");
         }
     }
 
@@ -504,7 +507,7 @@ mod tests {
             ("POST", "/exchange/withdraw"),
             ("GET", "/exchange/trades"),
         ] {
-            assert_ne!(route_template(method, path), "other", "{method} {path} is a real route and needs its own label");
+            assert_ne!(route_template(path), "other", "{method} {path} is a real route and needs its own label");
         }
     }
 

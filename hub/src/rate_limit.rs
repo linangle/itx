@@ -334,7 +334,7 @@ pub async fn middleware(
     // `metrics::route_template` for why a raw path in a label is a memory
     // leak with a monitoring endpoint in front of it.
     let method = static_method_name(req.method());
-    let template = crate::metrics::route_template(method, req.uri().path());
+    let template = crate::metrics::route_template(req.uri().path());
 
     if !check_and_record(&state.rate_limits, Bucket::Ip(ip, tier), Utc::now()) {
         state.metrics.rate_limited_by_tier[tier.metric_index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
