@@ -283,3 +283,74 @@ neither proxy config enables compression. Caddy has no `encode` directive and
 nginx sets `gzip off`, both deliberately: with `Accept-Encoding` passed
 upstream, the hub compresses, and a second layer would at best do nothing and at
 worst decompress and recompress the largest responses for no gain.
+
+---
+
+## 5. Running the three services
+
+`deploy/itx-node.service`, `deploy/itx-hub.service`, `deploy/itx-miner.service`.
+
+```bash
+sudo useradd --system --home /var/lib/itx --shell /usr/sbin/nologin itx
+sudo mkdir -p /var/lib/itx/secrets
+sudo chown -R itx:itx /var/lib/itx
+sudo chmod 700 /var/lib/itx/secrets
+
+cargo build --release
+sudo install -m 0755 target/release/{node,hub,miner} /usr/local/bin/
+
+sudo cp deploy/itx-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now itx-node itx-hub itx-miner
+```
+
+Notes that are not boilerplate:
+
+- **The units run as an unprivileged `itx` user with `ProtectSystem=strict` and
+  a single `ReadWritePaths=/var/lib/itx`.** The point is not general hygiene; it
+  is that a hub compromise should not be able to write anywhere the secrets can
+  be re-read from later, or leave a payload for the next process.
+- **`LimitCORE=0` on the hub specifically.** A core dump from the hub is a
+  plaintext copy of the operator key, the custody key, and the escrow secret,
+  written to a path none of the other hardening covers. The escrow module
+  documents that it deliberately does not zeroize its buffers
+  (`hub/src/escrow_key.rs`), so a dump contains the secret in the clear.
+- **`UMask=0077`.** The hub already chmods its own three key files to `0600`,
+  but nothing chmods `hub.redb`, and that file is not uninteresting: escrow key
+  derivation moved private keys out of it, but the board, every exchange
+  account, and the replay log are still there.
+- **The hub is `After=` the node, not `Requires=`.** With the node down the hub
+  still comes up and serves reads, reporting `degraded` from `/health`. That is
+  more useful than a hub that refuses to start, and it is what §7.1's alerting
+  assumes.
+- **`--trusted-proxies 127.0.0.1,::1`** is in the hub's `ExecStart`. If you move
+  the proxy off-box, this is the line to change, and §4.3 is the reason it
+  matters.
+- **All three key paths are passed explicitly** even though the hub has
+  defaults for them. The defaults resolve against the working directory, which
+  means the location of the treasury key would otherwise be implied by a
+  `WorkingDirectory=` line thirty lines away in a unit file. State it where it
+  is read.
+
+### Verifying a cold start
+
+The hub prints what it loaded and what it trusts. This banner is the cheapest
+deployment check available, so read it rather than tailing past it:
+
+```bash
+sudo journalctl -u itx-hub -n 40 --no-pager
+```
+
+Confirm, in order: the three addresses (operator, exchange custody, and the
+escrow secret path), the `trusting X-Forwarded-For only from: 127.0.0.1, ::1`
+line, the restored-record counts, and the replay-guard line. If the replay guard
+reports the fallback instead —
+
+```
+WARNING: replay log unreadable (...); authenticated writes are refused for the
+next 120s while the post-restart replay window closes.
+```
+
+— the hub is up but refusing authenticated writes for two minutes. It is
+supposed to do that (plan §3.3), but a hub that says it on *every* start has an
+unreadable replay log and needs looking at, not waiting out.

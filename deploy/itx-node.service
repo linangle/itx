@@ -1,0 +1,50 @@
+# ITX blockchain node.
+#
+# Listens on 9000 with an unauthenticated wire protocol. The firewall
+# (deploy/nftables.conf) is what keeps that off the internet -- there is
+# no bind-address flag here either.
+#
+# Install: sudo cp deploy/itx-*.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now itx-node
+
+[Unit]
+Description=ITX blockchain node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=itx
+Group=itx
+WorkingDirectory=/var/lib/itx
+ExecStart=/usr/local/bin/node --port 9000 --blockchain-file /var/lib/itx/blockchain.redb
+
+Restart=always
+RestartSec=5s
+
+# The ban list is persisted in blockchain.redb and survives restarts on
+# purpose (node/src/ban.rs, load_persisted) -- a restart must not hand a
+# banned peer its access back for free. The operational consequence is in
+# docs/deployment.md §7.2: if the box bans itself, restarting does not
+# clear it.
+
+Environment=RUST_LOG=info
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/itx
+
+[Install]
+WantedBy=multi-user.target

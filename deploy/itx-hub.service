@@ -1,0 +1,65 @@
+# ITX agent hub -- the custodial HTTP API.
+#
+# This unit runs the process that holds the treasury, the exchange
+# custody key, and the escrow master secret. Everything in the hardening
+# block below is aimed at that.
+#
+# WorkingDirectory is load-bearing: the hub resolves its default key
+# paths relative to the working directory and CREATES them on first run.
+# The ExecStart below passes all three explicitly anyway, so the location
+# is stated in one place rather than implied.
+
+[Unit]
+Description=ITX agent hub
+After=network-online.target itx-node.service
+Wants=network-online.target
+# Not Requires=: the hub comes up and serves reads with the node down,
+# reporting "degraded" from /health, which is more useful than refusing
+# to start. See docs/deployment.md §7.1.
+After=itx-node.service
+
+[Service]
+Type=simple
+User=itx
+Group=itx
+WorkingDirectory=/var/lib/itx
+ExecStart=/usr/local/bin/hub \
+    --port 9100 \
+    --node-addresses 127.0.0.1:9000 \
+    --store-file /var/lib/itx/hub.redb \
+    --operator-key-file /var/lib/itx/secrets/hub_operator.priv.cbor \
+    --exchange-custody-key-file /var/lib/itx/secrets/hub_exchange_custody.priv.cbor \
+    --escrow-secret-file /var/lib/itx/secrets/hub_escrow_secret.bin \
+    --trusted-proxies 127.0.0.1,::1
+
+Restart=always
+RestartSec=5s
+
+Environment=RUST_LOG=info
+# Anything the hub creates is owner-only. The hub already chmods its own
+# key files to 0600, but this covers hub.redb and everything else -- and
+# hub.redb is not nothing even after escrow key derivation landed: it
+# still holds the whole board, every account, and the replay log.
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/itx
+
+# The hub's secrets are worth a core-dump rule of their own: a dump
+# written by a crash is a plaintext copy of all three keys in a path
+# nothing else in this unit protects.
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

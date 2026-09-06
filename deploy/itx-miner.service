@@ -1,0 +1,48 @@
+# ITX miner.
+#
+# Outbound only -- it dials the node and listens for nothing, so it needs
+# no firewall rule. Its --public-key-file is a PUBLIC key (the address
+# block rewards are paid to); it is the one key file in this deployment
+# that is not a secret.
+
+[Unit]
+Description=ITX miner
+After=network-online.target itx-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=itx
+Group=itx
+WorkingDirectory=/var/lib/itx
+ExecStart=/usr/local/bin/miner \
+    --addresses 127.0.0.1:9000 \
+    --public-key-file /var/lib/itx/miner.pub.pem
+
+# The miner refuses to start if its PRIMARY node address is unreachable
+# (miner/src/main.rs, Miner::new returns an error rather than retrying),
+# so a miner brought up before the node restart-loops here until the node
+# answers. That is the intended shape -- After= orders them but does not
+# wait for the node's listener -- but it does mean "miner unit flapping"
+# usually means "node is down", not "miner is broken".
+Restart=always
+RestartSec=5s
+
+Environment=RUST_LOG=info
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/itx
+
+[Install]
+WantedBy=multi-user.target
