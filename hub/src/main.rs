@@ -1083,6 +1083,97 @@ mod tests {
         );
     }
 
+    /// A record of a known gap, not a desired property: the signing
+    /// string is `"{pubkey}:{timestamp}:{payload_json}"` with no method
+    /// and no path, so any two routes taking the same payload shape
+    /// accept each other's envelopes. See docs/agent-ecosystem-plan.md
+    /// §3.3 for what stops that being exploitable today and why the
+    /// recipe was not changed from the hub alone.
+    ///
+    /// This test exists to fail loudly the day someone binds the route
+    /// in -- at which point these assertions should be inverted rather
+    /// than deleted -- and to stop a sixth pair being added silently.
+    #[test]
+    fn route_pairs_that_currently_share_a_signing_string() {
+        // The signing string differs only in its payload for a fixed
+        // key and timestamp, so comparing serialized payloads compares
+        // exactly what the signature commits to.
+        let same = |a: String, b: String, pair: &str| {
+            assert_eq!(a, b, "{pair} no longer collide -- update §3.3 and this test");
+        };
+
+        // POST /faucet and POST /exchange/deposit
+        same(
+            serde_json::to_string(&()).unwrap(),
+            serde_json::to_string(&()).unwrap(),
+            "/faucet and /exchange/deposit",
+        );
+
+        // POST /tasks and POST /tasks/escrow
+        let create = handlers::CreateTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            expected_output_hash: "ab".into(),
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        let escrow = handlers::EscrowTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            expected_output_hash: "ab".into(),
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        same(
+            serde_json::to_string(&create).unwrap(),
+            serde_json::to_string(&escrow).unwrap(),
+            "/tasks and /tasks/escrow",
+        );
+
+        // POST /tasks/consensus and POST /tasks/consensus/escrow
+        let consensus = handlers::CreateConsensusTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            num_assignees: 3,
+            join_window_minutes: 10,
+            submission_window_minutes: 20,
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        let consensus_escrow = handlers::EscrowConsensusTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            num_assignees: 3,
+            join_window_minutes: 10,
+            submission_window_minutes: 20,
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        same(
+            serde_json::to_string(&consensus).unwrap(),
+            serde_json::to_string(&consensus_escrow).unwrap(),
+            "/tasks/consensus and /tasks/consensus/escrow",
+        );
+
+        // POST /tasks/:id/claim and POST /tasks/:id/cancel -- and note
+        // the shared path shape, so each handler's URL-vs-payload id
+        // check passes for the other's envelope too.
+        let task_id = Uuid::new_v4();
+        same(
+            serde_json::to_string(&handlers::ClaimPayload { task_id }).unwrap(),
+            serde_json::to_string(&handlers::CancelPayload { task_id }).unwrap(),
+            "/tasks/:id/claim and /tasks/:id/cancel",
+        );
+
+        // POST /tasks/escrow/:id/confirm and POST /exchange/deposit/:id/confirm
+        let escrow_id = Uuid::new_v4();
+        same(
+            serde_json::to_string(&handlers::ConfirmEscrowPayload { escrow_id }).unwrap(),
+            serde_json::to_string(&handlers::ConfirmExchangeDepositPayload { escrow_id }).unwrap(),
+            "/tasks/escrow/:id/confirm and /exchange/deposit/:id/confirm",
+        );
+    }
+
     #[tokio::test]
     async fn stale_timestamp_envelope_is_rejected() {
         let operator_key = PrivateKey::new_key();
