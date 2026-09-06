@@ -82,7 +82,8 @@ pub struct AppState {
     /// key material of its own -- the same reason `operator_private_key`
     /// lives here and not there.
     pub escrow_secret: EscrowSecret,
-    /// Per-client-IP request counters for `rate_limit::middleware`. Same
+    /// Request counters for `rate_limit::middleware`, one bucket per
+    /// client per endpoint tier (`rate_limit::Bucket`). Same
     /// instance-scoping reasoning as `payout_lock` -- see
     /// `rate_limit::RateLimitTable`'s own doc comment for why this can't
     /// be a global static.
