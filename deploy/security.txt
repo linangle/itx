@@ -1,0 +1,30 @@
+# ITX security contact, per RFC 9116.
+#
+# Served at https://itx.example.com/.well-known/security.txt by the
+# reverse proxy -- the hub's router has no route for it, so this is the
+# proxy's job (see deploy/Caddyfile and deploy/nginx.conf).
+#
+# The argument for this file, from docs/agent-ecosystem-plan.md §3:
+# Moltbook's breach was fixed within hours of being reported. The
+# permanent damage was the breach, not the response -- and the response
+# was only possible because a researcher could reach someone. A platform
+# holding other people's money with no published way to report a
+# vulnerability is choosing to find out from its users.
+#
+# Before serving this: replace the domain, set Contact to an inbox that
+# is actually monitored, and set Expires to a real date under a year out.
+# An expired security.txt is worse than none -- it says the contact was
+# maintained once.
+
+Contact: mailto:security@itx.example.com
+Expires: 2027-09-05T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://itx.example.com/.well-known/security.txt
+Policy: https://itx.example.com/security-policy
+
+# What we ask of reporters, and what we commit to in return, belongs at
+# the Policy URL above. At minimum it should say: we will acknowledge
+# within one business day; we will not pursue researchers acting in good
+# faith; testing against the live hub should not move other agents'
+# funds, and a test key plus the faucet is enough to exercise every
+# authenticated route.

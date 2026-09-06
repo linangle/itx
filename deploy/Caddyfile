@@ -1,0 +1,119 @@
+# ITX reverse proxy -- Caddy edition.
+#
+# Preferred over nginx because there is less to get wrong: TLS is
+# automatic and correct by default, HSTS is on by default, and the
+# timeouts below are the only tuning this deployment needs.
+#
+# Copy to /etc/caddy/Caddyfile, replace itx.example.com and the email,
+# then:  sudo caddy validate --config /etc/caddy/Caddyfile
+#        sudo systemctl reload caddy
+#
+# See docs/deployment.md §4 for why X-Forwarded-For is set the way it is.
+# It is the one line here that is a security control rather than tuning.
+
+{
+	# Let's Encrypt registration + expiry notices. A real inbox: this is
+	# where you find out a renewal has been failing for two weeks.
+	email ops@example.com
+
+	servers {
+		timeouts {
+			# Bounds slowloris: a client that opens a connection and
+			# dribbles headers gets 10s, not forever.
+			read_header 10s
+			# Generous enough for a large signed payload on a bad
+			# connection, short enough that a stalled upload is not a
+			# held connection.
+			read_body 30s
+			# The ceiling on a hub response. The expensive routes are
+			# node round trips and full-board walks; 60s is well past
+			# anything healthy and still bounds a wedged handler.
+			write 60s
+			idle 120s
+		}
+	}
+}
+
+itx.example.com {
+	# Body cap. axum's own extractor defaults to 2MB, which is far more
+	# than any ITX payload needs -- the largest is a task description
+	# plus a signature. Rejecting oversize bodies here means they never
+	# cost the hub a read, a rate-limit slot, or an ECDSA verify.
+	request_body {
+		max_size 64KB
+	}
+
+	# RFC 9116 disclosure contact. Served here because the hub's router
+	# has no route for it and adding one would be a code change; the
+	# proxy is the right place for a static well-known file anyway.
+	# Install with:
+	#     sudo install -Dm644 deploy/security.txt \
+	#         /etc/caddy/well-known/security.txt
+	handle /.well-known/security.txt {
+		root * /etc/caddy/well-known
+		rewrite * /security.txt
+		header Content-Type "text/plain; charset=utf-8"
+		file_server
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:9100 {
+			# THE security-relevant line.
+			#
+			# Caddy's default is to APPEND the client to any X-Forwarded-For
+			# the client itself sent. The hub reads the list right to left and
+			# skips its own proxies (hub/src/rate_limit.rs, client_ip), so
+			# appending is in fact safe today -- the rightmost entry is the
+			# one we observed.
+			#
+			# We replace instead of appending anyway, so that exactly one
+			# entry exists and it is the address this proxy actually saw.
+			# That makes the config correct under a left-to-right reader too,
+			# which is what protects it if the hub's parsing is ever changed
+			# or a second proxy is added by someone who does not know the
+			# rule. A spoofed header from a client is discarded here and
+			# never reaches the hub at all.
+			#
+			# `caddy validate` emits "Unnecessary header_up
+			# X-Forwarded-For: the reverse proxy's default behavior is
+			# to pass headers to the upstream" for this line. The
+			# warning is wrong here and must not be "fixed" by deleting
+			# it -- verified against Caddy 2.11.4: with the line, a
+			# client sending `X-Forwarded-For: 203.0.113.9` (or a whole
+			# invented chain, or repeated headers) reaches the upstream
+			# as exactly one entry, the real client address. Without it,
+			# the client's value is preserved and appended to.
+			header_up X-Forwarded-For {remote_host}
+
+			# The hub does not read these, but a future handler might, and
+			# they should mean what they say rather than whatever a client
+			# asserted.
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+			header_up -Forwarded
+			header_up -X-Real-IP
+
+			# Health of the upstream, not of the node. /health makes the hub
+			# open a fresh TCP connection to the node (node_client opens one
+			# per call), so this interval is a real cost -- see
+			# docs/deployment.md §8.2. 30s, not 1s.
+			health_uri /health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+
+	# Deliberately NO `encode` directive. The hub already gzips its own
+	# responses (CompressionLayer in build_router), and Caddy passes
+	# Accept-Encoding upstream, so adding encode here would at best do
+	# nothing and at worst cost a decompress/recompress cycle on the
+	# largest responses.
+
+	log {
+		output file /var/log/caddy/itx-access.log {
+			roll_size 100MiB
+			roll_keep 14
+		}
+		format json
+	}
+}
