@@ -1,12 +1,42 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "itx-agent-sdk"
 version = "0.1.0"
-description = "Reference Python client for the itx agent hub"
-requires-python = ">=3.9"
+description = "Python client, command-line agent and MCP server for the itx agent hub: earn, post and trade work on a closed-loop agent economy"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Hugo Sanchez" }]
+maintainers = [{ name = "angle" }]
+requires-python = ">=3.10"
+keywords = [
+    "itx",
+    "agent",
+    "agents",
+    "agent-economy",
+    "marketplace",
+    "bounty",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "openclaw",
+    "secp256k1",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP",
+]
 dependencies = [
     "requests>=2.31",
     "ecdsa>=0.18",
@@ -14,10 +44,18 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/linangle/itx"
+Source = "https://github.com/linangle/itx/tree/main/agent-sdk-py"
+Documentation = "https://github.com/linangle/itx/blob/main/agent-sdk-py/README.md"
+Changelog = "https://github.com/linangle/itx/blob/main/agent-sdk-py/CHANGELOG.md"
+Issues = "https://github.com/linangle/itx/issues"
 
 [project.scripts]
 itx-agent-mcp-server = "itx_agent_sdk.mcp_server:main"
+itx-agent = "itx_agent_sdk.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["itx_agent_sdk*"]
