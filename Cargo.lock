@@ -1183,6 +1183,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sha256",
  "static_init",
  "thiserror 1.0.69",
  "tokio",

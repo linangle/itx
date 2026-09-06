@@ -12,7 +12,7 @@ printed, transmitted or included in any output -- ``whoami`` reports the
 *public* key and the path the private one lives at, nothing more.
 
     itx-agent whoami
-    itx-agent faucet
+    itx-agent faucet                            # solves a proof-of-work challenge, then claims
     itx-agent find --capability python --limit 5
     itx-agent claim <task-id>
     itx-agent submit <task-id> "<answer>"      # or: --file answer.txt, or "-" for stdin
@@ -22,9 +22,10 @@ printed, transmitted or included in any output -- ``whoami`` reports the
 import argparse
 import json
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
-from .client import HubClient, HubError
+from .client import FaucetSolveTimeout, HubClient, HubError, solve_faucet_challenge
 from .config import DEFAULT_HUB_URL, DEFAULT_KEY_FILE, ENV_HUB_URL, ENV_KEY_FILE, resolve_hub_url, resolve_key_file
 from .identity import load_or_create_agent
 
@@ -101,7 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("whoami", parents=[common], help="this agent's public key and where its private key is stored")
     sub.add_parser("health", parents=[common], help="whether the hub can reach a chain node, and the chain height")
     sub.add_parser("llms", parents=[common], help="print the hub's own machine-readable manual (/llms.txt)")
-    sub.add_parser("faucet", parents=[common], help="claim the one-time starting grant for this identity")
+    faucet = sub.add_parser(
+        "faucet",
+        parents=[common],
+        help="claim the one-time starting grant: asks for a proof-of-work challenge, solves it, redeems it",
+    )
+    faucet.add_argument(
+        "--max-seconds",
+        type=float,
+        default=300.0,
+        help="give up solving after this long (default 300); the challenge then expires unused",
+    )
     sub.add_parser("status", parents=[common], help="reputation, exchange balance and this agent's posted/claimed tasks")
 
     find = sub.add_parser("find", parents=[common], help="open tasks this identity can claim right now, best bounty first")
@@ -157,13 +168,36 @@ def run(args: argparse.Namespace) -> Any:
         return {"pubkey": agent.pubkey_hex, "key_file": key_file, "hub_url": hub_url}
 
     if args.command == "faucet":
+        # Reported in three parts rather than one, because the middle
+        # one is the only step here that takes real time and a caller
+        # watching a cron log wants to see what it cost.
         try:
-            grant = client.faucet_claim(agent)
+            challenge = client.faucet_challenge(agent)
         except HubError as e:
             if e.status_code == 409:
                 return {"already_claimed": True, "pubkey": agent.pubkey_hex}
             raise
-        return {"already_claimed": False, "pubkey": agent.pubkey_hex, "grant": grant}
+        started = time.monotonic()
+        try:
+            solution = solve_faucet_challenge(challenge, max_seconds=args.max_seconds)
+        except FaucetSolveTimeout as e:
+            return {
+                "already_claimed": False,
+                "pubkey": agent.pubkey_hex,
+                "error": str(e),
+                "solved": False,
+            }
+        elapsed = time.monotonic() - started
+        grant = client.faucet_claim(agent, challenge["challenge_id"], solution)
+        return {
+            "already_claimed": False,
+            "pubkey": agent.pubkey_hex,
+            "solved": True,
+            "solution": solution,
+            "solve_seconds": round(elapsed, 2),
+            "expected_hashes": challenge.get("expected_hashes"),
+            "grant": grant,
+        }
 
     if args.command == "status":
         reputation = client.get_reputation(agent.pubkey_hex)

@@ -43,7 +43,7 @@ except ModuleNotFoundError as e:  # pragma: no cover - depends on how the packag
     ) from e
 
 from . import analytics
-from .client import HubClient, HubError
+from .client import HubClient, HubError, FaucetSolveTimeout, solve_faucet_challenge
 from .config import DEFAULT_HUB_URL, DEFAULT_KEY_FILE, ENV_HUB_URL, ENV_KEY_FILE, resolve_hub_url, resolve_key_file
 from .envelope import Agent
 from .identity import load_or_create_agent
@@ -286,12 +286,35 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     # -- action tools (require this agent's signed envelope) --------------
 
     @server.tool(annotations=SAFE_WRITE)
-    def claim_faucet() -> dict:
+    def claim_faucet(max_seconds: float = 120.0) -> dict:
         """One-time grant of starting funds for this pubkey. Fails (409-style
         hub error) if this pubkey has already claimed it before -- safe to
         call speculatively at startup.
+
+        The hub prices the faucet in proof of work, so this **blocks while
+        solving**, typically for seconds. `max_seconds` bounds that: if the
+        operator has raised the difficulty beyond what this machine can chew
+        through in the time allowed, the tool returns `{"solved": false}`
+        rather than hanging, and the unredeemed challenge expires on its own.
+        Nothing is spent by giving up.
         """
-        return client.faucet_claim(agent)
+        started = time.monotonic()
+        challenge = client.faucet_challenge(agent)
+        try:
+            solution = solve_faucet_challenge(challenge, max_seconds=max_seconds)
+        except FaucetSolveTimeout as e:
+            return {
+                "solved": False,
+                "reason": str(e),
+                "expected_hashes": challenge.get("expected_hashes"),
+            }
+        grant = client.faucet_claim(agent, challenge["challenge_id"], solution)
+        return {
+            "solved": True,
+            "solve_seconds": round(time.monotonic() - started, 2),
+            "expected_hashes": challenge.get("expected_hashes"),
+            "grant": grant,
+        }
 
     @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
     def post_task(

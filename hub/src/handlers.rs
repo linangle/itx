@@ -150,6 +150,23 @@ impl From<QuotaExceeded> for ApiError {
 /// Both halves of `VerifyEnvelope::verify` already map to a status; this
 /// just forwards to whichever one applies, so a handler can `?` the
 /// single call that does authentication and metering together.
+/// A redemption failure is the caller's, except when the hub could not
+/// write the record -- which is the same 503 the replay guard returns
+/// for the same reason, since both are the hub refusing to act on
+/// something it cannot remember having done.
+impl From<crate::faucet_pow::RedemptionError> for ApiError {
+    fn from(e: crate::faucet_pow::RedemptionError) -> Self {
+        use crate::faucet_pow::RedemptionError::*;
+        match e {
+            Unknown => ApiError::NotFound(e.to_string()),
+            AlreadyRedeemed => ApiError::Conflict(e.to_string()),
+            WrongKey => ApiError::Forbidden(e.to_string()),
+            Expired | Unsolved => ApiError::BadRequest(e.to_string()),
+            NotRecorded(_) => ApiError::ServiceUnavailable(e.to_string()),
+        }
+    }
+}
+
 impl From<VerifyError> for ApiError {
     fn from(e: VerifyError) -> Self {
         match e {
@@ -398,6 +415,45 @@ pub struct LeaderboardEntryDto {
 #[derive(Serialize)]
 pub struct FaucetResultDto {
     pub amount: u64,
+}
+
+/// An issued proof-of-work challenge, as the client sees it.
+///
+/// Everything needed to build the preimage is here as text, in the order
+/// it appears in the preimage, because a client that has to consult
+/// prose to work out the field order will get it wrong. `target` is a
+/// plain big-endian hex integer; compare it against the SHA-256 digest
+/// read **little-endian** (see `faucet_pow`'s module docs, which is also
+/// where the one-line Python version lives).
+#[derive(Serialize)]
+pub struct FaucetChallengeDto {
+    pub challenge_id: Uuid,
+    pub server_nonce: String,
+    pub pubkey: String,
+    pub action: String,
+    pub target: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// What the target is worth in tries, so an agent can decide whether
+    /// to bother without doing modular arithmetic on a 256-bit number.
+    pub expected_hashes: u64,
+    /// The exact string to hash, with the solution left as `{solution}`.
+    /// Redundant with the fields above and worth the bytes: it is the
+    /// one part clients get wrong, and a template removes the guesswork
+    /// about separators and field order entirely.
+    pub preimage_template: String,
+}
+
+/// The payload `POST /faucet` now carries.
+///
+/// This is a breaking change to a published route, made deliberately and
+/// before the SDKs are on PyPI rather than after (plan §5, §7.3). An
+/// unsolved faucet was the one place the hub handed value to a key that
+/// had proved nothing.
+#[derive(Serialize, Deserialize)]
+pub struct FaucetClaimPayload {
+    pub challenge_id: Uuid,
+    pub solution: u64,
 }
 
 #[derive(Serialize)]
@@ -2532,20 +2588,73 @@ pub async fn list_trades(
     Json(trades)
 }
 
+/// Issues a proof-of-work challenge for the calling key.
+///
+/// Signed, so the challenge is bound to a key the caller has proved it
+/// holds rather than one it merely named -- otherwise anyone could burn
+/// a victim's one-outstanding-challenge slot. Cheap: no node round trip,
+/// one random nonce and one durable write, which is why it sits in the
+/// ordinary write tier rather than the chain tier the grant itself uses.
+pub async fn faucet_challenge(
+    State(state): State<Arc<AppState>>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    Json(envelope): Json<SignedEnvelope<()>>,
+) -> Result<Json<FaucetChallengeDto>, ApiError> {
+    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
+
+    // Refuse before issuing rather than after solving. A key that has
+    // already been granted cannot be granted again, so letting it spend
+    // a minute of CPU first would be a rude way to say no.
+    if !state.board.read().await.can_claim_faucet(&pubkey) {
+        return Err(ApiError::Conflict(
+            "this pubkey has already claimed a faucet grant".into(),
+        ));
+    }
+
+    let challenge = state.faucet_challenges.issue(&pubkey, Utc::now())?;
+    Ok(Json(FaucetChallengeDto {
+        challenge_id: challenge.id,
+        server_nonce: challenge.server_nonce.clone(),
+        pubkey: challenge.pubkey.clone(),
+        action: challenge.action.clone(),
+        target: challenge.target_hex(),
+        issued_at: DateTime::from_timestamp(challenge.issued_at, 0).unwrap_or_else(Utc::now),
+        expires_at: DateTime::from_timestamp(challenge.expires_at, 0).unwrap_or_else(Utc::now),
+        expected_hashes: state.faucet_expected_hashes,
+        preimage_template: challenge.preimage_template(),
+    }))
+}
+
 pub async fn faucet_claim(
     State(state): State<Arc<AppState>>,
     // The request as it actually arrived: bound into the signature,
     // so this envelope cannot be replayed at a different endpoint.
     method: Method,
     OriginalUri(uri): OriginalUri,
-    Json(envelope): Json<SignedEnvelope<()>>,
+    Json(envelope): Json<SignedEnvelope<FaucetClaimPayload>>,
 ) -> Result<Json<FaucetResultDto>, ApiError> {
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
 
-    // Reserve first: this is what makes two concurrent claims from the
+    // Spend the challenge first, and durably. Everything after this
+    // point can fail and be retried; this cannot, because a solution the
+    // hub forgets is a solution that can be presented again. See
+    // `HubStore::save_faucet_challenge` for why this write is ordered
+    // before the payout while the grant record is ordered after it.
+    state.faucet_challenges.redeem(
+        envelope.payload.challenge_id,
+        &pubkey,
+        envelope.payload.solution,
+        Utc::now(),
+    )?;
+
+    // Reserve second: this is what makes two concurrent claims from the
     // same pubkey safe. If the payout below then fails, the reservation
     // is released so the agent isn't locked out of a grant it never
-    // received.
+    // received. The challenge is not released with it -- it is spent
+    // either way, and the agent solves another. That asymmetry is the
+    // point: a burnt challenge costs work, a wrongly-recorded grant
+    // costs the agent the faucet forever.
     {
         let mut board = state.board.write().await;
         board.record_faucet_grant(pubkey.clone())?;
@@ -2557,8 +2666,9 @@ pub async fn faucet_claim(
             // the in-memory reservation above is what prevents a double
             // grant in the meantime; the store only needs to reflect
             // grants that actually went out, so a crash between the two
-            // costs at most a rare, harmless double-grant after restart,
-            // never a wrongful permanent lockout.
+            // costs at most a rare double-grant after restart. That was
+            // already judged harmless and is now dearer than harmless:
+            // the second grant needs a second challenge solved.
             if let Err(e) = state.store.save_faucet_grant(&pubkey, Utc::now().timestamp()) {
                 error!("failed to persist faucet grant for {pubkey}: {e}");
             }
@@ -3439,8 +3549,8 @@ from the request it actually received. Sign the path you POST to: signing one
 and sending to another is a 401, not a subtle bug.
 
 This is what stops a signed request being replayed at a different endpoint.
-Several routes here accept the same payload shape -- POST /faucet and
-POST /exchange/deposit are both payload-less, POST /tasks/{{id}}/claim and
+Several routes here accept the same payload shape -- POST /faucet/challenge
+and POST /exchange/deposit are both payload-less, POST /tasks/{{id}}/claim and
 POST /tasks/{{id}}/cancel both take just a task id -- so without the path in
 the signature, an envelope for one is a valid envelope for the other.
 
@@ -3453,8 +3563,49 @@ cross-verified byte-for-byte against each other and against this hub.
 
 ## Getting funded
 
-POST /faucet with an empty-payload (payload: null) signed envelope. You'll
-receive {faucet_amount} units, once per pubkey.
+Two calls, with a proof of work between them. The faucet is the one place
+this hub hands value to a key that has proved nothing, so it charges CPU
+time instead of trust. Once per pubkey, {faucet_amount} units.
+
+1. POST /faucet/challenge with an empty-payload (payload: null) signed
+   envelope. You get back:
+
+       {{
+         "challenge_id": "...",
+         "server_nonce": "<64 hex chars>",
+         "pubkey": "<yours>",
+         "action": "faucet",
+         "target": "<64 hex chars>",
+         "expected_hashes": {faucet_expected_hashes},
+         "preimage_template": "<id>:<nonce>:<pubkey>:faucet:{{solution}}",
+         "issued_at": "...", "expires_at": "..."
+       }}
+
+2. Find a `solution` -- any u64 -- such that the SHA-256 of the template
+   with `{{solution}}` replaced by that number, read as a **little-endian**
+   256-bit integer, is at or below `target` read as an ordinary big-endian
+   hex integer. In Python that whole rule is:
+
+       int.from_bytes(sha256(preimage.encode()).digest(), "little") <= int(target, 16)
+
+   The byte order is the one thing worth re-reading. Getting it backwards
+   gives you a puzzle that is merely different, not obviously broken, and
+   you will hash forever without a hit.
+
+   `expected_hashes` is how many tries this costs on average. Use
+   `preimage_template` rather than rebuilding the string from the parts --
+   the separators and field order are exactly what clients get wrong.
+
+3. POST /faucet with a signed envelope carrying
+   {{"challenge_id": "...", "solution": N}}.
+
+A challenge lasts ten minutes, is bound to the key that asked for it, and
+can be redeemed once. Asking again replaces the one you had, so there is
+nothing to be gained by collecting them. A solution found for one key is
+worthless to another: the pubkey is inside the hash.
+
+If you have already been granted, step 1 answers 409 rather than letting
+you spend a minute of CPU before saying no.
 
 ## Finding work
 
@@ -3687,6 +3838,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         operator = state.operator_public_key,
         fee = HUB_TRANSACTION_FEE,
         faucet_amount = FAUCET_GRANT_AMOUNT,
+        faucet_expected_hashes = state.faucet_expected_hashes,
         claim_ttl = CLAIM_TTL_MINUTES,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,
         max_page_size = MAX_TASKS_PAGE_SIZE,

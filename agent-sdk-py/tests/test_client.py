@@ -10,11 +10,13 @@ about whether each method sends the envelope to the right place with the
 right payload.
 """
 
+import hashlib
 from unittest.mock import ANY, MagicMock
 
 import pytest
 
 from itx_agent_sdk import Agent, HubClient, HubError
+from itx_agent_sdk.client import FaucetSolveTimeout, solve_faucet_challenge
 
 
 def make_client_with_mock_session() -> HubClient:
@@ -81,18 +83,95 @@ def test_leaderboard_and_reputation_urls():
     )
 
 
-def test_faucet_claim_signs_a_null_payload():
+def test_faucet_challenge_signs_a_null_payload():
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"challenge_id": "x"})
+    agent = Agent.generate()
+
+    client.faucet_challenge(agent)
+
+    args, kwargs = client.session.post.call_args
+    assert args[0] == "http://hub.test/faucet/challenge"
+    envelope = kwargs["json"]
+    assert envelope["pubkey"] == agent.pubkey_hex
+    assert envelope["payload"] is None
+
+
+def test_faucet_claim_sends_the_challenge_id_and_solution():
     client = make_client_with_mock_session()
     client.session.post.return_value = mock_response({"amount": 50_000_000})
     agent = Agent.generate()
 
-    client.faucet_claim(agent)
+    client.faucet_claim(agent, "0F5F1E1A-0000-4000-8000-00000000ABCD", 12345)
 
     args, kwargs = client.session.post.call_args
     assert args[0] == "http://hub.test/faucet"
-    envelope = kwargs["json"]
-    assert envelope["pubkey"] == agent.pubkey_hex
-    assert envelope["payload"] is None
+    payload = kwargs["json"]["payload"]
+    # Canonicalised on the way out, like every other id: the hub
+    # re-serialises the UUID it parsed, so an uppercase one signed
+    # verbatim would produce a different signing string and a 401.
+    assert payload == {
+        "challenge_id": "0f5f1e1a-0000-4000-8000-00000000abcd",
+        "solution": 12345,
+    }
+
+
+def _challenge(expected_hashes: int = 64) -> dict:
+    """A challenge shaped exactly like the hub's, at a difficulty a test
+    clears in microseconds."""
+    target = (1 << 256) // expected_hashes
+    return {
+        "challenge_id": "0f5f1e1a-0000-4000-8000-00000000abcd",
+        "server_nonce": "ab" * 32,
+        "pubkey": "02" + "cd" * 32,
+        "action": "faucet",
+        "target": f"{target:064x}",
+        "expected_hashes": expected_hashes,
+        "preimage_template": "0f5f1e1a-0000-4000-8000-00000000abcd:"
+        + "ab" * 32
+        + ":02"
+        + "cd" * 32
+        + ":faucet:{solution}",
+    }
+
+
+def test_solving_a_challenge_produces_a_solution_that_meets_the_target():
+    challenge = _challenge()
+    solution = solve_faucet_challenge(challenge)
+
+    preimage = challenge["preimage_template"].replace("{solution}", str(solution))
+    digest = hashlib.sha256(preimage.encode()).digest()
+    # Little-endian, which is the whole subtlety -- see
+    # `solve_faucet_challenge`'s docstring.
+    assert int.from_bytes(digest, "little") <= int(challenge["target"], 16)
+
+
+def test_solving_gives_up_rather_than_hanging_on_an_impossible_target():
+    """A difficulty this machine cannot reach must fail loudly. Without
+    a bound, an operator raising the knob turns every client into a hang
+    with no output."""
+    impossible = _challenge()
+    impossible["target"] = f"{0:064x}"
+    with pytest.raises(FaucetSolveTimeout):
+        solve_faucet_challenge(impossible, max_seconds=0.25)
+
+
+def test_claim_faucet_walks_all_three_steps():
+    client = make_client_with_mock_session()
+    challenge = _challenge()
+    client.session.post.side_effect = [
+        mock_response(challenge),
+        mock_response({"amount": 50_000_000}),
+    ]
+    agent = Agent.generate()
+
+    result = client.claim_faucet(agent)
+
+    assert result == {"amount": 50_000_000}
+    first, second = client.session.post.call_args_list
+    assert first[0][0] == "http://hub.test/faucet/challenge"
+    assert second[0][0] == "http://hub.test/faucet"
+    assert second[1]["json"]["payload"]["challenge_id"] == challenge["challenge_id"]
 
 
 def test_create_task_sends_fields_in_struct_declaration_order():
