@@ -90,6 +90,26 @@ fn payout_attempt_key(task_id: uuid::Uuid, recipient: &PublicKey) -> Vec<u8> {
     key
 }
 
+/// Serializes `value` and stages it into `table` within a write
+/// transaction the caller owns, so that several records can share one
+/// commit (see `HubStore::in_one_write_txn`). Encoding is ciborium,
+/// byte-for-byte what the single-record `save_*` methods write, so a
+/// record written through here reads back through the ordinary
+/// `load_all_*` path with nothing to distinguish it.
+fn stage_record<T: serde::Serialize>(
+    txn: &redb::WriteTransaction,
+    table: TableDefinition<'static, &'static [u8], &'static [u8]>,
+    key: &[u8],
+    value: &T,
+) -> Result<()> {
+    let mut bytes = Vec::new();
+    ciborium::into_writer(value, &mut bytes)
+        .map_err(|e| HubStoreError::Serialization(e.to_string()))?;
+    let mut table = txn.open_table(table)?;
+    table.insert(key, bytes.as_slice())?;
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum HubStoreError {
     #[error("database error: {0}")]
@@ -223,6 +243,88 @@ impl HubStore {
                     .map_err(|e: ciborium::de::Error<_>| HubStoreError::Serialization(e.to_string()))
             })
             .collect()
+    }
+
+    /// Persists a confirmed escrow's task and the deposit that funded
+    /// it in **one** redb write transaction, so no reader and no restart
+    /// can ever see one without the other.
+    ///
+    /// This exists because doing it as two commits was a money bug
+    /// (plan §6.5b). `confirm_task_escrow` used to `save_task` and then
+    /// `save_pending_deposit`; a process killed between the two left a
+    /// task on disk beside a deposit still reading `Reserved`, and the
+    /// depositor could confirm the same escrow a second time and get a
+    /// second task out of one payment.
+    ///
+    /// The plan offered a cheaper fix -- write the deposit first, so a
+    /// crash strands the deposit instead of duplicating it -- and that
+    /// would have been an improvement, because a stranded deposit is
+    /// visible and recoverable while a duplicate is neither. It was
+    /// rejected anyway: it only makes the failure a better failure,
+    /// leaving an interval whose safety depends on nothing ever being
+    /// added between the two writes. One transaction has no interval at
+    /// all, and the store was already redb, which is what its
+    /// transactions are for. The stranded-deposit case simply stops
+    /// existing rather than becoming the expected outcome.
+    pub fn save_task_and_deposit(&self, task: &Task, deposit: &PendingDeposit) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), task)?;
+            stage_record(
+                txn,
+                PENDING_DEPOSITS_TABLE,
+                deposit.id.as_bytes().as_slice(),
+                deposit,
+            )
+        })
+    }
+
+    /// The `confirm_exchange_deposit` counterpart of
+    /// `save_task_and_deposit`: a credited exchange account and the
+    /// deposit that credited it, committed together. Same bug, same
+    /// reasoning -- see that method. The effect here is a ledger balance
+    /// rather than a task, which is if anything worse, since a duplicate
+    /// credit is spendable and tradeable the moment it lands.
+    pub fn save_exchange_account_and_deposit(
+        &self,
+        pubkey: &PublicKey,
+        account: &ExchangeAccount,
+        deposit: &PendingDeposit,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(
+                txn,
+                EXCHANGE_ACCOUNTS_TABLE,
+                pubkey.to_sec1_bytes().as_slice(),
+                account,
+            )?;
+            stage_record(
+                txn,
+                PENDING_DEPOSITS_TABLE,
+                deposit.id.as_bytes().as_slice(),
+                deposit,
+            )
+        })
+    }
+
+    /// Runs `f` inside a single redb write transaction and commits only
+    /// if it returns `Ok`. An `Err` returns without committing, and redb
+    /// discards the whole transaction when it drops -- so every record
+    /// `f` staged either becomes durable together or not at all.
+    ///
+    /// Kept as a named primitive rather than inlined into its two
+    /// callers because "these records share a commit" is the property
+    /// worth being able to point at, and because it is what lets the
+    /// rollback be tested directly: a test can stage both records and
+    /// then fail, which is the crash this exists to survive and the one
+    /// thing no amount of killing a process can demonstrate reliably.
+    fn in_one_write_txn<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&redb::WriteTransaction) -> Result<()>,
+    {
+        let write_txn = self.db.begin_write()?;
+        f(&write_txn)?;
+        write_txn.commit()?;
+        Ok(())
     }
 
     pub fn save_reputation(&self, pubkey: &PublicKey, reputation: &Reputation) -> Result<()> {
@@ -1056,6 +1158,223 @@ mod tests {
             result,
             Err(HubStoreError::UnsupportedSchemaVersion { .. })
         ));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A task and the deposit that funded it, built as a matched pair so
+    /// the atomicity tests below all talk about the same confirmation.
+    /// Mirrors what `TaskBoard::confirm_escrow` hands its caller: a task
+    /// pointing at the escrow, and that escrow already marked
+    /// `Consumed`.
+    fn confirmed_escrow_pair() -> (Task, PendingDeposit) {
+        let secret = crate::escrow_key::EscrowSecret::generate();
+        let depositor = PrivateKey::new_key().public_key();
+        let escrow_id = Uuid::new_v4();
+        let deposit = PendingDeposit {
+            id: escrow_id,
+            depositor: depositor.clone(),
+            deposit_pubkey: secret.derive(escrow_id).public_key(),
+            deposit_private_key: None,
+            required_amount: 1_000_000,
+            purpose: crate::board::EscrowPurpose::FundHashMatchTask(crate::board::TaskIntent {
+                description: "escrowed work".to_string(),
+                bounty: 1_000_000,
+                expected_output_hash: Hash::hash_bytes(b"answer"),
+                min_reputation: 0,
+                capabilities: Default::default(),
+            }),
+            status: crate::board::EscrowStatus::Consumed,
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(30),
+        };
+        let task = Task {
+            id: Uuid::new_v4(),
+            description: "escrowed work".to_string(),
+            bounty: 1_000_000,
+            kind: crate::board::TaskKind::HashMatch {
+                expected_output_hash: Hash::hash_bytes(b"answer"),
+            },
+            poster: depositor,
+            status: TaskStatus::Open,
+            claimant: None,
+            claim_deadline: None,
+            failed_attempts: 0,
+            created_at: Utc::now(),
+            min_reputation: 0,
+            close_reason: None,
+            escrow_id: Some(escrow_id),
+            capabilities: Default::default(),
+        };
+        (task, deposit)
+    }
+
+    /// The bug in plan §6.5b, reduced to the store: staging both records
+    /// and *then* failing must leave neither behind.
+    ///
+    /// This is the test the fix rests on, and the reason the fix is a
+    /// transaction rather than a reordering. The failure is injected
+    /// here rather than by killing a hub because the interval a real
+    /// `SIGKILL` has to land in is one step wide -- `harness drill
+    /// escrow-restart` reproduced the bug in three runs of six and
+    /// reports *inconclusive* rather than safe when it finds nothing,
+    /// precisely because sampling cannot show an interval is gone. An
+    /// injected failure after both writes are staged is that interval,
+    /// hit deterministically and on every run.
+    #[test]
+    fn a_failure_after_staging_both_records_commits_neither() {
+        let path = temp_db_path("atomic_rollback");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, deposit) = confirmed_escrow_pair();
+
+        let result = store.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), &task)?;
+            stage_record(
+                txn,
+                PENDING_DEPOSITS_TABLE,
+                deposit.id.as_bytes().as_slice(),
+                &deposit,
+            )?;
+            // Stands in for the process dying here. Everything above is
+            // staged and none of it is committed.
+            Err(HubStoreError::Serialization("injected mid-transaction failure".into()))
+        });
+        assert!(result.is_err(), "the injected failure must surface to the caller");
+
+        assert!(
+            store.load_all_tasks().unwrap().is_empty(),
+            "the task was staged before the failure and must not have survived it -- a task on \
+             disk beside a deposit that never reached Consumed is exactly the state that let one \
+             escrow fund two tasks"
+        );
+        assert!(
+            store.load_all_pending_deposits().unwrap().is_empty(),
+            "neither record may survive a transaction that did not commit"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The other half of the same property: on success both records
+    /// become visible at the same instant, not one and then the other.
+    ///
+    /// Proved against a read snapshot opened before the write. redb's
+    /// read transactions are point-in-time, so a snapshot that sees the
+    /// task but not the deposit would be a reader observing the two
+    /// apart -- which, held by a restarting hub instead of a test, is
+    /// the bug.
+    #[test]
+    fn a_task_and_its_deposit_are_never_visible_apart() {
+        let path = temp_db_path("atomic_commit");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, deposit) = confirmed_escrow_pair();
+
+        let before = store.db.begin_read().unwrap();
+        store.save_task_and_deposit(&task, &deposit).unwrap();
+
+        // The pre-write snapshot must see neither, never just the task.
+        let tasks_then = before.open_table(TASKS_TABLE).unwrap();
+        let deposits_then = before.open_table(PENDING_DEPOSITS_TABLE).unwrap();
+        assert!(tasks_then.get(task.id.as_bytes().as_slice()).unwrap().is_none());
+        assert!(deposits_then.get(deposit.id.as_bytes().as_slice()).unwrap().is_none());
+
+        // And a snapshot taken after must see both.
+        let tasks = store.load_all_tasks().unwrap();
+        let deposits = store.load_all_pending_deposits().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, task.id);
+        assert_eq!(tasks[0].escrow_id, Some(deposit.id));
+        assert_eq!(deposits.len(), 1);
+        assert_eq!(deposits[0].id, deposit.id);
+        assert_eq!(
+            deposits[0].status,
+            crate::board::EscrowStatus::Consumed,
+            "the deposit must come back Consumed, or a restarted hub would offer it for \
+             confirmation a second time"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The premise of plan §6.5b, made executable: written as two
+    /// commits, the task and its deposit *are* observable apart.
+    ///
+    /// This passes before and after the fix -- it characterises
+    /// `save_task` followed by `save_pending_deposit`, which both still
+    /// exist and are still correct on their own. It is here because it
+    /// is the one place the suite states the actual mechanism of the
+    /// bug: the snapshot below is what a hub that died between the two
+    /// commits reads back on restart, and from there the deposit is
+    /// still Reserved and confirmable a second time.
+    ///
+    /// Note what it also shows about testing the fix. No test can catch
+    /// `save_task_and_deposit` being rewritten as these two calls,
+    /// because two commits differ from one only in the existence of a
+    /// window nothing can be scheduled inside on demand -- which is the
+    /// original problem restated. What rules that rewrite out is the
+    /// shape of the code and the comment on the method, not this suite.
+    #[test]
+    fn two_separate_commits_leave_a_window_where_the_task_exists_alone() {
+        let path = temp_db_path("two_commit_window");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, deposit) = confirmed_escrow_pair();
+
+        store.save_task(&task).unwrap();
+        // Stands exactly where the SIGKILL landed: after the task's
+        // commit, before the deposit's.
+        let crashed_here = store.db.begin_read().unwrap();
+        store.save_pending_deposit(&deposit).unwrap();
+
+        let tasks = crashed_here.open_table(TASKS_TABLE).unwrap();
+        let deposits = crashed_here.open_table(PENDING_DEPOSITS_TABLE).unwrap();
+        assert!(
+            tasks.get(task.id.as_bytes().as_slice()).unwrap().is_some(),
+            "the task committed first, so a reader in the window sees it"
+        );
+        assert!(
+            deposits.get(deposit.id.as_bytes().as_slice()).unwrap().is_none(),
+            "and does not see the deposit that paid for it -- on disk that is a funded task \
+             beside an escrow still reading Reserved, which is the duplicate waiting to happen"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `confirm_exchange_deposit`'s pair, which has the same shape and
+    /// was never drilled. A duplicate here credits a ledger balance that
+    /// is spendable and tradeable immediately.
+    #[test]
+    fn an_exchange_credit_and_its_deposit_are_never_visible_apart() {
+        let path = temp_db_path("atomic_exchange_commit");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (_, mut deposit) = confirmed_escrow_pair();
+        deposit.purpose = crate::board::EscrowPurpose::FundExchangeAccount;
+        let depositor = deposit.depositor.clone();
+        let account = ExchangeAccount {
+            base_balance: 999_000,
+            ..Default::default()
+        };
+
+        let before = store.db.begin_read().unwrap();
+        store
+            .save_exchange_account_and_deposit(&depositor, &account, &deposit)
+            .unwrap();
+
+        let accounts_then = before.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        let deposits_then = before.open_table(PENDING_DEPOSITS_TABLE).unwrap();
+        assert!(accounts_then
+            .get(depositor.to_sec1_bytes().as_slice())
+            .unwrap()
+            .is_none());
+        assert!(deposits_then.get(deposit.id.as_bytes().as_slice()).unwrap().is_none());
+
+        let accounts = store.load_all_exchange_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].0, depositor);
+        assert_eq!(accounts[0].1.base_balance, 999_000);
+        let deposits = store.load_all_pending_deposits().unwrap();
+        assert_eq!(deposits.len(), 1);
+        assert_eq!(deposits[0].status, crate::board::EscrowStatus::Consumed);
 
         std::fs::remove_file(&path).ok();
     }

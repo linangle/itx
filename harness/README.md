@@ -216,7 +216,7 @@ comparable; rates per second are not.
 |---|---|---|
 | `node-crash` | Confirmed §6.5 | **6,000,000 ITX destroyed**, 6 of 6 payouts |
 | `escrow-restart` (SIGTERM) | Confirmed | every interrupted confirmation drained cleanly |
-| `escrow-restart` (SIGKILL) | **Refuted** (3 runs of 6) | 1 deposit funded 2 tasks |
+| `escrow-restart` (SIGKILL) | **Refuted** (3 runs of 6) | 1 deposit funded 2 tasks — fixed same day, see below |
 | `replay-storm` | Confirmed §3.3 | 0 of 30 replays accepted after a SIGKILL |
 | `rate-limit-tiers` | Confirmed §3.4 | 120 reads / 59 writes served, others unaffected |
 | `quota-isolation` | Confirmed §3.4 | 60 served, 15 refused; bystander 10 of 10 |
@@ -237,7 +237,25 @@ confirmation completed and none was lost, in every run. A crash is not.
 `Consumed` status, and a process that stops between the two leaves a task on
 disk beside a deposit that still reads `Reserved`. Verified independently of
 the drill by restarting a hub against its store and listing tasks: the same
-description, twice, under two ids. Written up as plan §6.5b; not fixed here.
+description, twice, under two ids. Written up as plan §6.5b.
+
+**Fixed 2026-09-06** (branch `escrow`), by committing the task and the
+deposit's `Consumed` status in one redb transaction rather than two. The
+baseline above is deliberately still the "before", as `node-crash`'s is; the
+sign-off is the comparison, not a refreshed file. Re-running this drill against
+the fix reports `verdict: refuted -> inconclusive`, `deposits_funding_two_tasks:
+1 -> 0` and the finding `gone`.
+
+Read that carefully, because a run finding nothing is exactly what this drill
+says not to trust. What makes it evidence is the control: five runs against the
+fix and five more on the same machine in the same session against the pre-fix
+hub sources, rebuilt in place. Pre-fix, `deposits_funding_two_tasks` equalled
+`tasks_that_survived_the_restart` in **every** run — five duplicates from five
+handlers that got as far as committing a task, because committing the task is
+what opens the window. With the fix, two handlers got that far and neither
+duplicated. Running the drill on both sides of a change is worth more here than
+running it many times on one, and is the pattern to copy for anything else this
+drill is pointed at.
 
 **It reproduced in three runs of six, and the drill is built to say so.** The
 interval is one step wide, so whether a `SIGKILL` lands inside it is chance.
@@ -251,6 +269,13 @@ So the hard-kill phase reports **inconclusive**, never confirmed, when it finds
 nothing: it can demonstrate the bug and cannot demonstrate its absence, and the
 hub has no fault-injection point that would make it deterministic. Do not sign
 a fix off on a green run of this drill.
+
+That behaviour was left exactly as it is when §6.5b was fixed, and the reason is
+worth stating: the fix removes the interval rather than narrowing it, and the
+absence of an interval is not something a sampling run can observe. There is no
+deterministic verdict for this drill to give. The deterministic evidence lives
+in `hub/src/store.rs`'s tests, where the failure can be injected between the two
+writes on every run.
 
 **`replay-storm`.** Thirty envelopes spent, the hub `SIGKILL`ed so nothing
 could flush on the way out, all thirty replayed the instant `/health` answered.
