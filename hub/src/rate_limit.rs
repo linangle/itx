@@ -184,7 +184,8 @@ pub struct Window {
 
 /// Per-client request tracking. Deliberately a field on `AppState`
 /// (constructed fresh per hub instance), *not* a process-wide
-/// `#[dynamic] static` like `auth::SEEN_SIGNATURES` -- unlike a
+/// `#[dynamic] static`, which the replay guard's seen-signature set used
+/// to be -- unlike a
 /// signature (unique per request by construction), a client IP is not,
 /// and every hub test instance in this workspace's test suite runs on
 /// 127.0.0.1. A global static here would mean every test hub sharing
@@ -215,7 +216,7 @@ fn check_and_record(table: &RateLimitTable, bucket: Bucket, now: DateTime<Utc>) 
 
 /// Evicts entries whose window has already lapsed -- keeps this from
 /// growing forever on a long-running process. Call periodically from
-/// the sweep loop, mirroring `auth::cleanup_replay_guard`.
+/// the sweep loop, mirroring `auth::ReplayGuard::cleanup`.
 pub fn cleanup(table: &RateLimitTable) {
     let cutoff = Utc::now() - Duration::seconds(WINDOW_SECONDS);
     table.retain(|_, w| w.started_at > cutoff);

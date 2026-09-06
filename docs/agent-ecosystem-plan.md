@@ -183,6 +183,14 @@ and plaintext credentials turn a leak into a supply-chain event.
      to matter would break the dashboard's five-second poll); the real fix is
      caching it the way `/leaderboard` already caches net worth (§6.1/§6.2).
 
+   One interaction worth naming now that §3.3 has landed too: a verified
+   request also costs an fsync, since the replay guard records the signature
+   durably before the handler runs. The per-key quota is charged *after*
+   verification, so it cannot come first — that ordering is forced, not chosen.
+   The quota is therefore what bounds "make the hub fsync on demand" for a
+   holder of a valid key; unauthenticated callers never reach the write, and
+   there is a test pinning that.
+
    Still open here: the limits are compile-time constants, so tuning them under
    an active attack means a redeploy — they should become operator knobs
    alongside the faucet's difficulty (§5). And `/llms.txt` documents no budget at
