@@ -1348,11 +1348,18 @@ impl TaskBoard {
             .collect()
     }
 
-    /// Tasks that passed verification but whose payout hasn't been
-    /// confirmed sent yet -- either because a payout attempt is still in
-    /// flight, or a previous one failed. Polled periodically by the hub's
-    /// sweep loop to retry payouts without needing a human to notice and
-    /// resubmit them by hand.
+    /// Tasks that passed verification and still have a payout to *send*.
+    ///
+    /// Deliberately still only `Verified`, not `Submitted`: a task
+    /// reaches `Submitted` precisely when nothing is left unsent (see
+    /// `record_payout_attempt`), so anything with a leg still to go is
+    /// here by construction. What happens to a payout after it is sent
+    /// is `outstanding_payout_attempts`'s half of the sweep, not this
+    /// one's.
+    ///
+    /// Polled periodically by the hub's sweep loop so a payout that
+    /// failed to build or send is retried without needing a human to
+    /// notice and resubmit it by hand.
     pub fn verified_unpaid_tasks(&self) -> Vec<&Task> {
         self.tasks
             .values()

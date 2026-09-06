@@ -1538,25 +1538,29 @@ async fn submit_consensus_task(
 #[dynamic]
 static PAYOUT_IN_FLIGHT: DashMap<(Uuid, String), ()> = DashMap::new();
 
-/// Attempts to pay out every recipient still owed a share of a `Verified`
-/// task's bounty (see `Task::pending_payouts` -- for a `HashMatch` task
-/// that's always exactly one recipient; for a `Consensus` task it may be
+/// Submits a payout for every recipient still owed a share of the task's
+/// bounty and not already waiting on one (see
+/// `TaskBoard::unsubmitted_payouts` -- for a `HashMatch` task that's
+/// always exactly one recipient; for a `Consensus` task it may be
 /// several). Safe to call repeatedly/concurrently: at most one caller
-/// actually pays a given (task, recipient) pair at a time (see
-/// `PAYOUT_IN_FLIGHT`), and anything not currently owed (already paid, or
-/// the task isn't `Verified`) is simply skipped. Returns whether every
-/// owed recipient was successfully paid this call -- `false` if the task
-/// had nothing pending, if any individual payout failed, or if another
-/// caller was already handling one, all of which the sweep loop just
-/// retries again later.
+/// sends for a given (task, recipient) pair at a time (see
+/// `PAYOUT_IN_FLIGHT`), and anything not currently owed (already
+/// confirmed, already in flight, or the task is in neither `Verified`
+/// nor `Submitted`) is simply skipped.
 ///
-/// Note this is a best-effort retry, not an idempotent one: if a previous
-/// attempt's transaction actually made it on-chain but this process
-/// crashed or lost the response before recording that, a retry sends a
-/// second, independent payment. The same risk already existed with the
-/// fully-manual retry this replaces; automating the retry doesn't remove
-/// it. Acceptable for a testnet economy, but worth keeping in mind before
-/// reusing this pattern anywhere real money is on the line.
+/// **Returns whether everything owed is now on the wire, not whether it
+/// was paid.** Confirmation is the sweep's job and comes at least a
+/// sweep later (`resolve_payout_attempt`); `false` here means the task
+/// had nothing to send, a send failed, or another caller was already
+/// handling it, all of which the sweep retries.
+///
+/// The retry used to be best-effort rather than idempotent: a previous
+/// attempt whose transaction actually made it on-chain, unrecorded, meant
+/// a retry sent a second independent payment. That is what `Submitted`
+/// and `PayoutAttempt` removed -- a payout with a transaction in flight
+/// is no longer in the set this sends, and it is only ever re-sent once
+/// the node has been shown to hold neither the output nor a claim on the
+/// inputs.
 ///
 /// An escrow-funded task (see `Task::escrow_id`) is settled entirely
 /// differently from an operator-funded one -- see `settle_escrow_funded_task`.
@@ -3814,6 +3818,15 @@ async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u
 /// forget (see its own doc comment), so the caller of the losing payout
 /// would otherwise have no way of knowing it never landed on chain before
 /// going on to record it as paid anyway.
+///
+/// A *task* payout would now survive that: the sweep would find the
+/// output missing and the inputs untouched and re-send it
+/// (`resolve_payout_attempt`). The lock still earns its place -- one
+/// wasted round trip and a sweep interval of delay is worse than not
+/// racing in the first place -- and the faucet, exchange withdrawals and
+/// escrow disbursement have no such recovery at all, so for them this is
+/// still the only thing standing between two concurrent payments and a
+/// silently dropped one.
 /// Fetches `source_pubkey`'s UTXOs, builds a transaction paying every one
 /// of `recipients` (change, if any, to `change_pubkey`) signed by
 /// `signing_key`, and submits it. Does no locking itself -- callers are
