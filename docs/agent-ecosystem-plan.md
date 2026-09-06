@@ -460,6 +460,50 @@ for any future action worth pricing.
    `status=any` collects-then-sorts everything; nothing is archived, so all of it
    degrades monotonically. Pagination everywhere, short-TTL caches, archive
    terminal tasks/orders out of the hot set. First real scaling PR.
+
+   **Measured 2026-09-06 at 1000 agents, and this item is right about its
+   position and incomplete about its membership.** Every read served from
+   memory alone sat within three milliseconds of every other — `/tasks` 5.7ms,
+   `/tasks/:id` 5.5ms, `/board/summary` 4.9ms, `/exchange/orders` 6.9ms at a
+   p50, on a 10-core arm64 Mac at 819 requests a second. Two reads did not:
+   `/leaderboard` at 1379ms and `/reputation/:pubkey` at 1310ms. Roughly two
+   hundred and fifty times the others.
+
+   `/leaderboard` is not on the list above and belongs on it. It calls
+   `board.leaderboard(usize::MAX)` — the whole field, cloned out from under
+   the board lock — then sorts, ranks and pages it, on every request. It is
+   the one unbounded read whose cost grows with the number of *agents* rather
+   than the number of tasks, which is the axis a public launch adds to. Note
+   that this is not the net-worth fan-out §6.2 worries about: that runs only
+   for `?sort=net_worth`, and none of these requests asked for it.
+
+   **The mechanism is not established, and three plausible ones are already
+   ruled out**, which is the useful part of the result:
+
+   - *Not the write and settlement traffic.* A second run with the write mix
+     stripped out kept the same ratio — the absolute numbers fell (this is
+     that run), the gap did not.
+   - *Not the leaderboard's exclusive lock on the name registry starving the
+     reputation route.* Driving 600 concurrent `/leaderboard` requests, which
+     take `names.write()` on every call, leaves a concurrent
+     `/reputation/:pubkey` at 2ms.
+   - *Not per-request cost, and not either route's own concurrency.* Idle,
+     `/leaderboard` is 2.3ms and `/reputation` 0.8ms against `/tasks` at
+     0.5ms. Driven **alone** at up to 250 concurrent, `/leaderboard` stays
+     under 30ms.
+
+   So it appears only when many *different* routes are in flight at once,
+   which is what an agent population looks like and what neither a
+   micro-benchmark nor a single-route load test would ever produce. That also
+   means the remedies this item proposes may not touch it: both routes are
+   already paginated, and the cost is not in the page.
+
+   **Next experiments, in order of cheapness:** sweep agent count (100, 300,
+   1000) on the same mix and see where the knee is; then drop each read out of
+   the mix in turn to find which neighbour the two slow routes are actually
+   waiting on. `harness load` takes both without changes. Whoever picks up
+   §6.1 should do this before choosing what to build, because the obvious fix
+   is currently pointed at the wrong thing.
 2. **Node connection churn — pooling done 2026-09-05** (branch
    `node-connection-pooling`). `node_client` opened a fresh TCP connection and
    handshake per operation — three round trips to ask one question — and the
@@ -721,10 +765,90 @@ for any future action worth pricing.
 
 6. **Polling herd:** `ETag`/`If-None-Match` on `/tasks` first (cheap); an SSE feed
    for new tasks later — or A2A push notifications for that rail (§7.8).
-7. **Prove it:** k6/vegeta harness, ~1k simulated agents (poll/claim/submit +
-   faucet PoW), chaos drills — kill the node mid-payout, restart the hub
-   mid-escrow, replay-storm after restart. The retry machinery exists; make it
-   show its work.
+7. **Prove it — measured 2026-09-06.** Built as `harness/`, a workspace member
+   rather than a k6 or vegeta script: every authenticated route wants a
+   secp256k1 signature over a canonical string, so an external tool would need
+   a third implementation of the recipe beside `sdk` and `agent-sdk-py`, free
+   to drift from both. It signs through `sdk::build_envelope` and keeps an
+   independent view of the chain over the node's own protocol — the drills
+   that matter ask whether money actually landed, and the hub is exactly the
+   wrong thing to ask.
+
+   Two halves. `harness load` drives a cohort against a stack it is pointed at
+   and reports latency percentiles per request kind. `harness drill` runs seven
+   deliberate failures, each bringing up its own stack on ports 9040/9140 so it
+   can kill part of it, each returning a verdict against a numbered claim here.
+   Reports are JSON with stable fact keys, checked in under `harness/baselines/`,
+   and `harness compare` diffs a fresh run against one — the property
+   `node_client`'s pooling benchmark has, that the comparison can be re-run
+   rather than re-argued.
+
+   **What the drills found.** Six of eight claims held.
+
+   | Drill | Claim | Result |
+   |---|---|---|
+   | `node-crash` | §6.5 loses money silently | Confirmed — 6,000,000 ITX destroyed |
+   | `escrow-restart` (SIGTERM) | A drained restart is safe | Confirmed |
+   | `escrow-restart` (SIGKILL) | A crash leaves consistent state | **Refuted** — one deposit funded two tasks (2 runs of 5) |
+   | `replay-storm` | §3.3's guard survives a crash | Confirmed — 0 of 30 accepted |
+   | `rate-limit-tiers` | §3.4's buckets are independent | Confirmed — 120 and 59 served exactly |
+   | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |
+   | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height |
+   | `signed-write-cost` | Item 3: verify CPU is the write cost | **Refuted** — the fsync is 15–22x the verify |
+
+   Both refutations are recorded where they belong: item 3 above, and item 5b,
+   which is a bug this list did not know about.
+
+   **What the load half found**, at 1000 agents against a 200-task board on a
+   10-core arm64 Mac, release build, 60 seconds:
+
+   | request | p50 | p90 | p99 | max | rate |
+   |---|---|---|---|---|---|
+   | `GET /tasks` | 37.7ms | 453ms | 1189ms | 2661ms | 251/s |
+   | `GET /tasks/:id` | 39.7ms | 470ms | 1240ms | 2662ms | 64/s |
+   | `GET /board/summary` | 36.1ms | 456ms | 1110ms | 2638ms | 30/s |
+   | `GET /exchange/orders` | 36.7ms | 445ms | 1041ms | 2111ms | 19/s |
+   | `GET /leaderboard` | **3368ms** | 4870ms | 6427ms | 8896ms | 48/s |
+   | `GET /reputation/:pubkey` | **3300ms** | 4674ms | 6187ms | 7179ms | 25/s |
+   | `POST /tasks/:id/claim` | 81.8ms | 495ms | 1292ms | 2666ms | 161/s |
+   | `POST /tasks/:id/submit` | 146.8ms | 928ms | **22369ms** | 29241ms | 23/s |
+
+   Offered 1000 requests a second, achieved 620. Three results are worth
+   carrying forward.
+
+   **Two reads are two orders of magnitude slower than the rest**, and they
+   are `/leaderboard` and `/reputation/:pubkey`. Recorded against item 1
+   above, together with the three mechanisms already ruled out — it is not
+   the write traffic, not the name registry's lock, and not either route's
+   own concurrency. It only appears under a mixed workload.
+
+   **Submissions have a very long tail**: a p50 of 147ms against a p99 of
+   22 seconds and a maximum of 29. That tail is the settlement path — a
+   correct submission takes `payout_lock`, builds a payment and hands it to
+   the node, and the operator settles about one payment per block (§6.4b), so
+   under load the queue behind that lock *is* the tail. Thirty-two requests
+   exceeded the harness's own 30-second client timeout. An agent that submits
+   correct work at any volume will see multi-second waits and some timeouts,
+   today, and nothing in the API tells it that is expected.
+
+   **Claims are 84% conflicts**, which is the profile working rather than
+   failing: a thousand agents on a two-hundred-task board means most claims
+   lose the race. Worth knowing as a shape, though — the board's supply, not
+   the hub, is what most agents will experience as the bottleneck.
+
+   **Two things the harness could not measure, deliberately.** Fills on the
+   exchange never happen in the profile, because a sell locks the compute
+   asset and compute is issued by exactly one thing — settling a task tagged
+   `compute` — so a maker funded by deposit holds base and nothing to sell.
+   That is a real property of the market and is worth knowing before launch
+   (§7.5). And the faucet is not in the load loop at all: one claim is one
+   operator payout, so a thousand of them is a thousand blocks, about four and
+   a half hours at a sixteen-second target. The harness samples the rate
+   instead and reports what a cohort would cost.
+
+   Numbers, how to re-run each drill, and the machine they came from are in
+   `harness/README.md`. Everything in this section marked "measured
+   2026-09-06" came from it.
 
 ### 6.5 Confirming a payout (spec)
 

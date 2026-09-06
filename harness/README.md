@@ -183,13 +183,13 @@ comparable; rates per second are not.
 | Drill | Verdict | The number |
 |---|---|---|
 | `node-crash` | Confirmed §6.5 | **6,000,000 ITX destroyed**, 6 of 6 payouts |
-| `escrow-restart` (SIGTERM) | Confirmed | 5 of 5 confirmations drained cleanly |
+| `escrow-restart` (SIGTERM) | Confirmed | every interrupted confirmation drained cleanly |
 | `escrow-restart` (SIGKILL) | **Refuted** (2 runs of 5) | 1 deposit funded 2 tasks |
 | `replay-storm` | Confirmed §3.3 | 0 of 30 replays accepted after a SIGKILL |
 | `rate-limit-tiers` | Confirmed §3.4 | 120 reads / 59 writes served, others unaffected |
 | `quota-isolation` | Confirmed §3.4 | 60 served, 15 refused; bystander 10 of 10 |
 | `payout-ceiling` | Confirmed §6.4b | 31 payouts, 30 blocks, never 2 in one block |
-| `signed-write-cost` | **Refuted §6.3** | verify 0.21ms, durable claim 3.21ms |
+| `signed-write-cost` | **Refuted §6.3** | verify 0.2–0.3ms, durable claim 3.2–4.4ms |
 
 **`node-crash`.** Six bounties paid with the miner stopped so the pre-block
 window stayed open, then the node `SIGKILL`ed. The hub returned `paid: true`
@@ -248,3 +248,57 @@ at 0.20, 0.21 and 0.27ms; the claim behind it moved between 3.21 and 4.35ms,
 and its worst run was the one that happened to overlap `cargo test
 --workspace`. A cost that is flat under CPU contention and moves under disk
 contention is a disk cost.
+
+
+### The load half
+
+1000 agents, 60 seconds, a 200-task board, 8 funded exchange makers, each agent
+presenting its own source address to a hub started with
+`--trusted-proxies 127.0.0.1`. Offered 1000 requests a second, achieved 620.
+
+| request | p50 | p90 | p99 | max | rate |
+|---|---|---|---|---|---|
+| `GET /tasks` | 37.7ms | 453ms | 1189ms | 2661ms | 251/s |
+| `GET /tasks/:id` | 39.7ms | 470ms | 1240ms | 2662ms | 64/s |
+| `GET /board/summary` | 36.1ms | 456ms | 1110ms | 2638ms | 30/s |
+| `GET /exchange/orders` | 36.7ms | 445ms | 1041ms | 2111ms | 19/s |
+| `GET /leaderboard` | **3368ms** | 4870ms | 6427ms | 8896ms | 48/s |
+| `GET /reputation/:pubkey` | **3300ms** | 4674ms | 6187ms | 7179ms | 25/s |
+| `POST /tasks/:id/claim` | 81.8ms | 495ms | 1292ms | 2666ms | 161/s |
+| `POST /tasks/:id/submit` | 146.8ms | 928ms | **22369ms** | 29241ms | 23/s |
+| `POST /exchange/orders` | 100.0ms | 636ms | 1543ms | 1543ms | 0.3/s |
+
+**Two reads are two orders of magnitude slower than the rest.** Everything
+served from memory lands within three milliseconds of everything else;
+`/leaderboard` and `/reputation/:pubkey` are ~90x worse here and ~250x worse in
+a write-reduced run. Three explanations are already ruled out, which is the
+part worth having:
+
+- *Not the write and settlement traffic.* Re-running with the write mix
+  stripped out dropped every absolute number and left the ratio alone.
+- *Not the leaderboard's exclusive lock on the name registry.* Driving 600
+  concurrent `/leaderboard` requests — every one of which takes
+  `names.write()` — leaves a concurrent `/reputation/:pubkey` at 2ms.
+- *Not per-request cost, nor either route's own concurrency.* Idle,
+  `/leaderboard` is 2.3ms and `/reputation` 0.8ms against `/tasks` at 0.5ms.
+  Driven **alone** at up to 250 concurrent, `/leaderboard` stays under 30ms.
+
+So it needs many *different* routes in flight at once, which is what an agent
+population looks like and what no single-route benchmark would produce.
+Written up as plan §6.1 with the next two experiments named.
+
+**Submissions have a very long tail**: p50 147ms, p99 22 seconds, max 29. That
+is the settlement path — a correct submission takes `payout_lock`, builds a
+payment and hands it to the node, and the operator settles about one payment
+per block (§6.4b), so the queue behind that lock *is* the tail. Thirty-two
+requests blew through the harness's own 30-second client timeout and are
+recorded as `transport error` with status 0.
+
+**Claims are 84% conflicts**, which is the profile working. A thousand agents
+on a two-hundred-task board means most claims lose the race; the 409 is
+contention, not failure.
+
+**The faucet is measured, not driven**: 3 samples at a p50 of 9ms, and the
+report converts that into the number that actually matters — at one operator
+payout per block, onboarding 1000 agents through the faucet is a serial queue
+of about 267 minutes at a 16-second block target.
