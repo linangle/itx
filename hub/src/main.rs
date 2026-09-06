@@ -267,6 +267,24 @@ async fn sweep_loop(state: Arc<AppState>) {
 /// tests can simulate a deadline having passed without an actual sleep --
 /// mirroring the board methods this delegates to, which already take `now`
 /// for the same reason.
+/// How long a submitted payout is left alone before the sweep asks the
+/// node what became of it.
+///
+/// `submit_transaction` is fire-and-forget: it returns once the bytes
+/// are written, before the node has read them, let alone mined them. A
+/// resolution run in that window would find the output absent and the
+/// inputs untouched and conclude the payout was lost -- and act on it,
+/// by sending a second one. Thirty seconds is roughly two blocks at the
+/// 16-second target, and comfortably longer than the round trip it is
+/// really guarding.
+///
+/// It costs nothing in practice. The sweep runs once a minute, so a
+/// payout submitted at any point in one interval is already older than
+/// this by the next one; the grace only ever suppresses a resolution
+/// that would have been asked in the same sweep that sent it, which is
+/// the case where the answer cannot be trusted anyway.
+const PAYOUT_RESOLUTION_GRACE_SECONDS: i64 = 30;
+
 async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc>) {
     let reopened = {
         let mut board = state.board.write().await;
@@ -346,6 +364,26 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         info!("sweep: refunded overdue unconfirmed escrow deposit {deposit_id}");
     }
 
+    // Resolve first, then send. A payout that confirmed this interval
+    // drops out of `unsubmitted_payouts` before the sending pass looks
+    // at it, and one the node proves it never received is re-sent by
+    // `resolve_payout_attempt` itself -- so the two passes never both
+    // act on the same payout in one sweep.
+    let settled_enough_to_ask = now - chrono::Duration::seconds(PAYOUT_RESOLUTION_GRACE_SECONDS);
+    // Collected into a binding first, deliberately. Written as
+    // `for attempt in state.board.read().await.outstanding_payout_attempts()`
+    // the read guard is a temporary in the iterator expression, and Rust
+    // keeps those alive for the whole loop -- so the first resolution
+    // that took the board's write lock would deadlock against a lock the
+    // loop itself was still holding.
+    let outstanding = state.board.read().await.outstanding_payout_attempts();
+    for attempt in outstanding {
+        if attempt.submitted_at > settled_enough_to_ask {
+            continue;
+        }
+        handlers::resolve_payout_attempt(state, &attempt).await;
+    }
+
     let unpaid: Vec<Uuid> = state
         .board
         .read()
@@ -356,7 +394,11 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         .collect();
     for task_id in unpaid {
         if handlers::try_settle_verified_task(state, task_id).await {
-            warn!("sweep: retried and paid out task {task_id}");
+            // "submitted", not "paid" -- what comes back from here is
+            // that the transaction went onto the wire. Whether it
+            // reached a block is what the resolution pass above answers,
+            // one sweep later at the earliest.
+            warn!("sweep: retried and submitted the payout for task {task_id}");
         }
     }
 
@@ -461,9 +503,22 @@ async fn main() -> Result<()> {
     for trade in store.load_all_trades()? {
         board.restore_trade(trade);
     }
+    // After the tasks, so every attempt restored here already has the
+    // task it belongs to on the board. A payout in flight across a
+    // restart is exactly the case this whole mechanism exists for, so
+    // the count is printed rather than left silent -- a non-zero one at
+    // boot is worth an operator's attention.
+    let restored_payouts = {
+        let attempts = store.load_all_payout_attempts()?;
+        let count = attempts.len();
+        for attempt in attempts {
+            board.restore_payout_attempt(attempt);
+        }
+        count
+    };
     println!(
         "loaded {} task(s), {} reputation record(s), {} faucet grant(s), {} pending escrow deposit(s), \
-         {} exchange account(s), {} order(s), {} trade(s) from store",
+         {} exchange account(s), {} order(s), {} trade(s), {} unconfirmed payout(s) from store",
         board.all_tasks().count(),
         board.all_reputation().count(),
         board.all_faucet_grants().count(),
@@ -471,6 +526,7 @@ async fn main() -> Result<()> {
         board.all_exchange_accounts().count(),
         board.all_orders().count(),
         board.all_trades().count(),
+        restored_payouts,
     );
 
     let mut names = NameRegistry::new();
@@ -699,6 +755,27 @@ mod tests {
     /// tests to assert against.
     const FAKE_NODE_CHAIN_HEIGHT: u32 = 7;
 
+    /// What a `FakeNode` does with a transaction it is handed. The three
+    /// things a real node can do that the hub cannot tell apart from the
+    /// send alone -- which is the entire reason `TaskStatus::Submitted`
+    /// exists -- so each is stageable here.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SubmissionFate {
+        /// Accepted and mined: inputs consumed, outputs credited. The
+        /// default, and the only one the hub used to assume.
+        Mined,
+        /// Accepted into a memory-only mempool: the inputs are marked and
+        /// nothing is credited yet. Also what a rejected transaction
+        /// leaves behind once some *other* transaction has taken the
+        /// inputs -- from the hub's side the two are the same picture,
+        /// which is why it is the ambiguous row.
+        HeldInMempool,
+        /// Never arrived. The node is not told, the hub is not told, and
+        /// nothing anywhere changes -- a node restart discarding its
+        /// mempool, or a rejection that closed the connection.
+        Swallowed,
+    }
+
     /// A minimal stand-in for a real node: speaks just enough of the wire
     /// protocol (handshake, `FetchUTXOs`, `SubmitTransaction`, `AskChainTip`)
     /// to drive the hub's real `NodeClient` in tests, without a real
@@ -712,10 +789,19 @@ mod tests {
     struct FakeNode {
         addr: String,
         submitted: Arc<AsyncMutex<Vec<Transaction>>>,
-        // Keyed by the pubkey's string form, not `PublicKey` itself --
-        // same reason as `handlers::PAYOUT_IN_FLIGHT`: `PublicKey` has no
-        // `Hash` impl.
-        balances: Arc<AsyncMutex<std::collections::HashMap<String, u64>>>,
+        /// The unspent outputs this node reports, and whether its
+        /// mempool has spoken for each -- a real set rather than a
+        /// balance rendered into a throwaway output on every read.
+        ///
+        /// It has to be a real set now, because settlement confirmation
+        /// resolves an *output hash* against what an address holds (see
+        /// `board::PayoutAttempt`). A node that minted a fresh
+        /// `unique_id` per `FetchUTXOs` could never confirm anything: the
+        /// same money would hash differently every time it was looked at.
+        utxos: Arc<AsyncMutex<Vec<(TransactionOutput, bool)>>>,
+        /// What a submitted transaction does to `utxos`. See
+        /// `SubmissionFate`.
+        fate: Arc<AsyncMutex<SubmissionFate>>,
         /// How many TCP connections this fake has accepted over its
         /// lifetime. The figure the connection-pooling tests assert on:
         /// with a pool, a run of operations should cost far fewer
@@ -733,12 +819,14 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
             let submitted = Arc::new(AsyncMutex::new(Vec::new()));
-            let balances: Arc<AsyncMutex<std::collections::HashMap<String, u64>>> =
-                Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+            let utxos: Arc<AsyncMutex<Vec<(TransactionOutput, bool)>>> =
+                Arc::new(AsyncMutex::new(Vec::new()));
+            let fate = Arc::new(AsyncMutex::new(SubmissionFate::Mined));
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let submitted_for_accept_loop = submitted.clone();
-            let balances_for_accept_loop = balances.clone();
+            let utxos_for_accept_loop = utxos.clone();
+            let fate_for_accept_loop = fate.clone();
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
             tokio::spawn(async move {
@@ -748,7 +836,8 @@ mod tests {
                     };
                     connections_for_accept_loop.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let submitted = submitted_for_accept_loop.clone();
-                    let balances = balances_for_accept_loop.clone();
+                    let utxos = utxos_for_accept_loop.clone();
+                    let fate = fate_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
                     tokio::spawn(async move {
                         if btclib::network::perform_handshake_acceptor(&mut socket)
@@ -764,26 +853,53 @@ mod tests {
                             };
                             match message {
                                 Message::FetchUTXOs(pk) => {
-                                    let balance = balances.lock().await.get(&pk.to_string()).copied();
-                                    let utxos = match balance {
-                                        Some(balance) => vec![(
-                                            TransactionOutput {
-                                                value: balance,
-                                                unique_id: Uuid::new_v4(),
-                                                pubkey: pk,
-                                            },
-                                            false,
-                                        )],
-                                        None => vec![],
-                                    };
-                                    if Message::UTXOs(utxos).send_async(&mut socket).await.is_err()
+                                    let owned: Vec<(TransactionOutput, bool)> = utxos
+                                        .lock()
+                                        .await
+                                        .iter()
+                                        .filter(|(output, _)| output.pubkey == pk)
+                                        .cloned()
+                                        .collect();
+                                    if Message::UTXOs(owned).send_async(&mut socket).await.is_err()
                                     {
                                         return;
                                     }
                                 }
                                 Message::SubmitTransaction(tx) => {
-                                    submitted.lock().await.push(tx);
                                     // fire-and-forget, matching the real protocol
+                                    let fate = *fate.lock().await;
+                                    if fate == SubmissionFate::Swallowed {
+                                        // The node never got it: not
+                                        // recorded, and the UTXO set is
+                                        // untouched, which is exactly
+                                        // what a lost submission looks
+                                        // like from the hub's side.
+                                        continue;
+                                    }
+                                    submitted.lock().await.push(tx.clone());
+                                    let mut utxos = utxos.lock().await;
+                                    match fate {
+                                        SubmissionFate::Mined => {
+                                            utxos.retain(|(output, _)| {
+                                                !tx.inputs.iter().any(|input| {
+                                                    input.prev_transaction_output_hash == output.hash()
+                                                })
+                                            });
+                                            utxos.extend(
+                                                tx.outputs.iter().cloned().map(|o| (o, false)),
+                                            );
+                                        }
+                                        SubmissionFate::HeldInMempool => {
+                                            for (output, marked) in utxos.iter_mut() {
+                                                if tx.inputs.iter().any(|input| {
+                                                    input.prev_transaction_output_hash == output.hash()
+                                                }) {
+                                                    *marked = true;
+                                                }
+                                            }
+                                        }
+                                        SubmissionFate::Swallowed => unreachable!("handled above"),
+                                    }
                                 }
                                 Message::AskChainTip => {
                                     let tip = Message::ChainTip(FAKE_NODE_CHAIN_HEIGHT, btclib::U256::from(1u64));
@@ -800,7 +916,7 @@ mod tests {
                     });
                 }
             });
-            FakeNode { addr, submitted, balances, connections, hang_up_after_one }
+            FakeNode { addr, submitted, utxos, fate, connections, hang_up_after_one }
         }
 
         /// How many TCP connections this fake has accepted so far.
@@ -824,9 +940,44 @@ mod tests {
         }
 
         /// Sets (or replaces) the balance `FetchUTXOs` reports for
-        /// `pubkey`. Callable any time after spawning.
+        /// `pubkey`, as one unmarked output. Callable any time after
+        /// spawning -- escrow tests need it, since the address to fund is
+        /// minted by the hub long after this server is running.
         async fn fund(&self, pubkey: PublicKey, balance: u64) {
-            self.balances.lock().await.insert(pubkey.to_string(), balance);
+            let mut utxos = self.utxos.lock().await;
+            utxos.retain(|(output, _)| output.pubkey != pubkey);
+            utxos.push((
+                TransactionOutput { value: balance, unique_id: Uuid::new_v4(), pubkey },
+                false,
+            ));
+        }
+
+        /// What this node does with the next transaction it is handed --
+        /// see `SubmissionFate`. The default is `Mined`.
+        async fn set_fate(&self, fate: SubmissionFate) {
+            *self.fate.lock().await = fate;
+        }
+
+        /// Every unspent output `pubkey` currently holds, newest last.
+        async fn outputs_of(&self, pubkey: &PublicKey) -> Vec<(TransactionOutput, bool)> {
+            self.utxos
+                .lock()
+                .await
+                .iter()
+                .filter(|(output, _)| output.pubkey == *pubkey)
+                .cloned()
+                .collect()
+        }
+
+        /// What `NodeClient::balance` would report for `pubkey`:
+        /// everything the mempool has not spoken for.
+        async fn balance_of(&self, pubkey: &PublicKey) -> u64 {
+            self.outputs_of(pubkey)
+                .await
+                .iter()
+                .filter(|(_, marked)| !marked)
+                .map(|(output, _)| output.value)
+                .sum()
         }
 
         async fn submitted_transactions(&self) -> Vec<Transaction> {
@@ -849,6 +1000,37 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
             self.submitted_transactions().await
+        }
+    }
+
+    /// Runs the sweep's resolution pass over every payout currently in
+    /// flight, so a test can reach the settled end state.
+    ///
+    /// Settlement is two steps now: the hub submits, and a later sweep
+    /// works out what became of it. A test that only submits leaves the
+    /// task `Submitted`, which is correct and is the point -- reputation,
+    /// compute credit and `Paid` all wait on evidence.
+    ///
+    /// It waits for the fake node to hold the output before resolving,
+    /// because `submit_transaction` is fire-and-forget and returns before
+    /// the node has read the bytes. Asked in that window the hub would be
+    /// *right* to call the payout lost; the real sweep buys the same
+    /// margin with `PAYOUT_RESOLUTION_GRACE_SECONDS`.
+    async fn confirm_submitted_payouts(state: &Arc<AppState>, node: &FakeNode) {
+        let outstanding = state.board.read().await.outstanding_payout_attempts();
+        for attempt in outstanding {
+            for _ in 0..200 {
+                let landed = node
+                    .outputs_of(&attempt.recipient)
+                    .await
+                    .iter()
+                    .any(|(output, _)| output.hash() == attempt.output_hash);
+                if landed {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            handlers::resolve_payout_attempt(state, &attempt).await;
         }
     }
 
@@ -1278,7 +1460,12 @@ mod tests {
             .unwrap();
         let result: Value = resp.json().await.unwrap();
         assert_eq!(result["verified"], true);
-        assert_eq!(result["paid"], true);
+        assert_eq!(result["paid"], true, "submitted -- see SubmitResultDto::paid");
+
+        // The bounty payout is only *submitted* at this point.
+        // Reputation, like everything else downstream of a payout, now
+        // waits until the sweep has seen it on chain.
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
 
         let reputation: Value = hub
             .client
@@ -2232,16 +2419,31 @@ mod tests {
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let (task_id, claimant) = seed_verified_task(&hub.state, 1_000).await;
 
-        let paid = handlers::try_settle_verified_task(&hub.state, task_id).await;
-        assert!(paid);
+        let submitted_ok = handlers::try_settle_verified_task(&hub.state, task_id).await;
+        assert!(submitted_ok);
 
         let status = hub.state.board.read().await.get_task(task_id).unwrap().status;
-        assert_eq!(status, TaskStatus::Paid);
+        assert_eq!(
+            status,
+            TaskStatus::Submitted,
+            "sent is not paid -- the hub has had no answer from the node yet"
+        );
+        assert_eq!(hub.state.board.read().await.reputation(&claimant).completed, 0);
 
         let submitted = fake_node.wait_for_submitted_count(1).await;
         assert_eq!(submitted.len(), 1);
         let recipient_output = submitted[0].outputs.iter().find(|o| o.pubkey == claimant);
         assert_eq!(recipient_output.unwrap().value, 1_000);
+
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+        let status = hub.state.board.read().await.get_task(task_id).unwrap().status;
+        assert_eq!(status, TaskStatus::Paid, "and now the chain has been asked");
+        assert_eq!(hub.state.board.read().await.reputation(&claimant).completed, 1);
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            1,
+            "confirming must never put a second transaction on the wire"
+        );
     }
 
     #[tokio::test]
@@ -2279,11 +2481,26 @@ mod tests {
 
         run_sweep_once(&hub.state, Utc::now()).await;
 
+        {
+            let board = hub.state.board.read().await;
+            assert_eq!(board.get_task(task_a).unwrap().status, TaskStatus::Submitted);
+            assert_eq!(board.get_task(task_b).unwrap().status, TaskStatus::Submitted);
+        }
+        assert_eq!(fake_node.wait_for_submitted_count(2).await.len(), 2);
+
+        // A second sweep, far enough past the first that the grace
+        // period has elapsed, is what turns sent into paid.
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(1)).await;
+
         let board = hub.state.board.read().await;
         assert_eq!(board.get_task(task_a).unwrap().status, TaskStatus::Paid);
         assert_eq!(board.get_task(task_b).unwrap().status, TaskStatus::Paid);
         drop(board);
-        assert_eq!(fake_node.wait_for_submitted_count(2).await.len(), 2);
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            2,
+            "the resolving sweep must not re-send payouts it is only checking on"
+        );
     }
 
     #[tokio::test]
@@ -2397,6 +2614,11 @@ mod tests {
         let result: Value = resp.json().await.unwrap();
         assert_eq!(result["resolved"], true);
         assert_eq!(result["verified"], false, "agent_c disagreed with the majority");
+
+        // The bounty payout is only *submitted* at this point.
+        // Reputation, like everything else downstream of a payout, now
+        // waits until the sweep has seen it on chain.
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
 
         let rep_a: Value = hub
             .client
@@ -3695,6 +3917,9 @@ mod tests {
 
         // simulate the dispute window having elapsed, no dispute filed
         run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(31)).await;
+        // ...and a later one to resolve what that sweep submitted.
+        fake_node.wait_for_submitted_count(1).await;
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(32)).await;
 
         let task: Value = hub
             .client
@@ -3781,6 +4006,11 @@ mod tests {
             .sum();
         assert_eq!(total_to_challenger, 900 + 900, "bounty (900) plus their own bond back (900, after its own fee)");
 
+        // The bounty payout is only *submitted* at this point.
+        // Reputation, like everything else downstream of a payout, now
+        // waits until the sweep has seen it on chain.
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+
         let assignee_rep: Value = hub
             .client
             .get(format!("{}/reputation/{}", hub.base_url, assignee_key.public_key()))
@@ -3839,6 +4069,11 @@ mod tests {
             .map(|o| o.value)
             .sum();
         assert_eq!(total_to_assignee, 900 + 900, "bounty plus the forfeited bond");
+
+        // The bounty payout is only *submitted* at this point.
+        // Reputation, like everything else downstream of a payout, now
+        // waits until the sweep has seen it on chain.
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
 
         let assignee_rep: Value = hub
             .client
@@ -4285,6 +4520,14 @@ mod tests {
         }
 
         assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        // Minting rides on the payout being *confirmed*, not merely sent
+        // -- the same evidence that credits reputation.
+        assert_eq!(
+            hub.state.board.read().await.exchange_account(&claimant).compute_balance,
+            0,
+            "nothing is minted off a transaction whose fate is still unknown"
+        );
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
 
         let account = hub.state.board.read().await.exchange_account(&claimant);
         assert_eq!(account.compute_balance, 500, "the settled bounty amount, minted as compute on top of the payout");
@@ -4298,6 +4541,7 @@ mod tests {
 
         let (task_id, claimant) = seed_verified_task(&hub.state, 500).await;
         assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
 
         let account = hub.state.board.read().await.exchange_account(&claimant);
         assert_eq!(account.compute_balance, 0, "no compute tag, no compute minted");
