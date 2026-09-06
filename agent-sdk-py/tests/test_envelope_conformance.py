@@ -67,12 +67,46 @@ def test_build_envelope_reproduces_the_fixture_end_to_end(fixture):
     payload = json.loads(fixture["payload_json"])
     timestamp = datetime.fromisoformat(fixture["timestamp"])
 
-    envelope = agent.build_envelope(payload, timestamp=timestamp)
+    envelope = agent.build_envelope(
+        fixture["method"], fixture["path"], payload, timestamp=timestamp
+    )
 
     assert envelope["pubkey"] == fixture["pubkey_hex"]
     assert envelope["timestamp"] == fixture["timestamp"]
     assert _canonical_json(envelope["payload"]) == fixture["payload_json"]
     assert envelope["signature"] == fixture["expected_signature_hex"]
+    # The method and path are bound into the signature, never sent.
+    assert "method" not in envelope and "path" not in envelope
+
+
+def test_fixtures_cover_the_endpoint_binding():
+    """The fixture file must contain a pair differing only in path, or
+    this suite would still pass against an implementation that ignored
+    the path entirely -- which is exactly the bug the recipe change
+    exists to prevent.
+    """
+    by_name = {fx["name"]: fx for fx in FIXTURES}
+    a, b = by_name["unit_payload"], by_name["same_payload_different_path"]
+    assert (a["private_key_hex"], a["timestamp"], a["payload_json"]) == (
+        b["private_key_hex"],
+        b["timestamp"],
+        b["payload_json"],
+    ), "the pair must differ in nothing but the path"
+    assert a["path"] != b["path"]
+    assert a["expected_signature_hex"] != b["expected_signature_hex"]
+
+
+def test_signing_the_same_payload_for_two_routes_gives_two_signatures():
+    """The property from the caller's side: `/faucet` and
+    `/exchange/deposit` both take a payload-less envelope, and one must
+    not be usable at the other.
+    """
+    agent = Agent.generate()
+    ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    faucet = agent.build_envelope("POST", "/faucet", None, timestamp=ts)
+    deposit = agent.build_envelope("POST", "/exchange/deposit", None, timestamp=ts)
+    assert faucet["payload"] == deposit["payload"]
+    assert faucet["signature"] != deposit["signature"]
 
 
 def test_format_rfc3339_matches_chronos_auto_si_style():
@@ -119,8 +153,11 @@ def test_build_envelope_round_trips_through_its_own_signature():
     from ecdsa.util import sigdecode_string
 
     agent = Agent.generate()
-    envelope = agent.build_envelope({"z": 1, "a": 2})
-    signing_string = f"{envelope['pubkey']}:{envelope['timestamp']}:{_canonical_json(envelope['payload'])}"
+    envelope = agent.build_envelope("POST", "/tasks", {"z": 1, "a": 2})
+    signing_string = (
+        f"{envelope['pubkey']}:{envelope['timestamp']}:"
+        f"POST /tasks:{_canonical_json(envelope['payload'])}"
+    )
     digest = hashlib.sha256(hashlib.sha256(signing_string.encode("utf-8")).digest()).digest()
 
     verifying_key = VerifyingKey.from_string(bytes.fromhex(envelope["pubkey"]), curve=SECP256k1)

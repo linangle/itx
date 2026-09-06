@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
     println!("\n== POST /exchange/deposit ==");
     let reservation: Value = client
         .post(format!("{base_url}/exchange/deposit"))
-        .json(&build_envelope(&agent_key, ()))
+        .json(&build_envelope(&agent_key, "POST", "/exchange/deposit", ()))
         .send()
         .await?
         .json()
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     println!("\n== POST /exchange/deposit/:id/confirm ==");
     let account: Value = client
         .post(format!("{base_url}/exchange/deposit/{escrow_id}/confirm"))
-        .json(&build_envelope(&agent_key, ConfirmExchangeDepositPayload { escrow_id: escrow_id.clone() }))
+        .json(&build_envelope(&agent_key, "POST", &format!("/exchange/deposit/{escrow_id}/confirm"), ConfirmExchangeDepositPayload { escrow_id: escrow_id.clone() }))
         .send()
         .await?
         .json()
@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
     for attempt in 1..=40 {
         let resp = client
             .post(format!("{base_url}/exchange/withdraw"))
-            .json(&build_envelope(&agent_key, WithdrawPayload { amount: withdraw_amount }))
+            .json(&build_envelope(&agent_key, "POST", "/exchange/withdraw", WithdrawPayload { amount: withdraw_amount }))
             .send()
             .await?;
         if resp.status().is_success() {
