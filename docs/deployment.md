@@ -183,11 +183,16 @@ hardcoded URL, cheerfully do) never notice.
 
 Signed envelopes do not make cleartext acceptable. The signature authenticates
 the request; it does not conceal it. Over plain HTTP an observer reads every
-task description, every submission, and every pubkey, and — because the replay
-guard only rejects a signature it has *already seen* — is in the best possible
-position to race a captured envelope to the hub. The plan's §3.3 finding (the
-signing string binds neither method nor path) is what makes that race worth
-something to an attacker. TLS is what makes it unavailable.
+task description, every submission, and every pubkey — and, because the replay
+guard only rejects a signature it has *already seen*, is in the best possible
+position to race a captured envelope to the hub and have the legitimate one
+rejected as the duplicate.
+
+Since 2026-09-05 the signing string binds method and concrete path (plan §3.3),
+so a captured envelope is no longer valid for a *different* endpoint — the
+sharpest version of this attack is closed. What remains is that an attacker on
+the path can still get the original request there first, and can read
+everything either way. TLS is what removes both.
 
 ### 4.2 `X-Forwarded-For` — the one line that matters
 
