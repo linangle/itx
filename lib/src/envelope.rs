@@ -13,6 +13,22 @@ pub enum EnvelopeError {
     ClockDrift,
     #[error("request has already been used (possible replay)")]
     Replayed,
+    /// Verifier-side only, like `Replayed`: the server is inside the
+    /// window after a restart in which envelopes it accepted before the
+    /// restart are still within `MAX_REQUEST_DRIFT_SECONDS` and would
+    /// otherwise verify a second time. Distinct from `Replayed` because
+    /// it says something completely different to a caller -- this
+    /// request was never used, it simply arrived while the server was
+    /// closing that window, and retrying it shortly will work.
+    #[error("server is closing its post-restart replay window; retry shortly")]
+    GuardWarmingUp,
+    /// Verifier-side only: the server could not durably record that it
+    /// had accepted this request, and refuses to act on one it cannot
+    /// remember accepting. Also a "retry shortly", but for an operational
+    /// fault rather than a scheduled window -- the two are separate so a
+    /// storm of them is legible as the incident it is.
+    #[error("server could not record this request against replay: {0}")]
+    GuardUnavailable(String),
     #[error("signature does not match the claimed public key")]
     BadSignature,
     #[error("malformed public key: {0}")]

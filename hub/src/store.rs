@@ -36,6 +36,20 @@ const TRADES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("trades
 // built from, so a name already handed out keeps working even if the
 // word it came from is later edited out of `wordlist/`.
 const AGENT_NAMES_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("agent_names");
+// raw signature bytes -> when this hub first accepted them (Unix
+// seconds). The durable half of `auth::ReplayGuard`: the in-memory set
+// alone starts empty on every boot, which reopens a
+// `MAX_REQUEST_DRIFT_SECONDS` replay window across restarts. Exactly the
+// "durable set of bytes with a timestamp" shape FAUCET_GRANTS_TABLE
+// already is, and additive in the same way PENDING_DEPOSITS_TABLE was --
+// an old store gains it empty on the first open by a build that knows
+// about it, so no SCHEMA_VERSION bump.
+//
+// Unlike every other table here this one is *garbage*, not records: an
+// entry is meaningless once its signature can no longer pass the drift
+// check, and the sweep prunes it (see `prune_seen_signatures`). Without
+// that it would grow by one row per authenticated request forever.
+const REPLAY_GUARD_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("replay_guard");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -91,6 +105,7 @@ impl HubStore {
             write_txn.open_table(ORDERS_TABLE)?;
             write_txn.open_table(TRADES_TABLE)?;
             write_txn.open_table(AGENT_NAMES_TABLE)?;
+            write_txn.open_table(REPLAY_GUARD_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
             let stored_version = match meta.get(SCHEMA_VERSION_KEY)? {
@@ -406,6 +421,71 @@ impl HubStore {
             })
             .collect()
     }
+
+    /// Durably records that `signature` has been accepted, so a restart
+    /// cannot forget it while it is still inside its drift window.
+    ///
+    /// Callers must let this commit **before** acting on the request the
+    /// signature authenticates -- the same ordering rule
+    /// `save_pending_deposit` documents, for the same reason. Reversed,
+    /// a crash between the effect landing and this write committing
+    /// leaves an envelope that has already moved money and is still
+    /// replayable, which is precisely the hole being closed.
+    ///
+    /// One redb commit, and therefore one fsync, per authenticated
+    /// request. That cost is why the ordering above cannot be traded for
+    /// a batched or write-behind flush: batching wins back the fsync by
+    /// giving up the guarantee that makes the record worth writing.
+    pub fn record_seen_signature(&self, signature: &[u8], seen_at_unix: i64) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(REPLAY_GUARD_TABLE)?;
+            table.insert(signature, seen_at_unix)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Every recorded signature still new enough to be replayable --
+    /// seen strictly after `cutoff_unix`. Anything older already fails
+    /// the drift check on its own, so restoring it would only cost
+    /// memory. Read at boot to refill the in-memory guard.
+    pub fn load_recent_signatures(&self, cutoff_unix: i64) -> Result<Vec<(Vec<u8>, i64)>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(REPLAY_GUARD_TABLE)?;
+        let mut recent = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let seen_at = value.value();
+            if seen_at > cutoff_unix {
+                recent.push((key.value().to_vec(), seen_at));
+            }
+        }
+        Ok(recent)
+    }
+
+    /// Drops every signature seen at or before `cutoff_unix`, returning
+    /// how many went. The mirror of `auth::cleanup_replay_guard`'s
+    /// in-memory eviction, on the same cadence and the same cutoff --
+    /// this table is the only one here that is pure garbage collection,
+    /// and without this it grows by a row per authenticated request for
+    /// the life of the deployment.
+    pub fn prune_seen_signatures(&self, cutoff_unix: i64) -> Result<usize> {
+        let mut pruned = 0usize;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(REPLAY_GUARD_TABLE)?;
+            table.retain(|_, seen_at| {
+                let keep = seen_at > cutoff_unix;
+                if !keep {
+                    pruned += 1;
+                }
+                keep
+            })?;
+        }
+        write_txn.commit()?;
+        Ok(pruned)
+    }
 }
 
 #[cfg(test)]
@@ -709,6 +789,81 @@ mod tests {
 
         store.save_agent_name_batch(&[]).unwrap();
         assert_eq!(store.load_all_agent_names().unwrap().len(), 3);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn round_trips_and_prunes_seen_signatures() {
+        let path = temp_db_path("replay_guard");
+        let store = HubStore::open_or_create(&path).unwrap();
+        assert!(store.load_recent_signatures(i64::MIN).unwrap().is_empty());
+
+        let now = Utc::now().timestamp();
+        store.record_seen_signature(b"old", now - 500).unwrap();
+        store.record_seen_signature(b"new", now).unwrap();
+
+        // `load_recent_signatures` is a cutoff read, not a full scan:
+        // this is what a restart uses to skip signatures that already
+        // fail the drift check on their own.
+        let recent = store.load_recent_signatures(now - 100).unwrap();
+        assert_eq!(recent, vec![(b"new".to_vec(), now)]);
+        assert_eq!(store.load_recent_signatures(i64::MIN).unwrap().len(), 2);
+
+        // Re-recording one is a replace, not a duplicate -- a signature
+        // is a set member here, and the guard claims each one once.
+        store.record_seen_signature(b"new", now + 1).unwrap();
+        assert_eq!(store.load_recent_signatures(i64::MIN).unwrap().len(), 2);
+
+        assert_eq!(store.prune_seen_signatures(now - 100).unwrap(), 1);
+        assert_eq!(store.load_recent_signatures(i64::MIN).unwrap().len(), 1);
+        // Pruning again removes nothing: the sweep runs every minute
+        // forever, so it has to be idempotent and cheap when idle.
+        assert_eq!(store.prune_seen_signatures(now - 100).unwrap(), 0);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The replay table is purely additive, so a store written before it
+    /// existed must open on this build untouched -- no version bump, no
+    /// migration, the table simply arrives empty. Same reasoning
+    /// PENDING_DEPOSITS_TABLE's own comment records; this is the test
+    /// that keeps it honest.
+    #[test]
+    fn a_store_from_a_build_without_the_replay_table_still_opens() {
+        let path = temp_db_path("older_build");
+        let agent = PrivateKey::new_key().public_key();
+        {
+            // Exactly what an older build's `open_or_create` did: the
+            // tables it knew about, stamped with the same schema version
+            // it stamps today.
+            let db = redb::Database::create(&path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                write_txn.open_table(TASKS_TABLE).unwrap();
+                write_txn.open_table(REPUTATION_TABLE).unwrap();
+                write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
+                let mut meta = write_txn.open_table(META_TABLE).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice()).unwrap();
+                let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
+                grants.insert(agent.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let store = HubStore::open_or_create(&path).unwrap();
+        assert!(
+            store.load_recent_signatures(i64::MIN).unwrap().is_empty(),
+            "the new table must arrive empty rather than failing to open"
+        );
+        assert_eq!(
+            store.load_all_faucet_grants().unwrap(),
+            vec![agent],
+            "and the store's existing contents must survive untouched"
+        );
+        // Usable immediately, not just openable.
+        store.record_seen_signature(b"sig", Utc::now().timestamp()).unwrap();
+        assert_eq!(store.load_recent_signatures(i64::MIN).unwrap().len(), 1);
 
         std::fs::remove_file(&path).ok();
     }

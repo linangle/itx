@@ -39,7 +39,10 @@ use uuid::Uuid;
 /// operator keys never change for the process's lifetime.
 pub struct AppState {
     pub board: RwLock<TaskBoard>,
-    pub store: HubStore,
+    /// Shared rather than owned outright because `replay_guard` needs a
+    /// handle to the same file: redb is single-process and will not open
+    /// one store twice, so the two cannot each hold their own.
+    pub store: Arc<HubStore>,
     pub node: NodeClient,
     pub operator_private_key: PrivateKey,
     pub operator_public_key: PublicKey,
@@ -92,6 +95,12 @@ pub struct AppState {
     /// (`--trusted-proxies`). Deliberately empty unless configured: see
     /// `rate_limit::TrustedProxies`.
     pub trusted_proxies: rate_limit::TrustedProxies,
+    /// The signed-envelope replay guard: which signatures this hub has
+    /// already accepted, in memory and on disk. Instance-scoped for the
+    /// reason `auth::ReplayGuard`'s own doc comment gives -- its durable
+    /// half is one specific store file, so it cannot be shared by two
+    /// hubs the way a bare signature set could.
+    pub replay_guard: auth::ReplayGuard,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -361,7 +370,7 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         }
     }
 
-    auth::cleanup_replay_guard();
+    state.replay_guard.cleanup(now);
     rate_limit::cleanup(&state.rate_limits);
 }
 
@@ -420,7 +429,7 @@ async fn main() -> Result<()> {
     }
     println!("================================================================");
 
-    let store = HubStore::open_or_create(&args.store_file)?;
+    let store = Arc::new(HubStore::open_or_create(&args.store_file)?);
     let mut board = TaskBoard::new();
     for task in store.load_all_tasks()? {
         board.restore_task(task);
@@ -482,6 +491,25 @@ async fn main() -> Result<()> {
         names.remaining()
     );
 
+    // A hub that cannot read its own replay log still comes up -- just
+    // not with a hole in it. The fallback costs two minutes of refused
+    // writes and is loud about why.
+    let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
+        Ok((guard, restored)) => {
+            println!("restored {restored} replay-guard signature(s) still inside the drift window");
+            guard
+        }
+        Err(e) => {
+            error!("could not restore the durable replay guard ({e}) -- falling back to refusing");
+            println!(
+                "WARNING: replay log unreadable ({e}); authenticated writes are refused for the \n\
+                 next {}s while the post-restart replay window closes. Read routes are unaffected.",
+                btclib::envelope::MAX_REQUEST_DRIFT_SECONDS,
+            );
+            auth::ReplayGuard::booting(chrono::Utc::now())
+        }
+    };
+
     let state = Arc::new(AppState {
         board: RwLock::new(board),
         store,
@@ -495,6 +523,7 @@ async fn main() -> Result<()> {
         escrow_secret,
         rate_limits: rate_limit::new_table(),
         trusted_proxies,
+        replay_guard,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
     });
@@ -800,9 +829,13 @@ mod tests {
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
-        let store = HubStore::open_or_create(&store_path).unwrap();
+        let store = Arc::new(HubStore::open_or_create(&store_path).unwrap());
         let exchange_custody_private_key = PrivateKey::new_key();
         let exchange_custody_public_key = exchange_custody_private_key.public_key();
+        // Restored rather than `open()` so every authenticated request
+        // in the suite goes through the durable write path too, not just
+        // the tests that are about it.
+        let replay_guard = auth::ReplayGuard::restore(store.clone(), Utc::now()).unwrap().0;
         let state = Arc::new(AppState {
             board: RwLock::new(TaskBoard::new()),
             store,
@@ -816,6 +849,7 @@ mod tests {
             escrow_secret: EscrowSecret::generate(),
             rate_limits: rate_limit::new_table(),
             trusted_proxies,
+            replay_guard,
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
         });
@@ -1072,6 +1106,110 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // ...and the accepted signature reached disk on the way through,
+        // so the rejection above would survive a restart rather than
+        // depending on this process's memory. That a restored guard then
+        // rejects it is `auth`'s own
+        // `a_replayed_envelope_is_still_rejected_after_a_restart`; this
+        // is the half that can only be checked on the real HTTP path.
+        let expected_signature = hex::decode(env["signature"].as_str().unwrap()).unwrap();
+        let recorded = hub.state.store.load_recent_signatures(i64::MIN).unwrap();
+        assert!(
+            recorded.iter().any(|(sig, _)| *sig == expected_signature),
+            "a signature accepted over HTTP must be durably recorded"
+        );
+    }
+
+    /// A record of a known gap, not a desired property: the signing
+    /// string is `"{pubkey}:{timestamp}:{payload_json}"` with no method
+    /// and no path, so any two routes taking the same payload shape
+    /// accept each other's envelopes. See docs/agent-ecosystem-plan.md
+    /// §3.3 for what stops that being exploitable today and why the
+    /// recipe was not changed from the hub alone.
+    ///
+    /// This test exists to fail loudly the day someone binds the route
+    /// in -- at which point these assertions should be inverted rather
+    /// than deleted -- and to stop a sixth pair being added silently.
+    #[test]
+    fn route_pairs_that_currently_share_a_signing_string() {
+        // The signing string differs only in its payload for a fixed
+        // key and timestamp, so comparing serialized payloads compares
+        // exactly what the signature commits to.
+        let same = |a: String, b: String, pair: &str| {
+            assert_eq!(a, b, "{pair} no longer collide -- update §3.3 and this test");
+        };
+
+        // POST /faucet and POST /exchange/deposit
+        same(
+            serde_json::to_string(&()).unwrap(),
+            serde_json::to_string(&()).unwrap(),
+            "/faucet and /exchange/deposit",
+        );
+
+        // POST /tasks and POST /tasks/escrow
+        let create = handlers::CreateTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            expected_output_hash: "ab".into(),
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        let escrow = handlers::EscrowTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            expected_output_hash: "ab".into(),
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        same(
+            serde_json::to_string(&create).unwrap(),
+            serde_json::to_string(&escrow).unwrap(),
+            "/tasks and /tasks/escrow",
+        );
+
+        // POST /tasks/consensus and POST /tasks/consensus/escrow
+        let consensus = handlers::CreateConsensusTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            num_assignees: 3,
+            join_window_minutes: 10,
+            submission_window_minutes: 20,
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        let consensus_escrow = handlers::EscrowConsensusTaskPayload {
+            description: "t".into(),
+            bounty: 1,
+            num_assignees: 3,
+            join_window_minutes: 10,
+            submission_window_minutes: 20,
+            min_reputation: 2,
+            capabilities: Default::default(),
+        };
+        same(
+            serde_json::to_string(&consensus).unwrap(),
+            serde_json::to_string(&consensus_escrow).unwrap(),
+            "/tasks/consensus and /tasks/consensus/escrow",
+        );
+
+        // POST /tasks/:id/claim and POST /tasks/:id/cancel -- and note
+        // the shared path shape, so each handler's URL-vs-payload id
+        // check passes for the other's envelope too.
+        let task_id = Uuid::new_v4();
+        same(
+            serde_json::to_string(&handlers::ClaimPayload { task_id }).unwrap(),
+            serde_json::to_string(&handlers::CancelPayload { task_id }).unwrap(),
+            "/tasks/:id/claim and /tasks/:id/cancel",
+        );
+
+        // POST /tasks/escrow/:id/confirm and POST /exchange/deposit/:id/confirm
+        let escrow_id = Uuid::new_v4();
+        same(
+            serde_json::to_string(&handlers::ConfirmEscrowPayload { escrow_id }).unwrap(),
+            serde_json::to_string(&handlers::ConfirmExchangeDepositPayload { escrow_id }).unwrap(),
+            "/tasks/escrow/:id/confirm and /exchange/deposit/:id/confirm",
+        );
     }
 
     #[tokio::test]
@@ -1090,6 +1228,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // The drift check stands on its own: this envelope was rejected
+        // by its timestamp alone, with the replay guard having never
+        // seen it. It must also not have been written -- otherwise an
+        // unauthenticated flood of stale envelopes would be a way to
+        // make the hub fsync on demand.
+        assert!(
+            hub.state.store.load_recent_signatures(i64::MIN).unwrap().is_empty(),
+            "a drift rejection must not reach the durable replay guard"
+        );
     }
 
     #[tokio::test]

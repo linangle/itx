@@ -97,6 +97,11 @@ pub enum ApiError {
     Conflict(String),
     TooManyRequests(String),
     Internal(String),
+    /// The request was well-formed and may well be authorized -- the
+    /// server just cannot serve it *yet*. Distinct from `Internal`
+    /// because it is neither an error on our side nor a permanent one:
+    /// the honest thing to tell a caller is "come back", which is a 503.
+    ServiceUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
@@ -109,6 +114,7 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            ApiError::ServiceUnavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
@@ -122,6 +128,13 @@ impl From<AuthError> for ApiError {
             }
             AuthError::BadPublicKey(_) | AuthError::BadSignatureEncoding(_) => {
                 ApiError::BadRequest(e.to_string())
+            }
+            // Neither is a 401: the caller did nothing wrong. The first
+            // is accepted once the window closes; the second is the hub
+            // refusing to act on a request it could not record against
+            // replay, which is a fault on our side to retry into.
+            AuthError::GuardWarmingUp | AuthError::GuardUnavailable(_) => {
+                ApiError::ServiceUnavailable(e.to_string())
             }
         }
     }
@@ -812,7 +825,7 @@ pub async fn create_task(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<CreateTaskPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
     validate_text_field(&envelope.payload.description, "description")?;
@@ -840,7 +853,7 @@ pub async fn create_consensus_task(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<CreateConsensusTaskPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
     validate_text_field(&envelope.payload.description, "description")?;
@@ -894,7 +907,7 @@ pub async fn create_task_escrow(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<EscrowTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     let expected_output_hash = parse_hex_hash(&envelope.payload.expected_output_hash)?;
@@ -926,7 +939,7 @@ pub async fn create_consensus_task_escrow(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<EscrowConsensusTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     if envelope.payload.num_assignees < 2 {
@@ -974,7 +987,7 @@ pub async fn create_disputable_task_escrow(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<EscrowDisputableTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     validate_positive_minutes(envelope.payload.dispute_window_minutes, "dispute_window_minutes")?;
@@ -1017,7 +1030,7 @@ pub async fn confirm_task_escrow(
             "escrow id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
 
     let deposit_pubkey = {
@@ -1069,7 +1082,7 @@ pub async fn create_dispute_escrow(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.reason, "reason")?;
 
@@ -1118,7 +1131,7 @@ pub async fn confirm_dispute_escrow(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     let escrow_id = envelope.payload.escrow_id;
 
@@ -1174,7 +1187,7 @@ pub async fn resolve_dispute(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
 
@@ -1208,7 +1221,7 @@ pub async fn claim_task(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
 
     let task = {
@@ -1246,7 +1259,7 @@ pub async fn cancel_task(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
 
@@ -1270,7 +1283,7 @@ pub async fn submit_task(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.output, "output")?;
 
@@ -1881,7 +1894,7 @@ pub async fn create_exchange_deposit(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<()>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
@@ -1914,7 +1927,7 @@ pub async fn confirm_exchange_deposit(
             "escrow id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
 
     let deposit_pubkey = {
@@ -2006,7 +2019,7 @@ pub async fn place_order(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<PlaceOrderPayload>>,
 ) -> Result<Json<OrderDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     let (order, trades) = state.board.write().await.place_order(
         pubkey,
@@ -2064,7 +2077,7 @@ pub async fn cancel_order(
             "order id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     let order = state.board.write().await.cancel_order(order_id, &pubkey)?;
     if let Err(e) = state.store.save_order(&order) {
@@ -2106,7 +2119,7 @@ pub async fn withdraw(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<WithdrawPayload>>,
 ) -> Result<Json<ExchangeAccountDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
     let amount = envelope.payload.amount;
     {
@@ -2148,7 +2161,7 @@ pub async fn faucet_claim(
     State(state): State<Arc<AppState>>,
     Json(envelope): Json<SignedEnvelope<()>>,
 ) -> Result<Json<FaucetResultDto>, ApiError> {
-    let pubkey = envelope.verify()?;
+    let pubkey = envelope.verify(&state.replay_guard)?;
     charge_pubkey(&state, &pubkey)?;
 
     // Reserve first: this is what makes two concurrent claims from the
