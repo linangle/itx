@@ -9,7 +9,7 @@ use argh::FromArgs;
 use harness::drills;
 use harness::load::{self, LoadConfig};
 use harness::report::{Environment, Report};
-use harness::stack::Stack;
+use harness::stack::{Stack, StackConfig};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ struct Args {
 enum Command {
     Load(LoadArgs),
     Drill(DrillArgs),
+    Stack(StackArgs),
 }
 
 #[derive(FromArgs)]
@@ -88,6 +89,28 @@ struct DrillArgs {
     out: Option<PathBuf>,
 }
 
+#[derive(FromArgs)]
+/// Bring up a node, miner and hub and hold them there, for the load half
+/// to be pointed at.
+///
+/// The drills start their own stacks because they have to kill them; load
+/// runs against one somebody else is running, and this is the somebody
+/// else. It prints the operator key's path, which is what `load
+/// --funding-key` wants.
+#[argh(subcommand, name = "stack")]
+struct StackArgs {
+    #[argh(option, default = "default_build_dir()")]
+    /// the build directory to take node/miner/hub from
+    build_dir: PathBuf,
+    #[argh(option, default = "default_work_root().join(\"stack\")")]
+    /// where to put chain data, stores and logs. Wiped on start
+    work_dir: PathBuf,
+    #[argh(switch)]
+    /// start the hub trusting X-Forwarded-For from 127.0.0.1, which is
+    /// what `load --distinct-sources` needs
+    trust_local_proxy: bool,
+}
+
 fn default_build_dir() -> PathBuf {
     PathBuf::from("target/release")
 }
@@ -102,7 +125,36 @@ async fn main() -> Result<()> {
     match args.command {
         Command::Load(load_args) => run_load(load_args).await,
         Command::Drill(drill_args) => run_drills(drill_args).await,
+        Command::Stack(stack_args) => run_stack(stack_args).await,
     }
+}
+
+async fn run_stack(args: StackArgs) -> Result<()> {
+    let bin_dir = args.work_dir.join("bin");
+    if args.work_dir.exists() {
+        std::fs::remove_dir_all(&args.work_dir)?;
+    }
+    Stack::snapshot(&args.build_dir, &bin_dir)?;
+
+    let mut config = StackConfig::new(&bin_dir, &args.work_dir);
+    if args.trust_local_proxy {
+        config = config.trusting_local_proxy();
+    }
+    let mut stack = Stack::prepare(config)?;
+    stack.start_all().await?;
+
+    println!("hub          {}", stack.hub_url());
+    println!("node         {}", stack.node_address());
+    println!("operator key {}", stack.work_dir().join("operator.priv.cbor").display());
+    println!("logs         {}", stack.work_dir().join("logs").display());
+    println!("\nrunning; ctrl-c to stop");
+
+    // Children are `kill_on_drop`, so waiting here is what keeps them
+    // alive -- returning from `main` would take the whole stack with it.
+    tokio::signal::ctrl_c().await?;
+    stack.shutdown().await;
+    println!("stopped");
+    Ok(())
 }
 
 async fn run_load(args: LoadArgs) -> Result<()> {

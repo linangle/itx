@@ -102,7 +102,7 @@ async fn reserve_and_fund(
 /// are unique per escrow here, which makes them the join key between what
 /// the drill set up and what survived.
 async fn tasks_by_description(hub: &HubClient) -> Result<BTreeMap<String, String>> {
-    let reply = hub.get("/tasks?status=any&limit=200").await?;
+    let reply = hub.get("/tasks?status=all&limit=200").await?;
     Ok(reply
         .body
         .as_array()
