@@ -747,10 +747,13 @@ for any future action worth pricing.
    specifically a crash, not a deploy.
 
    **The reproduction is probabilistic and the drill says so.** The interval
-   is one step wide, so whether a `SIGKILL` lands inside it is chance; the
-   drill stages a dozen confirmations across one handler's duration to
-   sample the timeline, and still reproduces the duplicate in some runs and
-   not others. Its hard-kill phase therefore reports *inconclusive* rather
+   is one step wide, so whether a `SIGKILL` lands inside it is chance. It
+   reproduced in three runs of six across three versions of the drill; the
+   version now in the tree — a dozen confirmations staggered across one
+   measured handler's duration, so that each is at a different point in it
+   when the process dies — caught it on its first attempt, but the three
+   runs that found nothing are exactly why this cannot be trusted either
+   way. Its hard-kill phase therefore reports *inconclusive* rather
    than confirmed when it finds nothing, because it can demonstrate the bug
    and cannot demonstrate its absence. **Do not sign the fix off on a green
    drill run.** The hub has no fault-injection point that would make this
@@ -799,7 +802,7 @@ for any future action worth pricing.
    |---|---|---|
    | `node-crash` | §6.5 loses money silently | Confirmed — 6,000,000 ITX destroyed |
    | `escrow-restart` (SIGTERM) | A drained restart is safe | Confirmed |
-   | `escrow-restart` (SIGKILL) | A crash leaves consistent state | **Refuted** — one deposit funded two tasks (2 runs of 5) |
+   | `escrow-restart` (SIGKILL) | A crash leaves consistent state | **Refuted** — one deposit funded two tasks (3 runs of 6) |
    | `replay-storm` | §3.3's guard survives a crash | Confirmed — 0 of 30 accepted |
    | `rate-limit-tiers` | §3.4's buckets are independent | Confirmed — 120 and 59 served exactly |
    | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |

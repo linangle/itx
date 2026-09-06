@@ -1,8 +1,8 @@
 {
   "name": "drill: escrow-restart",
-  "started_at": "2026-09-06T09:47:41.204760Z",
+  "started_at": "2026-09-06T10:02:43.615151Z",
   "environment": {
-    "commit": "434f1f149f954360806900b7f5b2fed09c65628d",
+    "commit": "1b1378460590511b583fc9639e69a1fbbc5f92ef",
     "dirty": false,
     "profile": "release",
     "host": "Darwin arm64",
@@ -20,15 +20,15 @@
       "verdict": "confirmed",
       "facts": {
         "answered_error": 0,
-        "answered_success": 5,
-        "confirmations_in_flight": 5,
+        "answered_success": 12,
+        "confirmations_in_flight": 12,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 12.634459000000001,
+        "handler_latency_ms": 10.369917,
         "never_answered": 0,
         "recovered_by_retry": 0,
         "tasks_before": 1,
-        "tasks_that_survived_the_restart": 5
+        "tasks_that_survived_the_restart": 12
       },
       "notes": [
         "Every interrupted confirmation ended in a state a client can act on: either the task exists, or the escrow is still confirmable with a fresh envelope. No deposit funded two tasks and none was stranded."
@@ -42,36 +42,36 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 12.634459000000001,
-          "p90_ms": 12.634459000000001,
-          "p99_ms": 12.634459000000001,
-          "max_ms": 12.634459000000001,
+          "p50_ms": 10.369917,
+          "p90_ms": 10.369917,
+          "p99_ms": 10.369917,
+          "max_ms": 10.369917,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (interrupted)",
-          "requests": 5,
+          "requests": 12,
           "success_rate": 1.0,
           "by_status": {
-            "200": 5
+            "200": 12
           },
-          "p50_ms": 38.379375,
-          "p90_ms": 47.235333999999995,
-          "p99_ms": 47.235333999999995,
-          "max_ms": 47.235333999999995,
+          "p50_ms": 100.002333,
+          "p90_ms": 120.859916,
+          "p99_ms": 124.643417,
+          "max_ms": 124.643417,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (retry)",
-          "requests": 5,
+          "requests": 12,
           "success_rate": 0.0,
           "by_status": {
-            "409": 5
+            "409": 12
           },
-          "p50_ms": 3.863334,
-          "p90_ms": 5.144208,
-          "p99_ms": 5.144208,
-          "max_ms": 5.144208,
+          "p50_ms": 3.13125,
+          "p90_ms": 5.034166,
+          "p99_ms": 9.933334,
+          "max_ms": 9.933334,
           "per_second": null
         }
       ]
@@ -79,23 +79,23 @@
     {
       "title": "Restart the hub mid-escrow (SIGKILL)",
       "plan_item": "§6.7",
-      "verdict": "confirmed",
+      "verdict": "refuted",
       "facts": {
         "answered_error": 0,
-        "answered_success": 1,
-        "confirmations_in_flight": 5,
-        "deposits_funding_two_tasks": 0,
+        "answered_success": 0,
+        "confirmations_in_flight": 12,
+        "deposits_funding_two_tasks": 1,
         "deposits_stranded": 0,
-        "handler_latency_ms": 19.305,
-        "never_answered": 4,
-        "recovered_by_retry": 4,
-        "tasks_before": 7,
+        "handler_latency_ms": 10.4925,
+        "never_answered": 12,
+        "recovered_by_retry": 11,
+        "tasks_before": 14,
         "tasks_that_survived_the_restart": 1
       },
-      "notes": [
-        "Every interrupted confirmation ended in a state a client can act on: either the task exists, or the escrow is still confirmable with a fresh envelope. No deposit funded two tasks and none was stranded."
+      "notes": [],
+      "findings": [
+        "1 escrow deposit(s) funded a second task after a hub restart. The confirmation handler creates the task, persists it, and only then persists the deposit's `Consumed` status; a process that stops between the second and third step leaves a task on disk beside a deposit that still reads `Reserved`, and the deposit can be confirmed again. One deposit, two bounties."
       ],
-      "findings": [],
       "latency": [
         {
           "label": "POST /tasks/escrow/:id/confirm",
@@ -104,37 +104,23 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 19.305,
-          "p90_ms": 19.305,
-          "p99_ms": 19.305,
-          "max_ms": 19.305,
-          "per_second": null
-        },
-        {
-          "label": "POST /tasks/escrow/:id/confirm (interrupted)",
-          "requests": 1,
-          "success_rate": 1.0,
-          "by_status": {
-            "200": 1
-          },
-          "p50_ms": 10.234083,
-          "p90_ms": 10.234083,
-          "p99_ms": 10.234083,
-          "max_ms": 10.234083,
+          "p50_ms": 10.4925,
+          "p90_ms": 10.4925,
+          "p99_ms": 10.4925,
+          "max_ms": 10.4925,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (retry)",
-          "requests": 5,
-          "success_rate": 0.8,
+          "requests": 12,
+          "success_rate": 1.0,
           "by_status": {
-            "200": 4,
-            "409": 1
+            "200": 12
           },
-          "p50_ms": 11.6175,
-          "p90_ms": 13.725458,
-          "p99_ms": 13.725458,
-          "max_ms": 13.725458,
+          "p50_ms": 10.594458,
+          "p90_ms": 12.103208,
+          "p99_ms": 12.333791999999999,
+          "max_ms": 12.333791999999999,
           "per_second": null
         }
       ]

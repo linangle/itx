@@ -184,7 +184,7 @@ comparable; rates per second are not.
 |---|---|---|
 | `node-crash` | Confirmed §6.5 | **6,000,000 ITX destroyed**, 6 of 6 payouts |
 | `escrow-restart` (SIGTERM) | Confirmed | every interrupted confirmation drained cleanly |
-| `escrow-restart` (SIGKILL) | **Refuted** (2 runs of 5) | 1 deposit funded 2 tasks |
+| `escrow-restart` (SIGKILL) | **Refuted** (3 runs of 6) | 1 deposit funded 2 tasks |
 | `replay-storm` | Confirmed §3.3 | 0 of 30 replays accepted after a SIGKILL |
 | `rate-limit-tiers` | Confirmed §3.4 | 120 reads / 59 writes served, others unaffected |
 | `quota-isolation` | Confirmed §3.4 | 60 served, 15 refused; bystander 10 of 10 |
@@ -207,16 +207,18 @@ disk beside a deposit that still reads `Reserved`. Verified independently of
 the drill by restarting a hub against its store and listing tasks: the same
 description, twice, under two ids. Written up as plan §6.5b; not fixed here.
 
-**It reproduced in two runs of five, and the drill is built to say so.** The
+**It reproduced in three runs of six, and the drill is built to say so.** The
 interval is one step wide, so whether a `SIGKILL` lands inside it is chance.
 The drill stages a dozen confirmations across one measured handler's duration
-to sample the timeline rather than firing them all at one instant — an earlier
-version did the latter, which put every request at the same point and made the
-whole drill a coin flip. Even staggered it misses. So the hard-kill phase
-reports **inconclusive**, never confirmed, when it finds nothing: it can
-demonstrate the bug and cannot demonstrate its absence, and the hub has no
-fault-injection point that would make it deterministic. Do not sign a fix off
-on a green run of this drill.
+so each is at a different point in it when the process dies — an earlier
+version fired them all at one instant, which put every request at the same
+point and made the whole drill a coin flip. The staggered version caught it on
+its first attempt; earlier ones missed three times.
+
+So the hard-kill phase reports **inconclusive**, never confirmed, when it finds
+nothing: it can demonstrate the bug and cannot demonstrate its absence, and the
+hub has no fault-injection point that would make it deterministic. Do not sign
+a fix off on a green run of this drill.
 
 **`replay-storm`.** Thirty envelopes spent, the hub `SIGKILL`ed so nothing
 could flush on the way out, all thirty replayed the instant `/health` answered.
