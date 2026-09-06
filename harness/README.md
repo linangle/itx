@@ -36,8 +36,9 @@ CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out 
 ```
 
 One at a time, by name: `node-crash`, `escrow-restart`, `replay-storm`,
-`rate-limit-tiers`, `quota-isolation`, `payout-ceiling`. The process exits
-non-zero if any drill refuted the plan or found a bug.
+`rate-limit-tiers`, `quota-isolation`, `payout-ceiling`, `signed-write-cost`.
+The process exits non-zero if any drill refuted the plan or found a bug, so it
+can be put in front of a change and be told rather than read.
 
 `--build-dir` chooses where `node`, `miner` and `hub` are taken from
 (`target/release` by default). They are **copied** into the run's own directory
@@ -50,7 +51,13 @@ Check free space before a long run; a mining node fills a chain file steadily.
 
 ### Load
 
-Load is pointed at a stack somebody else is running.
+Load is pointed at a stack somebody else is running. `harness stack` is the
+somebody else — it brings up node, miner and hub on the same ports, holds them
+until ctrl-c, and prints the operator key path that `--funding-key` wants.
+
+```bash
+CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- stack --trust-local-proxy
+```
 
 ```bash
 CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- load \
@@ -71,6 +78,23 @@ limiter — and the two rate-limit drills deliberately do the opposite.
 or fund exchange makers, and the run measures reads against whatever the hub
 already holds.
 
+Seeding a 200-task board takes about four minutes and that is not the
+harness being slow. Every `POST /tasks` is signed by the same operator key,
+and the per-key quota is sixty signed requests a minute whatever addresses
+they come from, so the seeding sits out three rate-limit windows on the way.
+
+### Comparing a run against a baseline
+
+```bash
+CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- compare \
+  --baseline harness/baselines/node-crash.json --against harness/results/node-crash.json
+```
+
+Sections are matched by title and facts by key, and it exits non-zero when
+something got worse — a verdict that turned into a refutation, or a finding
+that was not there before. A finding *going away* is somebody's fix landing
+and deliberately does not fail.
+
 ## What each drill proves
 
 | Drill | Plan item | The claim it tests |
@@ -81,8 +105,9 @@ already holds.
 | `rate-limit-tiers` | §3.4 | Saturating one tier leaves health, reads, writes and chain writes independently available |
 | `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another |
 | `payout-ceiling` | §6.4b | With a single operator output, payouts are bounded at about one per block |
+| `signed-write-cost` | §6.3 | Signature-verify CPU is what the write path's time goes on |
 
-Two of them need explaining, because the way they are set up is the
+Three of them need explaining, because the way they are set up is the
 measurement.
 
 **`node-crash` stops the miner before the payouts.** The exposed window in
@@ -101,6 +126,18 @@ else uses, then has the operator pay itself its whole confirmed balance minus
 the fee, leaving exactly one output and no change. Only then does it measure. A
 drill that skipped this would report no ceiling and be measuring a wallet shape
 no deployment has.
+
+**`signed-write-cost` sends the same envelope twice.** The hub's own
+authentication ordering is the experiment: `verify_charging` runs the drift
+check, the ECDSA verify and the quota charge, and only then claims the
+signature — and the claim is the fsync, deliberately before the handler so a
+crash cannot leave a replayable envelope that has already moved money. A replay
+is detected *at* the claim and never written. So a fresh envelope on
+`POST /tasks` from a non-operator key is verified, charged, claimed, fsynced
+and then refused 403 by the handler before it touches anything else; the same
+envelope again is verified, charged and caught in memory for 401. Subtract one
+from the other and what is left is the fsync, with nothing else in it. A route
+that *succeeded* would fold in its own durable writes and separate nothing.
 
 ## Re-running rather than re-arguing
 

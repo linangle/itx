@@ -1,0 +1,80 @@
+{
+  "name": "drill: quota-isolation",
+  "started_at": "2026-09-06T09:05:49.168773Z",
+  "environment": {
+    "commit": "e7e5f32d8d7b9a71899044b1a39e8da8681bd988",
+    "dirty": true,
+    "profile": "release",
+    "host": "Darwin arm64",
+    "cpus": 10,
+    "binaries": {
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+    }
+  },
+  "sections": [
+    {
+      "title": "Exhaust one key's quota from many addresses",
+      "plan_item": "§3.4",
+      "verdict": "confirmed",
+      "facts": {
+        "bystander_after_attempts": 10,
+        "bystander_after_refused": 0,
+        "bystander_after_served": 10,
+        "bystander_before_refused": 0,
+        "bystander_before_served": 2,
+        "greedy_attempts": 75,
+        "greedy_refused": 15,
+        "greedy_served": 60
+      },
+      "notes": [
+        "Every request came from its own synthetic source address, so no per-address bucket was near its limit and any refusal is the per-key quota.",
+        "The greedy key was served 60 times and refused 15, while a second key -- sending from the very same addresses -- was served all 10 of its requests afterwards. The quota is charged to the identity and nothing else."
+      ],
+      "findings": [],
+      "latency": [
+        {
+          "label": "bystander (after)",
+          "requests": 10,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 10
+          },
+          "p50_ms": 9.191457999999999,
+          "p90_ms": 11.140541,
+          "p99_ms": 11.229666,
+          "max_ms": 11.229666,
+          "per_second": null
+        },
+        {
+          "label": "bystander (before)",
+          "requests": 2,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 2
+          },
+          "p50_ms": 11.139625,
+          "p90_ms": 13.693125,
+          "p99_ms": 13.693125,
+          "max_ms": 13.693125,
+          "per_second": null
+        },
+        {
+          "label": "greedy key",
+          "requests": 75,
+          "success_rate": 0.8,
+          "by_status": {
+            "200": 60,
+            "429": 15
+          },
+          "p50_ms": 9.375417,
+          "p90_ms": 19.325709,
+          "p99_ms": 30.066708000000002,
+          "max_ms": 30.066708000000002,
+          "per_second": null
+        }
+      ]
+    }
+  ]
+}
