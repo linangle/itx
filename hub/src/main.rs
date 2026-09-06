@@ -935,6 +935,43 @@ mod tests {
         }
     }
 
+    /// The same hazard on the write path, where it is far worse. A read
+    /// notices a dead pooled socket because the reply never comes;
+    /// `submit_transaction` is fire-and-forget, so nothing comes back
+    /// either way, and a write into a closed socket lands in the kernel
+    /// buffer and returns `Ok`. Pooled, this reported success for
+    /// transactions the node never received, and the hub records a
+    /// successful submit as a completed payout -- money gone with no
+    /// error anywhere. The node closes connections on every restart and
+    /// after every rejected transaction, so this was not a rare case.
+    ///
+    /// `hang_up_after_every_exchange` is exactly that node: it serves one
+    /// message per connection and closes. Every submission after the
+    /// first would therefore start on a socket the node has already
+    /// closed, if the client pooled them.
+    #[tokio::test]
+    async fn a_submit_is_never_reported_sent_on_a_connection_the_node_has_closed() {
+        let agent_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(agent_key.public_key(), 1).await;
+        fake_node.hang_up_after_every_exchange();
+        let client = NodeClient::new(vec![fake_node.addr.clone()]);
+
+        let mut reported_sent = 0usize;
+        for _ in 0..4 {
+            if client.submit_transaction(Transaction::new(vec![], vec![])).await.is_ok() {
+                reported_sent += 1;
+            }
+        }
+        assert_eq!(reported_sent, 4, "the node was up throughout, so every send should report success");
+
+        let received = fake_node.wait_for_submitted_count(reported_sent).await;
+        assert_eq!(
+            received.len(),
+            reported_sent,
+            "every submission the client reported as sent must have reached the node"
+        );
+    }
+
     /// Failover still works with a pool in the way, and the client that
     /// failed over settles on a single connection to the node that
     /// answered rather than redialling the dead one every time.

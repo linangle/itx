@@ -49,6 +49,8 @@ const MAX_POOLED_CONNECTIONS: usize = 8;
 ///   fresh one, because a pooled socket the node closed while it sat idle
 ///   is indistinguishable from a live one until it is used. A failure on
 ///   a freshly-dialled connection is a real failure and is returned.
+///   This rule only works for operations that read a reply, which is why
+///   `send` does not pool at all -- see its own doc comment.
 /// - *Isolation.* A caller **owns** its connection for the length of an
 ///   exchange -- it is moved out of the pool, not borrowed under a lock --
 ///   and a connection that errors is dropped instead of returned. So a
@@ -60,14 +62,33 @@ const MAX_POOLED_CONNECTIONS: usize = 8;
 ///   unread half of a reply still in the socket. Here, cancellation drops
 ///   the connection, which is the correct thing to do with it.
 ///
-/// Retrying is safe for all three operations because each is idempotent
-/// with respect to a *failed* attempt. The reads plainly are.
-/// `submit_transaction` is the one worth spelling out: it is
-/// fire-and-forget, so the only way it reports failure is the send itself
-/// failing, which means the node did not accept the bytes -- and
-/// resubmitting is not a thing to do casually here, since the node
-/// rejects a duplicate transaction (equal fee on an already-spoken-for
-/// input) and *strikes* the peer for it.
+/// Retrying is safe for the two read operations because each is
+/// idempotent with respect to a *failed* attempt, and because a read
+/// notices a dead socket: the reply never arrives.
+///
+/// `submit_transaction` is not a read, and that difference is load
+/// bearing. It is fire-and-forget, so there is no reply whose absence
+/// could reveal that the connection was already gone. A write to a
+/// socket whose peer has closed succeeds -- the bytes land in the
+/// kernel's buffer and the error, if it ever surfaces, surfaces on a
+/// later write. So a pooled `send` could report success for a
+/// transaction the node never saw, and the hub would go on to record
+/// the payout as made. It does not pool for that reason: every send
+/// dials a fresh connection, and completing the handshake is the
+/// closest thing this protocol has to proof that the node is listening
+/// at the moment we hand it the bytes.
+///
+/// That narrows the window rather than closing it. A transaction can
+/// still be accepted by the OS and then dropped -- the node can die
+/// between the handshake and reading the message, and it can reject
+/// what it reads (see below) without the hub ever hearing about it.
+/// Only an acknowledged submission would close it, which means a wire
+/// protocol change; §6.5 of the ecosystem plan tracks that as the
+/// settlement-honesty work.
+///
+/// Resubmitting is in any case not a thing to do casually here, since
+/// the node rejects a duplicate transaction (equal fee on an
+/// already-spoken-for input) and *strikes* the peer for it.
 ///
 /// Holds an ordered list of node addresses rather than one: a fresh
 /// connection always tries `addresses[0]` first and only falls through to
@@ -237,9 +258,33 @@ impl NodeClient {
         Ok(reply)
     }
 
-    /// Sends `message` with no reply expected. Same pooling and same
-    /// single retry; see the type's doc comment for why retrying a send
-    /// is safe even for `SubmitTransaction`.
+    /// Sends `message` with no reply expected, always on a freshly
+    /// dialled connection.
+    ///
+    /// **Deliberately does not take a connection from the pool**, unlike
+    /// `request`. `request` can afford to try a pooled socket first
+    /// because it waits for a reply, so a socket the node closed while it
+    /// sat idle announces itself and the operation retries on a fresh
+    /// one. A send has no reply to wait for, and writing to a closed
+    /// socket does not fail: the bytes go into the kernel's send buffer
+    /// and `send_async` returns `Ok`. Pooled, this reported success for
+    /// transactions the node never received -- measured at two of four
+    /// submissions lost against a node that closed each connection after
+    /// serving it, which is what the node does on every restart and after
+    /// every rejected transaction. Since the hub treats a successful
+    /// submit as "paid" (`handlers::settle_one_payout_inner` and the
+    /// sweep both stop tracking a task once it is), those were silent
+    /// losses of real payouts.
+    ///
+    /// The handshake a fresh dial completes is the check a send otherwise
+    /// has no way to make. It costs one connection per submission, which
+    /// is a payout-rate cost, not a hot-path one -- balance lookups and
+    /// chain-tip reads still pool.
+    ///
+    /// The connection is still handed to the pool afterwards: it is live,
+    /// and a later read can use it. If the node rejects the transaction
+    /// and closes, that pooled socket is dead, and `request`'s retry is
+    /// exactly the thing that handles it.
     async fn send(&self, message: &Message) -> Result<()> {
         let _permit = self
             .pool
@@ -247,18 +292,6 @@ impl NodeClient {
             .acquire()
             .await
             .expect("the node client's semaphore is never closed");
-
-        if let Some((address, mut stream)) = self.pool.take().await {
-            match message.send_async(&mut stream).await {
-                Ok(()) => {
-                    self.pool.put(&address, stream).await;
-                    return Ok(());
-                }
-                Err(e) => {
-                    debug!("pooled connection to {address} failed ({e}); retrying on a fresh one");
-                }
-            }
-        }
 
         let (address, mut stream) = self.connect().await?;
         message.send_async(&mut stream).await?;
