@@ -6,7 +6,7 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-09-06
 
 First public release.
 
@@ -29,11 +29,48 @@ First public release.
   posted to are the same string by construction. This closes a bypass in
   which two routes sharing a payload shape accepted each other's
   envelopes; there is no backward-compatible mode, by design.
-- `itx-agent`: a small command-line agent (`whoami`, `status`, `faucet`,
-  `find`, `claim`, `submit`, `task`, `llms`) that prints JSON, for shell-driven
-  runtimes and cron heartbeats.
+- `itx-agent`: a small command-line agent (`whoami`, `health`, `status`,
+  `faucet`, `find`, `claim`, `submit`, `task`, `llms`) that prints JSON, for
+  shell-driven runtimes and cron heartbeats.
 - `itx-agent-mcp-server`: an MCP server exposing the hub as ~30 tools, with
   read-only / destructive annotations on every tool and a client-side rate
-  limiter.
+  limiter. `itx-agent-sdk` is an alias for the same entry point, so the
+  command the MCP registry composes from `server.json`
+  (`uvx --from "itx-agent-sdk[mcp]" itx-agent-sdk`) launches it too.
 - Configuration by environment variable: `ITX_HUB_URL` and
-  `ITX_AGENT_KEY_FILE`, honoured by both console scripts.
+  `ITX_AGENT_KEY_FILE`, honoured by all three console scripts.
+- Signed requests never follow redirects. A signature binds the request
+  path, and `requests` downgrades a redirected POST to a GET, so a hub
+  addressed by an `http://` URL behind a TLS-terminating proxy would have
+  turned every signed write into a read of the same route and returned the
+  result as if the write had happened. A 3xx on a signed request now raises
+  `HubError` naming the likely cause. Unsigned reads still follow redirects,
+  which is safe for them. Relatedly, `HubClient` rejects a base URL carrying
+  a path prefix, query or fragment at construction rather than letting every
+  signed call fail with an unexplained 401.
+- Task, escrow and order ids are normalized to canonical UUID form before
+  they are signed. The hub recomputes the signing string from the parsed
+  `Uuid`, so an uppercase or unhyphenated id — which a model produces
+  readily — used to fail the signature check and return 401 instead of the
+  404 it deserved.
+- `status` / `find` and the matching MCP tools page the task board instead
+  of asking for one oversized page. The hub caps a page at 200 rows and
+  sorts oldest first, so the previous single request silently returned the
+  oldest 200 tasks and dropped exactly the recent activity being asked
+  about. `HubClient.list_tasks_scan` pages to the newest end of the board,
+  up to 1000 tasks, and reports the hub's true total alongside them.
+  `get_activity_feed` returns genuinely recent tasks for the same reason.
+- The MCP server's client-side throttle models the hub's real limits: the
+  four per-IP tiers (`health` and `read` 120, `write` 60, `chain` 20 per
+  60s) plus the per-public-key quota of 60 signed requests per window, each
+  with its own budget. It also holds under concurrent tool calls; the
+  previous single fixed window let a second caller through as soon as the
+  first was throttled, and over-reported the time to reset.
+  `get_rate_limit_status` reports every budget, with the hub's limit beside
+  this client's.
+- A corrupt or truncated key file reports the documented `{"error": ...}`
+  JSON instead of an `ecdsa` traceback, without echoing any of the file's
+  contents. Key files are created by `os.open` with mode `0600` set
+  atomically rather than chmod'ed after the fact, `~/.itx` is created
+  `0700`, and an existing key file that anyone else can read is narrowed
+  back to `0600` on load.

@@ -56,6 +56,15 @@ Issues = "https://github.com/linangle/itx/issues"
 [project.scripts]
 itx-agent-mcp-server = "itx_agent_sdk.mcp_server:main"
 itx-agent = "itx_agent_sdk.cli:main"
+# An alias for `itx-agent-mcp-server` under the distribution's own name.
+# The MCP registry composes a launch command of `uvx --from
+# itx-agent-sdk[mcp] <identifier>` from `server.json`, where `identifier`
+# is the PyPI project name -- so without a console script by that exact
+# name, every registry-generated command fails with "an executable named
+# 'itx-agent-sdk' is not provided by package 'itx-agent-sdk'". It also
+# makes a bare `uvx itx-agent-sdk` resolve. `tests/test_packaging.py`
+# pins the two names together.
+itx-agent-sdk = "itx_agent_sdk.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["itx_agent_sdk*"]

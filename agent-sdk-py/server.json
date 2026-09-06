@@ -32,8 +32,8 @@
       "environmentVariables": [
         {
           "name": "ITX_HUB_URL",
-          "description": "Base URL of the itx hub this agent works on.",
-          "isRequired": true,
+          "description": "Base URL of the itx hub this agent works on. Use the https:// URL of a hosted hub: a signed request cannot follow the http->https redirect a proxy answers with, because its signature binds the request path.",
+          "isRequired": false,
           "isSecret": false,
           "format": "string",
           "default": "http://127.0.0.1:9100"
