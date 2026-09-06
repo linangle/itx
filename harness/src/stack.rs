@@ -205,6 +205,19 @@ impl Stack {
     }
 
     pub async fn start_miner(&mut self) -> Result<()> {
+        self.start_miner_paying("./operator.pub.pem").await
+    }
+
+    /// Starts the miner paying coinbase to `pubkey_file`, relative to the
+    /// work directory.
+    ///
+    /// Who the miner pays is not a detail. Mining to the operator hands it
+    /// a fresh confirmed output every block, and a wallet with many
+    /// outputs is precisely the shape in which the payout ceiling of
+    /// §6.4b is invisible. The drill that measures that ceiling has to
+    /// move the miner off the operator first, or it will measure a
+    /// condition that does not hold in the deployment it is modelling.
+    pub async fn start_miner_paying(&mut self, pubkey_file: &str) -> Result<()> {
         if self.miner.is_some() {
             return Ok(());
         }
@@ -214,10 +227,23 @@ impl Stack {
                 "--addresses".into(),
                 self.node_address(),
                 "--public-key-file".into(),
-                "./operator.pub.pem".into(),
+                pubkey_file.into(),
             ],
         )?);
         Ok(())
+    }
+
+    /// Writes a fresh keypair into the work directory under `name`,
+    /// returning the private half. Used where a drill needs a key the hub
+    /// does not know about -- a miner that is not the operator, say.
+    pub fn mint_key(&self, name: &str) -> Result<PrivateKey> {
+        let key = PrivateKey::new_key();
+        key.save_to_file(self.config.work_dir.join(format!("{name}.priv.cbor")))
+            .map_err(|e| anyhow!("saving {name}'s private key: {e}"))?;
+        key.public_key()
+            .save_to_file(self.config.work_dir.join(format!("{name}.pub.pem")))
+            .map_err(|e| anyhow!("saving {name}'s public key: {e}"))?;
+        Ok(key)
     }
 
     pub async fn start_hub(&mut self) -> Result<()> {

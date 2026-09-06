@@ -1,0 +1,364 @@
+//! Restart the hub with escrow confirmations in flight.
+//!
+//! An escrow confirmation is the most state-heavy write the hub makes. It
+//! reads a pending deposit, asks the node what actually landed at the
+//! derived address, creates a task in memory, persists the task, and only
+//! then persists the deposit's new `Consumed` status. Four steps, three of
+//! which can be the last one to run before the process stops existing.
+//!
+//! Two restarts are worth telling apart and this drill does both.
+//! `SIGTERM` is what `systemctl restart` sends and what the hub drains on,
+//! so an in-flight confirmation should finish. `SIGKILL` is a crash: the
+//! handler stops wherever it was. The interesting question is not whether
+//! a request is lost -- one obviously can be -- but whether what survives
+//! is *consistent*: a deposit must not end up funding two tasks, and it
+//! must not end up funding none while the depositor's coin sits at an
+//! address only the hub can derive.
+//!
+//! The kill is timed off a measured confirmation rather than a guessed
+//! delay: one confirmation is run normally first, and the batch is
+//! interrupted at half that latency. A fixed sleep would land after the
+//! handlers on a fast machine and before them on a slow one, which is how
+//! a drill quietly stops testing anything.
+
+use crate::client::{ConfirmEscrowPayload, CreateTaskPayload, HubClient};
+use crate::report::{Report, Section, Verdict};
+use crate::stats::{summarize, Sample};
+use anyhow::Result;
+use btclib::crypto::{PrivateKey, PublicKey};
+use btclib::sha256::Hash;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const BOUNTY: u64 = 1_000_000;
+const FEE: u64 = 1_000;
+/// Escrows interrupted per phase. More than a couple, because the kill has
+/// to land inside at least one handler to test anything.
+const BATCH: usize = 5;
+const ANSWER: &str = "the answer is 42";
+
+struct Escrow {
+    id: String,
+    description: String,
+    deposit_pubkey: PublicKey,
+}
+
+/// Reserves an escrow-funded task and pays its deposit address on chain.
+async fn reserve_and_fund(
+    hub: &HubClient,
+    chain: &crate::chain::ChainView,
+    poster: &PrivateKey,
+    description: String,
+) -> Result<Escrow> {
+    let expected_output_hash = hex::encode(Hash::hash_bytes(ANSWER.as_bytes()).as_bytes());
+    let reply = hub
+        .post_signed(
+            poster,
+            "/tasks/escrow",
+            CreateTaskPayload {
+                description: description.clone(),
+                bounty: BOUNTY,
+                expected_output_hash,
+                min_reputation: 0,
+                capabilities: Vec::new(),
+            },
+        )
+        .await?;
+    anyhow::ensure!(
+        reply.ok(),
+        "reserving an escrow failed: {}",
+        reply.error_text()
+    );
+
+    let id = reply.body["escrow_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no escrow_id in the reservation"))?
+        .to_string();
+    let address = reply.body["deposit_address"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no deposit_address in the reservation"))?;
+    let required = reply.body["required_amount"].as_u64().unwrap_or(BOUNTY);
+    let deposit_pubkey = PublicKey::from_sec1_bytes(&hex::decode(address)?)?;
+
+    chain.pay(poster, &deposit_pubkey, required, FEE).await?;
+    let landed = chain
+        .wait_for_balance(&deposit_pubkey, required, Duration::from_secs(180))
+        .await?;
+    anyhow::ensure!(
+        landed >= required,
+        "the escrow deposit did not confirm: {landed} of {required}"
+    );
+
+    Ok(Escrow {
+        id,
+        description,
+        deposit_pubkey,
+    })
+}
+
+/// Every task the hub currently knows about, by description. Descriptions
+/// are unique per escrow here, which makes them the join key between what
+/// the drill set up and what survived.
+async fn tasks_by_description(hub: &HubClient) -> Result<BTreeMap<String, String>> {
+    let reply = hub.get("/tasks?status=any&limit=200").await?;
+    Ok(reply
+        .body
+        .as_array()
+        .map(|tasks| {
+            tasks
+                .iter()
+                .filter_map(|task| {
+                    Some((
+                        task.get("description")?.as_str()?.to_string(),
+                        task.get("id")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// One phase: interrupt `BATCH` confirmations with `hard` deciding whether
+/// that is a crash or a drain.
+async fn phase(
+    harness: &mut super::Harness,
+    poster: &PrivateKey,
+    label: &'static str,
+    hard: bool,
+    samples: &mut Vec<Sample>,
+) -> Result<Section> {
+    let hub = harness.stack.hub_client()?;
+    let chain = harness.stack.chain();
+
+    // A control confirmation, both to time the kill off and to prove the
+    // path works before it is interrupted.
+    let control = reserve_and_fund(
+        &hub,
+        &chain,
+        poster,
+        format!("escrow-restart {label} control"),
+    )
+    .await?;
+    let control_reply = hub
+        .post_signed(
+            poster,
+            &format!("/tasks/escrow/{}/confirm", control.id),
+            ConfirmEscrowPayload {
+                escrow_id: control.id.clone(),
+            },
+        )
+        .await?;
+    samples.push(Sample::new(
+        "POST /tasks/escrow/:id/confirm",
+        control_reply.status,
+        control_reply.latency,
+    ));
+    anyhow::ensure!(
+        control_reply.ok(),
+        "the control confirmation failed before anything was interrupted: {}",
+        control_reply.error_text()
+    );
+    let interrupt_after = control_reply.latency / 2;
+
+    let mut escrows = Vec::new();
+    for index in 0..BATCH {
+        escrows.push(
+            reserve_and_fund(&hub, &chain, poster, format!("escrow-restart {label} {index}"))
+                .await?,
+        );
+    }
+
+    let before = tasks_by_description(&hub).await?;
+
+    let mut inflight = tokio::task::JoinSet::new();
+    for escrow in &escrows {
+        let hub = hub.clone();
+        let poster = poster.clone();
+        let id = escrow.id.clone();
+        inflight.spawn(async move {
+            hub.post_signed(
+                &poster,
+                &format!("/tasks/escrow/{id}/confirm"),
+                ConfirmEscrowPayload {
+                    escrow_id: id.clone(),
+                },
+            )
+            .await
+        });
+    }
+
+    tokio::time::sleep(interrupt_after).await;
+    if hard {
+        harness.stack.kill_hub().await?;
+    } else {
+        harness.stack.stop_hub().await?;
+    }
+
+    let mut answered_ok = 0usize;
+    let mut answered_error = 0usize;
+    let mut never_answered = 0usize;
+    while let Some(result) = inflight.join_next().await {
+        match result? {
+            Ok(reply) => {
+                samples.push(Sample::new(
+                    "POST /tasks/escrow/:id/confirm (interrupted)",
+                    reply.status,
+                    reply.latency,
+                ));
+                if reply.ok() {
+                    answered_ok += 1;
+                } else {
+                    answered_error += 1;
+                }
+            }
+            // The connection died with the process. The client does not
+            // know whether the handler ran, which is the whole point.
+            Err(_) => never_answered += 1,
+        }
+    }
+
+    harness.stack.start_hub().await?;
+    let after = tasks_by_description(&hub).await?;
+    let survived = escrows
+        .iter()
+        .filter(|e| after.contains_key(&e.description))
+        .count();
+
+    // Retry every escrow with a fresh envelope. Three outcomes matter: a
+    // success where no task exists is clean recovery; a success where one
+    // already exists is one deposit funding two tasks; a refusal where no
+    // task exists is a stranded deposit.
+    let mut recovered = 0usize;
+    let mut duplicated = 0usize;
+    let mut stranded = 0usize;
+    for escrow in &escrows {
+        let had_task = after.contains_key(&escrow.description);
+        let retry = hub
+            .post_signed(
+                poster,
+                &format!("/tasks/escrow/{}/confirm", escrow.id),
+                ConfirmEscrowPayload {
+                    escrow_id: escrow.id.clone(),
+                },
+            )
+            .await?;
+        samples.push(Sample::new(
+            "POST /tasks/escrow/:id/confirm (retry)",
+            retry.status,
+            retry.latency,
+        ));
+        match (had_task, retry.ok()) {
+            (false, true) => recovered += 1,
+            (true, true) => duplicated += 1,
+            (false, false) => {
+                // Only stranded if the money is still sitting at the
+                // derived address with nothing pointing at it.
+                if chain.confirmed_balance(&escrow.deposit_pubkey).await? > 0 {
+                    stranded += 1;
+                }
+            }
+            (true, false) => {}
+        }
+    }
+
+    let mut section = Section::new(format!(
+        "Restart the hub mid-escrow ({})",
+        if hard { "SIGKILL" } else { "SIGTERM" }
+    ))
+    .plan_item("§6.7")
+    .fact("confirmations_in_flight", BATCH)
+    .fact("control_latency_ms", control_reply.latency.as_secs_f64() * 1000.0)
+    .fact("answered_success", answered_ok)
+    .fact("answered_error", answered_error)
+    .fact("never_answered", never_answered)
+    .fact("tasks_that_survived_the_restart", survived)
+    .fact("recovered_by_retry", recovered)
+    .fact("deposits_funding_two_tasks", duplicated)
+    .fact("deposits_stranded", stranded)
+    .fact("tasks_before", before.len());
+
+    if duplicated > 0 {
+        section = section
+            .verdict(Verdict::Refuted)
+            .finding(format!(
+                "{duplicated} escrow deposit(s) funded a second task after a hub restart. The \
+                 confirmation handler creates the task, persists it, and only then persists the \
+                 deposit's `Consumed` status; a process that stops between the second and third \
+                 step leaves a task on disk beside a deposit that still reads `Reserved`, and \
+                 the deposit can be confirmed again. One deposit, two bounties."
+            ));
+    } else if stranded > 0 {
+        section = section
+            .verdict(Verdict::Refuted)
+            .finding(format!(
+                "{stranded} escrow deposit(s) were left funded at their derived address with no \
+                 task and no way to retry the confirmation. The coin is recoverable by the \
+                 operator, who holds the escrow secret, but the depositor cannot reach it and \
+                 nothing tells them so."
+            ));
+    } else {
+        section = section.verdict(Verdict::Confirmed).note(
+            "Every interrupted confirmation ended in a state a client can act on: either the \
+             task exists, or the escrow is still confirmable with a fresh envelope. No deposit \
+             funded two tasks and none was stranded.",
+        );
+    }
+
+    if !hard && never_answered > 0 {
+        section = section.finding(format!(
+            "{never_answered} confirmation(s) were dropped without an answer on SIGTERM, which \
+             the hub is supposed to drain rather than drop."
+        ));
+    }
+
+    Ok(section)
+}
+
+pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Report> {
+    let mut harness = super::bring_up(repo, bin_dir, work_dir, true).await?;
+    let chain = harness.stack.chain();
+    let operator = harness.stack.operator_key.clone();
+
+    // The poster funds its own escrows, so it needs real coin. Paid
+    // straight from the operator rather than through the faucet: the
+    // faucet is one operator payout per grant and this drill is not about
+    // measuring that.
+    let poster = PrivateKey::new_key();
+    chain
+        .wait_for_utxo_count(&operator.public_key(), 3, Duration::from_secs(300))
+        .await?;
+    let needed = (BOUNTY + FEE) * (BATCH as u64 + 1) * 2 + FEE;
+    chain.pay(&operator, &poster.public_key(), needed, FEE).await?;
+    let funded = chain
+        .wait_for_balance(&poster.public_key(), needed, Duration::from_secs(180))
+        .await?;
+    anyhow::ensure!(funded >= needed, "could not fund the drill's poster");
+
+    let mut samples = Vec::new();
+    let graceful = phase(&mut harness, &poster, "sigterm", false, &mut samples).await?;
+    let crash = phase(&mut harness, &poster, "sigkill", true, &mut samples).await?;
+
+    harness.stack.shutdown().await;
+
+    let mut report = Report::new("drill: escrow-restart", harness.environment);
+    report.push(graceful);
+    report.push(crash.latency(summarize(&samples, None)));
+    Ok(report)
+}
+
+/// Kept so the module's one non-obvious helper does not drift: the join
+/// key between setup and survival is the description, which must be
+/// unique per escrow or the drill silently under-counts.
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn phase_labels_make_descriptions_unique_across_phases() {
+        let sigterm: Vec<String> = (0..3).map(|i| format!("escrow-restart sigterm {i}")).collect();
+        let sigkill: Vec<String> = (0..3).map(|i| format!("escrow-restart sigkill {i}")).collect();
+        for description in &sigterm {
+            assert!(!sigkill.contains(description));
+        }
+    }
+}

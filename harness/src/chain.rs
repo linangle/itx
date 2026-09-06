@@ -192,6 +192,36 @@ impl ChainView {
         }
     }
 
+    /// Waits until `pubkey` holds at least `count` confirmed,
+    /// unspoken-for outputs.
+    ///
+    /// Balance is the wrong thing to wait on wherever several payouts have
+    /// to be in flight at once. A block pays 50 coins into a single
+    /// coinbase output, so one block leaves the operator rich and holding
+    /// exactly one spendable output -- and a second payout, whose only
+    /// candidate input is already marked by the first, cannot be built at
+    /// all. What such a drill is waiting for is outputs, not coin.
+    pub async fn wait_for_utxo_count(
+        &self,
+        pubkey: &PublicKey,
+        count: usize,
+        timeout: Duration,
+    ) -> Result<usize> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut last = 0;
+        loop {
+            last = self
+                .utxos(pubkey)
+                .await
+                .map(|utxos| utxos.iter().filter(|(_, marked)| !marked).count())
+                .unwrap_or(last);
+            if last >= count || std::time::Instant::now() >= deadline {
+                return Ok(last);
+            }
+            tokio::time::sleep(Duration::from_millis(750)).await;
+        }
+    }
+
     /// Waits until the chain has advanced by `blocks` from wherever it is
     /// now, returning the height reached. Used wherever a drill needs
     /// "one block later" as its unit rather than a wall-clock guess.
