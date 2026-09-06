@@ -344,6 +344,13 @@ impl NodeClient {
     /// (the wallet and miner both already rely on this same fire-and-
     /// forget behavior), so success here means "accepted for delivery,"
     /// not "confirmed."
+    ///
+    /// Task bounties no longer treat the difference as academic: they go
+    /// to `TaskStatus::Submitted` and the sweep asks the chain what
+    /// became of them (`board::PayoutAttempt`). Faucet grants, escrow
+    /// disbursement and exchange withdrawals still take a successful
+    /// send as payment -- see plan §6.5 for why, and what it would take
+    /// to fix.
     pub async fn submit_transaction(&self, transaction: Transaction) -> Result<()> {
         self.send(&Message::SubmitTransaction(transaction)).await
     }

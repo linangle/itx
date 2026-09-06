@@ -88,7 +88,35 @@ pub enum TaskStatus {
     Disputed,
     /// A winner (or, for a `Consensus` task, at least one) has been determined; payout to them is in flight but not yet confirmed submitted to the chain.
     Verified,
+    /// Every payout this task owes has been handed to the node, and the
+    /// hub is waiting to see one of them on chain. Distinct from `Paid`
+    /// because `SubmitTransaction` is one-way: the wire protocol has no
+    /// reply meaning accepted and none meaning rejected, so a successful
+    /// send proves only that the bytes left this process. Collapsing
+    /// this into `Paid` -- which is what the hub used to do -- makes a
+    /// payout that never happened indistinguishable from one that did,
+    /// forever. See `PayoutAttempt` for what is recorded per recipient
+    /// and how the sweep resolves it.
+    Submitted,
     Paid,
+    /// Terminal, and the honest name for a specific thing: every one of
+    /// `MAX_PAYOUT_SUBMISSIONS` attempts was *proven* not to have
+    /// reached the chain (see `PayoutOutcome::NeverLanded`), so the hub
+    /// stopped trying and the money is still owed.
+    ///
+    /// Deliberately not `Closed`. `Closed` means nobody was owed
+    /// anything -- three innocent causes, no reputation dinged, escrow
+    /// refunded to the poster (see `CloseReason`). Here a worker earned
+    /// the bounty and has not been paid, so refunding the poster would
+    /// take money from whoever did the work. The escrow is left exactly
+    /// as it is and an operator resolves it by hand; `docs/deployment.md`
+    /// §10.3 is the runbook. Reputation is never credited, because
+    /// `mark_recipient_paid` is what credits it and it never ran.
+    ///
+    /// Note what this status does *not* cover: a payout whose fate the
+    /// hub cannot determine stays `Submitted` and keeps alerting. Only
+    /// proven loss lands here.
+    PayoutFailed,
     /// A terminal status covering three distinct causes, none of which
     /// owe a payout or dock anyone's reputation -- see `Task::close_reason`
     /// for which cause it was. The first two only ever apply to a
@@ -235,6 +263,143 @@ pub struct Dispute {
     pub resolution: Option<DisputeResolution>,
 }
 
+/// How many times a single payout may be put on the wire before the hub
+/// gives up and moves the task to `TaskStatus::PayoutFailed`, counting
+/// the first submission. Every resubmission after the first happens only
+/// once `PayoutOutcome::NeverLanded` has *proven* the previous one never
+/// reached the chain, so none of them can duplicate a payment and none
+/// can earn the node's duplicate-transaction strike (plan §6.2 -- three
+/// strikes in ten minutes bans the box from its own node).
+///
+/// Four rather than "keep trying": each retry is separated by a sweep
+/// interval, so four attempts span at least three minutes, which rides
+/// out a node restart and a re-sync comfortably. Repeated *proven* loss
+/// after that is not a transient -- it means the node is rejecting what
+/// the hub builds (a fee floor moved, the operator's balance is
+/// mis-modelled) and a fifth identical attempt would fail identically
+/// while the loop hammers a node that is already unwell. Stopping and
+/// saying so is more useful than retrying forever in silence.
+pub const MAX_PAYOUT_SUBMISSIONS: u32 = 4;
+
+/// One recipient's payout, from the moment its transaction goes onto the
+/// wire until the sweep can prove what became of it.
+///
+/// One record per (task, recipient) even when several recipients were
+/// paid by a single transaction: `build_multi_payment` gives each
+/// recipient their own `TransactionOutput`, so each has its own
+/// `output_hash` and each resolves independently against its own
+/// address. That keeps the escrow-funded multi-winner case (one
+/// transaction, several winners) and the operator-funded case (one
+/// transaction each) on exactly the same code path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PayoutAttempt {
+    pub task_id: Uuid,
+    pub recipient: PublicKey,
+    pub amount: u64,
+    /// Hash of the `TransactionOutput` paying `recipient` in the
+    /// submitted transaction -- the *primary* signal, and the reason
+    /// this is watched rather than only the inputs: a recipient can
+    /// spend a bounty the moment it lands, so a payout that plainly
+    /// confirmed looks like one that never happened if you only ever
+    /// examine the operator's side of it.
+    ///
+    /// Identifies *this attempt* rather than merely "a payment of this
+    /// size to this key", because every `TransactionOutput` carries a
+    /// fresh `unique_id` and so hashes differently even when value and
+    /// recipient repeat (pinned by
+    /// `btclib::payment::two_builds_of_the_same_payment_have_different_output_hashes`).
+    /// A rebuild after a genuine loss therefore produces a different
+    /// hash, which is what makes attempts distinguishable at all.
+    pub output_hash: Hash,
+    /// The `prev_transaction_output_hash` of every input the submitted
+    /// transaction spends. The corroborating signal: still present and
+    /// unspoken-for at the source means nothing consumed them, so the
+    /// transaction reached neither a block nor a mempool.
+    pub spent_inputs: Vec<Hash>,
+    /// Whose UTXO set `spent_inputs` was drawn from -- the operator's
+    /// address for an operator-funded task, the task escrow's one-time
+    /// address for an escrow-funded one. Recorded rather than inferred
+    /// so resolution never has to re-derive which funding source paid.
+    pub source: PublicKey,
+    pub submitted_at: DateTime<Utc>,
+    /// How many times this payout has been put on the wire, counting the
+    /// first. Capped by `MAX_PAYOUT_SUBMISSIONS`.
+    pub submissions: u32,
+}
+
+/// What the node's view of two addresses says became of a
+/// `PayoutAttempt`. The three rows of plan §6.5's table, and the reason
+/// they are three: the middle and the last are the difference between a
+/// payout that is safe to retry and one that is not, and collapsing them
+/// either loses money or duplicates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayoutOutcome {
+    /// The recipient holds the exact output this attempt created. It
+    /// reached the node and was mined.
+    Confirmed,
+    /// The output is nowhere and every input it would have spent is
+    /// still sitting unspent and unmarked at the source. Nothing
+    /// consumed them, so the transaction is in no block and no mempool:
+    /// safe -- and necessary -- to build a fresh one.
+    NeverLanded,
+    /// Neither of the above: the output is absent but the inputs are
+    /// gone or the mempool has spoken for them. The transaction may be
+    /// queued for the next block, or it may have confirmed and had its
+    /// output spent onward between two sweeps.
+    ///
+    /// Deliberately its own answer rather than being folded into a
+    /// neighbour. Treating it as `NeverLanded` risks paying a bounty
+    /// twice and earns a strike for the duplicate; treating it as
+    /// `Confirmed` reintroduces exactly the lie this whole mechanism
+    /// removes. The hub waits and says so.
+    Ambiguous,
+}
+
+impl PayoutAttempt {
+    /// Resolves this attempt against what the node reports for the
+    /// recipient's address and for the source address it spent from,
+    /// each as `fetch_utxos` returns them: `(marked, output)`, where
+    /// `marked` means the node's own mempool already has a transaction
+    /// spending that output.
+    ///
+    /// Pure, and takes both UTXO sets as arguments rather than a node
+    /// handle, so the three-way rule is testable without a node -- the
+    /// ambiguous row in particular is awkward to stage against a live
+    /// one and is the row that must never drift.
+    pub fn resolve(
+        &self,
+        recipient_utxos: &[(bool, btclib::types::TransactionOutput)],
+        source_utxos: &[(bool, btclib::types::TransactionOutput)],
+    ) -> PayoutOutcome {
+        // Marked or not is irrelevant here: the recipient holding this
+        // output at all means the transaction that created it was mined.
+        // A recipient who has already spent it onward is the ambiguous
+        // row below, reached by falling through.
+        if recipient_utxos.iter().any(|(_, output)| output.hash() == self.output_hash) {
+            return PayoutOutcome::Confirmed;
+        }
+        // An attempt with no recorded inputs can prove nothing either
+        // way, and `all()` over an empty list would answer NeverLanded
+        // -- the one wrong answer here, since it authorizes a resend.
+        // `build_multi_payment` never produces such a transaction, so
+        // this is defence against a future caller rather than a case
+        // seen today.
+        if self.spent_inputs.is_empty() {
+            return PayoutOutcome::Ambiguous;
+        }
+        let unspent_at_source = |wanted: &Hash| {
+            source_utxos
+                .iter()
+                .any(|(marked, output)| !marked && output.hash() == *wanted)
+        };
+        if self.spent_inputs.iter().all(unspent_at_source) {
+            PayoutOutcome::NeverLanded
+        } else {
+            PayoutOutcome::Ambiguous
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: Uuid,
@@ -276,16 +441,52 @@ pub struct Task {
 
 impl Task {
     /// Every (recipient, amount) pair still owed for this task right now.
-    /// Empty unless the task is `Verified`: for `HashMatch` that's always
-    /// exactly the one claimant; for `Consensus` it's every not-yet-paid
-    /// assignee with a `share` (only winners get one, fixed once by
-    /// `resolve_consensus` -- see `ConsensusAssignment::share`'s own docs
-    /// for why this must be a stored, not recomputed, value). The caller
-    /// retries whatever this returns until it comes back empty.
+    /// Empty unless the task is `Verified` or `Submitted`: for
+    /// `HashMatch` that's always exactly the one claimant; for
+    /// `Consensus` it's every not-yet-paid assignee with a `share` (only
+    /// winners get one, fixed once by `resolve_consensus` -- see
+    /// `ConsensusAssignment::share`'s own docs for why this must be a
+    /// stored, not recomputed, value). The caller retries whatever this
+    /// returns until it comes back empty.
+    ///
+    /// `Submitted` is included because a payout is not finished when its
+    /// transaction is sent -- it is finished when the sweep sees it on
+    /// chain (see `PayoutAttempt`). What stops a `Submitted` task's
+    /// payout being sent a *second* time is not this list but
+    /// `TaskBoard::unsubmitted_payouts`, which subtracts whoever already
+    /// has an attempt in flight.
     pub fn pending_payouts(&self) -> Vec<(PublicKey, u64)> {
-        if self.status != TaskStatus::Verified {
+        if !matches!(self.status, TaskStatus::Verified | TaskStatus::Submitted) {
             return vec![];
         }
+        self.owed_payouts()
+    }
+
+    /// What `pending_payouts` returns with the status gate removed:
+    /// every (recipient, amount) this task owes and has not confirmed,
+    /// whatever state it is in. `PayoutFailed` is the case that needs
+    /// this -- the money is still owed there, and a DTO that reported
+    /// nothing outstanding would be telling exactly the kind of
+    /// comfortable lie this work exists to remove.
+    pub fn owed_payouts(&self) -> Vec<(PublicKey, u64)> {
+        self.allocated_payouts()
+            .into_iter()
+            .filter(|(recipient, _)| !self.is_recipient_paid(recipient))
+            .collect()
+    }
+
+    /// Every (recipient, amount) this task will *ever* pay out, whether
+    /// or not it already has. Only meaningful once a winner exists, so
+    /// it is empty before resolution and for a dispute still awaiting
+    /// one.
+    ///
+    /// Split out from `owed_payouts` so the paid/unpaid subtraction
+    /// lives in exactly one place: `Consensus` tracks paid-ness on each
+    /// assignment while the two single-winner kinds infer it from the
+    /// task's own status, and having each of `owed_payouts`,
+    /// `confirmed_payout_total` and `is_recipient_paid` re-derive that
+    /// per kind is how the three drift apart.
+    fn allocated_payouts(&self) -> Vec<(PublicKey, u64)> {
         match &self.kind {
             TaskKind::HashMatch { .. } => match &self.claimant {
                 Some(claimant) => vec![(claimant.clone(), self.bounty)],
@@ -293,7 +494,6 @@ impl Task {
             },
             TaskKind::Consensus { assignees, .. } => assignees
                 .iter()
-                .filter(|(_, a)| !a.paid)
                 .filter_map(|(pk, a)| a.share.map(|share| (pk.clone(), share)))
                 .collect(),
             // Only the *bounty* leg -- drawn from the task's own escrow,
@@ -312,6 +512,33 @@ impl Task {
                 winner.map(|w| vec![(w, self.bounty)]).unwrap_or_default()
             }
         }
+    }
+
+    /// How much of this task's bounty the hub has actually seen land on
+    /// chain, and how much it has not. The honest pair the API owes
+    /// agents (plan §2 item 10): before this existed the only number
+    /// available was the bounty and the only states were "will be paid"
+    /// and "was paid", with no way to say "was sent and we are waiting".
+    ///
+    /// Together these need not sum to `bounty`: a `Consensus` task pays
+    /// only its winners, and an unresolved task has allocated nothing
+    /// yet.
+    pub fn confirmed_payout_total(&self) -> u64 {
+        self.allocated_payouts()
+            .into_iter()
+            .filter(|(recipient, _)| self.is_recipient_paid(recipient))
+            .map(|(_, amount)| amount)
+            .sum()
+    }
+
+    /// The other half of `confirmed_payout_total`: owed, and not yet
+    /// observed on chain. Non-zero in `Verified` (not sent yet),
+    /// `Submitted` (sent, unconfirmed) and `PayoutFailed` (proven lost,
+    /// still owed) alike -- the task's own status is what distinguishes
+    /// those three, and it is why the status had to grow rather than
+    /// this number carrying all the meaning on its own.
+    pub fn unconfirmed_payout_total(&self) -> u64 {
+        self.owed_payouts().into_iter().map(|(_, amount)| amount).sum()
     }
 
     /// Whether `recipient` has already been paid their share of this
@@ -620,6 +847,14 @@ pub struct TaskBoard {
     exchange_accounts: BTreeMap<PublicKey, ExchangeAccount>,
     orders: BTreeMap<Uuid, Order>,
     trades: BTreeMap<Uuid, Trade>,
+    /// Payouts handed to the node and not yet resolved, keyed by the
+    /// (task, recipient) pair they pay -- see `PayoutAttempt`. Kept
+    /// beside the tasks rather than inside `Task` because an entry here
+    /// is a claim about the *chain*, not about the task: it is created
+    /// and destroyed by the sweep, it is deleted the moment it resolves,
+    /// and unlike every field of `Task` it has no meaning at all once
+    /// the money is confirmed.
+    payout_attempts: BTreeMap<(Uuid, PublicKey), PayoutAttempt>,
 }
 
 impl TaskBoard {
@@ -1113,11 +1348,18 @@ impl TaskBoard {
             .collect()
     }
 
-    /// Tasks that passed verification but whose payout hasn't been
-    /// confirmed sent yet -- either because a payout attempt is still in
-    /// flight, or a previous one failed. Polled periodically by the hub's
-    /// sweep loop to retry payouts without needing a human to notice and
-    /// resubmit them by hand.
+    /// Tasks that passed verification and still have a payout to *send*.
+    ///
+    /// Deliberately still only `Verified`, not `Submitted`: a task
+    /// reaches `Submitted` precisely when nothing is left unsent (see
+    /// `record_payout_attempt`), so anything with a leg still to go is
+    /// here by construction. What happens to a payout after it is sent
+    /// is `outstanding_payout_attempts`'s half of the sweep, not this
+    /// one's.
+    ///
+    /// Polled periodically by the hub's sweep loop so a payout that
+    /// failed to build or send is retried without needing a human to
+    /// notice and resubmit it by hand.
     pub fn verified_unpaid_tasks(&self) -> Vec<&Task> {
         self.tasks
             .values()
@@ -1525,11 +1767,14 @@ impl TaskBoard {
     }
 
     /// Records that `recipient`'s `amount`-sized share of a `Verified`
-    /// task's bounty was successfully paid out on-chain, crediting their
-    /// reputation. Split from resolution so a transient payout failure
-    /// never silently credits reputation for a payment that didn't
-    /// actually happen -- the caller only calls this once the payment is
-    /// confirmed sent. Works for both task kinds: a `HashMatch` task has
+    /// or `Submitted` task's bounty was successfully paid out on-chain,
+    /// crediting their reputation. Split from resolution so a transient
+    /// payout failure never silently credits reputation for a payment
+    /// that didn't actually happen -- the caller only calls this once
+    /// the payment has been *observed on chain*
+    /// (`PayoutOutcome::Confirmed`), which is a stronger claim than the
+    /// "confirmed sent" this used to be called on and the whole point of
+    /// `TaskStatus::Submitted` existing. Works for both task kinds: a `HashMatch` task has
     /// exactly one possible recipient (its claimant) and always
     /// completes the task in one call; a `Consensus` task may have
     /// several winners, and the task only reaches `Paid` once every
@@ -1542,7 +1787,12 @@ impl TaskBoard {
         amount: u64,
     ) -> Result<bool, BoardError> {
         let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
-        if task.status != TaskStatus::Verified {
+        // `Submitted` as well as `Verified`: a payout is confirmed from
+        // `Submitted` now, and that is the ordinary path. `Verified`
+        // stays accepted because a `Consensus` task with several winners
+        // can still be `Verified` -- one leg unsent -- while an earlier
+        // leg's transaction confirms.
+        if !matches!(task.status, TaskStatus::Verified | TaskStatus::Submitted) {
             return Err(BoardError::NotVerified);
         }
 
@@ -1594,6 +1844,114 @@ impl TaskBoard {
         rep.completed += 1;
         rep.total_earned += amount;
         Ok(now_fully_paid)
+    }
+
+    /// Records that `attempt`'s transaction has been handed to the node,
+    /// and flips the task to `Submitted` once every payout it owes has
+    /// one. Replaces any previous attempt for the same (task,
+    /// recipient): a resubmission supersedes the attempt it replaces,
+    /// and keeping the old one would leave the sweep resolving a
+    /// transaction that has already been ruled out.
+    ///
+    /// The task only reaches `Submitted` when *nothing* is left
+    /// unsubmitted, so a multi-winner `Consensus` task with one leg that
+    /// failed to send stays `Verified` and the sweep keeps retrying that
+    /// leg -- which is exactly the pre-existing behaviour for a
+    /// partially-settled task, preserved.
+    pub fn record_payout_attempt(&mut self, attempt: PayoutAttempt) {
+        let task_id = attempt.task_id;
+        self.payout_attempts.insert((task_id, attempt.recipient.clone()), attempt);
+        if !self.unsubmitted_payouts(task_id).is_empty() {
+            return;
+        }
+        if let Some(task) = self.tasks.get_mut(&task_id) {
+            if task.status == TaskStatus::Verified {
+                task.status = TaskStatus::Submitted;
+            }
+        }
+    }
+
+    /// Restores an attempt previously persisted by `HubStore`. Unlike
+    /// `record_payout_attempt` this touches no task status: the task was
+    /// restored from the same store with the status it already had, and
+    /// recomputing it at boot could only disagree with what was written.
+    pub fn restore_payout_attempt(&mut self, attempt: PayoutAttempt) {
+        self.payout_attempts.insert((attempt.task_id, attempt.recipient.clone()), attempt);
+    }
+
+    pub fn payout_attempt(&self, task_id: Uuid, recipient: &PublicKey) -> Option<&PayoutAttempt> {
+        self.payout_attempts.get(&(task_id, recipient.clone()))
+    }
+
+    /// Every payout the hub is currently waiting on, oldest first, so
+    /// the sweep resolves the longest-outstanding ones before any it
+    /// only just submitted. Cloned rather than borrowed because the
+    /// caller has to release the board lock before talking to the node.
+    pub fn outstanding_payout_attempts(&self) -> Vec<PayoutAttempt> {
+        let mut attempts: Vec<PayoutAttempt> = self.payout_attempts.values().cloned().collect();
+        attempts.sort_by_key(|a| a.submitted_at);
+        attempts
+    }
+
+    /// Drops an attempt, because it resolved one way or the other.
+    /// Returns what was there, if anything -- `None` when a concurrent
+    /// resolution got to it first, which the caller must treat as "not
+    /// mine to act on" rather than as an error.
+    pub fn clear_payout_attempt(&mut self, task_id: Uuid, recipient: &PublicKey) -> Option<PayoutAttempt> {
+        self.payout_attempts.remove(&(task_id, recipient.clone()))
+    }
+
+    /// The payouts `task_id` still owes that have no transaction in
+    /// flight for them -- what the settlement path must actually send,
+    /// as opposed to `Task::pending_payouts`, which still names a
+    /// recipient whose transaction is already on the wire.
+    ///
+    /// This subtraction is the whole double-spend guard for the
+    /// `Submitted` state. Without it the sweep would re-send every
+    /// payout it is waiting on, once a minute, forever -- and the node
+    /// strikes a peer for a duplicate transaction (plan §6.2).
+    pub fn unsubmitted_payouts(&self, task_id: Uuid) -> Vec<(PublicKey, u64)> {
+        let Some(task) = self.tasks.get(&task_id) else {
+            return vec![];
+        };
+        task.pending_payouts()
+            .into_iter()
+            .filter(|(recipient, _)| !self.payout_attempts.contains_key(&(task_id, recipient.clone())))
+            .collect()
+    }
+
+    /// Gives up on a task's payout after `MAX_PAYOUT_SUBMISSIONS`
+    /// attempts were each proven never to have reached the chain, and
+    /// drops whatever attempts it still holds for it.
+    ///
+    /// The escrow behind the task is deliberately left alone -- not
+    /// refunded to the poster, who received the work, and not marked
+    /// settled, which would say the worker was paid. It stays exactly
+    /// where it is for an operator to resolve by hand; see
+    /// `TaskStatus::PayoutFailed`.
+    ///
+    /// Returns every attempt it dropped, including a sibling leg's,
+    /// because the caller has to delete each one from the store as well.
+    /// Leaving one behind would be silently corrosive rather than
+    /// merely untidy: it survives a restart, comes back on a board whose
+    /// task is now terminal, and every sweep afterwards tries to resolve
+    /// it and logs a failure it can never clear.
+    pub fn mark_payout_failed(&mut self, task_id: Uuid) -> Result<Vec<PayoutAttempt>, BoardError> {
+        let task = self.tasks.get_mut(&task_id).ok_or(BoardError::NotFound)?;
+        if !matches!(task.status, TaskStatus::Verified | TaskStatus::Submitted) {
+            return Err(BoardError::NotVerified);
+        }
+        task.status = TaskStatus::PayoutFailed;
+        let dropped: Vec<PayoutAttempt> = self
+            .payout_attempts
+            .keys()
+            .filter(|(id, _)| *id == task_id)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|key| self.payout_attempts.remove(&key))
+            .collect();
+        Ok(dropped)
     }
 
     /// Reopens any `Claimed` task whose deadline has passed, so an
@@ -2042,6 +2400,38 @@ mod tests {
 
     fn pubkey() -> PublicKey {
         PrivateKey::new_key().public_key()
+    }
+
+    /// A `TransactionOutput` of `value` belonging to `owner`, with the
+    /// fresh `unique_id` every real one carries -- so two calls with
+    /// identical arguments hash differently, which is the property the
+    /// whole resolution rule rests on.
+    fn output(value: u64, owner: &PublicKey) -> btclib::types::TransactionOutput {
+        btclib::types::TransactionOutput {
+            value,
+            unique_id: Uuid::new_v4(),
+            pubkey: owner.clone(),
+        }
+    }
+
+    /// An attempt that claims to have paid `paid_output` to its
+    /// recipient by spending `spent` from `source`.
+    fn attempt(
+        recipient: &PublicKey,
+        source: &PublicKey,
+        paid_output: &btclib::types::TransactionOutput,
+        spent: &[&btclib::types::TransactionOutput],
+    ) -> PayoutAttempt {
+        PayoutAttempt {
+            task_id: Uuid::new_v4(),
+            recipient: recipient.clone(),
+            amount: paid_output.value,
+            output_hash: paid_output.hash(),
+            spent_inputs: spent.iter().map(|o| o.hash()).collect(),
+            source: source.clone(),
+            submitted_at: Utc::now(),
+            submissions: 1,
+        }
     }
 
     /// A throwaway escrow secret for tests that only need `reserve_escrow`
@@ -3753,5 +4143,230 @@ mod tests {
         board.credit_compute(&recipient, 10);
         board.credit_compute(&recipient, 5);
         assert_eq!(board.exchange_account(&recipient).compute_balance, 15);
+    }
+
+    /// Row one of plan §6.5's table. The recipient holding the exact
+    /// output this attempt created is proof the transaction was mined,
+    /// and it is the *primary* signal precisely because it survives what
+    /// the operator's side does not: the operator's inputs are gone
+    /// either way here.
+    #[test]
+    fn a_payout_whose_output_the_recipient_holds_is_confirmed() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let spent = output(1_000, &operator);
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&spent]);
+
+        assert_eq!(
+            attempt.resolve(&[(false, paid)], &[]),
+            PayoutOutcome::Confirmed
+        );
+    }
+
+    /// Still confirmed when the node marks the recipient's output: a
+    /// mark means the mempool holds a transaction *spending* it, which
+    /// can only happen to an output that exists. An agent that
+    /// immediately spends its bounty must not read as unpaid.
+    #[test]
+    fn a_confirmed_payout_the_recipient_is_already_spending_is_still_confirmed() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let spent = output(1_000, &operator);
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&spent]);
+
+        assert_eq!(
+            attempt.resolve(&[(true, paid)], &[(false, spent)]),
+            PayoutOutcome::Confirmed
+        );
+    }
+
+    /// Row two. Nothing at the recipient, and every input still sitting
+    /// unspent and unmarked at the source: no block and no mempool holds
+    /// this transaction, so rebuilding it cannot duplicate a payment.
+    #[test]
+    fn a_payout_whose_inputs_are_all_still_unspent_never_landed() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let spent = output(1_000, &operator);
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&spent]);
+
+        assert_eq!(
+            attempt.resolve(&[], &[(false, spent)]),
+            PayoutOutcome::NeverLanded
+        );
+    }
+
+    /// A multi-input transaction needs *every* input back before the
+    /// hub may call it lost. One input still spendable and another
+    /// consumed is not a transaction that never happened -- it is a
+    /// picture the hub cannot explain, and resending against it risks
+    /// paying twice.
+    #[test]
+    fn a_payout_with_only_some_inputs_returned_is_ambiguous_not_lost() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let (first, second) = (output(60, &operator), output(60, &operator));
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&first, &second]);
+
+        assert_eq!(
+            attempt.resolve(&[], &[(false, first)]),
+            PayoutOutcome::Ambiguous
+        );
+    }
+
+    /// Row three, the case that must never collapse into either
+    /// neighbour: the inputs are marked, so the node's mempool is
+    /// holding a transaction that spends them -- most likely this very
+    /// one, waiting for a block. Resending here is the duplicate the
+    /// node answers with a strike.
+    #[test]
+    fn a_payout_whose_inputs_the_mempool_has_marked_is_ambiguous() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let spent = output(1_000, &operator);
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&spent]);
+
+        assert_eq!(
+            attempt.resolve(&[], &[(true, spent)]),
+            PayoutOutcome::Ambiguous
+        );
+    }
+
+    /// The same row reached the other way: the inputs are gone from the
+    /// source entirely. Either the transaction confirmed and the
+    /// recipient has since spent the output, or something else consumed
+    /// them. Both are unresolvable from here.
+    #[test]
+    fn a_payout_whose_inputs_have_vanished_is_ambiguous() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let spent = output(1_000, &operator);
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&spent]);
+        // Whatever the operator holds now, it is not the output this
+        // attempt spent -- a fresh `unique_id` makes it a different one.
+        assert_eq!(
+            attempt.resolve(&[], &[(false, output(900, &operator))]),
+            PayoutOutcome::Ambiguous
+        );
+    }
+
+    /// A recipient holding a payment of the same size from an *earlier*
+    /// attempt must not confirm a later one. This is what the fresh
+    /// `unique_id` on every output buys, and without it a resubmission
+    /// would confirm itself against the money it was resubmitted
+    /// because it lost.
+    #[test]
+    fn an_identical_payment_from_a_different_attempt_does_not_confirm_this_one() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let spent = output(1_000, &operator);
+        let earlier = output(100, &worker);
+        let this_attempt = attempt(&worker, &operator, &output(100, &worker), &[&spent]);
+
+        assert_ne!(
+            this_attempt.resolve(&[(false, earlier)], &[(false, spent)]),
+            PayoutOutcome::Confirmed,
+            "same value, same recipient, different attempt -- must not read as this one confirming"
+        );
+    }
+
+    /// An attempt with no recorded inputs proves nothing, and `all()`
+    /// over an empty list would otherwise say "never landed" and
+    /// authorize a resend.
+    #[test]
+    fn an_attempt_that_recorded_no_inputs_is_ambiguous_rather_than_lost() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[]);
+
+        assert_eq!(attempt.resolve(&[], &[]), PayoutOutcome::Ambiguous);
+    }
+
+    /// The board flips to `Submitted` only once every owed payout has a
+    /// transaction in flight -- a `Consensus` task with one leg still
+    /// unsent stays `Verified` so the sweep keeps sending it.
+    #[test]
+    fn a_task_reaches_submitted_only_when_every_leg_has_been_sent() {
+        let mut board = TaskBoard::new();
+        let (task_id, assignees) =
+            create_and_fill_consensus_task(&mut board, 2, Utc::now() + chrono::Duration::minutes(30));
+        for assignee in &assignees {
+            board.submit_consensus_answer(task_id, assignee.clone(), "same".to_string()).unwrap();
+        }
+        assert_eq!(board.get_task(task_id).unwrap().status, TaskStatus::Verified);
+
+        let source = pubkey();
+        let first = output(450, &assignees[0]);
+        let mut first_attempt = attempt(&assignees[0], &source, &first, &[&output(900, &source)]);
+        first_attempt.task_id = task_id;
+        board.record_payout_attempt(first_attempt);
+        assert_eq!(
+            board.get_task(task_id).unwrap().status,
+            TaskStatus::Verified,
+            "one winner still has nothing on the wire -- the sweep must keep trying"
+        );
+        assert_eq!(board.unsubmitted_payouts(task_id).len(), 1);
+
+        let second = output(450, &assignees[1]);
+        let mut second_attempt = attempt(&assignees[1], &source, &second, &[&output(900, &source)]);
+        second_attempt.task_id = task_id;
+        board.record_payout_attempt(second_attempt);
+        assert_eq!(board.get_task(task_id).unwrap().status, TaskStatus::Submitted);
+        assert!(
+            board.unsubmitted_payouts(task_id).is_empty(),
+            "nothing may be re-sent while it is already in flight"
+        );
+    }
+
+    /// `PayoutFailed` must keep telling the truth about the money: the
+    /// bounty is still owed, nobody's reputation was credited, and the
+    /// escrow was not handed back to the poster.
+    #[test]
+    fn an_abandoned_payout_still_reports_the_money_as_owed() {
+        let mut board = TaskBoard::new();
+        let (poster, worker) = (pubkey(), pubkey());
+        let task = board.create_task(poster, "t".to_string(), 100, Hash::hash(&"answer"));
+        board.claim_task(task.id, worker.clone(), Utc::now() + chrono::Duration::minutes(10)).unwrap();
+        board.submit(task.id, worker.clone(), Hash::hash(&"answer")).unwrap();
+
+        board.mark_payout_failed(task.id).unwrap();
+        let task = board.get_task(task.id).unwrap();
+        assert_eq!(task.status, TaskStatus::PayoutFailed);
+        assert_eq!(task.unconfirmed_payout_total(), 100, "the worker is still owed the bounty");
+        assert_eq!(task.confirmed_payout_total(), 0);
+        assert!(
+            task.pending_payouts().is_empty(),
+            "but nothing may be sent for it again without an operator"
+        );
+        assert_eq!(board.reputation(&worker).completed, 0, "an unpaid worker is not a completed one");
+        assert_eq!(
+            board.allocated_bounty(),
+            100,
+            "the operator's balance stays committed -- the debt is real"
+        );
+    }
+
+    /// Confirmation drives the totals the DTOs report, and does so one
+    /// winner at a time on a multi-winner task.
+    #[test]
+    fn confirmed_and_unconfirmed_totals_track_each_winner_separately() {
+        let mut board = TaskBoard::new();
+        let (task_id, assignees) =
+            create_and_fill_consensus_task(&mut board, 2, Utc::now() + chrono::Duration::minutes(30));
+        for assignee in &assignees {
+            board.submit_consensus_answer(task_id, assignee.clone(), "same".to_string()).unwrap();
+        }
+        let before = board.get_task(task_id).unwrap();
+        assert_eq!(before.confirmed_payout_total(), 0);
+        assert_eq!(before.unconfirmed_payout_total(), 900);
+
+        board.mark_recipient_paid(task_id, &assignees[0], 450).unwrap();
+        let midway = board.get_task(task_id).unwrap();
+        assert_eq!(midway.confirmed_payout_total(), 450);
+        assert_eq!(midway.unconfirmed_payout_total(), 450);
+
+        board.mark_recipient_paid(task_id, &assignees[1], 450).unwrap();
+        let done = board.get_task(task_id).unwrap();
+        assert_eq!(done.confirmed_payout_total(), 900);
+        assert_eq!(done.unconfirmed_payout_total(), 0);
     }
 }

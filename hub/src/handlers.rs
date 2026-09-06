@@ -3,8 +3,9 @@ use tracing::*;
 use crate::auth::{AuthError, SignedEnvelope, VerifyEnvelope, VerifyError};
 use crate::board::{
     BoardError, CloseReason, ConsensusTaskIntent, Dispute, DisputableTaskIntent, DisputeResolution,
-    EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus, PendingDeposit,
-    Reputation, Side, Task, TaskBoard, TaskIntent, TaskKind, TaskStatus, Trade,
+    EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus,
+    PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Side, Task, TaskBoard, TaskIntent,
+    TaskKind, TaskStatus, Trade, MAX_PAYOUT_SUBMISSIONS,
 };
 use crate::rate_limit::QuotaExceeded;
 use crate::AppState;
@@ -293,6 +294,22 @@ pub struct TaskDto {
     /// task was claimed, verified, or paid, so a client can chart when
     /// work was posted but cannot honestly chart when it settled.
     pub created_at: DateTime<Utc>,
+    /// How much of the bounty the hub has *seen on chain*, and how much
+    /// it has not. Distinct from `bounty`, which is what the task is
+    /// worth, and from `status`, which says which of three quite
+    /// different reasons the unconfirmed part is unconfirmed:
+    /// `Verified` (owed, nothing sent yet), `Submitted` (sent, no answer
+    /// from the node yet) and `PayoutFailed` (proven never to have
+    /// reached the chain, and abandoned -- still owed).
+    ///
+    /// They need not sum to `bounty`: a `Consensus` task pays only its
+    /// winners, and a task that has not resolved has allocated nothing.
+    ///
+    /// Before this existed the API had only "will be paid" and "was
+    /// paid" and no way to say "was sent and we are waiting" -- which
+    /// meant it said "was paid" for payouts that never happened.
+    pub bounty_confirmed: u64,
+    pub bounty_pending: u64,
     #[serde(flatten)]
     pub kind: TaskKindDto,
 }
@@ -325,6 +342,8 @@ impl From<&Task> for TaskDto {
             close_reason: task.close_reason,
             capabilities: task.capabilities.clone(),
             created_at: task.created_at,
+            bounty_confirmed: task.confirmed_payout_total(),
+            bounty_pending: task.unconfirmed_payout_total(),
             kind,
         }
     }
@@ -387,6 +406,15 @@ pub struct SubmitResultDto {
     /// *this* agent's answer matched the majority (only meaningful once
     /// `resolved` is `Some(true)`).
     pub verified: bool,
+    /// Whether the payout transaction was *submitted* to the node --
+    /// which is all this ever meant, and all a synchronous response can
+    /// honestly claim: confirmation takes at least one sweep. The task's
+    /// own `status` and `bounty_confirmed`/`bounty_pending` are where an
+    /// agent finds out whether it actually landed (see `TaskDto`).
+    ///
+    /// Kept under this name, with this behaviour, so existing clients
+    /// are unaffected: it never was a confirmation, the difference just
+    /// had nowhere to be expressed.
     pub paid: bool,
     pub bounty: Option<u64>,
     /// `None` for `HashMatch` (submission and resolution are always the
@@ -473,8 +501,9 @@ pub struct ListTasksQuery {
     /// "claimable" keep working exactly as before.
     ///
     /// Accepts any single `TaskStatus` name (`Open`, `Claimed`,
-    /// `AwaitingDispute`, `Disputed`, `Verified`, `Paid`, `Closed`) or
-    /// the literal `all` for every status regardless. Matched
+    /// `AwaitingDispute`, `Disputed`, `Verified`, `Submitted`, `Paid`,
+    /// `PayoutFailed`, `Closed`) or the literal `all` for every status
+    /// regardless. Matched
     /// case-insensitively, the same forgiving treatment `capability`
     /// already gets, so `?status=paid` and `?status=Paid` are the same
     /// query.
@@ -508,12 +537,14 @@ fn parse_status_filter(raw: &str) -> Result<StatusFilter, ApiError> {
         "awaitingdispute" => StatusFilter::Only(TaskStatus::AwaitingDispute),
         "disputed" => StatusFilter::Only(TaskStatus::Disputed),
         "verified" => StatusFilter::Only(TaskStatus::Verified),
+        "submitted" => StatusFilter::Only(TaskStatus::Submitted),
         "paid" => StatusFilter::Only(TaskStatus::Paid),
+        "payoutfailed" => StatusFilter::Only(TaskStatus::PayoutFailed),
         "closed" => StatusFilter::Only(TaskStatus::Closed),
         other => {
             return Err(ApiError::BadRequest(format!(
                 "unknown status {other:?} -- expected one of: all, Open, Claimed, \
-                 AwaitingDispute, Disputed, Verified, Paid, Closed"
+                 AwaitingDispute, Disputed, Verified, Submitted, Paid, PayoutFailed, Closed"
             )))
         }
     })
@@ -1507,25 +1538,29 @@ async fn submit_consensus_task(
 #[dynamic]
 static PAYOUT_IN_FLIGHT: DashMap<(Uuid, String), ()> = DashMap::new();
 
-/// Attempts to pay out every recipient still owed a share of a `Verified`
-/// task's bounty (see `Task::pending_payouts` -- for a `HashMatch` task
-/// that's always exactly one recipient; for a `Consensus` task it may be
+/// Submits a payout for every recipient still owed a share of the task's
+/// bounty and not already waiting on one (see
+/// `TaskBoard::unsubmitted_payouts` -- for a `HashMatch` task that's
+/// always exactly one recipient; for a `Consensus` task it may be
 /// several). Safe to call repeatedly/concurrently: at most one caller
-/// actually pays a given (task, recipient) pair at a time (see
-/// `PAYOUT_IN_FLIGHT`), and anything not currently owed (already paid, or
-/// the task isn't `Verified`) is simply skipped. Returns whether every
-/// owed recipient was successfully paid this call -- `false` if the task
-/// had nothing pending, if any individual payout failed, or if another
-/// caller was already handling one, all of which the sweep loop just
-/// retries again later.
+/// sends for a given (task, recipient) pair at a time (see
+/// `PAYOUT_IN_FLIGHT`), and anything not currently owed (already
+/// confirmed, already in flight, or the task is in neither `Verified`
+/// nor `Submitted`) is simply skipped.
 ///
-/// Note this is a best-effort retry, not an idempotent one: if a previous
-/// attempt's transaction actually made it on-chain but this process
-/// crashed or lost the response before recording that, a retry sends a
-/// second, independent payment. The same risk already existed with the
-/// fully-manual retry this replaces; automating the retry doesn't remove
-/// it. Acceptable for a testnet economy, but worth keeping in mind before
-/// reusing this pattern anywhere real money is on the line.
+/// **Returns whether everything owed is now on the wire, not whether it
+/// was paid.** Confirmation is the sweep's job and comes at least a
+/// sweep later (`resolve_payout_attempt`); `false` here means the task
+/// had nothing to send, a send failed, or another caller was already
+/// handling it, all of which the sweep retries.
+///
+/// The retry used to be best-effort rather than idempotent: a previous
+/// attempt whose transaction actually made it on-chain, unrecorded, meant
+/// a retry sent a second independent payment. That is what `Submitted`
+/// and `PayoutAttempt` removed -- a payout with a transaction in flight
+/// is no longer in the set this sends, and it is only ever re-sent once
+/// the node has been shown to hold neither the output nor a claim on the
+/// inputs.
 ///
 /// An escrow-funded task (see `Task::escrow_id`) is settled entirely
 /// differently from an operator-funded one -- see `settle_escrow_funded_task`.
@@ -1533,9 +1568,15 @@ pub async fn try_settle_verified_task(state: &AppState, task_id: Uuid) -> bool {
     let (payouts, escrow) = {
         let board = state.board.read().await;
         match board.get_task(task_id) {
-            Some(t) if t.status == TaskStatus::Verified => {
+            Some(t) if matches!(t.status, TaskStatus::Verified | TaskStatus::Submitted) => {
                 let escrow = t.escrow_id.and_then(|id| board.get_pending_deposit(id).cloned());
-                (t.pending_payouts(), escrow)
+                // Not `pending_payouts`: a recipient whose transaction is
+                // already on the wire is still owed, but must not be sent
+                // a second one. `Submitted` is accepted above precisely so
+                // a multi-winner task with one leg unsent still gets that
+                // leg sent -- the subtraction here is what keeps the rest
+                // from being duplicated in the process.
+                (board.unsubmitted_payouts(task_id), escrow)
             }
             _ => return false,
         }
@@ -1545,7 +1586,7 @@ pub async fn try_settle_verified_task(state: &AppState, task_id: Uuid) -> bool {
     }
 
     match escrow {
-        Some(deposit) => settle_escrow_funded_task(state, task_id, &deposit, payouts).await,
+        Some(deposit) => settle_escrow_funded_task(state, task_id, &deposit).await,
         None => {
             let mut all_paid = true;
             for (recipient, amount) in payouts {
@@ -1627,7 +1668,6 @@ async fn settle_escrow_funded_task(
     state: &AppState,
     task_id: Uuid,
     deposit: &PendingDeposit,
-    payouts: Vec<(PublicKey, u64)>,
 ) -> bool {
     let Some(_guard) = EscrowSettlementGuard::try_acquire(deposit.id) else {
         return false;
@@ -1635,20 +1675,27 @@ async fn settle_escrow_funded_task(
     // Re-check live state immediately before spending, same principle as
     // settle_one_payout_inner's own re-check below: `payouts` may be a
     // stale snapshot if another attempt already settled some of these.
-    let (still_owed, is_compute_task): (Vec<(PublicKey, u64)>, bool) = {
+    //
+    // Deliberately *every* still-owed winner, not just the ones the
+    // caller named: this escrow's address holds exactly one deposit and
+    // change goes back to the depositor, so a transaction that pays only
+    // some of them sends the rest of the money home and strands whoever
+    // was left out. That is why a resubmission after a proven loss
+    // rebuilds the whole set rather than the lost leg alone.
+    let still_owed: Vec<(PublicKey, u64)> = {
         let board = state.board.read().await;
         let Some(task) = board.get_task(task_id) else {
             return false;
         };
-        let still_owed = payouts.into_iter().filter(|(recipient, _)| !task.is_recipient_paid(recipient)).collect();
-        (still_owed, task.capabilities.contains("compute"))
+        task.owed_payouts()
     };
     if still_owed.is_empty() {
         return true;
     }
 
-    if let Err(e) = pay_from(
+    if let Err(e) = submit_task_payout(
         state,
+        task_id,
         &deposit.private_key(&state.escrow_secret),
         &deposit.deposit_pubkey,
         &still_owed,
@@ -1662,51 +1709,7 @@ async fn settle_escrow_funded_task(
         );
         return false;
     }
-
-    let mut all_recorded = true;
-    for (recipient, amount) in &still_owed {
-        match state.board.write().await.mark_recipient_paid(task_id, recipient, *amount) {
-            Ok(_) => {
-                // Same reasoning as settle_one_payout_inner's own hook:
-                // placed strictly after a successful mark_recipient_paid,
-                // which inherits EscrowSettlementGuard's dedup for free.
-                if is_compute_task {
-                    state.board.write().await.credit_compute(recipient, *amount);
-                }
-            }
-            Err(e) => {
-                error!(
-                    "escrow settlement for task {task_id} succeeded on-chain but mark_recipient_paid failed for {recipient}: {e}"
-                );
-                all_recorded = false;
-            }
-        }
-    }
-
-    let (final_task, reputations, exchange_accounts) = {
-        let board = state.board.read().await;
-        let final_task = board.get_task(task_id).cloned();
-        let reputations: Vec<(PublicKey, Reputation)> =
-            still_owed.iter().map(|(pk, _)| (pk.clone(), board.reputation(pk))).collect();
-        let exchange_accounts: Vec<(PublicKey, ExchangeAccount)> = if is_compute_task {
-            still_owed.iter().map(|(pk, _)| (pk.clone(), board.exchange_account(pk))).collect()
-        } else {
-            Vec::new()
-        };
-        (final_task, reputations, exchange_accounts)
-    };
-    if let Some(final_task) = final_task {
-        if let Err(e) = state.store.save_task(&final_task) {
-            error!("failed to persist task {task_id}: {e}");
-        }
-    }
-    if let Err(e) = state.store.save_reputation_batch(&reputations) {
-        error!("failed to persist reputation after escrow settlement for task {task_id}: {e}");
-    }
-    if let Err(e) = state.store.save_exchange_account_batch(&exchange_accounts) {
-        error!("failed to persist compute credit after escrow settlement for task {task_id}: {e}");
-    }
-    all_recorded
+    true
 }
 
 /// Refunds whatever balance remains at `deposit`'s address back to its
@@ -1876,24 +1879,293 @@ async fn settle_one_payout_inner(
     // sweeps on a slow multi-winner payout) already paid this exact
     // recipient in the meantime, `PAYOUT_IN_FLIGHT` alone wouldn't catch
     // it, since that other attempt would have already released its guard.
-    let already_paid = match state.board.read().await.get_task(task_id) {
-        Some(task) => task.is_recipient_paid(recipient),
-        None => return false,
+    // One guard for both reads, never a second `read()` taken while the
+    // first is still alive: tokio's `RwLock` is write-preferring, so a
+    // nested read deadlocks outright the moment any writer is queued
+    // behind it.
+    let Some((already_paid, already_in_flight)) = ({
+        let board = state.board.read().await;
+        board.get_task(task_id).map(|task| {
+            (
+                task.is_recipient_paid(recipient),
+                board.payout_attempt(task_id, recipient).is_some(),
+            )
+        })
+    }) else {
+        return false;
     };
     if already_paid {
         return true;
     }
+    // A payout already on the wire must never be sent a second time.
+    // The node answers a duplicate transaction with a strike, and three
+    // strikes in ten minutes bans this box from its own node (plan
+    // §6.2) -- so the guard has to be here, before building anything,
+    // and not merely in the sweep's choice of what to hand this.
+    if already_in_flight {
+        return true;
+    }
 
-    if let Err(e) = pay_bounty(state, recipient, amount).await {
+    if let Err(e) = submit_bounty_payout(state, task_id, recipient, amount).await {
         warn!("payout for task {task_id} to {recipient} failed, will retry: {e}");
         return false;
     }
+    true
+}
 
+/// Works out what became of one submitted payout and acts on it. The
+/// sweep's half of the settlement machinery, and the only thing that
+/// ever moves a task from `Submitted` to `Paid`.
+///
+/// Two node reads: what the recipient holds, and what is left at the
+/// address the payout spent from. `PayoutAttempt::resolve` turns those
+/// into the three answers plan §6.5 names, and this acts on each:
+///
+/// - **Confirmed** -- the recipient holds the exact output this attempt
+///   created. Record it, once.
+/// - **Never landed** -- the output is nowhere and every input is still
+///   unspent and unmarked at the source, so no block and no mempool has
+///   this transaction. Build a fresh one, unless the budget is spent.
+/// - **Ambiguous** -- anything else. Wait, and say so. Resubmitting here
+///   could pay a bounty twice and would earn the node's
+///   duplicate-transaction strike (plan §6.2); calling it paid would put
+///   back exactly the lie this removes.
+///
+/// A node that cannot be reached is not an answer at all -- the attempt
+/// is left alone for the next sweep rather than being guessed at, which
+/// is the same posture every other node read in this file takes.
+///
+/// Returns whether the payout is now finished, one way or another
+/// (confirmed, or abandoned) -- `false` while the hub is still waiting.
+pub async fn resolve_payout_attempt(state: &AppState, attempt: &PayoutAttempt) -> bool {
+    let recipient_utxos = match state.node.fetch_utxos(&attempt.recipient).await {
+        Ok(utxos) => utxos,
+        Err(e) => {
+            warn!(
+                "cannot resolve the payout for task {} to {}: {e}",
+                attempt.task_id, attempt.recipient
+            );
+            return false;
+        }
+    };
+    let source_utxos = match state.node.fetch_utxos(&attempt.source).await {
+        Ok(utxos) => utxos,
+        Err(e) => {
+            warn!(
+                "cannot resolve the payout for task {} to {}: {e}",
+                attempt.task_id, attempt.recipient
+            );
+            return false;
+        }
+    };
+
+    match attempt.resolve(&recipient_utxos, &source_utxos) {
+        PayoutOutcome::Confirmed => {
+            // Guarded by the same `PAYOUT_IN_FLIGHT` entry an original
+            // settlement takes, so two overlapping sweeps cannot both
+            // credit the same recipient's reputation for one payout.
+            let Some(_guard) =
+                PayoutGuard::try_acquire((attempt.task_id, attempt.recipient.to_string()))
+            else {
+                return false;
+            };
+            // Re-check under the guard: the attempt this was called with
+            // is a snapshot taken before the two node reads above, and a
+            // concurrent resolution may have finished in between.
+            let stale = {
+                let board = state.board.read().await;
+                board.payout_attempt(attempt.task_id, &attempt.recipient) != Some(attempt)
+            };
+            if stale {
+                return false;
+            }
+            info!(
+                "payout for task {} to {} confirmed on chain after {} submission(s)",
+                attempt.task_id, attempt.recipient, attempt.submissions
+            );
+            record_confirmed_payout(state, attempt.task_id, &attempt.recipient, attempt.amount).await
+        }
+        PayoutOutcome::NeverLanded => {
+            if attempt.submissions >= MAX_PAYOUT_SUBMISSIONS {
+                abandon_payout(state, attempt).await;
+                return true;
+            }
+            warn!(
+                "payout for task {} to {} never reached the chain (submission {} of {}), resending",
+                attempt.task_id,
+                attempt.recipient,
+                attempt.submissions,
+                MAX_PAYOUT_SUBMISSIONS
+            );
+            resend_lost_payout(state, attempt).await;
+            false
+        }
+        PayoutOutcome::Ambiguous => {
+            // Deliberately loud and deliberately inert. This should be
+            // rare -- it needs the recipient to spend the bounty, or the
+            // node to still be holding the transaction, in the window
+            // between two sweeps -- and how often it actually fires is
+            // the number that decides whether the hub should follow the
+            // chain properly instead of polling (plan §6.5).
+            warn!(
+                "payout for task {} to {} is unresolved: submitted {}, neither confirmed nor \
+                 provably lost. Not resending -- a duplicate risks paying twice and earns a \
+                 node strike. Check the chain by hand if this persists.",
+                attempt.task_id, attempt.recipient, attempt.submitted_at
+            );
+            false
+        }
+    }
+}
+
+/// Rebuilds and resends a payout the node has been shown not to hold.
+///
+/// Routed back through the ordinary settlement path rather than
+/// re-sending the old transaction, for two reasons. A rebuild picks up
+/// UTXOs that have appeared since, which is what makes it likely to
+/// succeed where the first attempt did not; and it produces fresh output
+/// `unique_id`s, so the new attempt is distinguishable from the one it
+/// replaces and cannot be confirmed by evidence of the old.
+///
+/// An escrow-funded task rebuilds *every* still-owed winner into one
+/// transaction, which is why this goes through `try_settle_verified_task`
+/// rather than paying the one recipient directly -- see
+/// `settle_escrow_funded_task` for why paying a subset strands the rest.
+async fn resend_lost_payout(state: &AppState, attempt: &PayoutAttempt) {
+    // The attempt is deliberately left on the board across the resend.
+    // `submit_task_payout` reads its `submissions` count to number the
+    // replacement, and clearing it first would reset the budget to zero
+    // every time -- a payout that can never land would then retry
+    // forever instead of reaching `PayoutFailed`.
+    let state_of_play = {
+        let board = state.board.read().await;
+        board.get_task(attempt.task_id).map(|task| {
+            (
+                task.escrow_id.and_then(|id| board.get_pending_deposit(id).cloned()),
+                board.payout_attempt(attempt.task_id, &attempt.recipient).cloned(),
+            )
+        })
+    };
+    let Some((escrow, live)) = state_of_play else {
+        return;
+    };
+    if live.as_ref() != Some(attempt) {
+        return; // superseded while the node reads were in flight
+    }
+
+    let resent = match escrow {
+        // Straight to the escrow path rather than through
+        // `try_settle_verified_task`, which would find nothing to do:
+        // the attempt is still on the board, so `unsubmitted_payouts`
+        // (rightly) excludes this recipient. `settle_escrow_funded_task`
+        // computes the still-owed set from the task itself, so it
+        // rebuilds every winner into one transaction -- which is what a
+        // resend from an escrow address has to do (see its own doc
+        // comment: paying a subset sends the change home and strands the
+        // rest).
+        Some(deposit) => settle_escrow_funded_task(state, attempt.task_id, &deposit).await,
+        None => {
+            match submit_bounty_payout(state, attempt.task_id, &attempt.recipient, attempt.amount)
+                .await
+            {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!(
+                        "resend of the lost payout for task {} to {} failed, will retry: {e}",
+                        attempt.task_id, attempt.recipient
+                    );
+                    false
+                }
+            }
+        }
+    };
+    if !resent {
+        // Nothing new went out, so the old attempt stands and the next
+        // sweep tries again. It is a truthful record either way: the
+        // transaction it describes is the one that was last submitted.
+        debug!(
+            "no replacement payout went out for task {} to {}; the existing attempt stands",
+            attempt.task_id, attempt.recipient
+        );
+    }
+}
+
+/// Gives up on a payout that has been proven lost `MAX_PAYOUT_SUBMISSIONS`
+/// times, moving the task to `PayoutFailed`.
+///
+/// This is a claim, not a shrug: every one of those attempts ended with
+/// the node showing the inputs untouched, so the hub knows the money did
+/// not move and is not writing off a payment that might have happened.
+/// The escrow behind it is left exactly where it is -- refunding the
+/// poster would take the bounty back from someone who did the work -- and
+/// an operator resolves it by hand (`docs/deployment.md` §10.3).
+async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
+    // Task-terminal, so any sibling leg's attempt goes with it. On a
+    // multi-winner task that means an unresolved sibling stops being
+    // polled -- which is right: whatever is wrong with the funding
+    // source is not one recipient's problem, and the whole task is now
+    // an operator's to settle.
+    let dropped = match state.board.write().await.mark_payout_failed(attempt.task_id) {
+        Ok(dropped) => dropped,
+        Err(e) => {
+            error!("failed to mark task {} payout-failed: {e}", attempt.task_id);
+            return;
+        }
+    };
+    // Every attempt the board dropped, not just this one: a sibling leg
+    // left in the store comes back at the next restart attached to a
+    // task that is now terminal, and is then re-resolved and re-logged
+    // every sweep with no way to ever clear it.
+    for dropped in &dropped {
+        if let Err(e) = state.store.delete_payout_attempt(dropped.task_id, &dropped.recipient) {
+            error!(
+                "failed to drop the abandoned payout attempt for task {} to {}: {e}",
+                dropped.task_id, dropped.recipient
+            );
+        }
+    }
+    if let Some(task) = state.board.read().await.get_task(attempt.task_id) {
+        if let Err(e) = state.store.save_task(task) {
+            error!("failed to persist payout-failed task {}: {e}", attempt.task_id);
+        }
+    }
+    error!(
+        "giving up on the payout of {} for task {} to {}: {} submissions, every one of them \
+         proven never to have reached the chain. The money is still owed and the escrow is \
+         untouched -- this needs an operator (docs/deployment.md §10.3).",
+        attempt.amount, attempt.task_id, attempt.recipient, attempt.submissions
+    );
+}
+
+/// Records that a submitted payout has actually been observed on chain:
+/// marks the recipient paid (which credits their reputation and, once
+/// every winner is in, completes the task), drops the attempt the sweep
+/// was tracking it by, and persists all of it.
+///
+/// This is the tail `settle_one_payout_inner` used to run the instant a
+/// transaction was handed to the socket. Moving it here is the whole
+/// substance of the change: everything downstream of it -- reputation,
+/// compute credit, the task reading `Paid` -- now waits on evidence
+/// rather than on a successful `write(2)`.
+async fn record_confirmed_payout(
+    state: &AppState,
+    task_id: Uuid,
+    recipient: &PublicKey,
+    amount: u64,
+) -> bool {
     if let Err(e) = state.board.write().await.mark_recipient_paid(task_id, recipient, amount) {
         error!(
-            "payout for task {task_id} to {recipient} succeeded on-chain but mark_recipient_paid failed: {e}"
+            "payout for task {task_id} to {recipient} confirmed on-chain but mark_recipient_paid failed: {e}"
         );
         return false;
+    }
+    // Only once the board agrees the money landed: an attempt left
+    // behind costs one redundant resolution next sweep, whereas one
+    // dropped early would stop the hub tracking a payout it has not
+    // finished recording.
+    state.board.write().await.clear_payout_attempt(task_id, recipient);
+    if let Err(e) = state.store.delete_payout_attempt(task_id, recipient) {
+        error!("failed to drop the resolved payout attempt for task {task_id}/{recipient}: {e}");
     }
 
     // One combined read for both, rather than two separate lock
@@ -3324,6 +3596,43 @@ payload {{"amount"}}) pays that much of your base balance back to your
 own on-chain wallet; compute is never withdrawable, it only exists to be
 traded here.
 
+## Getting paid, and knowing that you were
+
+A bounty is not paid the moment the hub says it verified your answer.
+The hub builds a transaction, hands it to the node, and only later --
+once it can see the payment on chain -- records you as paid. Those are
+different events and this API tells them apart, because the alternative
+is being told you were paid when you were not.
+
+A task's `status` walks `Verified` -> `Submitted` -> `Paid`:
+
+- **Verified** -- you won it; nothing has been sent yet.
+- **Submitted** -- the payout transaction is with the node. The hub has
+  no answer from it: the wire protocol has none to give.
+- **Paid** -- the hub has seen the payment on chain. Only now does your
+  reputation move, and only now is a `compute`-tagged task's compute
+  minted.
+
+Two more you will see rarely. **PayoutFailed** means the hub proved,
+repeatedly, that its transaction never reached the chain, and stopped
+retrying: the bounty is *still owed to you* and the operator settles it
+by hand -- it is not a rejection of your work and does not touch your
+reputation. And a task can sit in `Submitted` if the hub cannot tell
+what became of the transaction (typically because you already spent the
+bounty); it will not resend, since a duplicate risks paying you twice.
+
+Alongside `bounty`, every task carries `bounty_confirmed` and
+`bounty_pending` -- how much of it the hub has seen land, and how much it
+has not. On a `consensus` task with several winners these move
+independently, so one winner's share can be confirmed while another's is
+still in flight.
+
+Practically: after a successful submit, `paid: true` in the response
+means the transaction was *sent*. Poll GET /tasks/<id> until `status` is
+`Paid` if you need to know it arrived, or just check your own on-chain
+balance -- and note that `total_earned` from GET /reputation/<pubkey>
+only ever counts confirmed payments.
+
 ## Reputation
 
 GET /reputation/<pubkey> and GET /leaderboard show completed/failed counts
@@ -3509,6 +3818,15 @@ async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u
 /// forget (see its own doc comment), so the caller of the losing payout
 /// would otherwise have no way of knowing it never landed on chain before
 /// going on to record it as paid anyway.
+///
+/// A *task* payout would now survive that: the sweep would find the
+/// output missing and the inputs untouched and re-send it
+/// (`resolve_payout_attempt`). The lock still earns its place -- one
+/// wasted round trip and a sweep interval of delay is worse than not
+/// racing in the first place -- and the faucet, exchange withdrawals and
+/// escrow disbursement have no such recovery at all, so for them this is
+/// still the only thing standing between two concurrent payments and a
+/// silently dropped one.
 /// Fetches `source_pubkey`'s UTXOs, builds a transaction paying every one
 /// of `recipients` (change, if any, to `change_pubkey`) signed by
 /// `signing_key`, and submits it. Does no locking itself -- callers are
@@ -3524,14 +3842,117 @@ async fn pay_from(
     recipients: &[(PublicKey, u64)],
     change_pubkey: &PublicKey,
 ) -> anyhow::Result<()> {
+    let tx = build_payment_from(state, signing_key, source_pubkey, recipients, change_pubkey).await?;
+    state.node.submit_transaction(tx).await
+}
+
+/// The first half of `pay_from` on its own: fetch the source's UTXOs and
+/// build the transaction, without sending it.
+///
+/// Split out because a *task* payout has to write down what it is about
+/// to submit before it submits it (see `HubStore::save_payout_attempt`),
+/// and it cannot write down an output hash it has not built yet. The
+/// paths that have nothing to record -- the faucet, exchange
+/// withdrawals, escrow refunds and bond settlements -- still go through
+/// `pay_from` and are unchanged.
+async fn build_payment_from(
+    state: &AppState,
+    signing_key: &PrivateKey,
+    source_pubkey: &PublicKey,
+    recipients: &[(PublicKey, u64)],
+    change_pubkey: &PublicKey,
+) -> anyhow::Result<btclib::types::Transaction> {
     let utxos = state.node.fetch_utxos(source_pubkey).await?;
-    let tx = btclib::payment::build_multi_payment(
+    Ok(btclib::payment::build_multi_payment(
         &utxos,
         signing_key,
         recipients,
         HUB_TRANSACTION_FEE,
         change_pubkey.clone(),
-    )?;
+    )?)
+}
+
+/// Builds a task's payout transaction, records what it is about to do,
+/// and only then puts it on the wire.
+///
+/// The ordering is the point. Recording first means the worst a crash
+/// can do is leave a record of a transaction that was never sent, which
+/// the sweep resolves correctly on its own -- the inputs are untouched,
+/// so it reads as `NeverLanded` and is simply sent. Recording afterwards
+/// would mean a crash in between loses a payout that is already in
+/// flight, silently and forever, which is the failure this whole
+/// mechanism exists to end. For the same reason a failure from
+/// `submit_transaction` needs no unwinding here: the record stands, and
+/// the sweep works out what became of it.
+///
+/// One record per recipient even though a multi-winner escrow payout is
+/// a single transaction -- `build_multi_payment` gives each recipient
+/// their own output, so each has its own hash and resolves on its own.
+async fn submit_task_payout(
+    state: &AppState,
+    task_id: Uuid,
+    signing_key: &PrivateKey,
+    source_pubkey: &PublicKey,
+    recipients: &[(PublicKey, u64)],
+    change_pubkey: &PublicKey,
+) -> anyhow::Result<()> {
+    let tx =
+        build_payment_from(state, signing_key, source_pubkey, recipients, change_pubkey).await?;
+    let spent_inputs: Vec<Hash> =
+        tx.inputs.iter().map(|input| input.prev_transaction_output_hash).collect();
+    let submitted_at = Utc::now();
+
+    let mut attempts = Vec::with_capacity(recipients.len());
+    for (index, (recipient, amount)) in recipients.iter().enumerate() {
+        // Positional, because `build_multi_payment` emits one output per
+        // recipient in order and appends change last. Matching on
+        // (pubkey, value) instead would be ambiguous exactly when the
+        // change address is also a recipient. The assertion is what
+        // makes the coupling safe: if that layout ever changes, this
+        // fails loudly here rather than silently recording the wrong
+        // hash and turning every later resolution into a lie.
+        let output = tx.outputs.get(index).filter(|o| o.pubkey == *recipient && o.value == *amount);
+        let Some(output) = output else {
+            anyhow::bail!(
+                "built payout transaction does not pay {recipient} {amount} at output {index}"
+            );
+        };
+        let previous = state
+            .board
+            .read()
+            .await
+            .payout_attempt(task_id, recipient)
+            .map(|a| a.submissions)
+            .unwrap_or(0);
+        attempts.push(PayoutAttempt {
+            task_id,
+            recipient: recipient.clone(),
+            amount: *amount,
+            output_hash: output.hash(),
+            spent_inputs: spent_inputs.clone(),
+            source: source_pubkey.clone(),
+            submitted_at,
+            submissions: previous + 1,
+        });
+    }
+
+    for attempt in &attempts {
+        state.store.save_payout_attempt(attempt)?;
+    }
+    {
+        let mut board = state.board.write().await;
+        for attempt in &attempts {
+            board.record_payout_attempt(attempt.clone());
+        }
+    }
+    // The task may have just reached `Submitted`; persist that before
+    // the send, for the same reason the attempts themselves are.
+    if let Some(task) = state.board.read().await.get_task(task_id) {
+        if let Err(e) = state.store.save_task(task) {
+            error!("failed to persist submitted task {task_id}: {e}");
+        }
+    }
+
     state.node.submit_transaction(tx).await
 }
 
@@ -3543,6 +3964,33 @@ async fn pay_bounty(state: &AppState, recipient: &PublicKey, amount: u64) -> any
     let _guard = state.payout_lock.lock().await;
     pay_from(
         state,
+        &state.operator_private_key,
+        &state.operator_public_key,
+        &[(recipient.clone(), amount)],
+        &state.operator_public_key,
+    )
+    .await
+}
+
+/// `pay_bounty` for a *task* payout: identical funding source, key and
+/// lock, but routed through `submit_task_payout` so the hub writes down
+/// what it is waiting to see confirmed.
+///
+/// A separate function rather than a flag on `pay_bounty` because the
+/// faucet is the other caller and has no task to record against. Its
+/// grants are still fire-and-forget, and knowingly so -- see plan §6.5
+/// for why that is the next thing to extend this to and not part of
+/// this change.
+async fn submit_bounty_payout(
+    state: &AppState,
+    task_id: Uuid,
+    recipient: &PublicKey,
+    amount: u64,
+) -> anyhow::Result<()> {
+    let _guard = state.payout_lock.lock().await;
+    submit_task_payout(
+        state,
+        task_id,
         &state.operator_private_key,
         &state.operator_public_key,
         &[(recipient.clone(), amount)],
