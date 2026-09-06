@@ -22,6 +22,13 @@ pub enum EnvelopeError {
     /// closing that window, and retrying it shortly will work.
     #[error("server is closing its post-restart replay window; retry shortly")]
     GuardWarmingUp,
+    /// Verifier-side only: the server could not durably record that it
+    /// had accepted this request, and refuses to act on one it cannot
+    /// remember accepting. Also a "retry shortly", but for an operational
+    /// fault rather than a scheduled window -- the two are separate so a
+    /// storm of them is legible as the incident it is.
+    #[error("server could not record this request against replay: {0}")]
+    GuardUnavailable(String),
     #[error("signature does not match the claimed public key")]
     BadSignature,
     #[error("malformed public key: {0}")]

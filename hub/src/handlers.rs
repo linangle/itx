@@ -126,9 +126,13 @@ impl From<AuthError> for ApiError {
             AuthError::BadPublicKey(_) | AuthError::BadSignatureEncoding(_) => {
                 ApiError::BadRequest(e.to_string())
             }
-            // Not a 401: the caller did nothing wrong and the same
-            // envelope will be accepted once the window closes.
-            AuthError::GuardWarmingUp => ApiError::ServiceUnavailable(e.to_string()),
+            // Neither is a 401: the caller did nothing wrong. The first
+            // is accepted once the window closes; the second is the hub
+            // refusing to act on a request it could not record against
+            // replay, which is a fault on our side to retry into.
+            AuthError::GuardWarmingUp | AuthError::GuardUnavailable(_) => {
+                ApiError::ServiceUnavailable(e.to_string())
+            }
         }
     }
 }

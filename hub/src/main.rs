@@ -39,7 +39,10 @@ use uuid::Uuid;
 /// operator keys never change for the process's lifetime.
 pub struct AppState {
     pub board: RwLock<TaskBoard>,
-    pub store: HubStore,
+    /// Shared rather than owned outright because `replay_guard` needs a
+    /// handle to the same file: redb is single-process and will not open
+    /// one store twice, so the two cannot each hold their own.
+    pub store: Arc<HubStore>,
     pub node: NodeClient,
     pub operator_private_key: PrivateKey,
     pub operator_public_key: PublicKey,
@@ -87,12 +90,11 @@ pub struct AppState {
     /// `rate_limit::RateLimitTable`'s own doc comment for why this can't
     /// be a global static.
     pub rate_limits: rate_limit::RateLimitTable,
-    /// The part of the signed-envelope replay guard that belongs to this
-    /// hub's own lifetime rather than to the process -- see
-    /// `auth::ReplayGuard`. The seen-signature set itself stays a
-    /// process-wide static, which its doc comment explains is safe
-    /// precisely because signatures (unlike client IPs) are unique per
-    /// request.
+    /// The signed-envelope replay guard: which signatures this hub has
+    /// already accepted, in memory and on disk. Instance-scoped for the
+    /// reason `auth::ReplayGuard`'s own doc comment gives -- its durable
+    /// half is one specific store file, so it cannot be shared by two
+    /// hubs the way a bare signature set could.
     pub replay_guard: auth::ReplayGuard,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
@@ -354,7 +356,7 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         }
     }
 
-    auth::cleanup_replay_guard();
+    state.replay_guard.cleanup(now);
     rate_limit::cleanup(&state.rate_limits);
 }
 
@@ -404,7 +406,7 @@ async fn main() -> Result<()> {
     );
     println!("================================================================");
 
-    let store = HubStore::open_or_create(&args.store_file)?;
+    let store = Arc::new(HubStore::open_or_create(&args.store_file)?);
     let mut board = TaskBoard::new();
     for task in store.load_all_tasks()? {
         board.restore_task(task);
@@ -466,6 +468,25 @@ async fn main() -> Result<()> {
         names.remaining()
     );
 
+    // A hub that cannot read its own replay log still comes up -- just
+    // not with a hole in it. The fallback costs two minutes of refused
+    // writes and is loud about why.
+    let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
+        Ok((guard, restored)) => {
+            println!("restored {restored} replay-guard signature(s) still inside the drift window");
+            guard
+        }
+        Err(e) => {
+            error!("could not restore the durable replay guard ({e}) -- falling back to refusing");
+            println!(
+                "WARNING: replay log unreadable ({e}); authenticated writes are refused for the \n\
+                 next {}s while the post-restart replay window closes. Read routes are unaffected.",
+                btclib::envelope::MAX_REQUEST_DRIFT_SECONDS,
+            );
+            auth::ReplayGuard::booting(chrono::Utc::now())
+        }
+    };
+
     let state = Arc::new(AppState {
         board: RwLock::new(board),
         store,
@@ -478,15 +499,10 @@ async fn main() -> Result<()> {
         exchange_custody_payout_lock: Mutex::new(()),
         escrow_secret,
         rate_limits: rate_limit::new_table(),
-        replay_guard: auth::ReplayGuard::booting(chrono::Utc::now()),
+        replay_guard,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
     });
-    println!(
-        "authenticated writes are refused for the next {}s while the post-restart replay \n\
-         window closes; read routes are unaffected",
-        btclib::envelope::MAX_REQUEST_DRIFT_SECONDS,
-    );
 
     tokio::spawn(sweep_loop(state.clone()));
 
@@ -776,9 +792,13 @@ mod tests {
     async fn spawn_hub(operator_private_key: PrivateKey, node_address: String) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
-        let store = HubStore::open_or_create(&store_path).unwrap();
+        let store = Arc::new(HubStore::open_or_create(&store_path).unwrap());
         let exchange_custody_private_key = PrivateKey::new_key();
         let exchange_custody_public_key = exchange_custody_private_key.public_key();
+        // Restored rather than `open()` so every authenticated request
+        // in the suite goes through the durable write path too, not just
+        // the tests that are about it.
+        let replay_guard = auth::ReplayGuard::restore(store.clone(), Utc::now()).unwrap().0;
         let state = Arc::new(AppState {
             board: RwLock::new(TaskBoard::new()),
             store,
@@ -791,7 +811,7 @@ mod tests {
             exchange_custody_payout_lock: Mutex::new(()),
             escrow_secret: EscrowSecret::generate(),
             rate_limits: rate_limit::new_table(),
-            replay_guard: auth::ReplayGuard::open(),
+            replay_guard,
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
         });
@@ -1048,6 +1068,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // ...and the accepted signature reached disk on the way through,
+        // so the rejection above would survive a restart rather than
+        // depending on this process's memory. That a restored guard then
+        // rejects it is `auth`'s own
+        // `a_replayed_envelope_is_still_rejected_after_a_restart`; this
+        // is the half that can only be checked on the real HTTP path.
+        let expected_signature = hex::decode(env["signature"].as_str().unwrap()).unwrap();
+        let recorded = hub.state.store.load_recent_signatures(i64::MIN).unwrap();
+        assert!(
+            recorded.iter().any(|(sig, _)| *sig == expected_signature),
+            "a signature accepted over HTTP must be durably recorded"
+        );
     }
 
     #[tokio::test]
@@ -1066,6 +1099,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // The drift check stands on its own: this envelope was rejected
+        // by its timestamp alone, with the replay guard having never
+        // seen it. It must also not have been written -- otherwise an
+        // unauthenticated flood of stale envelopes would be a way to
+        // make the hub fsync on demand.
+        assert!(
+            hub.state.store.load_recent_signatures(i64::MIN).unwrap().is_empty(),
+            "a drift rejection must not reach the durable replay guard"
+        );
     }
 
     #[tokio::test]
