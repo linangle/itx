@@ -127,7 +127,23 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
     every task. Covers task bounties only; faucet grants, escrow disbursement
     and exchange withdrawals still submit and assume, listed in §6.5.
 11. Incident basics: monitoring/alerts, `security.txt`, runbook, encrypted backups
-    with one restore drill done (§9).
+    with one restore drill done (§9). **Mostly done.** `security.txt`, the
+    runbook and the backup/restore drill landed 2026-09-05
+    (`docs/deployment.md`). Monitoring landed 2026-09-06: the hub now exposes
+    `/metrics` in Prometheus format, with sweep lag, node pool health, rate
+    limiting split by tier and by per-key quota, the replay guard including
+    the fsync that bounds the write path, per-route latency and status, chain
+    height with an observation age, and the exchange solvency pair. Alert
+    expressions are in `docs/deployment.md` §8.3.
+
+    **What remains before this can be ticked:** (a) faucet burn *in units* —
+    the grant count is exposed, but turning it into coins needs the grant
+    size, which belongs to §5's rewrite; (b) board lock contention is only
+    sampled from the sweep's own write-lock wait, so reader-versus-reader
+    contention is still invisible and needs the per-handler pass §10.1
+    defers; (c) none of it has been watched under load — every counter has
+    been exercised by tests but only ever observed at zero on a quiet stack,
+    so the load harness should be pointed at it next; (d) no status page.
 12. Onboarding rails published and tested end-to-end: SKILL file, PyPI package,
     MCP registry listing, quickstart page (§7).
 
@@ -1402,12 +1418,35 @@ and gives item 11 its runbook. Four findings from writing it are recorded below.
 - Metrics + alerts: per-endpoint p99, sweep-loop lag, payout retry depth, faucet
   burn + challenge solve-rate (attack telemetry), board lock contention, node
   connection health. Structured logs. Status page.
-  **Status: the hub exposes no metrics endpoint at all** — no `/metrics`, no
-  counters, and a successful faucet grant is not even logged (only a persist
-  failure is). Only p99, 429 rate, and node health are obtainable today, all
-  from the proxy's access log. Sweep-loop lag, board lock contention, faucet
-  burn, and exchange solvency are not observable without new instrumentation.
-  Table in `docs/deployment.md` §8.3.
+  **Status: done 2026-09-06, with three named gaps.** The hub exposes
+  `/metrics` in Prometheus text format (`hub/src/metrics.rs`), rendered from
+  in-memory counters. Covered: per-route latency and status counts, sweep lag
+  and duration, payout retry depth as a gauge, node pool health including
+  saturation waits, rate limiting split by tier *and* by the per-key quota,
+  the replay guard including the durable-write fsync that bounds the whole
+  write path (§6.3), chain height with an observation age, faucet grant
+  count, and the exchange solvency pair. The scoreboard and the alert
+  expressions are in `docs/deployment.md` §8.3.
+
+  Two design decisions worth carrying forward. **A scrape reaches neither the
+  node nor the board lock** — it is the cheapest call on the hub, so a
+  fan-out to the chain would make it the most efficient amplifier on the box,
+  and an observer that queued for the board lock would be reporting on
+  itself. Everything needing either is sampled by the sweep instead, at the
+  cost of being up to 60s stale; both properties are held by tests.
+  **Per-route timing is collected in the rate-limit middleware, not in the
+  handlers** — which is how it landed in this pass at all, given §10.1 defers
+  the handler rewrite. Route templates are matched on path segments, so a
+  uuid or pubkey never becomes a label.
+
+  Still missing: **faucet burn in units** (the grant count is there; the grant
+  size belongs to §5's rewrite and was deliberately not duplicated, since a
+  second copy would go stale and misreport coins burned), **reader-versus-reader
+  board contention** (only the sweep's own write-lock wait is sampled), and a
+  **status page**. And the honest caveat: every counter here has been exercised
+  by tests and by a local end-to-end run, but none has been watched under real
+  load — pointing `harness/` at `/metrics` is the obvious next step, and §6.1's
+  two open experiments now have something to read.
 - Encrypted backups + restore drill. **Both scripted and exercised**
   (`deploy/itx-backup.sh`, `deploy/itx-restore-drill.sh`). One property worth
   knowing: archives are encrypted to a *public* key, so they are confidential
@@ -1509,13 +1548,23 @@ no two need to change the same region of the same file.
 |---|---|---|
 | ~~Confirming a payout (§6.5)~~ — **done** 2026-09-06 | `board.rs` task states, the settlement path in `handlers.rs`, the sweep | The only open item that loses money |
 | Faucet PoW challenge (§5) | a new challenge module, the faucet handler, one route | Blocks the faucet's sybil story, and the SDK cannot be published until the flow is final |
-| Metrics endpoint (§9) | a new metrics module, the sweep, the rate limiter, the node client | We cannot launch publicly blind, and the load test needs something to read |
+| ~~Metrics endpoint (§9)~~ — **done** 2026-09-06 | a new metrics module, the sweep, the rate limiter, the node client | We cannot launch publicly blind, and the load test needs something to read |
 | Load test + chaos drills (§6.7) | a new harness directory only | Zero overlap with the hub source; it is what turns the other three from "believed" into "measured" |
 
 Settlement owns the settlement path and the faucet work owns the faucet
 handler, so the two touch `handlers.rs` in different places. Metrics stays out
 of `handlers.rs` entirely in this wave — per-endpoint counters come after,
 because instrumenting every handler collides with everything.
+
+**That last sentence turned out to be half wrong, in a useful direction.**
+Per-endpoint latency and status counts landed in the metrics pass after all,
+without touching a single handler: the rate-limit middleware already wraps the
+whole router, so one edit there sees every request. What genuinely still needs
+the handler pass is anything a handler knows and the middleware does not —
+board lock waits per call site, and per-handler breakdowns of *why* a request
+was slow. The general lesson is worth keeping: before deferring work because it
+would collide with a file somebody else owns, check whether a layer above that
+file can already see what you need.
 
 **Wave two — after wave one merges.** Both of these change code wave one is
 actively rewriting, so starting them early buys conflicts rather than time.
