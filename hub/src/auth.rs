@@ -11,6 +11,32 @@ use dashmap::DashMap;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 
+/// How long a claimed signature has to be remembered for, counted from
+/// the moment this hub accepted it.
+///
+/// Twice the drift window, and the factor of two is the whole point.
+/// `verify_signature` accepts any timestamp within
+/// `MAX_REQUEST_DRIFT_SECONDS` of the server clock **in either
+/// direction**, because a client's clock may be fast as easily as slow.
+/// So an envelope stamped `D` seconds in the future is accepted the
+/// instant it arrives and stays acceptable for another `2D` after that:
+/// it only fails the drift check once the wall clock passes its
+/// timestamp plus `D`.
+///
+/// Remembering it for only `D`, which is what this used to do, left the
+/// last `D` seconds of that life uncovered -- the guard had already
+/// forgotten the signature while the drift check would still let it
+/// through, so a captured envelope from a fast-clocked client replayed
+/// cleanly. Nothing about that requires the attacker to control a clock;
+/// it only requires them to capture an envelope from a client whose
+/// clock happens to run ahead, which is ordinary.
+///
+/// The cost of the fix is that the guard holds each signature twice as
+/// long, in memory and in the durable table. Both are still bounded by a
+/// fixed window rather than by uptime, which is the property that
+/// matters.
+const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
+
 /// The signed-envelope replay guard: the set of signatures this hub has
 /// already accepted, held in memory for the check and on disk so that
 /// the check survives the process.
@@ -64,14 +90,14 @@ impl ReplayGuard {
     /// Reports how many came back so the caller can log it alongside the
     /// rest of the restored state.
     ///
-    /// Signatures older than the drift window are left on disk for the
+    /// Signatures past `REPLAY_MEMORY_SECONDS` are left on disk for the
     /// sweep rather than loaded: they already fail `verify_signature` on
     /// their own, so restoring them would cost memory and buy nothing.
     pub fn restore(
         store: Arc<HubStore>,
         now: DateTime<Utc>,
     ) -> std::result::Result<(Self, usize), HubStoreError> {
-        let cutoff = now - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS);
+        let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
         let recent = store.load_recent_signatures(cutoff.timestamp())?;
         let seen = DashMap::new();
         for (signature, seen_at_unix) in &recent {
@@ -89,14 +115,21 @@ impl ReplayGuard {
     /// A guard that keeps no durable record, for a hub that has just
     /// started and therefore lost whatever the previous process had
     /// seen: refuses authenticated requests until
-    /// `started_at + MAX_REQUEST_DRIFT_SECONDS`. The fallback when
-    /// `restore` fails -- a hub that cannot read its replay log should
-    /// still come up, just not with a hole in it.
+    /// `started_at + REPLAY_MEMORY_SECONDS`. The fallback when `restore`
+    /// fails -- a hub that cannot read its replay log should still come
+    /// up, just not with a hole in it.
+    ///
+    /// The window has to be the full memory span, not one drift window:
+    /// the newest envelope the previous process could have accepted was
+    /// stamped up to `MAX_REQUEST_DRIFT_SECONDS` in the future, and stays
+    /// verifiable for another drift window beyond that. Waiting out only
+    /// one would reopen the hole this exists to close, for exactly the
+    /// envelopes that live longest.
     pub fn booting(started_at: DateTime<Utc>) -> Self {
         Self {
             seen: DashMap::new(),
             store: None,
-            accepting_from: Some(started_at + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS)),
+            accepting_from: Some(started_at + Duration::seconds(REPLAY_MEMORY_SECONDS)),
         }
     }
 
@@ -148,8 +181,12 @@ impl ReplayGuard {
     /// from disk, on one cutoff, so the two halves cannot drift apart.
     /// Call periodically from the sweep loop; without it the durable
     /// table grows by a row per authenticated request forever.
+    ///
+    /// "Old enough" is `REPLAY_MEMORY_SECONDS`, not one drift window; see
+    /// that constant for why the difference is a replay hole rather than
+    /// a tuning choice.
     pub fn cleanup(&self, now: DateTime<Utc>) {
-        let cutoff = now - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS);
+        let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
         cleanup_replay_guard(&self.seen, cutoff);
         if let Some(store) = &self.store {
             // Logged rather than propagated: a sweep that cannot prune
@@ -327,17 +364,20 @@ mod tests {
         let boot = Utc::now();
         let guard = ReplayGuard::booting(boot);
 
-        // An envelope signed the instant before the restart is still
-        // inside its drift window for exactly this long, so the guard
-        // must still be refusing.
+        // The envelope that outlives all the others is one the previous
+        // process accepted from a client whose clock ran fast: stamped a
+        // full drift window in the future, it stays inside the drift
+        // check for another one after that. The guard must still be
+        // refusing for the whole of that span.
         assert!(guard.refuses_at(boot));
-        assert!(guard.refuses_at(boot + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS - 1)));
+        assert!(guard.refuses_at(boot + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS)));
+        assert!(guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS - 1)));
 
-        // At the boundary that envelope fails `verify_signature`'s own
-        // drift check, so there is nothing left for the window to
+        // At the boundary even that envelope fails `verify_signature`'s
+        // own drift check, so there is nothing left for the window to
         // protect and the hub can serve writes again.
-        assert!(!guard.refuses_at(boot + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS)));
-        assert!(!guard.refuses_at(boot + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1)));
+        assert!(!guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS)));
+        assert!(!guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS + 1)));
     }
 
     #[test]
@@ -394,17 +434,28 @@ mod tests {
     /// Restoring must not resurrect signatures that can no longer be
     /// replayed anyway: they would be pure memory, and the fact that
     /// they are *not* loaded is what keeps a restored guard bounded by
-    /// the drift window rather than by uptime.
+    /// `REPLAY_MEMORY_SECONDS` rather than by uptime.
+    ///
+    /// The signature one drift window old is the one that matters here.
+    /// It is past the drift window and still restored, because the
+    /// envelope behind it may have been stamped in the future and may
+    /// still verify -- which is precisely what the old one-drift-window
+    /// cutoff got wrong.
     #[test]
-    fn a_restart_does_not_restore_signatures_already_past_the_drift_window() {
+    fn a_restart_restores_everything_still_replayable_and_nothing_older() {
         let (store, path) = temp_store();
         let now = Utc::now();
-        store.record_seen_signature(b"stale", (now - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1)).timestamp()).unwrap();
+        store.record_seen_signature(b"stale", (now - Duration::seconds(REPLAY_MEMORY_SECONDS + 1)).timestamp()).unwrap();
+        store.record_seen_signature(b"one_drift_old", (now - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1)).timestamp()).unwrap();
         store.record_seen_signature(b"fresh", now.timestamp()).unwrap();
 
         let (guard, restored) = ReplayGuard::restore(store.clone(), now).unwrap();
-        assert_eq!(restored, 1);
+        assert_eq!(restored, 2);
         assert!(guard.seen.contains_key(b"fresh".as_slice()));
+        assert!(
+            guard.seen.contains_key(b"one_drift_old".as_slice()),
+            "a signature past one drift window can still belong to a replayable envelope"
+        );
         assert!(!guard.seen.contains_key(b"stale".as_slice()));
 
         drop(guard);
@@ -418,7 +469,7 @@ mod tests {
     fn cleanup_evicts_expired_signatures_from_memory_and_from_disk_together() {
         let (store, path) = temp_store();
         let now = Utc::now();
-        let stale = now - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1);
+        let stale = now - Duration::seconds(REPLAY_MEMORY_SECONDS + 1);
         store.record_seen_signature(b"stale", stale.timestamp()).unwrap();
         store.record_seen_signature(b"fresh", now.timestamp()).unwrap();
 
@@ -436,6 +487,47 @@ mod tests {
 
         drop(guard);
         std::fs::remove_file(&path).ok();
+    }
+
+    /// The hole `REPLAY_MEMORY_SECONDS` closes, driven end to end.
+    ///
+    /// The envelope here is stamped in the future, which needs no
+    /// attacker: a client whose clock runs fast produces one on every
+    /// request, and the drift check accepts it precisely so that such
+    /// clients work. What makes it dangerous is that it outlives its own
+    /// arrival -- the hub accepts it now and it keeps verifying for
+    /// nearly two drift windows. A sweep that forgot it after one left
+    /// it replayable by anyone who had captured it.
+    #[test]
+    fn a_future_dated_envelope_stays_remembered_for_as_long_as_it_stays_valid() {
+        let key = PrivateKey::new_key();
+        let now = Utc::now();
+        let envelope = SignedEnvelope::new_at(
+            &key,
+            now + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS - 1),
+            "POST",
+            "/faucet",
+            (),
+        );
+
+        let guard = ReplayGuard::open();
+        assert_eq!(envelope.verify_unmetered(&guard, "POST", "/faucet").unwrap(), key.public_key());
+
+        // A sweep one drift window later -- the point at which the old
+        // cutoff dropped this signature.
+        let after_one_window = now + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1);
+        guard.cleanup(after_one_window);
+
+        // The premise: the envelope is still perfectly valid at that
+        // moment, so forgetting it is forgetting something usable.
+        assert!(
+            envelope.verify_signature(after_one_window, "POST", "/faucet").is_ok(),
+            "the envelope is still inside its drift window here, which is what makes this a hole"
+        );
+        assert!(
+            matches!(envelope.verify_unmetered(&guard, "POST", "/faucet"), Err(AuthError::Replayed)),
+            "an envelope that can still be replayed must still be remembered"
+        );
     }
 
     /// The drift check and the replay check are independent: neither
