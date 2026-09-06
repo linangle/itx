@@ -1,0 +1,87 @@
+{
+  "name": "drill: payout-ceiling",
+  "started_at": "2026-09-06T08:50:26.429999Z",
+  "environment": {
+    "commit": "8c176e10fefe368109e5508be68037a8a28c65f5",
+    "dirty": true,
+    "profile": "release",
+    "host": "Darwin arm64",
+    "cpus": 10,
+    "binaries": {
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+    }
+  },
+  "sections": [
+    {
+      "title": "Payout ceiling with a single operator output",
+      "plan_item": "§6.4b",
+      "verdict": "confirmed",
+      "facts": {
+        "attempts": 723,
+        "attempts_per_block": 24.1,
+        "blocks_elapsed": 30,
+        "busiest_single_block": 1,
+        "payouts_by_height": {
+          "10": 1,
+          "11": 1,
+          "12": 1,
+          "13": 1,
+          "14": 1,
+          "15": 1,
+          "16": 1,
+          "17": 1,
+          "18": 1,
+          "19": 1,
+          "20": 1,
+          "21": 1,
+          "22": 1,
+          "23": 1,
+          "24": 1,
+          "25": 1,
+          "26": 1,
+          "27": 1,
+          "28": 1,
+          "29": 1,
+          "30": 1,
+          "31": 1,
+          "32": 1,
+          "33": 1,
+          "34": 1,
+          "35": 1,
+          "5": 1,
+          "6": 1,
+          "7": 1,
+          "8": 1,
+          "9": 1
+        },
+        "payouts_granted": 31,
+        "payouts_per_block": 1.03,
+        "refused_for_balance": 692,
+        "single_output_value": 14999999000
+      },
+      "notes": [
+        "The miner was moved off the operator and the operator's wallet collapsed to a single 14999999000-unit output before measuring, because a wallet holding one coinbase output per block does not have this ceiling at all.",
+        "31 payouts landed across 30 blocks (1.03 per block, busiest block 1) against 723 offered. The operator's change is unconfirmed until mined, so the wallet has nothing to select from until the next block arrives."
+      ],
+      "findings": [],
+      "latency": [
+        {
+          "label": "POST /faucet",
+          "requests": 723,
+          "success_rate": 0.042876901798063624,
+          "by_status": {
+            "200": 31,
+            "500": 692
+          },
+          "p50_ms": 5.301208,
+          "p90_ms": 6.731792,
+          "p99_ms": 14.033458,
+          "max_ms": 25.994291,
+          "per_second": null
+        }
+      ]
+    }
+  ]
+}

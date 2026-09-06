@@ -48,6 +48,7 @@ use btclib::util::Saveable;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -64,6 +65,11 @@ const SEEDED_BOUNTY: u64 = 10_000;
 /// How many agents get a faucet grant during setup, purely to measure the
 /// rate. Deliberately tiny -- see the module note.
 const FAUCET_SAMPLE: usize = 3;
+
+/// How many rate-limit windows seeding will sit through before giving up
+/// and running against a smaller board. Each is a minute, and each buys
+/// sixty more tasks.
+const MAX_QUOTA_WAITS: usize = 5;
 
 #[derive(Debug, Clone)]
 pub struct LoadConfig {
@@ -118,12 +124,25 @@ struct Agent {
     open_order: Option<String>,
     rng: StdRng,
     samples: Vec<Sample>,
+    /// The first error text seen for each kind of request.
+    ///
+    /// A status histogram says a tenth of the orders were refused; it does
+    /// not say whether that was the rate limiter, an empty account or a
+    /// malformed payload, and those call for completely different
+    /// responses. One example per label is enough to tell them apart and
+    /// cheap enough to keep for every run.
+    errors: BTreeMap<&'static str, String>,
 }
 
 impl Agent {
     fn record(&mut self, label: &'static str, reply: &crate::client::Reply) {
         self.samples
             .push(Sample::new(label, reply.status, reply.latency));
+        if !reply.ok() {
+            self.errors
+                .entry(label)
+                .or_insert_with(|| format!("{}: {}", reply.status, reply.error_text()));
+        }
     }
 }
 
@@ -157,6 +176,7 @@ async fn seed_tasks(
 
     let expected_output_hash = hex::encode(Hash::hash_bytes(CORRECT_ANSWER.as_bytes()).as_bytes());
     let mut refused = 0usize;
+    let mut waits = 0usize;
     while ids.len() < want {
         let payload = CreateTaskPayload {
             description: format!("harness seed task {}", ids.len()),
@@ -176,11 +196,27 @@ async fn seed_tasks(
             client.clone()
         };
         let reply = poster.post_signed(funder, "/tasks", payload).await?;
+        if reply.status == 429 {
+            // Not the per-address bucket -- every post above comes from
+            // its own address. This is the per-key quota, and every seed
+            // post is signed by the same operator key, so seeding is
+            // capped at sixty a minute however many addresses it spreads
+            // across. Wait the window out rather than giving up: a
+            // two-hundred-task board takes four minutes to build and that
+            // is a fact about the hub, not a reason to measure a smaller
+            // board.
+            waits += 1;
+            if waits > MAX_QUOTA_WAITS {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(61)).await;
+            continue;
+        }
         if !reply.ok() {
-            // Almost always "insufficient escrow balance" -- the
-            // operator's change is unconfirmed until mined (§6.4b), so
-            // seeding is itself throttled by the block interval. Report
-            // the shortfall rather than spinning on it.
+            // Usually "insufficient escrow balance" -- the operator's
+            // change is unconfirmed until mined (§6.4b), so seeding is
+            // also throttled by the block interval. Report the shortfall
+            // rather than spinning on it.
             refused += 1;
             if refused > 3 {
                 break;
@@ -449,6 +485,7 @@ pub async fn run(config: &LoadConfig) -> Result<Section> {
             // runs, not merely random.
             rng: StdRng::seed_from_u64(index as u64),
             samples: Vec::new(),
+            errors: BTreeMap::new(),
         })
         .collect();
 
@@ -501,13 +538,18 @@ pub async fn run(config: &LoadConfig) -> Result<Section> {
                 }
                 tokio::time::sleep(tick).await;
             }
-            agent.samples
+            (agent.samples, agent.errors)
         });
     }
 
     let mut samples = Vec::new();
+    let mut errors: BTreeMap<&'static str, String> = BTreeMap::new();
     while let Some(finished) = running.join_next().await {
-        samples.extend(finished?);
+        let (agent_samples, agent_errors) = finished?;
+        samples.extend(agent_samples);
+        for (label, text) in agent_errors {
+            errors.entry(label).or_insert(text);
+        }
     }
     let elapsed = started.elapsed();
     let offered = config.agents as f64 / config.tick.as_secs_f64();
@@ -525,6 +567,13 @@ pub async fn run(config: &LoadConfig) -> Result<Section> {
         .fact("seeded_tasks", tasks.len())
         .fact("funded_makers", funded_makers)
         .fact("distinct_sources", config.distinct_sources)
+        .fact(
+            "sample_errors",
+            serde_json::json!(errors
+                .into_iter()
+                .map(|(label, text)| (label.to_string(), text))
+                .collect::<BTreeMap<_, _>>()),
+        )
         .latency(summaries);
 
     if let Some(p50) = faucet_summary {

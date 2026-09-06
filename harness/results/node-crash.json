@@ -1,0 +1,83 @@
+{
+  "name": "drill: node-crash",
+  "started_at": "2026-09-06T08:37:47.174368Z",
+  "environment": {
+    "commit": "ddf966086c1eb189147adb3aec8f6c60c68acc51",
+    "dirty": true,
+    "profile": "release",
+    "host": "Darwin arm64",
+    "cpus": 10,
+    "binaries": {
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+    }
+  },
+  "sections": [
+    {
+      "title": "Kill the node mid-payout",
+      "plan_item": "§6.5",
+      "verdict": "confirmed",
+      "facts": {
+        "agents_actually_paid": 0,
+        "chain_height_at_crash": 9,
+        "hub_reported_paid": 6,
+        "itx_hub_reported_paid": 6000000,
+        "itx_landed_after_one_sweep": 0,
+        "itx_landed_on_chain": 0,
+        "itx_lost": 6000000,
+        "itx_lost_before_sweep": 6000000,
+        "payouts_attempted": 6,
+        "tasks_still_marked_paid": 6
+      },
+      "notes": [
+        "The miner was stopped before the submissions, which holds the pre-block window open rather than racing it. In production that window is everything submitted since the last block -- about eight seconds on average at a sixteen-second target.",
+        "The hub reported 6 of 6 payouts as complete and returned `paid: true` to each agent. 0 of 6000000 ITX exists on the chain. 6 of those tasks still read `Paid` over the API after a full sweep interval, so nothing in the hub will ever revisit them."
+      ],
+      "findings": [
+        "Killing the node with payouts in the mempool destroyed 6000000 ITX across 6 payouts, with no trace left in the hub: the tasks remain `Paid`, the agents were never credited on-chain, and the sweep does not look at `Paid` tasks. This is §6.5 exactly, measured rather than predicted."
+      ],
+      "latency": [
+        {
+          "label": "POST /tasks",
+          "requests": 6,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 6
+          },
+          "p50_ms": 6.874084,
+          "p90_ms": 16.948583,
+          "p99_ms": 16.948583,
+          "max_ms": 16.948583,
+          "per_second": null
+        },
+        {
+          "label": "POST /tasks/:id/claim",
+          "requests": 6,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 6
+          },
+          "p50_ms": 7.898416999999999,
+          "p90_ms": 9.575042,
+          "p99_ms": 9.575042,
+          "max_ms": 9.575042,
+          "per_second": null
+        },
+        {
+          "label": "POST /tasks/:id/submit",
+          "requests": 6,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 6
+          },
+          "p50_ms": 21.809333,
+          "p90_ms": 24.101208,
+          "p99_ms": 24.101208,
+          "max_ms": 24.101208,
+          "per_second": null
+        }
+      ]
+    }
+  ]
+}
