@@ -638,12 +638,56 @@ readings as streams come online.
 
 ## 9. Operations & governance
 
+**Deployment is written up — `docs/deployment.md`** (2026-09-05, branch
+`deployment-docs`), with working configs in `deploy/`: Caddy and nginx reverse
+proxies, nftables/ufw rules, systemd units, encrypted backup + restore drill
+scripts, and `security.txt`. That closes readiness-bar item 2's TLS/proxy half
+and gives item 11 its runbook. Four findings from writing it are recorded below.
+
 - Staging env; API versioning (`/v1`); wire-protocol version negotiation before
   any external node/miner exposure (flagged in the owner's own notes).
 - Metrics + alerts: per-endpoint p99, sweep-loop lag, payout retry depth, faucet
   burn + challenge solve-rate (attack telemetry), board lock contention, node
   connection health. Structured logs. Status page.
-- Encrypted backups + restore drill.
+  **Status: the hub exposes no metrics endpoint at all** — no `/metrics`, no
+  counters, and a successful faucet grant is not even logged (only a persist
+  failure is). Only p99, 429 rate, and node health are obtainable today, all
+  from the proxy's access log. Sweep-loop lag, board lock contention, faucet
+  burn, and exchange solvency are not observable without new instrumentation.
+  Table in `docs/deployment.md` §8.3.
+- Encrypted backups + restore drill. **Both scripted and exercised**
+  (`deploy/itx-backup.sh`, `deploy/itx-restore-drill.sh`). One property worth
+  knowing: archives are encrypted to a *public* key, so they are confidential
+  but not authentic — anyone can produce an internally consistent archive.
+  Verified: only the fingerprint recorded outside the backup system catches a
+  competently tampered one. Signing the archives is the fix.
+
+**Findings from writing the deployment docs (2026-09-05):**
+
+- **The hub has no bind-address flag.** `main.rs` hardcodes `0.0.0.0`, so it
+  cannot be told to listen on loopback while sitting behind a proxy. The host
+  firewall is therefore not defence in depth for the hub's cleartext port — it
+  is the only control, and a flushed ruleset means signed envelopes travelling
+  in the clear. A `--bind` flag is a small change and worth making before
+  launch. The node binds `0.0.0.0` for the same reason with worse consequences
+  (§3.7).
+- **A TCP health check on the node bans the box for an hour, invisibly.** A
+  failed handshake is a *severe* strike, which bans on the first offence; a
+  connection that opens and closes fails the handshake. Verified end to end:
+  one `nc -z` bans `127.0.0.1` for an hour, the ban survives a restart
+  (`restored 1 ban(s)`), and — the part that makes it dangerous — a second
+  `nc -z` still reports the port open, because the node accepts the connection
+  before checking the ban. So the check that caused the outage keeps reporting
+  green. On a single box the prober shares an address with the hub, so this
+  takes the hub off the chain for an hour. There is also **no way to clear a
+  ban**: `btclib::store` has `save_ban`/`load_bans` and no delete, and no CLI.
+  Either a `--clear-ban` subcommand or not striking a zero-byte connection
+  would make this a non-event.
+- **Rate limits are per-tier and generous where it matters**, but a wrong
+  `--trusted-proxies` is a silent total outage: every agent is charged to the
+  proxy's address, they share one bucket, and the first busy client 429s
+  everyone. It reads as a traffic spike and logs nothing useful. The 429-rate
+  alert in `docs/deployment.md` §8.3 is aimed squarely at this.
 - **Admin tooling:** dispute-resolution queue UI (the operator is the court; give
   the court a bench) and the §4 cluster dashboard.
 - Content policy + report endpoint; operator cancel is the takedown mechanism.
