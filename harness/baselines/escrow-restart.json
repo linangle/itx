@@ -1,9 +1,9 @@
 {
   "name": "drill: escrow-restart",
-  "started_at": "2026-09-06T09:43:44.844134Z",
+  "started_at": "2026-09-06T09:46:24.087586Z",
   "environment": {
-    "commit": "7697e78cc66b8845d7c513f37c725d4e2aa24f2a",
-    "dirty": true,
+    "commit": "434f1f149f954360806900b7f5b2fed09c65628d",
+    "dirty": false,
     "profile": "release",
     "host": "Darwin arm64",
     "cpus": 10,
@@ -22,9 +22,9 @@
         "answered_error": 0,
         "answered_success": 5,
         "confirmations_in_flight": 5,
-        "control_latency_ms": 15.124792,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
+        "handler_latency_ms": 12.859709,
         "never_answered": 0,
         "recovered_by_retry": 0,
         "tasks_before": 1,
@@ -42,10 +42,10 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 15.124792,
-          "p90_ms": 15.124792,
-          "p99_ms": 15.124792,
-          "max_ms": 15.124792,
+          "p50_ms": 12.859709,
+          "p90_ms": 12.859709,
+          "p99_ms": 12.859709,
+          "max_ms": 12.859709,
           "per_second": null
         },
         {
@@ -55,10 +55,10 @@
           "by_status": {
             "200": 5
           },
-          "p50_ms": 44.056875000000005,
-          "p90_ms": 52.575875,
-          "p99_ms": 52.575875,
-          "max_ms": 52.575875,
+          "p50_ms": 57.780291,
+          "p90_ms": 68.392542,
+          "p99_ms": 68.392542,
+          "max_ms": 68.392542,
           "per_second": null
         },
         {
@@ -68,10 +68,10 @@
           "by_status": {
             "409": 5
           },
-          "p50_ms": 4.269542,
-          "p90_ms": 4.844583,
-          "p99_ms": 4.844583,
-          "max_ms": 4.844583,
+          "p50_ms": 4.776375,
+          "p90_ms": 5.648667,
+          "p99_ms": 5.648667,
+          "max_ms": 5.648667,
           "per_second": null
         }
       ]
@@ -82,15 +82,15 @@
       "verdict": "confirmed",
       "facts": {
         "answered_error": 0,
-        "answered_success": 0,
+        "answered_success": 1,
         "confirmations_in_flight": 5,
-        "control_latency_ms": 11.401917,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "never_answered": 5,
-        "recovered_by_retry": 5,
+        "handler_latency_ms": 12.978125,
+        "never_answered": 4,
+        "recovered_by_retry": 4,
         "tasks_before": 7,
-        "tasks_that_survived_the_restart": 0
+        "tasks_that_survived_the_restart": 1
       },
       "notes": [
         "Every interrupted confirmation ended in a state a client can act on: either the task exists, or the escrow is still confirmable with a fresh envelope. No deposit funded two tasks and none was stranded."
@@ -104,23 +104,37 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 11.401917,
-          "p90_ms": 11.401917,
-          "p99_ms": 11.401917,
-          "max_ms": 11.401917,
+          "p50_ms": 12.978125,
+          "p90_ms": 12.978125,
+          "p99_ms": 12.978125,
+          "max_ms": 12.978125,
+          "per_second": null
+        },
+        {
+          "label": "POST /tasks/escrow/:id/confirm (interrupted)",
+          "requests": 1,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 1
+          },
+          "p50_ms": 12.827542000000001,
+          "p90_ms": 12.827542000000001,
+          "p99_ms": 12.827542000000001,
+          "max_ms": 12.827542000000001,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (retry)",
           "requests": 5,
-          "success_rate": 1.0,
+          "success_rate": 0.8,
           "by_status": {
-            "200": 5
+            "200": 4,
+            "409": 1
           },
-          "p50_ms": 11.256208,
-          "p90_ms": 12.098083,
-          "p99_ms": 12.098083,
-          "max_ms": 12.098083,
+          "p50_ms": 11.036707999999999,
+          "p90_ms": 17.938125,
+          "p99_ms": 17.938125,
+          "max_ms": 17.938125,
           "per_second": null
         }
       ]

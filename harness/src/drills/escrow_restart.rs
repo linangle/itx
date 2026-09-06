@@ -46,9 +46,13 @@ use std::time::Duration;
 
 const BOUNTY: u64 = 1_000_000;
 const FEE: u64 = 1_000;
-/// Escrows interrupted per phase. More than a couple, because the kill has
-/// to land inside at least one handler to test anything.
-const BATCH: usize = 5;
+/// Escrows interrupted per phase.
+///
+/// Each one costs a block to fund, so this is not free -- but it is the
+/// only knob that raises the chance of catching a one-step-wide interval,
+/// since every additional in-flight confirmation is another sample of the
+/// handler's timeline. Twelve is about a minute of chain time per phase.
+const BATCH: usize = 12;
 const ANSWER: &str = "the answer is 42";
 
 struct Escrow {
@@ -321,17 +325,24 @@ async fn phase(
                  operator, who holds the escrow secret, but the depositor cannot reach it and \
                  nothing tells them so."
             ));
-    } else if hard && survived == 0 {
-        // Nothing got as far as persisting a task, so nothing was ever in
-        // the interval between the two commits -- the one this phase
-        // exists to test. Reporting that as safe would be reporting the
-        // absence of an experiment as the absence of a bug.
-        section = section.verdict(Verdict::Inconclusive).note(
-            "The kill landed before any handler had persisted a task, so no confirmation was \
-             ever inside the window between the task's commit and the deposit's. Nothing was \
-             lost and nothing was duplicated, but this run did not test the dangerous \
-             interval. Re-run it.",
-        );
+    } else if hard {
+        // Not "confirmed". This phase can demonstrate the bug and cannot
+        // demonstrate its absence: the dangerous interval is one step
+        // wide, whether the kill lands inside it is chance, and the hub
+        // offers no fault-injection point to make it deterministic. A run
+        // that finds nothing has failed to reproduce, which is a
+        // different statement from "this is safe" and must not be
+        // recorded as the same one. `tasks_that_survived_the_restart`
+        // says how many handlers got as far as committing a task at all,
+        // which is the closest thing to a coverage figure available.
+        section = section.verdict(Verdict::Inconclusive).note(format!(
+            "No deposit funded two tasks and none was stranded in this run. That is a failure \
+             to reproduce, not a clean bill of health: the window is one step wide, {survived} \
+             of {BATCH} handlers got as far as committing a task, and nothing here can force \
+             the kill to land between that commit and the deposit's. See plan §6.5b, which was \
+             written from a run that did reproduce it and confirmed independently against the \
+             store."
+        ));
     } else {
         section = section.verdict(Verdict::Confirmed).note(
             "Every interrupted confirmation ended in a state a client can act on: either the \
