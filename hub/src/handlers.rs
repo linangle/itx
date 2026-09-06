@@ -6,6 +6,7 @@ use crate::board::{
     EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus, PendingDeposit,
     Reputation, Side, Task, TaskBoard, TaskIntent, TaskKind, TaskStatus, Trade,
 };
+use crate::rate_limit::{charge_pubkey, QuotaExceeded};
 use crate::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -94,6 +95,7 @@ pub enum ApiError {
     Forbidden(String),
     NotFound(String),
     Conflict(String),
+    TooManyRequests(String),
     Internal(String),
 }
 
@@ -105,6 +107,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
+            ApiError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
@@ -121,6 +124,12 @@ impl From<AuthError> for ApiError {
                 ApiError::BadRequest(e.to_string())
             }
         }
+    }
+}
+
+impl From<QuotaExceeded> for ApiError {
+    fn from(e: QuotaExceeded) -> Self {
+        ApiError::TooManyRequests(e.to_string())
     }
 }
 
@@ -804,6 +813,7 @@ pub async fn create_task(
     Json(envelope): Json<SignedEnvelope<CreateTaskPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
     validate_text_field(&envelope.payload.description, "description")?;
     let expected_output_hash = parse_hex_hash(&envelope.payload.expected_output_hash)?;
@@ -831,6 +841,7 @@ pub async fn create_consensus_task(
     Json(envelope): Json<SignedEnvelope<CreateConsensusTaskPayload>>,
 ) -> Result<Json<TaskDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
     validate_text_field(&envelope.payload.description, "description")?;
     if envelope.payload.num_assignees < 2 {
@@ -884,6 +895,7 @@ pub async fn create_task_escrow(
     Json(envelope): Json<SignedEnvelope<EscrowTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     let expected_output_hash = parse_hex_hash(&envelope.payload.expected_output_hash)?;
     let bounty = envelope.payload.bounty;
@@ -915,6 +927,7 @@ pub async fn create_consensus_task_escrow(
     Json(envelope): Json<SignedEnvelope<EscrowConsensusTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     if envelope.payload.num_assignees < 2 {
         return Err(ApiError::BadRequest(
@@ -962,6 +975,7 @@ pub async fn create_disputable_task_escrow(
     Json(envelope): Json<SignedEnvelope<EscrowDisputableTaskPayload>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.description, "description")?;
     validate_positive_minutes(envelope.payload.dispute_window_minutes, "dispute_window_minutes")?;
     let bounty = envelope.payload.bounty;
@@ -1004,6 +1018,7 @@ pub async fn confirm_task_escrow(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
 
     let deposit_pubkey = {
         let board = state.board.read().await;
@@ -1055,6 +1070,7 @@ pub async fn create_dispute_escrow(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.reason, "reason")?;
 
     let bounty = {
@@ -1103,6 +1119,7 @@ pub async fn confirm_dispute_escrow(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     let escrow_id = envelope.payload.escrow_id;
 
     let deposit_pubkey = {
@@ -1158,6 +1175,7 @@ pub async fn resolve_dispute(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
 
     let (_winner, loser) = {
@@ -1191,6 +1209,7 @@ pub async fn claim_task(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
 
     let task = {
         let mut board = state.board.write().await;
@@ -1228,6 +1247,7 @@ pub async fn cancel_task(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     require_operator(&pubkey, &state)?;
 
     let task = {
@@ -1251,6 +1271,7 @@ pub async fn submit_task(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     validate_text_field(&envelope.payload.output, "output")?;
 
     enum Dispatch {
@@ -1861,6 +1882,7 @@ pub async fn create_exchange_deposit(
     Json(envelope): Json<SignedEnvelope<()>>,
 ) -> Result<Json<EscrowReservationDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
         &state.escrow_secret,
@@ -1893,6 +1915,7 @@ pub async fn confirm_exchange_deposit(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
 
     let deposit_pubkey = {
         let board = state.board.read().await;
@@ -1984,6 +2007,7 @@ pub async fn place_order(
     Json(envelope): Json<SignedEnvelope<PlaceOrderPayload>>,
 ) -> Result<Json<OrderDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     let (order, trades) = state.board.write().await.place_order(
         pubkey,
         envelope.payload.side,
@@ -2041,6 +2065,7 @@ pub async fn cancel_order(
         ));
     }
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     let order = state.board.write().await.cancel_order(order_id, &pubkey)?;
     if let Err(e) = state.store.save_order(&order) {
         error!("failed to persist cancelled order {order_id}: {e}");
@@ -2082,6 +2107,7 @@ pub async fn withdraw(
     Json(envelope): Json<SignedEnvelope<WithdrawPayload>>,
 ) -> Result<Json<ExchangeAccountDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
     let amount = envelope.payload.amount;
     {
         state.board.write().await.debit_for_withdrawal(&pubkey, amount)?;
@@ -2123,6 +2149,7 @@ pub async fn faucet_claim(
     Json(envelope): Json<SignedEnvelope<()>>,
 ) -> Result<Json<FaucetResultDto>, ApiError> {
     let pubkey = envelope.verify()?;
+    charge_pubkey(&state, &pubkey)?;
 
     // Reserve first: this is what makes two concurrent claims from the
     // same pubkey safe. If the payout below then fails, the reservation

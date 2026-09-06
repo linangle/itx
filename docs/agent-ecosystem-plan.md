@@ -92,8 +92,13 @@ and plaintext credentials turn a leak into a supply-chain event.
    or encrypt the column; lock down key file permissions; encrypted backups;
    consider custody on a separate host from the public hub.
 2. **Transport & proxy.** TLS via reverse proxy (Caddy/nginx), config documented
-   in-repo. Only trust `X-Forwarded-For` from the proxy's address — today it is
-   client-spoofable, which also breaks rate limiting (§3.4).
+   in-repo. **Done (hub side):** `X-Forwarded-For` is honoured only when the
+   direct peer is on `--trusted-proxies`, which defaults to empty, and the list
+   is read right-to-left past our own proxies so a client cannot pre-seed it.
+   Note for whoever writes the deployment docs (§10 item 2): the proxy's address
+   must be passed to the hub explicitly, and a hub deployed behind a proxy
+   *without* it will limit the proxy's own IP for everyone behind it. TLS
+   termination and the proxy config itself are still open.
 3. **Replay durability.** The seen-signature guard is per-process, in-memory: a
    restart reopens a 120s replay window and two hub instances can't share it.
    Near-term: persist recent signatures, or refuse writes for
@@ -101,8 +106,34 @@ and plaintext credentials turn a leak into a supply-chain event.
    signing string binds the target endpoint; if two routes accept the same payload
    shape, a signed envelope for one may replay against the other.
 4. **DoS economics.** Every signed request costs an ECDSA verify, attacker-chosen
-   within the IP budget. Tier limits per endpoint (reads generous, writes scarce),
-   add per-pubkey quotas post-verify, run cheap checks (size, drift) first.
+   within the IP budget. **Done:** per-IP buckets tiered by what a route costs
+   (health / read / local write / chain write, each its own bucket so exhausting
+   one leaves the others alone), plus a flat per-key quota charged after the
+   signature verifies — the axis an IP limit cannot cover once a client spreads
+   itself across addresses. The ordering constraint already held: axum's
+   extractor caps the body, and `verify_signature` rejects on clock drift before
+   the payload is hashed or a signature checked.
+
+   Two findings from wiring it up, both worth knowing elsewhere:
+
+   - **`GET /health` is a node round trip.** It asks the node for its chain tip,
+     so it is not the free endpoint it looks like — which matters for §3.7's
+     advice to check node liveness through the hub rather than probing the node's
+     port. A one-second uptime check is 60 fresh TCP connections a minute to the
+     node (`node_client` opens one per call, §6.2). It gets its own rate-limit
+     tier regardless, because a 429 on `/health` reads to a monitor as "the hub
+     is down" — the wrong thing to say under load.
+   - **`GET /reputation/:pubkey` is an unauthenticated read that costs a node
+     round trip,** with no cache behind it — a free amplifier for anyone who
+     finds it. Left in the generous read tier deliberately (a limit tight enough
+     to matter would break the dashboard's five-second poll); the real fix is
+     caching it the way `/leaderboard` already caches net worth (§6.1/§6.2).
+
+   Still open here: the limits are compile-time constants, so tuning them under
+   an active attack means a redeploy — they should become operator knobs
+   alongside the faucet's difficulty (§5). And `/llms.txt` documents no budget at
+   all, so an agent that trips a 429 has nothing telling it what to back off to;
+   worth adding when the onboarding rails are written (§7.2).
 5. **Prompt injection.** Task descriptions and submissions are untrusted text that
    other people's LLMs will read. This is the "lethal trifecta" in miniature: a
    funded key + attacker-authored content + the ability to transact. We can't fix
