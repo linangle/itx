@@ -4,10 +4,12 @@ How to run a public ITX stack — hub, node, miner — without handing away the
 treasury. Companion configs live in `deploy/`; every one of them is meant to be
 copied and edited, not read as a sketch.
 
-Grounding: written against the tree at `5d19d38` (2026-09-05), and every claim
-about hub or node behaviour below was read out of the source or reproduced on a
-local stack. Where the code does not yet support something this document needs,
-it says so rather than describing the config that would work if it did.
+Grounding: written against the tree at `5d19d38` (2026-09-05) and revised after
+an audit on 2026-09-06. Every claim about hub or node behaviour below was read
+out of the source or reproduced on a local stack. Where the code does not yet
+support something this document needs, it says so rather than describing the
+config that would work if it did. §11 says which claims were run and which were
+only reasoned, and the audit pass added to both lists.
 
 Companion reading: `docs/agent-ecosystem-plan.md` §3.2 (transport), §3.7 (blast
 radius), §6.4b (the operator payout ceiling), §9 (operations). This document is
@@ -130,6 +132,29 @@ The `-c` dry run is not optional politeness: a syntax error in a ruleset applied
 without it can leave you with a default-deny chain and no SSH rule, locked out
 of a box holding the treasury.
 
+Two properties of that file are worth knowing before you edit it:
+
+- **It replaces only its own table, not the whole ruleset.** The first three
+  lines are `table inet itx` / `delete table inet itx` / the definition, which
+  is the atomic replace idiom. It deliberately does *not* `flush ruleset` —
+  that destroys every table on the host, including the ones fail2ban, docker,
+  libvirt and podman create and then assume are still theirs. Reloading with a
+  flush silently unbans every fail2ban address and breaks container networking
+  until those daemons happen to rewrite their rules.
+- **SSH is matched by port alone, on both families.** The rule used to read
+  `tcp dport 22 ip saddr $SSH_ALLOWED`, and in an `inet` table an `ip saddr`
+  match is IPv4-only — every inbound IPv6 SSH connection missed it and hit the
+  policy drop. SSH prefers IPv6 when the host has an AAAA record, so on a
+  typical hosted box that rule *was* the lockout the header warns about. If you
+  narrow SSH by source, fill in both `SSH_ALLOWED_V4` and `SSH_ALLOWED_V6` and
+  uncomment both rules; one without the other is the same bug again.
+
+The `forward` chain is `policy drop`, which is right for the single box §2
+describes and wrong the moment you run containers on it. A packet has to
+survive *every* table's forward chain, so docker's own accept rules cannot
+override this one — containers just lose all traffic. Delete the chain if you
+run containers; they install their own filtering.
+
 If the host runs `ufw` instead, `deploy/ufw.sh` is the equivalent. It is
 deliberately shorter and does less — it does not distinguish the node port,
 because with `ufw` the node's protection comes entirely from default-deny
@@ -151,6 +176,25 @@ curl -sS --max-time 5 http://itx.example.com:9100/health
 # the node port: see the warning below before you run ANY probe
 nmap -Pn -p 9000 itx.example.com     # expect filtered
 ```
+
+**Run every one of those twice, once per address family** — `curl -4` / `curl
+-6`, `nmap -4` / `nmap -6`. An `inet` table's rules are not automatically
+symmetric, and the one thing that must work over both is the one thing you
+cannot test by locking yourself out of it:
+
+```bash
+# from a machine with both, BEFORE you close the session you are using
+ssh -4 -o ConnectTimeout=5 itx@itx.example.com true && echo "ssh v4 ok"
+ssh -6 -o ConnectTimeout=5 itx@itx.example.com true && echo "ssh v6 ok"
+
+# and the hub port must be shut on both
+curl -4 -sS --max-time 5 http://itx.example.com:9100/health
+curl -6 -sS --max-time 5 http://itx.example.com:9100/health
+```
+
+Keep the session that applied the rules open until both SSH lines have printed.
+`ssh -6` failing while `ssh -4` works is the IPv4-only-match bug, and it is
+silent from the box's side: `nft list ruleset` looks entirely reasonable.
 
 **Do not probe the node port with `nc -z`, a TCP health check, or anything else
 that opens a connection and hangs up.** `nmap -Pn` against a *filtered* port
@@ -232,8 +276,8 @@ hub --port 9100 --trusted-proxies 127.0.0.1,::1
 ```
 
 `::1` is defensive rather than required, and the reason is worth knowing.
-Verified on a live proxy: writing the upstream as a **hostname** makes the
-address the upstream sees IPv6 —
+Writing the upstream as a **hostname** rather than a literal makes the address
+a dual-stack upstream sees IPv6 —
 
 ```
 reverse_proxy 127.0.0.1:9100   ->  upstream sees 127.0.0.1
@@ -242,13 +286,15 @@ reverse_proxy localhost:9100   ->  upstream sees ::1
 
 — because `localhost` resolves to `::1` first. The hub compares the *peer
 address it sees*, not a name, so a proxy dialling `[::1]:9100` against a hub
-trusting only `127.0.0.1` is untrusted, and fails silently as below.
+trusting only `127.0.0.1` would be untrusted, and would fail silently as below.
 
-Today's hub cannot actually be reached that way: it binds `0.0.0.0`, which is
-IPv4-only, so it never accepts an IPv6 connection and the peer is always an IPv4
-address. A proxy configured with `localhost` falls back to IPv4 and works.
-Include `::1` anyway — it costs nothing, and it is already correct on the day
-the hub gains a `--bind` flag (§1) and someone binds it dual-stack.
+**Against today's hub this cannot actually happen, and that is why the pair
+above is reasoned rather than measured.** The hub binds `0.0.0.0`, which is
+IPv4-only, so nothing ever connects to it over IPv6: a proxy configured with
+`localhost` finds the `::1` connection refused and falls back to `127.0.0.1`,
+and the peer is an IPv4 address either way. Include `::1` anyway — it costs
+nothing, and it is already correct on the day the hub gains a `--bind` flag
+(§1) and someone binds it dual-stack.
 
 The hub prints which it trusts at startup. Read the line; it is the only
 confirmation you get:
@@ -277,11 +323,31 @@ the firewall should make it impossible to reach the hub as anything else.
 
 ### 4.4 Body caps and timeouts
 
-Both configs cap request bodies at 64KB. axum's extractor already defaults to
-2MB, so this is not the only limit — it is the cheap one. A body rejected at the
-proxy costs the hub nothing: no read, no rate-limit slot, no ECDSA verify, and
-no replay-guard fsync. 64KB is generous for the largest real payload (a task
-description plus a signature); lower it if you measure otherwise.
+Both configs cap request bodies at **262,144 bytes (256 KiB)** — `max_size
+262144` in Caddy, `client_max_body_size 256k` in nginx. axum's extractor already
+defaults to 2MB, so this is not the only limit; it is the cheap one. A body
+rejected at the proxy costs the hub nothing: no read, no rate-limit slot, no
+ECDSA verify, and no replay-guard fsync.
+
+The number is derived, not chosen, and the derivation is the interesting part
+because the previous value was **below what the hub itself accepts**:
+
+- The hub caps free-text fields (task description, submitted output, dispute
+  reason) at `MAX_TEXT_FIELD_LENGTH = 20_000` **characters** — counted with
+  `chars().count()` in `hub/src/handlers.rs`, and advertised to agents in
+  `/llms.txt`.
+- The Python SDK posts with `requests`' `json=`, which uses `json.dumps`'s
+  default `ensure_ascii=True`. Every non-ASCII character therefore goes on the
+  wire as `\uXXXX`: 6 bytes for a CJK character, 12 for an emoji, which is a
+  surrogate pair.
+- So a 20,000-character emoji description is 240,000 bytes of body for a
+  payload the hub would happily accept. Under the old cap the agent got a `413`
+  from the proxy and a limit in `/llms.txt` that was not true.
+
+The old caps also disagreed with each other: `64KB` in Caddy is 64,000 bytes and
+`64k` in nginx is 65,536, because Caddy reads `KB` as 1000 and nginx reads `k` as
+1024. Caddy's value is now written as a plain byte count so the two configs are
+provably the same number. If you change one, change both, and keep them equal.
 
 Timeouts bound slow clients. nginx's defaults are 60s for both header and body
 reads, which is a long time to hold a worker for a client sending a byte a
@@ -295,7 +361,65 @@ authenticated POST does an fsync before its handler runs. Those are the plan's
 §6.1 and §6.2 items. Do not tighten `write`/`proxy_read_timeout` to hide them;
 you will start cutting legitimate settlements. Fix them upstream instead.
 
-### 4.5 Compression
+### 4.5 No active health check on the proxy
+
+Neither config gives the proxy an active upstream health check, and the Caddy
+one used to. Removing it fixed a real outage mode rather than saving a request.
+
+`handlers::health` asks the node for its chain tip and returns `503
+{"status":"degraded"}` whenever the node is unreachable. Caddy treats any
+non-2xx probe response as an unhealthy upstream. With exactly one upstream
+there is nothing to fail over to, so Caddy took **every** request off the hub —
+reads included — the moment the node blinked, which:
+
+- contradicts §5's "the hub comes up and serves reads with the node down" and
+  the alerting in §8.2 that depends on it;
+- made a degraded hub indistinguishable from a dead one, since the client sees
+  a proxy error either way and never reaches the `"degraded"` body;
+- meant the §8.1 self-ban — an hour-long node outage caused by a single stray
+  TCP probe — took the whole site down with it, instead of the read surface
+  staying up.
+
+`health_status` takes one value, so it cannot express "200 or 503". The other
+options were to probe a route that does not touch the node, or to drop the
+check. Dropping it is right for a single upstream: a health check there can only
+ever remove capacity, and if the hub process is genuinely down the dial fails and
+Caddy answers `502` regardless. Monitoring polls `/health` itself (§8.2) and can
+tell `503`-degraded from no answer at all, which is the distinction that matters.
+
+If a second hub upstream ever exists, an active check earns its place again —
+but it must probe something that does not depend on the node, or it will take
+both upstreams out together.
+
+### 4.6 The proxy must not touch the request path
+
+**Every authenticated request will fail if the path is rewritten, and nothing
+will say so.** Since 2026-09-05 the signing string binds the HTTP method and the
+**concrete path** (plan §3.3), and the hub verifies against `OriginalUri` — the
+path exactly as it arrived, not the route the handler expected. `hub/src/auth.rs`
+is explicit that a handler must never substitute its own idea of the route.
+
+So a proxy that changes the path invalidates every signature:
+
+| Mistake | What the hub receives | Result |
+|---|---|---|
+| `proxy_pass http://127.0.0.1:9100/;` (trailing slash) | nginx substitutes the matched location, path is rewritten | 100% `401` |
+| `handle_path /api/*` in Caddy | prefix stripped before proxying | 100% `401` |
+| Mounting the hub under `/api` without the client knowing | client signs `/tasks`, hub sees `/api/tasks` | 100% `401` |
+| Adding a rewrite, redirect-to-canonical, or trailing-slash normaliser | path differs by one character | 100% `401` |
+
+The symptom is the worst kind: reads keep working perfectly, so the site looks
+healthy, and every write fails with a signature error that looks like a client
+bug. The proxy logs a normal `401`. The hub logs a failed verification. Neither
+mentions the path.
+
+Both shipped configs get this right and are commented at the line that matters —
+`reverse_proxy 127.0.0.1:9100` inside a bare `handle` for Caddy, and
+`proxy_pass http://127.0.0.1:9100;` with **no URI part** for nginx. If you must
+mount the hub under a prefix, the clients have to sign the prefixed path, which
+means changing the SDKs' base URL handling, not the proxy.
+
+### 4.7 Compression
 
 The hub gzips its own responses (`CompressionLayer` in `build_router`), so
 neither proxy config enables compression. Caddy has no `encode` directive and
@@ -316,12 +440,23 @@ sudo chown -R itx:itx /var/lib/itx
 sudo chmod 700 /var/lib/itx/secrets
 
 cargo build --release
-sudo install -m 0755 target/release/{node,hub,miner} /usr/local/bin/
+# Installed as itx-node / itx-hub / itx-miner, NOT under their build names.
+# `target/release/node` and `target/release/hub` in /usr/local/bin would shadow
+# Node.js and GitHub's `hub` for every user on the box, /usr/local/bin coming
+# first on the default PATH -- and a treasury host is a bad place to discover
+# that `node` now means something else.
+for b in node hub miner; do
+    sudo install -m 0755 "target/release/$b" "/usr/local/bin/itx-$b"
+done
 
 sudo cp deploy/itx-*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now itx-node itx-hub itx-miner
 ```
+
+The units' `ExecStart` lines and `deploy/itx-restore-drill.sh` both expect the
+`itx-` names. If you are upgrading a box installed the old way, install the new
+names and remove `/usr/local/bin/node` and `/usr/local/bin/hub`.
 
 Notes that are not boilerplate:
 
@@ -350,6 +485,27 @@ Notes that are not boilerplate:
   means the location of the treasury key would otherwise be implied by a
   `WorkingDirectory=` line thirty lines away in a unit file. State it where it
   is read.
+- **`StateDirectory=` on all three units** creates `/var/lib/itx` (and
+  `/var/lib/itx/secrets` for the hub) owned by `itx` before `ExecStart`, at mode
+  `0700`. The `mkdir` above is still worth running — you want the directory to
+  exist before anything else — but the units no longer *depend* on someone
+  having run it. Without `StateDirectory=`, a missing `secrets/` is an immediate
+  hub exit: the hub generates its keys through `PrivateKey::save_to_file`, which
+  does not create parent directories, and `Restart=always` turns that into a
+  restart loop on the box holding the treasury.
+- **`Environment=NO_COLOR=1` on all three.** `tracing_subscriber::fmt` enables
+  ANSI colour whenever the `ansi` feature is compiled in — it never checks for a
+  terminal — so without this the journal stores escape sequences around every
+  level and target, and §8.4's greps stop matching. Verified against
+  tracing-subscriber 0.3.23, which is what `Cargo.lock` pins.
+- **A hub restart is not free to clients, and it fails in a specific way.** See
+  §9.9: the hub has no graceful shutdown and the replay guard claims an
+  envelope's signature *before* the handler runs, so a request in flight at
+  `systemctl restart itx-hub` dies with its envelope already spent.
+- **Stopping the node is not free either, and it is much worse.** See §7.2:
+  the mempool is memory-only, so a node restart destroys every transaction
+  submitted since the last mined block — including payouts the hub has already
+  recorded as done.
 
 ### Verifying a cold start
 
@@ -362,17 +518,26 @@ sudo journalctl -u itx-hub -n 40 --no-pager
 
 Confirm, in order: the three addresses (operator, exchange custody, and the
 escrow secret path), the `trusting X-Forwarded-For only from: 127.0.0.1, ::1`
-line, the restored-record counts, and the replay-guard line. If the replay guard
-reports the fallback instead —
+line, the restored-record counts, and the replay-guard line. A healthy start
+says:
+
+```
+restored N replay-guard signature(s) still inside the drift window
+```
+
+If it reports the fallback instead —
 
 ```
 WARNING: replay log unreadable (...); authenticated writes are refused for the
 next 120s while the post-restart replay window closes.
 ```
 
-— the hub is up but refusing authenticated writes for two minutes. It is
-supposed to do that (plan §3.3), but a hub that says it on *every* start has an
-unreadable replay log and needs looking at, not waiting out.
+— **that is an incident on its first appearance, not a warm-up message.** The
+hub only takes that path when `ReplayGuard::restore` *fails* to read its redb
+table, and it logs the reason at `error!` immediately above. It does not print
+this after an ordinary crash, or on a cold start, or once while it settles: a
+hub whose replay log is readable and empty prints `restored 0 …` and carries on.
+Seeing it at all means the store could not be read. §9.5 has what to do.
 
 ---
 
@@ -452,8 +617,31 @@ So rotating means:
 1. Stop accepting new escrow deposits under the old secret.
 2. Wait until **every** deposit reserved under it has settled or expired. The
    sweep loop refunds overdue unconfirmed deposits every 60s, so this is bounded
-   by the escrow confirmation window, not indefinite — but check
-   `all_pending_deposits` is empty rather than assuming.
+   by the escrow confirmation window, not indefinite.
+
+   Confirming that it *is* empty is more awkward than it sounds, and worth
+   planning for rather than discovering: there is no endpoint that reports the
+   pending-deposit count, and `all_pending_deposits` is only ever surfaced in
+   the hub's startup banner — so reading it means a restart, which is a thing
+   you were going to do in step 3 anyway. The workable procedure is:
+
+   ```bash
+   # stop taking new deposits (step 1), then wait out the escrow window
+   sudo systemctl restart itx-hub
+   sudo journalctl -u itx-hub -b --no-pager | grep 'pending escrow deposit'
+   ```
+
+   That is the `loaded N task(s), … M pending escrow deposit(s), … from store`
+   line — `all_pending_deposits().count()` is one of its fields and the only
+   place the number appears.
+
+   A non-zero count means those deposits still need the *old* secret: do not
+   swap the file, wait another window and restart again. If you would rather
+   not restart a second time, the alternative is to read the count out of
+   `hub.redb` with an external redb tool while the hub is stopped — same
+   ordering constraint as §9.7, and no less of an outage. An endpoint (or a
+   banner line on SIGHUP) that answers this without a restart is worth adding
+   before the first rotation.
 3. Swap the file and restart.
 4. **Keep the previous secret** anyway, archived, for as long as you keep
    backups from before the rotation. A restore of an old `hub.redb` needs the
@@ -472,9 +660,11 @@ maintenance window with a drain, not a routine hygiene task on a timer.
 - **`hub.redb` is sensitive too**, just less so than before. It holds the board,
   exchange accounts, agent names, and the replay log. Back it up with the same
   encryption as the secrets (§7).
-- **`miner.pub.pem` is public** — it is the address block rewards pay to. It is
-  the one key file here that needs no protection, and saying so avoids the
-  cargo-culted `chmod 600` that makes people think all four are equivalent.
+- **`miner.pub.pem` is public** — it is the address block rewards pay to, and
+  it genuinely needs no protection. Its *private half* is a different matter
+  entirely and has its own section below (§6.5); this bullet used to call
+  `miner.pub.pem` "the one key file that needs no protection", which was true
+  of the file and quietly wrong about the pair.
 - **Check the permissions after any restore or manual copy.** The hub sets
   `0600` when it *creates* a file; `cp` and `tar` do not necessarily preserve
   it, and nothing re-checks at startup:
@@ -485,6 +675,49 @@ maintenance window with a drain, not a routine hygiene task on a timer.
 - **Custody on a separate host** is the plan's eventual §3.1 answer and is not
   addressed here. Until then, "protect the hub box" is the entire control, which
   is why §1 puts the firewall and §5's hardening where it does.
+
+### 6.5 The fourth key: the miner's
+
+There are not three key files in this deployment, there are four, and the fourth
+is the one nothing in here used to mention. `deploy/itx-miner.service` points at
+`/var/lib/itx/miner.pub.pem` — the address every block reward is paid to. That
+file really is public. But it has a private half, and **every coin this
+deployment has ever mined is spendable only with it.**
+
+There is exactly one generator, `lib/src/bin/key_gen.rs`, and it always writes
+the pair:
+
+```bash
+cargo run --release -p btclib --bin key_gen -- miner
+# -> miner.pub.pem     public: the payout address, goes on the hub box
+# -> miner.priv.cbor   spends every block reward, ever
+```
+
+**Generate it somewhere that is not the hub box, and copy only `miner.pub.pem`
+across.** The miner process loads a `PublicKey` and never needs the private
+half; the wallet does, and the wallet does not have to run here. Keep
+`miner.priv.cbor` wherever the `age` restore identity from §7.1 lives — the same
+offline place, for the same reason.
+
+Done that way it is deliberately **not** in the backup set, and that is the
+right answer rather than an oversight: it is not on the box, and putting it here
+so the nightly job can pick it up would place a spendable key on the hub box in
+exchange for nothing the miner needs.
+
+If it *is* on the box — which is what happens when someone runs `key_gen` here,
+and is the common case — then `deploy/itx-backup.sh` picks it up and says so:
+
+```
+note: miner.priv.cbor is on this box, so it is in this archive.
+```
+
+Backing it up is strictly better than losing it, but treat that line as a
+to-do. On the box it is a fourth secret sitting outside `secrets/`, with no
+`0700` directory around it, no mode enforcement, and none of §5's hardening
+aimed at it. Move it off and re-run the backup.
+
+Whichever layout you choose, write down which one it is. "We assumed it was in
+the backup" and "we assumed it was offline" fail the same way.
 
 ---
 
@@ -504,6 +737,9 @@ age-keygen -o ~/itx-restore-key.txt          # keep this offline
 /usr/local/bin/itx-backup.sh --recipient age1ql3z7... --dest /var/backups/itx
 ```
 
+A nightly run stops `itx-hub` for the length of the copy — seconds — and leaves
+`itx-node` alone. §7.2 is why that asymmetry matters and is not a detail.
+
 The box holds only the *public* key, so it can write backups it cannot read
 back. That matters more than it first appears: if the hub is compromised, the
 attacker already has the running secrets — what asymmetric encryption denies
@@ -519,21 +755,97 @@ already looks like. Same asymmetric property.
 
 ### 7.2 What is backed up, and the consistency cost
 
-The three secrets, `hub.redb`, and `blockchain.redb`.
+The three secrets, `hub.redb`, `blockchain.redb`, and the miner key files if
+they are on the box (§6.5).
 
 `blockchain.redb` is not resyncable. There is no peer to fetch the chain from —
 this is a single-node deployment — so that file *is* the ledger. Losing it loses
 every balance the hub reports.
 
-Both `.redb` files have a live writer, and copying one underneath a running
-process can capture a torn state that redb then refuses to open. You would find
-that out during a restore, which is the worst possible time. So the script stops
-`itx-hub` and `itx-node` for the length of the copy and starts them again
-afterwards — seconds on any reasonable box, and honest about being a short
-outage rather than pretending a live `cp` is safe.
+> ### ⚠ Stopping the node destroys money in flight
+>
+> This applies to the backup, to `systemctl restart itx-node`, to a deploy, to
+> §9.0's containment lever, and to the box rebooting. It is the single most
+> expensive thing in this document and nothing warns you at the time.
+>
+> **The node's mempool is memory-only.** `btclib::store` defines exactly three
+> tables — `blocks`, `meta`, `bans` — and `node/src/util.rs`'s
+> `persist_chain_state` writes blocks and the active chain and nothing else. A
+> transaction that has been accepted but not yet mined exists in one process's
+> RAM and nowhere else.
+>
+> **The hub has already recorded those payouts as done.** `submit_transaction`
+> in `hub/src/node_client.rs` is fire-and-forget: success means the bytes were
+> sent. The 60s sweep in `hub/src/main.rs` only retries tasks still `Verified`,
+> and `board.rs`'s `pending_payouts` only answers while the task is `Verified`,
+> so once a task flips to `Paid` nothing will ever look at it again.
+>
+> Put together: **every bounty payout, faucet grant, escrow refund, dispute-bond
+> settlement, exchange withdrawal and custody sweep submitted since the last
+> mined block is destroyed**, while the task still reads `Paid` and the exchange
+> account stays debited. No log line, no alert, no retry. At a ~35s block
+> cadence that is up to 35 seconds of settlements per stop, every time.
+>
+> **After any node stop or restart, check:**
+>
+> 1. The chain height before and after — `curl -s localhost:9100/health` — and
+>    whether a block was mined in the minute before you stopped.
+> 2. Tasks that went `Paid` in that window against the chain. There is no
+>    endpoint for this; `GET /tasks?status=paid` plus the recipient's balance is
+>    the manual version.
+> 3. Exchange withdrawals in the same window, the same way, against the custody
+>    address.
+> 4. Anything that looks wrong is a manual re-send from the operator wallet.
+>    There is no re-drive path in the hub.
+>
+> The real fix is for the hub to track confirmation instead of assuming it —
+> plan §2 item 10, "honest pending/confirmed states". Until then, treat a node
+> stop as a settlement outage, and take it deliberately.
 
-`--no-stop` exists for hosts where `/var/lib/itx` is on LVM/ZFS/btrfs and you
-are snapshotting underneath the script. It is not for avoiding the outage.
+Both `.redb` files have a live writer, and copying one underneath a running
+process can capture a state that no single instant ever had: `cp` reads the file
+sequentially over some hundreds of milliseconds, and redb — copy-on-write, with a
+two-phase commit — is free to rewrite pages behind the read head while it does.
+
+Two outcomes, and this document used to describe only the first:
+
+- **redb refuses to open the copy.** Unpleasant, and you find out during a
+  restore, but at least you find out.
+- **The copy opens cleanly and is wrong.** A coherent-looking mix of two
+  commits: the god byte points at a tree whose pages came from either side of a
+  write. Nothing reports this. The drill in §7.4 passes on it, because every
+  step it runs — checksums, escrow fingerprint, a hub that starts and answers
+  `/health` — is satisfied by a file that is internally consistent and missing
+  rows. Step 7's record counts are the only thing that would notice, and only if
+  you actually compare them against production.
+
+So the script's default is now: **stop `itx-hub`, never the node.** The hub's
+writes are all durable, it restarts in seconds, and stopping it is what makes
+`hub.redb` consistent — while the node keeps running, keeps its mempool, and
+keeps mining what is in it. `blockchain.redb` is copied hot, and that residual
+risk is stated rather than removed.
+
+It is reduced, though. The script tries `cp --reflink=always` first, which
+succeeds on btrfs and XFS-with-reflinks and is a single `FICLONE`: the copy is
+the file exactly as it existed at one instant, which is precisely the
+crash-consistent image redb is built to recover. Elsewhere it falls back to a
+sequential read. Which one happened is recorded in the archive's `MANIFEST.txt`
+as `redb copy method:`, so a restore knows what it is holding.
+
+The flags:
+
+- **default** — hub stopped, node running. This is the one for cron.
+- **`--no-stop`** — stop nothing. For hosts where `/var/lib/itx` is on
+  LVM/ZFS/btrfs and you are snapshotting underneath the script. Not for avoiding
+  the outage.
+- **`--stop-node`** — the old behaviour, for a planned maintenance backup where
+  you have drained the hub and waited out a block. It prints the warning above
+  before it does anything. **Never put it in a cron line.**
+
+There is no honest way to make the script wait for the mempool to drain instead:
+the node exposes no query for it (`FetchTemplate` would reveal it, but only to
+something that speaks the wire protocol), and a bare TCP probe of port 9000 gets
+the box banned for an hour (§8.1).
 
 The miner restart-loops while the node is down and recovers on its own; that is
 expected and needs no handling (see `deploy/itx-miner.service`).
@@ -541,8 +853,9 @@ expected and needs no handling (see `deploy/itx-miner.service`).
 ### 7.3 The manifest, and why the escrow secret gets its own line
 
 Each archive carries `MANIFEST.sha256` (every file) and `MANIFEST.txt` (host,
-timestamp, whether the copy was consistent, and the escrow secret's SHA-256 and
-length). `MANIFEST.txt` is also written *beside* the archive in cleartext, so a
+timestamp, which services were stopped, whether the redb files were reflinked or
+copied sequentially, whether the miner private key is inside, and the escrow
+secret's SHA-256 and length). `MANIFEST.txt` is also written *beside* the archive in cleartext, so a
 drill can check the fingerprint without decrypting, and so the value is legible
 to someone who can see the backup directory but holds no key. It is a hash of a
 secret, not the secret.
@@ -586,19 +899,46 @@ against a compromised hub box, which can sign whatever it likes.
 ### 7.4 The drill
 
 Run monthly, and after any change to the backup path. It never touches the live
-state directory and never stops a live service, so it is safe on the production
-box; it does bind two throwaway ports.
+state directory and never stops a live service.
+
+It is **not** unconditionally safe on the production box, and this section used
+to say it was. Step 5 starts a hub against the restored operator, custody and
+escrow keys — the real ones — and the hub binds `0.0.0.0` with no way to say
+otherwise (§1). So for the length of the drill there is a second listener on
+`:19001` holding the live treasury keys, on a port `deploy/nftables.conf` has no
+rule for.
+
+The script now closes that itself: step 0 re-execs inside a private network
+namespace (`unshare --net`), where `0.0.0.0` means that namespace's own loopback
+and there is no route in or out at all. That is safe by construction rather than
+by trusting the firewall. If `unshare` or `ip` is missing, or the kernel refuses
+unprivileged user namespaces, the drill says so and runs anyway — and then the
+warning above applies in full. Read step 0's output; do not assume it isolated.
+
+Running the drill on a machine that is not the hub box is still better than
+either.
 
 ```bash
 /usr/local/bin/itx-restore-drill.sh \
     --archive /var/backups/itx/itx-20260905T030000Z.tar.gz.age \
     --identity ~/itx-restore-key.txt \
-    --expect-operator "$(grep -A1 'hub operator address' /var/log/itx-hub-banner.txt | tail -1)" \
+    --expect-operator "$(sudo journalctl -u itx-hub -b --no-pager \
+                          | grep -A1 'hub operator address' | tail -1)" \
     --expect-escrow-sha256 3f1a...
 ```
 
-The seven steps, and what each one actually proves:
+That `--expect-operator` command used to read `/var/log/itx-hub-banner.txt`,
+which nothing in this deployment creates — the banner goes to the journal like
+everything else (§8.4). The form above reads it from the current boot. If the
+hub has been restarted since, drop `-b`; if the journal has rotated past it,
+that is exactly the case §8.4 says to keep a copy for, and the file is then
+whatever path you chose to keep it at.
 
+The steps, and what each one actually proves:
+
+0. **Isolate.** Re-exec inside a private network namespace, so the hub in step 5
+   cannot be reached from anywhere. Prints a warning instead if it cannot; see
+   above for why that warning matters.
 1. **Decrypt.** Also proves you can still lay hands on the offline identity
    file. This is the half of "do we have backups" that people fail — not the
    archive, the key.
@@ -612,6 +952,16 @@ The seven steps, and what each one actually proves:
    keeps whatever mode it arrived with, permanently and silently.
 5. **Start a node and hub against the restored state** on throwaway ports and
    wait for `/health`. Proves both redb files open and the store is coherent.
+
+   Two things this step gets right that are easy to get wrong. It waits for the
+   node's `Listening on …` line, not for its first output — the node prints
+   `found N blocks in the local store, loading...` before it replays the chain
+   and long before it binds, so waiting on "any output" starts the hub against a
+   node that is not up. And it reads `/health`'s status code rather than using
+   `curl -sf`, which fails on the `503` a hub returns while the node is
+   unreachable and cannot tell that apart from no answer at all. `503` now
+   reports "the restored node did not answer"; only a genuine silence reports
+   "hub never answered /health".
 6. **Compare the operator address** to the live one. This is the step that
    matters most and is easiest to leave out: a hub that starts proves the files
    are well-formed, not that they are *your* files. The operator address is
@@ -714,21 +1064,29 @@ outage.
 
 ### 8.2 `/health` is not free
 
-`handlers::health` asks the node for its chain tip, and `node_client` opens a
-fresh TCP connection per call (plan §6.2). A one-second uptime check is
-therefore 60 new connections a minute to the node — not a hammering, but not
-the free endpoint the name suggests either.
+`handlers::health` asks the node for its chain tip, so every call is a node
+round trip. It is no longer a *connection* per call: `hub/src/node_client.rs`
+keeps a pool of up to `MAX_POOLED_CONNECTIONS = 8` persistent connections and
+reuses them, retrying once on a fresh one if a pooled socket turns out to have
+been closed while idle. This section used to say the hub "opens a fresh TCP
+connection per call" and that a one-second check was "60 new connections a
+minute"; that was true before the pooling change and is not now. A one-second
+check is 60 request/reply exchanges a minute over a handful of sockets, with no
+handshake per call.
 
-Poll it every 30s, which is what `deploy/Caddyfile` sets. The endpoint has its
-own rate-limit tier (`Tier::Health`, 120 requests per 60s window per client)
-precisely so a read flood cannot make monitoring lie: a 429 on `/health` reads
-to an uptime check as "the hub is down", which is the wrong thing to say under
-load.
+**Poll it every 30s anyway.** The interval was a fine choice for a different
+reason and remains one: `/health` has its own rate-limit tier (`Tier::Health`,
+120 requests per 60s window per client) precisely so a read flood cannot make
+monitoring lie — a 429 on `/health` reads to an uptime check as "the hub is
+down", which is the wrong thing to say under load. 120/min is two per second, so
+a 30s poll uses about 1% of the budget and several independent monitors still
+fit comfortably. The pool is also a *ceiling* of 8 sockets, so a monitor that
+polls hard now queues against that bound instead of opening sockets without
+limit — which bounds the damage but does not make hammering it free.
 
-120/min is two per second, so a 30s poll uses about 1% of the budget and several
-independent monitors still fit comfortably. Note that the proxy's own
-`health_interval` draws from the same bucket when it shares an address with
-your monitoring.
+Note that this is now **your** monitoring's job alone. The Caddyfile no longer
+runs an active health check of its own (§4.5), so nothing but your monitor is
+drawing on that bucket unless you added something.
 
 Alert on:
 
@@ -751,7 +1109,7 @@ the proxy's access log or is not currently observable.
 | per-endpoint p99 | **yes** | proxy access log; Caddy's JSON format carries `duration` and `uri` |
 | 429 rate, per endpoint | **yes** | proxy access log status codes |
 | node connection health | **yes** | `/health` status + `chain_height` advancing |
-| payout retry depth | **partly** | count `payout for task … failed, will retry` and `sweep: retried and paid out task` in the journal — both `warn`, so they stand out, but it is a log count, not a gauge |
+| payout retry depth | **partly** | count `payout for task … failed, will retry` and `sweep: retried and paid out task` in the journal. Both are `warn!` in the code, but the journal records them at `info` like everything else (§8.4), so they are found by grepping the text, not by priority — and it is a log count, not a gauge |
 | faucet burn rate | **no** | a successful grant is not logged at all (only a persist *failure* is). Derivable by counting `faucet_grants` in the store, not by watching |
 | sweep-loop lag | **no** | the 60s loop logs its actions, never its own timing |
 | board lock contention | **no** | nothing instruments the `RwLock` |
@@ -783,17 +1141,54 @@ misconfiguration nothing else reports.
 
 All three services log to the journal via systemd, at `RUST_LOG=info`.
 
+**`journalctl -p warning` does not work here, and it fails by returning
+nothing.** All three binaries log through `tracing_subscriber::fmt` to stdout,
+which emits no syslog priority prefix, and the units set no `SyslogLevel=`. So
+systemd records every line — `info`, `warn` and `error` alike — at priority
+`info`, and `-p warning` filters out exactly the lines you were looking for.
+This section used to recommend it for "retries and bans"; every line that table
+depends on (`node/src/ban.rs`'s `banning peer`, `handlers.rs`'s `will retry`,
+`main.rs`'s `retried and paid out`) was being filtered out.
+
+There is no fix available from the unit file: `SyslogLevel=` sets one priority
+for the whole stream, and systemd only reads per-line levels from a `<N>` prefix
+that `tracing` does not emit. So grep the level out of the message instead. The
+units set `Environment=NO_COLOR=1` (§5) specifically so this works — without it
+`tracing` wraps the level in ANSI escapes and the pattern below misses.
+
 ```bash
 journalctl -u itx-hub -f
-journalctl -u itx-hub --since '1 hour ago' -p warning   # retries and bans
+
+# anything above info, from any of the three
+journalctl -u itx-hub -u itx-node -u itx-miner --since '1 hour ago' \
+  | grep -E ' (WARN|ERROR) '
+
+# payout retries and sweep recoveries -- §8.3's "payout retry depth"
+journalctl -u itx-hub --since '1 hour ago' \
+  | grep -E 'failed, will retry|retried and paid out'
+
+# peer bans -- §8.1, and usually the box banning itself
+journalctl -u itx-node --since '1 hour ago' | grep 'banning peer'
+
+# the replay guard failing to restore: an incident, see §9.5
+journalctl -u itx-hub -b | grep -E 'could not restore the durable replay guard|replay log unreadable'
 ```
 
 Two habits worth having:
 
 - **Keep the hub's startup banner.** It is the only record of which addresses
   and which trusted proxies a given run used, and §7.4's drill compares against
-  it. `journalctl -u itx-hub -b --no-pager | head -30` after every deploy, into
-  the runbook's log.
+  it. Nothing writes it to a file — it goes to the journal like everything else
+  — so after every deploy, put a copy somewhere that outlives journal rotation:
+
+  ```bash
+  sudo journalctl -u itx-hub -b --no-pager | head -40 \
+    | sudo tee -a /var/log/itx-hub-banner.txt >/dev/null
+  ```
+
+  That path is a convention, not something the stack creates; use it or pick
+  your own, but pick one, because §7.4's `--expect-operator` needs it once the
+  journal has rotated past the last cold start.
 - **Watch for log injection.** Task descriptions and submissions are untrusted
   agent-authored text (plan §3.5, §3.6) and some of it reaches log lines. Do not
   build alerting that parses log *content* as though it were trustworthy, and
@@ -821,6 +1216,12 @@ It is drastic and it is available in one command. Know that before you need it.
 sudo systemctl stop itx-node itx-miner    # nothing settles from here on
 ```
 
+**It also destroys the mempool** — every transaction submitted since the last
+mined block, including payouts the hub has already marked `Paid`. See §7.2's
+warning and its post-stop checklist. That is the right price for containment
+when funds are being drained; it is the wrong price for anything routine, which
+is why the nightly backup no longer pays it.
+
 ### 9.1 Suspected key compromise
 
 The worst case, and the one to rehearse. Any of: the box was accessed, a secret
@@ -829,7 +1230,9 @@ moving that the hub did not send.
 
 1. **Halt.** `sudo systemctl stop itx-hub itx-node itx-miner`. In that order —
    the hub first so it stops signing, the chain second so nothing already signed
-   confirms.
+   confirms. Stopping the node discards the mempool (§7.2), which here is a
+   feature: an attacker's submitted-but-unmined transactions go with it. Note
+   that legitimate ones do too, so the §7.2 checklist still applies afterwards.
 2. **Preserve evidence before touching anything.** Copy the journal
    (`journalctl -u itx-hub --since ... > /tmp/incident.log`), the proxy access
    log, and the `bans` state. Do not restart services to "see if it is still
@@ -870,8 +1273,9 @@ healthy in its own logs, and everything requiring the chain fails.
 **Cause, nine times in ten:** something TCP-probed port 9000. See §8.1 — the ban
 is one hour, persisted, and survives a restart.
 
-1. Confirm: `journalctl -u itx-node | grep -i banning` — the node logs
-   `banning peer <ip> until <time>` at `warn`.
+1. Confirm: `journalctl -u itx-node | grep 'banning peer'` — the node logs
+   `banning peer <ip> until <time>`. It is a `warn!` in the code but lands in
+   the journal at `info` (§8.4), so grep the text; `-p warning` finds nothing.
 2. If the banned address is the box's own, that is the diagnosis.
 3. **Find and disable the prober first**, or you will be banned again the moment
    the hour is up. Look at anything added recently: a monitoring check, a deploy
@@ -893,7 +1297,10 @@ is now sharing one bucket.
 2. `trusting no proxy` while a proxy is in front of the hub is §4.3's failure 1
    — every request is charged to the proxy's address.
 3. Fix `--trusted-proxies` in `deploy/itx-hub.service` (include `::1`), then
-   `daemon-reload` and restart.
+   `daemon-reload` and restart. The restart itself costs the requests in flight
+   at that moment, and they cannot be retried — see §9.9. Under a 100% 429 rate
+   there is not much in flight worth saving, but say so to whoever is watching
+   rather than letting it look like a second fault.
 
 If the banner is correct, it is a genuine load or attack event: consult the
 proxy access log for the distribution of source addresses, and note that the
@@ -910,11 +1317,32 @@ after any payout, which bounds operator-funded payouts at roughly one per block.
 Read the banner first; it usually says which.
 
 - **`WARNING: replay log unreadable … authenticated writes are refused for the
-  next 120s`** — the hub is up and serving reads, and deliberately closing the
-  post-restart replay window the slow way (plan §3.3). If it says this on *every*
-  start, the replay log is genuinely unreadable and needs investigating; if it
-  says it once after a crash, it is working as designed. Read routes are
-  unaffected either way.
+  next 120s`** — **treat the first one as an incident.** This document used to
+  say that once after a crash it was working as designed. It is not. The hub
+  only reaches that branch when `ReplayGuard::restore` *fails* to read the
+  durable replay table, and the line immediately above it is an `error!`:
+
+  ```
+  could not restore the durable replay guard (<the redb error>) -- falling back to refusing
+  ```
+
+  What is by design is the *fallback* — refusing authenticated writes for the
+  drift window rather than serving with a hole in the replay guard (plan §3.3).
+  What is not by design is needing it. A hub with a readable, empty log prints
+  `restored 0 replay-guard signature(s) …` and carries on; it never prints this
+  after an ordinary crash. So:
+
+  1. Read the redb error in the `error!` line — that is the actual diagnosis.
+  2. Do not wait it out and move on. The store that failed to read is
+     `hub.redb`, the same file holding the board, every exchange account and
+     every agent name.
+  3. Stop the hub and check the file before it takes more writes
+     (`fuser /var/lib/itx/hub.redb` first; redb is single-process).
+  4. If it is damaged, this is §9.7, and the last backup that passed a drill is
+     what you restore.
+
+  Read routes are unaffected throughout, which is exactly why this can sit
+  unnoticed. Alert on the string.
 - **`escrow secret at … must be exactly 32 bytes, found N`** — the hub is
   refusing to start rather than derive escrow addresses from a truncated or
   wrong file. This is the good failure. Restore the secret (§7.4); do not
@@ -954,6 +1382,41 @@ curl -sS https://itx.example.com/.well-known/security.txt
 Set `Contact:` to an inbox someone actually reads and `Expires:` to a real date
 under a year out, then put its renewal on a calendar. An expired `security.txt`
 is worse than none — it advertises that the contact was maintained once.
+
+### 9.9 Restarting the hub burns the requests in flight
+
+Every `systemctl restart itx-hub` — §9.3's step 3, every deploy, every config
+change — fails the authenticated requests that were in flight, **and those
+clients cannot retry them.** They have to re-sign.
+
+Two facts combine:
+
+- `hub/src/main.rs` calls `axum::serve(...)` with no `.with_graceful_shutdown`.
+  On SIGTERM the process goes away with open connections mid-handler; there is
+  no drain.
+- `hub/src/auth.rs` claims an envelope's signature in the replay guard **before
+  the handler runs**, and fsyncs it (`record_seen_signature`). That ordering is
+  deliberate and correct — a signature must be spent before the work it
+  authorises, or a crash between the two is a replayable envelope — but it means
+  the signature of a request killed mid-flight is already recorded as used.
+
+So the client sees a connection reset, retries the identical envelope the way
+any sensible HTTP client would, and gets rejected as a replay. The request
+neither happened nor can be repeated. Only a *new* signature works.
+
+What to do about it:
+
+- **Say so.** Anyone operating an agent against this hub needs to know that a
+  `409`/replay rejection right after a connection reset means re-sign, not
+  back off. It belongs in the SDK docs as much as here.
+- **Restart deliberately**, at a quiet moment, not as a reflex mid-incident.
+  Reads are unaffected, so there is rarely a reason to hurry.
+- **Do not "fix" it client-side by reusing the envelope.** That is the attack
+  the replay guard exists to stop.
+
+A graceful shutdown in the hub (drain, then exit) would reduce this to the
+requests still running at the drain deadline. That is a hub change, not a deploy
+one, and it is not done.
 
 ---
 
@@ -1022,8 +1485,17 @@ drill works on a copy in a scratch directory for exactly that reason (§7.4).
 
 `submit_transaction` is fire-and-forget with a 60s sweep retry, so a task marked
 paid means the transaction was *sent*, not that it confirmed (plan §6.5). The
-sweep loop retries stuck payouts, and its retries are the `warn` lines §8.3
+sweep loop retries stuck payouts, and its retries are the `warn!` lines §8.3
 counts as payout retry depth.
+
+**This is the ceiling that makes §7.2 so expensive**, and the two are worth
+reading together. The sweep only ever revisits tasks still `Verified`, and
+`pending_payouts` only answers while a task is `Verified`, so a task that
+reached `Paid` is never looked at again by anything. Combine that with a
+memory-only mempool and "sent" becomes "gone" the moment the node stops: the
+hub's record says the money moved, the chain never saw it, and no loop in the
+system will ever notice the difference. Everything §7.2 says about not stopping
+the node is downstream of this one design choice.
 
 For operations this means: a rising count of `payout for task … failed, will
 retry` is the early signal that the node is unhealthy or the operator is out of
@@ -1037,20 +1509,22 @@ distinction is visible at all.
 ## 11. What in here was actually tested
 
 Written down so a reader knows which claims are verified and which are
-reasoned. Everything below was run on 2026-09-05 against a local stack (node +
-hub from this tree) behind Caddy 2.11.4.
+reasoned. The first table was run on 2026-09-05 against a local stack (node +
+hub from this tree) behind Caddy 2.11.4. The audit-fix pass on 2026-09-06
+changed several of the configs and the doc; what that pass could and could not
+check is listed separately below, because most of it could only be reasoned.
 
 **Verified by running it:**
 
 | Claim | How it was checked | Result |
 |---|---|---|
-| `deploy/Caddyfile` is valid | `caddy validate` | valid (one misleading warning, §4.2) |
+| `deploy/Caddyfile` is valid | `caddy validate` | valid (three "Unnecessary header_up" warnings, one per `X-Forwarded-*` line; the one that matters is explained in §4.2) |
+| …and still is after the 2026-09-06 changes | `caddy validate` + `caddy adapt`, Caddy 2.11.4 | adapts; `"max_size": 262144` in the JSON, no active health check |
 | TLS terminates in front of the hub | `curl` over HTTPS to the real hub | `200`, HTTP/2, `{"status":"ok","chain_height":5}` |
 | A spoofed `X-Forwarded-For` is discarded | client sends one address, a chain, and repeated headers | upstream sees exactly one entry: the real client |
 | `Forwarded` / `X-Real-IP` are cleared | client sends both | neither reaches the upstream |
 | Stripping actually protects the rate limit | 130 reads through the proxy, each with a different spoofed address | 119 × `200`, 11 × `429` — one shared bucket, spoofing gained nothing |
 | …and that the limit fails without it | same 130 reads sent to the hub from a trusted peer with the header passed through | 130 × `200`, 0 × `429` — limit defeated |
-| `localhost` upstream yields an IPv6 peer | `reverse_proxy localhost:9100` vs `127.0.0.1:9100` | `::1` vs `127.0.0.1` (§4.3) |
 | `security.txt` needs the proxy | requested via proxy, then direct from the hub | `200` via proxy, `404` direct |
 | A `nc -z` probe bans the node | one probe against an isolated node | `banning peer 127.0.0.1 until <+1h>` |
 | The ban is invisible to that probe | second `nc -z` after the ban | still `succeeded!`, while the node logs `rejecting connection from banned peer` |
@@ -1063,13 +1537,49 @@ hub from this tree) behind Caddy 2.11.4.
 done on macOS:
 
 - `deploy/nftables.conf` and `deploy/ufw.sh` — the rules follow from §2's
-  topology, but no Linux host was available to apply them. Run `nft -c -f` on
-  the real host before committing to them, and verify from off-box per §3.
+  topology, but no Linux host was available to apply them, and `nft` is not
+  installed on the machine the checks were done on, so **not even `nft -c -f`
+  was run against the current file.** Run it on the real host before committing
+  to it, and verify from off-box per §3 — including the `ssh -6` line, which is
+  the one that would have caught the IPv4-only SSH rule.
+- `deploy/nginx.conf` — `nginx -t` was not run either; nginx is not installed
+  here. The `listen 443 ssl http2` form, the removal of `ssl_stapling`, the
+  `charset utf-8` on the `security.txt` location and the `256k` body cap are all
+  reasoned from the directive documentation, not from a parse.
 - The systemd units — syntax and directives are conventional, but they have not
   been loaded by a running systemd. Check `systemd-analyze verify` on the host.
+  This now includes `StateDirectory=itx itx/secrets` and
+  `Environment=NO_COLOR=1`, neither of which has been exercised.
 - `itx-backup.sh`'s service stop/start path. The drill was run with `--no-stop`,
   since there is no systemd on the test machine, so the `systemctl stop` branch
-  and its `resume` trap are untested. Exercise them once on the real host.
+  and its restart-on-exit trap are untested. Exercise them once on the real
+  host.
+- `cp --reflink=always` in `itx-backup.sh` — macOS `cp` has no such flag, so
+  only the fallback path has ever run. On the real host, check the archive's
+  `MANIFEST.txt` for `redb copy method: reflink` to see which branch you got.
+- The restore drill's step 0 (`unshare --net`) — Linux only, never executed
+  here. Its argument-passing shape (`sh -c '… exec "$@"' sh "$0" "$@"`) was
+  checked with a stub script; the namespace itself was not.
+- The `journalctl … | grep -E ' (WARN|ERROR) '` recipe in §8.4. The log format
+  it assumes was read out of tracing-subscriber 0.3.23's source (`fmt_layer.rs`
+  gates ANSI on the `ansi` feature and honours `NO_COLOR`; `format/mod.rs`
+  writes `<timestamp> <LEVEL> <target>: <message>` with no padding), and the
+  version was confirmed against `Cargo.lock`. It has not been run against a real
+  journal.
+
+**Corrected on 2026-09-06, having previously been listed as verified:** the row
+claiming a `localhost` upstream yields an `::1` peer. It cannot have been
+observed against this hub, which binds `0.0.0.0` and so never accepts an IPv6
+connection at all — a Caddy upstream written as `localhost` finds `[::1]:9100`
+refused and falls back to IPv4. §4.3 now states the pair as reasoned, and the
+advice to include `::1` in `--trusted-proxies` is unchanged: it is free, and it
+is right the day the hub gains a `--bind` flag.
 
 **Also observed in passing:** the node logs `Listening on 0.0.0.0:9500` and
 binds IPv4 only — same as the hub, and the same reason §1 leans on the firewall.
+The restore drill now waits for exactly that line.
+
+**Known-open, and not fixable in `deploy/`:** the hub assuming a submitted
+transaction is a settled one (§7.2, §10.3) is a hub change — it needs
+confirmation tracking, plan §2 item 10. Everything the backup script and this
+document do about it is mitigation. So is §9.9's missing graceful shutdown.

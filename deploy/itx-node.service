@@ -18,18 +18,38 @@ Type=simple
 User=itx
 Group=itx
 WorkingDirectory=/var/lib/itx
-ExecStart=/usr/local/bin/node --port 9000 --blockchain-file /var/lib/itx/blockchain.redb
+
+# Creates /var/lib/itx, owned by User=, before ExecStart -- so the unit
+# does not silently depend on §5's mkdir having been run by hand.
+StateDirectory=itx
+StateDirectoryMode=0700
+
+ExecStart=/usr/local/bin/itx-node --port 9000 --blockchain-file /var/lib/itx/blockchain.redb
 
 Restart=always
 RestartSec=5s
 
-# The ban list is persisted in blockchain.redb and survives restarts on
-# purpose (node/src/ban.rs, load_persisted) -- a restart must not hand a
-# banned peer its access back for free. The operational consequence is in
-# docs/deployment.md §8.1: if the box bans itself, restarting does not
-# clear it.
+# STOPPING THIS UNIT DESTROYS MONEY IN FLIGHT. The mempool is memory
+# only: btclib::store defines `blocks`, `meta` and `bans`, and
+# node/src/util.rs persist_chain_state writes blocks and the active chain
+# and nothing else. Every transaction submitted since the last mined
+# block is gone on restart -- and the hub has already marked those
+# payouts done, because submit_transaction is fire-and-forget and the
+# sweep only retries tasks still `Verified`. So a routine
+# `systemctl restart itx-node` can leave tasks reading `Paid` that were
+# never paid and exchange accounts debited for withdrawals that never
+# happened. docs/deployment.md §7.2 has the checklist for afterwards.
+#
+# The ban list, by contrast, is persisted in blockchain.redb and survives
+# restarts on purpose (node/src/ban.rs, load_persisted) -- a restart must
+# not hand a banned peer its access back for free. The operational
+# consequence is in docs/deployment.md §8.1: if the box bans itself,
+# restarting does not clear it.
 
 Environment=RUST_LOG=info
+# See itx-hub.service for why: tracing-subscriber colours its output
+# unconditionally otherwise, and the journal ends up full of escapes.
+Environment=NO_COLOR=1
 UMask=0077
 
 NoNewPrivileges=true

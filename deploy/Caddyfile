@@ -35,12 +35,26 @@
 }
 
 itx.example.com {
-	# Body cap. axum's own extractor defaults to 2MB, which is far more
-	# than any ITX payload needs -- the largest is a task description
-	# plus a signature. Rejecting oversize bodies here means they never
-	# cost the hub a read, a rate-limit slot, or an ECDSA verify.
+	# Body cap. Derived from the hub's own limit rather than picked: the
+	# hub accepts free-text fields (description, output, dispute reason)
+	# of up to MAX_TEXT_FIELD_LENGTH = 20,000 *characters*, counted with
+	# chars().count() in hub/src/handlers.rs and advertised in
+	# /llms.txt. The Python SDK posts with requests' `json=`, which uses
+	# json.dumps' default ensure_ascii=True, so every non-ASCII character
+	# goes on the wire as \uXXXX -- 6 bytes for a BMP character, 12 for
+	# an emoji (a surrogate pair). A full 20,000-character emoji field is
+	# therefore 240,000 bytes of body for a payload the hub would accept.
+	#
+	# 262144 bytes (256 KiB) covers that with room for the envelope, and
+	# is still an order of magnitude under axum's own 2MB extractor
+	# default, so oversize bodies still die here rather than costing the
+	# hub a read, a rate-limit slot, or an ECDSA verify. Written as a
+	# plain byte count so it is exactly the same number as nginx.conf's
+	# `client_max_body_size 256k` -- Caddy reads KB as 1000 and nginx
+	# reads k as 1024, which is how the two "equivalent" configs used to
+	# differ by 1,536 bytes without either looking wrong.
 	request_body {
-		max_size 64KB
+		max_size 262144
 	}
 
 	# RFC 9116 disclosure contact. Served here because the hub's router
@@ -57,6 +71,16 @@ itx.example.com {
 	}
 
 	handle {
+		# The path reaches the hub byte-for-byte as the client sent it,
+		# and that is a correctness requirement, not a preference. Since
+		# 2026-09-05 the signed envelope binds method and concrete path,
+		# and the hub verifies against `OriginalUri` -- the path as it
+		# arrived. A proxy that rewrites the path (a trailing slash on
+		# nginx's `proxy_pass`, a `handle_path` strip here, mounting the
+		# hub under /api) makes every authenticated request fail its
+		# signature check, with a 100% 401 rate and nothing in either
+		# log saying why. `handle` + a bare upstream address does no
+		# rewriting; see docs/deployment.md §4.6 before changing it.
 		reverse_proxy 127.0.0.1:9100 {
 			# THE security-relevant line.
 			#
@@ -93,13 +117,34 @@ itx.example.com {
 			header_up -Forwarded
 			header_up -X-Real-IP
 
-			# Health of the upstream, not of the node. /health makes the hub
-			# open a fresh TCP connection to the node (node_client opens one
-			# per call), so this interval is a real cost -- see
-			# docs/deployment.md §8.2. 30s, not 1s.
-			health_uri /health
-			health_interval 30s
-			health_timeout 5s
+			# Deliberately NO active health check. There used to be a
+			# `health_uri /health` here, and it was actively harmful.
+			#
+			# `handlers::health` asks the node for its chain tip and
+			# answers 503 `{"status":"degraded"}` whenever the node is
+			# unreachable. Caddy treats any non-2xx probe response as an
+			# unhealthy upstream, and with exactly one upstream there is
+			# nothing to fail over to -- so Caddy took every request off
+			# the hub, reads included, the moment the node blinked. A
+			# hub that is up and serving the whole read surface became
+			# indistinguishable from a dead one, which contradicts what
+			# §8.2 alerts on, and the §8.1 node self-ban took the entire
+			# site down with it.
+			#
+			# The options were: accept 503 as healthy (`health_status`
+			# takes one value, so it cannot say "200 or 503"), probe a
+			# route that does not touch the node, or drop the check.
+			# Dropping it is the right one here. A health check on a
+			# single upstream can only ever remove capacity; if the hub
+			# process is genuinely down, the dial fails and Caddy
+			# answers 502 either way. Monitoring polls /health directly
+			# (§8.2) and can tell 503-degraded from no answer at all,
+			# which is the distinction that matters.
+			#
+			# If a second hub upstream is ever added, an active check
+			# earns its place again -- but it must probe something that
+			# does not depend on the node, or it will still take both
+			# upstreams out together.
 		}
 	}
 

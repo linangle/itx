@@ -1,9 +1,21 @@
 # ITX miner.
 #
 # Outbound only -- it dials the node and listens for nothing, so it needs
-# no firewall rule. Its --public-key-file is a PUBLIC key (the address
-# block rewards are paid to); it is the one key file in this deployment
-# that is not a secret.
+# no firewall rule.
+#
+# --public-key-file really is a public key: the address block rewards are
+# paid to, and nothing bad happens if it is read. What is easy to miss is
+# that it has a private half. The only generator is btclib's key_gen,
+# which writes the pair together:
+#
+#     cargo run --release -p btclib --bin key_gen -- /var/lib/itx/miner
+#     -> /var/lib/itx/miner.pub.pem     this file, public
+#     -> /var/lib/itx/miner.priv.cbor   spends every block reward, ever
+#
+# The miner process never needs the private half, so generate the pair
+# somewhere else and copy only the .pub.pem here. If it is on this box
+# anyway, it is a fourth secret with no directory, no mode enforcement
+# and no unit hardening aimed at it -- see docs/deployment.md §6.5.
 
 [Unit]
 Description=ITX miner
@@ -15,7 +27,13 @@ Type=simple
 User=itx
 Group=itx
 WorkingDirectory=/var/lib/itx
-ExecStart=/usr/local/bin/miner \
+
+# Creates /var/lib/itx, owned by User=, before ExecStart -- so the unit
+# does not silently depend on §5's mkdir having been run by hand.
+StateDirectory=itx
+StateDirectoryMode=0700
+
+ExecStart=/usr/local/bin/itx-miner \
     --addresses 127.0.0.1:9000 \
     --public-key-file /var/lib/itx/miner.pub.pem
 
@@ -29,6 +47,9 @@ Restart=always
 RestartSec=5s
 
 Environment=RUST_LOG=info
+# See itx-hub.service for why: tracing-subscriber colours its output
+# unconditionally otherwise, and the journal ends up full of escapes.
+Environment=NO_COLOR=1
 UMask=0077
 
 NoNewPrivileges=true

@@ -11,19 +11,31 @@
 
 [Unit]
 Description=ITX agent hub
-After=network-online.target itx-node.service
-Wants=network-online.target
 # Not Requires=: the hub comes up and serves reads with the node down,
 # reporting "degraded" from /health, which is more useful than refusing
-# to start. See docs/deployment.md §8.2.
-After=itx-node.service
+# to start. See docs/deployment.md §8.2. (There used to be a second,
+# identical After=itx-node.service line below the [Unit] block's other
+# directives; systemd merges them, so it did nothing but suggest the two
+# were saying different things.)
+After=network-online.target itx-node.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=itx
 Group=itx
 WorkingDirectory=/var/lib/itx
-ExecStart=/usr/local/bin/hub \
+
+# Creates /var/lib/itx and /var/lib/itx/secrets, owned by User=, before
+# ExecStart. Without this the unit depends on someone having run §5's
+# mkdir by hand: the hub generates its keys on first start via
+# PrivateKey::save_to_file, which does NOT create parent directories, so
+# a missing secrets/ is an immediate exit and Restart=always turns that
+# into a restart loop on the box holding the treasury.
+StateDirectory=itx itx/secrets
+StateDirectoryMode=0700
+
+ExecStart=/usr/local/bin/itx-hub \
     --port 9100 \
     --node-addresses 127.0.0.1:9000 \
     --store-file /var/lib/itx/hub.redb \
@@ -32,10 +44,23 @@ ExecStart=/usr/local/bin/hub \
     --escrow-secret-file /var/lib/itx/secrets/hub_escrow_secret.bin \
     --trusted-proxies 127.0.0.1,::1
 
+# A restart is not free to clients, and it is worth knowing which way it
+# fails. hub/src/main.rs serves with no graceful shutdown, and
+# hub/src/auth.rs claims and fsyncs an envelope's signature BEFORE the
+# handler runs -- so a request in flight at `systemctl restart` dies with
+# its envelope already spent. The client cannot retry it; the replay
+# guard will reject the same signature. It has to re-sign. See
+# docs/deployment.md §9.9.
 Restart=always
 RestartSec=5s
 
 Environment=RUST_LOG=info
+# tracing-subscriber's fmt layer turns ANSI colours on whenever the
+# `ansi` feature is compiled in -- it does not check for a terminal -- so
+# without this the journal holds escape sequences wrapped around every
+# level and target. It honours NO_COLOR (tracing-subscriber 0.3.23,
+# fmt_layer.rs). Plain text is what makes §8.4's greps work.
+Environment=NO_COLOR=1
 # Anything the hub creates is owner-only. The hub already chmods its own
 # key files to 0600, but this covers hub.redb and everything else -- and
 # hub.redb is not nothing even after escrow key derivation landed: it

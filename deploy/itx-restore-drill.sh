@@ -8,15 +8,21 @@
 # -- not merely that the archive decrypted.
 #
 # It never touches the live state directory and never stops a live
-# service, so it is safe to run against production backups on the
-# production box. It does bind two ports; pass --port-base to move them.
+# service. It is NOT unconditionally safe on the production box, though,
+# and the reason is worth reading before you schedule it: step 5 starts a
+# hub holding the RESTORED PRODUCTION SECRETS, and both binaries hardcode
+# a 0.0.0.0 bind with no --bind flag. Step 0 puts them in a private
+# network namespace so that cannot reach anything; if it cannot, the
+# drill says so and the host firewall is again the only thing between the
+# real treasury keys and the internet (§1, and now on a second port).
 #
 # Usage:
 #   itx-restore-drill.sh --archive /var/backups/itx/itx-<stamp>.tar.gz.age \
 #                        --identity ~/age-restore-key.txt \
 #                        [--expect-operator <pubkey>] \
 #                        [--expect-escrow-sha256 <hex>] \
-#                        [--bin-dir /usr/local/bin] [--port-base 19000]
+#                        [--bin-dir /usr/local/bin] [--port-base 19000] \
+#                        [--no-isolate]
 #
 # The identity file is the private half that deliberately does not live
 # on the hub box (see itx-backup.sh). Running this drill therefore also
@@ -34,6 +40,7 @@ EXPECT_ESCROW=""
 BIN_DIR=${ITX_BIN_DIR:-/usr/local/bin}
 PORT_BASE=19000
 USE_GPG=0
+ISOLATE=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         --bin-dir)              BIN_DIR="$2";         shift 2 ;;
         --port-base)            PORT_BASE="$2";       shift 2 ;;
         --gpg)                  USE_GPG=1;            shift ;;
+        --no-isolate)           ISOLATE=0;            shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -53,6 +61,50 @@ done
 [[ "$ARCHIVE" == *.gpg ]] && USE_GPG=1
 if [[ $USE_GPG -eq 0 && -z "$IDENTITY" ]]; then
     echo "--identity is required for an age archive" >&2; exit 2
+fi
+
+# --- 0. isolate the network -------------------------------------------
+#
+# Checked after the arguments, so a typo fails here rather than inside a
+# namespace.
+#
+# Steps 5-7 run a hub against the restored operator, custody and escrow
+# keys -- the live ones. hub/src/main.rs binds `0.0.0.0:{port}` with no
+# way to say otherwise, so without this the drill puts the real treasury
+# keys on a listener facing every interface, on a port nothing in
+# deploy/nftables.conf knows about, for as long as the drill runs.
+#
+# A private network namespace fixes it by construction rather than by
+# policy: inside one, 0.0.0.0 is the namespace's own loopback and there
+# is no route in or out at all, so the ports cannot be reached even if
+# the host firewall is wrong. The probe runs the real thing in a
+# throwaway namespace first, so an unavailable or blocked unshare (some
+# hardened kernels and AppArmor profiles refuse unprivileged user
+# namespaces) degrades to a warning instead of a broken drill.
+if [[ -z "${ITX_DRILL_NETNS:-}" ]]; then
+    if [[ $ISOLATE -eq 0 ]]; then
+        echo "WARNING: --no-isolate. The hub started in step 5 holds the restored"
+        echo "  PRODUCTION keys and binds 0.0.0.0:$((PORT_BASE + 1)). Only the host"
+        echo "  firewall keeps that off the internet, and it has no rule for this"
+        echo "  port. Confirm from off-box before relying on this."
+    elif command -v unshare >/dev/null 2>&1 \
+         && command -v ip >/dev/null 2>&1 \
+         && unshare --net --map-root-user -- ip link set lo up >/dev/null 2>&1; then
+        echo "== 0. isolating: re-running inside a private network namespace"
+        export ITX_DRILL_NETNS=1
+        # `sh -c` brings loopback up (a fresh namespace starts with lo
+        # DOWN, and every bind below would fail with EADDRNOTAVAIL),
+        # then re-runs this script with its original arguments.
+        exec unshare --net --map-root-user -- \
+            /bin/sh -c 'ip link set lo up && exec "$@"' sh "$0" "$@"
+    else
+        echo "WARNING: no private network namespace available (unshare/ip missing,"
+        echo "  or unprivileged user namespaces are disabled). The hub started in"
+        echo "  step 5 holds the restored PRODUCTION keys and will bind"
+        echo "  0.0.0.0:$((PORT_BASE + 1)) on every interface. Only the host firewall"
+        echo "  keeps that off the internet, and it has no rule for this port."
+        echo "  Prefer running the drill on a machine that is not the hub box."
+    fi
 fi
 
 NODE_PORT=$PORT_BASE
@@ -133,15 +185,31 @@ echo "all three secrets are 0600"
 
 # --- 5. stand it up ---------------------------------------------------
 step "5. starting a node and hub against the restored state"
-"$BIN_DIR/node" --port "$NODE_PORT" --blockchain-file "$R/blockchain.redb" \
+"$BIN_DIR/itx-node" --port "$NODE_PORT" --blockchain-file "$R/blockchain.redb" \
     > "$WORK/node.log" 2>&1 &
 NODE_PID=$!
-for _ in $(seq 30); do grep -q . "$WORK/node.log" && break; sleep 0.5; done
+
+# Wait for the node to actually be LISTENING, not merely to have said
+# something. This loop used to break on any output at all, and the node's
+# first line is "found N blocks in the local store, loading..." -- printed
+# before it replays the chain and long before it binds. On a chain of any
+# size the hub then started against a node that was not up yet, answered
+# 503 to the health loop below, and the drill reported "hub never
+# answered /health" for a restore that was fine.
+for _ in $(seq 240); do
+    grep -q 'Listening on ' "$WORK/node.log" && break
+    kill -0 "$NODE_PID" 2>/dev/null \
+        || { cat "$WORK/node.log"; fail "node exited during startup"; }
+    sleep 0.5
+done
+grep -q 'Listening on ' "$WORK/node.log" \
+    || { cat "$WORK/node.log"; fail "node never started listening (it replays the whole chain first; a very large store may need longer than the two minutes waited here)"; }
+echo "node is listening on 127.0.0.1:$NODE_PORT"
 
 # --trusted-proxies is deliberately left empty here: the drill talks to
 # the hub directly, and an empty list is the configuration that cannot be
 # talked out of its rate limit.
-"$BIN_DIR/hub" --port "$HUB_PORT" \
+"$BIN_DIR/itx-hub" --port "$HUB_PORT" \
     --node-addresses "127.0.0.1:$NODE_PORT" \
     --store-file "$R/hub.redb" \
     --operator-key-file "$R/secrets/hub_operator.priv.cbor" \
@@ -150,15 +218,27 @@ for _ in $(seq 30); do grep -q . "$WORK/node.log" && break; sleep 0.5; done
     > "$WORK/hub.log" 2>&1 &
 HUB_PID=$!
 
+# `-o /dev/null -w %{http_code}` rather than `-sf`, because `-sf` fails
+# on the 503 the hub returns while the node is unreachable and cannot
+# tell that apart from no answer at all. Those are different diagnoses
+# and the drill should say which one it got: "000" is the hub not
+# listening yet, "503" is the hub up and the restored node not answering.
+HEALTH_CODE=000
 for _ in $(seq 60); do
-    curl -sf "http://127.0.0.1:$HUB_PORT/health" >/dev/null 2>&1 && break
+    HEALTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+        "http://127.0.0.1:$HUB_PORT/health") || HEALTH_CODE=000
+    [[ "$HEALTH_CODE" != "000" ]] && break
     kill -0 "$HUB_PID" 2>/dev/null || { cat "$WORK/hub.log"; fail "hub exited during startup"; }
     sleep 0.5
 done
 
-curl -sf "http://127.0.0.1:$HUB_PORT/health" >/dev/null \
-    || { cat "$WORK/hub.log"; fail "hub never answered /health"; }
-echo "hub answered /health against the restored store"
+case "$HEALTH_CODE" in
+    200) echo "hub answered /health 200 against the restored store" ;;
+    503) cat "$WORK/node.log"
+         fail "hub is up but reports degraded -- it could not reach the restored node" ;;
+    000) cat "$WORK/hub.log"; fail "hub never answered /health" ;;
+    *)   cat "$WORK/hub.log"; fail "hub answered /health with $HEALTH_CODE" ;;
+esac
 
 # --- 6. same deployment? ---------------------------------------------
 #
