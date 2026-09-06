@@ -466,3 +466,130 @@ maintenance window with a drain, not a routine hygiene task on a timer.
 - **Custody on a separate host** is the plan's eventual §3.1 answer and is not
   addressed here. Until then, "protect the hub box" is the entire control, which
   is why §1 puts the firewall and §5's hardening where it does.
+
+---
+
+## 7. Backups and the restore drill
+
+`deploy/itx-backup.sh` writes them; `deploy/itx-restore-drill.sh` proves they
+work. Run the second one on a schedule, not once.
+
+### 7.1 Encrypt to a public key, not a password
+
+```bash
+# once, on a machine that is NOT the hub box
+age-keygen -o ~/itx-restore-key.txt          # keep this offline
+# -> public key: age1ql3z7...
+
+# on the hub box, nightly
+/usr/local/bin/itx-backup.sh --recipient age1ql3z7... --dest /var/backups/itx
+```
+
+The box holds only the *public* key, so it can write backups it cannot read
+back. That matters more than it first appears: if the hub is compromised, the
+attacker already has the running secrets — what asymmetric encryption denies
+them is the archive of every previous state, other agents' historical data, and
+a convenient offline copy to work on. A passphrase-based scheme gives all of
+that away, because the passphrase has to be on the box to run unattended.
+
+The private key must not live on the hub box. Putting it there to make restores
+easier is precisely the trade this is refusing.
+
+`--gpg` uses gpg with a recipient instead, if that is what your key management
+already looks like. Same asymmetric property.
+
+### 7.2 What is backed up, and the consistency cost
+
+The three secrets, `hub.redb`, and `blockchain.redb`.
+
+`blockchain.redb` is not resyncable. There is no peer to fetch the chain from —
+this is a single-node deployment — so that file *is* the ledger. Losing it loses
+every balance the hub reports.
+
+Both `.redb` files have a live writer, and copying one underneath a running
+process can capture a torn state that redb then refuses to open. You would find
+that out during a restore, which is the worst possible time. So the script stops
+`itx-hub` and `itx-node` for the length of the copy and starts them again
+afterwards — seconds on any reasonable box, and honest about being a short
+outage rather than pretending a live `cp` is safe.
+
+`--no-stop` exists for hosts where `/var/lib/itx` is on LVM/ZFS/btrfs and you
+are snapshotting underneath the script. It is not for avoiding the outage.
+
+The miner restart-loops while the node is down and recovers on its own; that is
+expected and needs no handling (see `deploy/itx-miner.service`).
+
+### 7.3 The manifest, and why the escrow secret gets its own line
+
+Each archive carries `MANIFEST.sha256` (every file) and `MANIFEST.txt` (host,
+timestamp, whether the copy was consistent, and the escrow secret's SHA-256 and
+length). `MANIFEST.txt` is also written *beside* the archive in cleartext, so a
+drill can check the fingerprint without decrypting, and so the value is legible
+to someone who can see the backup directory but holds no key. It is a hash of a
+secret, not the secret.
+
+The escrow secret is called out separately because it is the one file whose
+bytes must be exactly right. Escrow addresses are `HKDF(secret, deposit id)`, so
+a single flipped bit yields a hub that starts perfectly, looks healthy, derives a
+*different* address for every deposit, and sweeps nothing. The failure is silent
+and total. A length check is not enough — the hub itself only checks length —
+which is why the drill compares the fingerprint.
+
+Record the live fingerprint somewhere outside the backup system (a password
+manager, the runbook) so the drill has something independent to compare against.
+The hub prints it at the end of every backup run.
+
+### 7.4 The drill
+
+Run monthly, and after any change to the backup path. It never touches the live
+state directory and never stops a live service, so it is safe on the production
+box; it does bind two throwaway ports.
+
+```bash
+/usr/local/bin/itx-restore-drill.sh \
+    --archive /var/backups/itx/itx-20260905T030000Z.tar.gz.age \
+    --identity ~/itx-restore-key.txt \
+    --expect-operator "$(grep -A1 'hub operator address' /var/log/itx-hub-banner.txt | tail -1)" \
+    --expect-escrow-sha256 3f1a...
+```
+
+The seven steps, and what each one actually proves:
+
+1. **Decrypt.** Also proves you can still lay hands on the offline identity
+   file. This is the half of "do we have backups" that people fail — not the
+   archive, the key.
+2. **Verify `MANIFEST.sha256`.** Proves the archive round-tripped, rather than
+   merely decrypting.
+3. **Check the escrow secret** — 32 bytes, and fingerprint against the expected
+   value. Without `--expect-escrow-sha256` this only proves internal
+   consistency; pass the live fingerprint to prove it is *the* secret.
+4. **Check permissions.** `tar` and `cp` do not reliably carry mode through
+   every path, and the hub only chmods files it *creates* — a restored secret
+   keeps whatever mode it arrived with, permanently and silently.
+5. **Start a node and hub against the restored state** on throwaway ports and
+   wait for `/health`. Proves both redb files open and the store is coherent.
+6. **Compare the operator address** to the live one. This is the step that
+   matters most and is easiest to leave out: a hub that starts proves the files
+   are well-formed, not that they are *your* files. The operator address is
+   derived from the restored key, so matching it is what distinguishes "a
+   working hub" from "our hub".
+7. **Print what came back** — task, reputation, grant, deposit, account, order
+   and trade counts from the hub's own banner. Sanity-check them against
+   production; a backup that restores cleanly with a tenth of the tasks is
+   telling you something about step 2's window.
+
+Scratch state is removed on every exit path, pass or fail — it holds decrypted
+secrets.
+
+### 7.5 What this does not cover
+
+The drill restores to a scratch directory. It does not rehearse a *real*
+recovery: repointing the live services at restored files, or restoring onto a
+fresh box. Do that once, deliberately, before launch, and write down how long it
+took — that number is your actual RTO, and it is the one figure an incident
+turns on.
+
+Note the ordering constraint when you do: redb is single-process, so the live
+hub must be stopped before anything else opens `hub.redb`. That is the same
+property that blocks horizontal scaling (plan §3.3, §11), showing up in
+operations.
