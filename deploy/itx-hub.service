@@ -15,7 +15,7 @@ After=network-online.target itx-node.service
 Wants=network-online.target
 # Not Requires=: the hub comes up and serves reads with the node down,
 # reporting "degraded" from /health, which is more useful than refusing
-# to start. See docs/deployment.md §7.1.
+# to start. See docs/deployment.md §8.2.
 After=itx-node.service
 
 [Service]

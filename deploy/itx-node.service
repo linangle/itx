@@ -26,7 +26,7 @@ RestartSec=5s
 # The ban list is persisted in blockchain.redb and survives restarts on
 # purpose (node/src/ban.rs, load_persisted) -- a restart must not hand a
 # banned peer its access back for free. The operational consequence is in
-# docs/deployment.md §7.2: if the box bans itself, restarting does not
+# docs/deployment.md §8.1: if the box bans itself, restarting does not
 # clear it.
 
 Environment=RUST_LOG=info

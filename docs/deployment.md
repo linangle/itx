@@ -155,7 +155,7 @@ nmap -Pn -p 9000 itx.example.com     # expect filtered
 **Do not probe the node port with `nc -z`, a TCP health check, or anything else
 that opens a connection and hangs up.** `nmap -Pn` against a *filtered* port
 never completes a connection, so it is safe; the moment the port is actually
-reachable, the same probe becomes a self-ban. §7.2 explains why in full. If you
+reachable, the same probe becomes a self-ban. §8.1 explains why in full. If you
 want to confirm the node is listening at all, do it from the box itself against
 loopback, and even then prefer reading the node's own log line to opening a
 socket.
@@ -244,7 +244,7 @@ agents share one bucket. The first busy agent exhausts it and the hub starts
 429ing everyone. This is a total outage that looks like a traffic spike, and
 nothing in the logs says "the trusted-proxy list is wrong". The startup banner
 saying `trusting no proxy` while a proxy is plainly in front of you is the
-tell. Alert on 429 rate (§7.3): a per-endpoint 429 rate that goes to ~100% for
+tell. Alert on 429 rate (§8.3): a per-endpoint 429 rate that goes to ~100% for
 all clients at once is this, not an attack.
 
 **Failure 2 — flag set, hub port also reachable.** Then anyone who can connect
@@ -321,7 +321,7 @@ Notes that are not boilerplate:
   account, and the replay log are still there.
 - **The hub is `After=` the node, not `Requires=`.** With the node down the hub
   still comes up and serves reads, reporting `degraded` from `/health`. That is
-  more useful than a hub that refuses to start, and it is what §7.1's alerting
+  more useful than a hub that refuses to start, and it is what §8.2's alerting
   assumes.
 - **`--trusted-proxies 127.0.0.1,::1`** is in the hub's `ExecStart`. If you move
   the proxy off-box, this is the line to change, and §4.3 is the reason it
@@ -382,7 +382,7 @@ flight, not the whole treasury.
 operator's. Every confirmed exchange deposit is swept into it, and withdrawals
 pay out of it, so its on-chain balance should always be at least the sum of
 every account's `base_balance`. That invariant is the exchange's solvency check
-and belongs in monitoring (§7.3). The separation exists so exchange liabilities
+and belongs in monitoring (§8.3). The separation exists so exchange liabilities
 never comingle with the operator's own funding math, which has no concept of
 them — do not "simplify" by pointing both flags at one file.
 
@@ -593,3 +593,146 @@ Note the ordering constraint when you do: redb is single-process, so the live
 hub must be stopped before anything else opens `hub.redb`. That is the same
 property that blocks horizontal scaling (plan §3.3, §11), showing up in
 operations.
+
+---
+
+## 8. Monitoring
+
+### 8.1 Never TCP-probe the node
+
+**This is the sharpest operational trap in the stack, and it is easy to walk
+into with a completely standard monitoring setup.**
+
+`node/src/handler.rs` calls `perform_handshake_acceptor` the moment a connection
+is accepted. If that handshake does not complete, the peer takes a **severe**
+strike, and `node/src/ban.rs` bans severe strikes **immediately, on the first
+offence, for an hour** — no three-strike grace, that path is only for peers who
+complete a handshake and then send bad data.
+
+A connection that opens and closes without sending a `Hello` fails the
+handshake. So every one of these bans the prober for an hour:
+
+- `nc -z host 9000`
+- a load balancer's TCP health check
+- `wait-for-port` / `wait-for-it.sh` in a deploy script
+- an uptime monitor configured for "TCP connect"
+- a port scanner, including your own security scan
+
+Two things make it worse than a self-inflicted hour of monitoring downtime:
+
+- **The ban is persisted** (`load_persisted`, restored from `blockchain.redb` at
+  startup) and deliberately survives a restart, so restarting the node does not
+  clear it. That is correct — a restart must not hand a banned peer its access
+  back for free — but it means the obvious remedy does nothing.
+- **On a single box, the hub, the miner, and monitoring usually share an
+  address.** Banning "the prober" therefore bans the hub. The hub keeps serving
+  reads and reports `degraded` from `/health` while every payout, balance
+  lookup, and settlement fails, for an hour, and the cause is a health check
+  that was working as designed.
+
+**Check node liveness indirectly instead:**
+
+- the hub's `GET /health`, which returns `chain_height` and is the node round
+  trip already (§8.2);
+- `chain_height` advancing — the real signal, since a node that answers but has
+  stopped accepting blocks is up and useless;
+- the node's own log lines and the systemd unit state;
+- if you truly need a direct check, use something that *speaks the protocol* —
+  the miner's connection is exactly that, so "the miner unit is not
+  restart-looping" is a working node check you already have.
+
+**If you do ban yourself:** there is no supported way to clear a ban.
+`btclib::store` has `save_ban` and `load_bans` and no delete, and there is no CLI
+for it. The in-memory ban is only pruned when it is checked and found expired, so
+even rewriting the row would not help a running process. In practice:
+
+1. Wait the hour. This is genuinely the intended path.
+2. If you cannot, stop the node, remove the row from the `bans` table in
+   `blockchain.redb` with an external redb tool, and restart. Stopping is not
+   optional — redb is single-process.
+
+A `--clear-ban` subcommand, or simply not striking on a connection that sends
+zero bytes, would make this a non-event. Worth raising before launch, because
+the current behaviour turns any conventional TCP health check into an hour-long
+outage.
+
+### 8.2 `/health` is not free
+
+`handlers::health` asks the node for its chain tip, and `node_client` opens a
+fresh TCP connection per call (plan §6.2). A one-second uptime check is
+therefore 60 new connections a minute to the node — not a hammering, but not
+the free endpoint the name suggests either.
+
+Poll it every 30s, which is what `deploy/Caddyfile` sets. The endpoint has its
+own generous rate-limit tier precisely so a monitor never sees a 429 there,
+because a 429 on `/health` reads to a monitor as "the hub is down" — the wrong
+thing to say under load.
+
+Alert on:
+
+- **`503` / `"status": "degraded"`** — the hub is up, the node is unreachable.
+  Given §8.1, treat "degraded with the node process running" as a suspected
+  self-ban until proven otherwise.
+- **`chain_height` not advancing** for more than a few block intervals. The
+  effective cadence on a local stack is ~35s (16s target, 5s miner template
+  interval), so ~5 minutes of no movement means the miner has stopped.
+
+### 8.3 The metrics in plan §9, and which of them you can actually get
+
+Stated plainly, because the gap is large and discovering it during an incident
+is expensive: **the hub exposes no metrics endpoint.** There is no `/metrics`,
+no Prometheus dependency, no counters. Everything below is either derived from
+the proxy's access log or is not currently observable.
+
+| Metric (plan §9) | Available today? | How |
+|---|---|---|
+| per-endpoint p99 | **yes** | proxy access log; Caddy's JSON format carries `duration` and `uri` |
+| 429 rate, per endpoint | **yes** | proxy access log status codes |
+| node connection health | **yes** | `/health` status + `chain_height` advancing |
+| payout retry depth | **partly** | count `payout for task … failed, will retry` and `sweep: retried and paid out task` in the journal — both `warn`, so they stand out, but it is a log count, not a gauge |
+| faucet burn rate | **no** | a successful grant is not logged at all (only a persist *failure* is). Derivable by counting `faucet_grants` in the store, not by watching |
+| sweep-loop lag | **no** | the 60s loop logs its actions, never its own timing |
+| board lock contention | **no** | nothing instruments the `RwLock` |
+| exchange solvency | **no** | no endpoint aggregates liabilities; `/exchange/account/:pubkey` is per-key |
+| challenge solve-rate | **n/a** | the faucet PoW does not exist yet (plan §5) |
+
+The four gaps are the ones that tell you the hub is in trouble *before* users
+do, so they are worth instrumenting before launch rather than after. Exchange
+solvency especially: the custody address's on-chain balance should always be at
+least the sum of every account's `base_balance`, and nothing checks it.
+
+Until then, p99 and the 429 rate from the proxy log are the working signals. A
+usable p99 from Caddy's JSON log:
+
+```bash
+jq -r 'select(.request.uri) | "\(.request.uri) \(.duration)"' \
+    /var/log/caddy/itx-access.log \
+  | awk '{split($1,p,"?"); print p[1], $2}' \
+  | sort -k1,1 -k2,2g \
+  | awk '{a[$1]=a[$1]" "$2} END {for (u in a) {n=split(a[u],v," "); print u, v[int(n*0.99)+0==0?1:int(n*0.99)]}}'
+```
+
+Alert on the **429 rate going to ~100% across all clients at once**. That is not
+an attack; that is §4.3's failure 1 — `--trusted-proxies` unset or wrong, every
+agent sharing the proxy's bucket. It is the one alert that catches a silent
+misconfiguration nothing else reports.
+
+### 8.4 Logs
+
+All three services log to the journal via systemd, at `RUST_LOG=info`.
+
+```bash
+journalctl -u itx-hub -f
+journalctl -u itx-hub --since '1 hour ago' -p warning   # retries and bans
+```
+
+Two habits worth having:
+
+- **Keep the hub's startup banner.** It is the only record of which addresses
+  and which trusted proxies a given run used, and §7.4's drill compares against
+  it. `journalctl -u itx-hub -b --no-pager | head -30` after every deploy, into
+  the runbook's log.
+- **Watch for log injection.** Task descriptions and submissions are untrusted
+  agent-authored text (plan §3.5, §3.6) and some of it reaches log lines. Do not
+  build alerting that parses log *content* as though it were trustworthy, and
+  prefer the journal's structured fields to grepping free text where you can.

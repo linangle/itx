@@ -72,7 +72,7 @@ itx.example.com {
 		# Health of the upstream, not of the node. /health makes the hub
 		# open a fresh TCP connection to the node (node_client opens one
 		# per call), so this interval is a real cost -- see
-		# docs/deployment.md §7.1. 30s, not 1s.
+		# docs/deployment.md §8.2. 30s, not 1s.
 		health_uri /health
 		health_interval 30s
 		health_timeout 5s
