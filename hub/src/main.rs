@@ -87,6 +87,10 @@ pub struct AppState {
     /// `rate_limit::RateLimitTable`'s own doc comment for why this can't
     /// be a global static.
     pub rate_limits: rate_limit::RateLimitTable,
+    /// Which peers' `X-Forwarded-For` header the rate limiter believes
+    /// (`--trusted-proxies`). Deliberately empty unless configured: see
+    /// `rate_limit::TrustedProxies`.
+    pub trusted_proxies: rate_limit::TrustedProxies,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -178,6 +182,15 @@ struct Args {
     /// (generated on first run if missing). Back this up: without it, any
     /// escrow address already handed out becomes unsweepable.
     escrow_secret_file: String,
+    #[argh(option, default = "String::new()")]
+    /// comma-separated addresses of the reverse proxies in front of this
+    /// hub, whose `X-Forwarded-For` header the rate limiter should
+    /// believe. Empty (the default) trusts nothing and always charges the
+    /// direct peer. Set this to the proxy's address when deploying behind
+    /// one, and to nothing at all when not -- see
+    /// `rate_limit::TrustedProxies` for why an un-proxied hub that
+    /// honoured the header would have no working rate limit.
+    trusted_proxies: String,
 }
 
 fn load_or_create_key(path: &str) -> Result<PrivateKey> {
@@ -378,6 +391,8 @@ async fn main() -> Result<()> {
 
     let args: Args = argh::from_env();
     let node_addresses: Vec<String> = args.node_addresses.split(',').map(|s| s.trim().to_string()).collect();
+    let trusted_proxies = rate_limit::parse_trusted_proxies(&args.trusted_proxies)
+        .map_err(|e| anyhow::anyhow!("--trusted-proxies is not a list of IP addresses: {e}"))?;
 
     let operator_private_key = load_or_create_key(&args.operator_key_file)?;
     let operator_public_key = operator_private_key.public_key();
@@ -395,6 +410,13 @@ async fn main() -> Result<()> {
          escrow address already handed out becomes unsweepable:",
         args.escrow_secret_file
     );
+    if trusted_proxies.is_empty() {
+        println!("trusting no proxy: rate limiting charges the direct peer and ignores X-Forwarded-For");
+    } else {
+        let mut listed: Vec<String> = trusted_proxies.iter().map(|ip| ip.to_string()).collect();
+        listed.sort();
+        println!("trusting X-Forwarded-For only from: {}", listed.join(", "));
+    }
     println!("================================================================");
 
     let store = HubStore::open_or_create(&args.store_file)?;
@@ -471,6 +493,7 @@ async fn main() -> Result<()> {
         exchange_custody_payout_lock: Mutex::new(()),
         escrow_secret,
         rate_limits: rate_limit::new_table(),
+        trusted_proxies,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
     });
@@ -761,6 +784,19 @@ mod tests {
     }
 
     async fn spawn_hub(operator_private_key: PrivateKey, node_address: String) -> TestHub {
+        spawn_hub_with_trusted_proxies(operator_private_key, node_address, rate_limit::TrustedProxies::new()).await
+    }
+
+    /// `spawn_hub`, but with the rate limiter told to believe some peer's
+    /// `X-Forwarded-For`. Every test hub connects over the loopback, so a
+    /// test that wants to exercise the proxied path trusts `127.0.0.1`;
+    /// the default (`spawn_hub`) trusts nothing, which is also the
+    /// deployed default.
+    async fn spawn_hub_with_trusted_proxies(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        trusted_proxies: rate_limit::TrustedProxies,
+    ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
         let store = HubStore::open_or_create(&store_path).unwrap();
@@ -778,6 +814,7 @@ mod tests {
             exchange_custody_payout_lock: Mutex::new(()),
             escrow_secret: EscrowSecret::generate(),
             rate_limits: rate_limit::new_table(),
+            trusted_proxies,
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
         });
@@ -1173,6 +1210,92 @@ mod tests {
 
         let status = hub.client.get(format!("{}/llms.txt", hub.base_url)).send().await.unwrap().status();
         assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS, "one past the limit must be rejected");
+    }
+
+    /// The bypass this closes: before trusted-proxy handling, one header
+    /// was enough to leave the rate limiter behind entirely, because
+    /// `X-Forwarded-For` was believed from any peer. Drives a real HTTP
+    /// server so the assertion covers the deployed default (trust
+    /// nothing), not just `client_ip` in isolation.
+    #[tokio::test]
+    async fn a_spoofed_forwarded_for_cannot_escape_the_limit_on_an_unproxied_hub() {
+        let operator_key = PrivateKey::new_key();
+        let hub = spawn_hub(operator_key, dead_address().await).await;
+
+        // A fresh, distinct claimed address on every request -- the exact
+        // shape of the evasion, and previously an unlimited number of
+        // requests.
+        for i in 0..rate_limit::MAX_REQUESTS_PER_WINDOW {
+            let status = hub
+                .client
+                .get(format!("{}/llms.txt", hub.base_url))
+                .header("x-forwarded-for", format!("203.0.113.{}", i % 256))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, reqwest::StatusCode::OK, "request within the limit must succeed");
+        }
+
+        let status = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.255")
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "an untrusted peer's X-Forwarded-For must not move it out of its own bucket"
+        );
+    }
+
+    /// The other half: once a proxy is configured, its header is what
+    /// keeps the limiter pointed at real clients rather than uniformly
+    /// limiting the proxy itself on everyone's behalf.
+    #[tokio::test]
+    async fn a_trusted_proxys_forwarded_for_separates_clients_behind_it() {
+        let operator_key = PrivateKey::new_key();
+        let trusted = rate_limit::parse_trusted_proxies("127.0.0.1").unwrap();
+        let hub = spawn_hub_with_trusted_proxies(operator_key, dead_address().await, trusted).await;
+
+        for _ in 0..rate_limit::MAX_REQUESTS_PER_WINDOW {
+            let status = hub
+                .client
+                .get(format!("{}/llms.txt", hub.base_url))
+                .header("x-forwarded-for", "203.0.113.9")
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, reqwest::StatusCode::OK);
+        }
+
+        let exhausted = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.9")
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(exhausted, reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+        let neighbour = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.10")
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            neighbour,
+            reqwest::StatusCode::OK,
+            "a second client behind the same proxy must not inherit the first's exhausted bucket"
+        );
     }
 
     /// The dashboard polls the full task list on a timer, and that JSON
