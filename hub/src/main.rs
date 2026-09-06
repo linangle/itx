@@ -4,6 +4,7 @@ mod auth;
 mod board;
 mod escrow_key;
 mod handlers;
+mod metrics;
 mod names;
 mod node_client;
 mod rate_limit;
@@ -11,7 +12,9 @@ mod store;
 
 use anyhow::Result;
 use argh::FromArgs;
+use axum::extract::State;
 use axum::http::{HeaderName, Method};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use board::{PendingDeposit, Reputation, Task, TaskBoard, TaskStatus};
@@ -21,7 +24,9 @@ use btclib::util::Saveable;
 use names::NameRegistry;
 use node_client::NodeClient;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 use store::HubStore;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
@@ -114,6 +119,15 @@ pub struct AppState {
     /// `handlers::net_worth_snapshot` for why the field is priced in one
     /// pass rather than a page at a time.
     pub net_worths: RwLock<Option<(std::time::Instant, std::collections::HashMap<String, u64>)>>,
+    /// Everything the hub counts about itself, rendered at `/metrics`.
+    ///
+    /// An `Arc` rather than a plain field because two of its writers --
+    /// the replay guard and the node client -- are built before this
+    /// struct exists and hold their own handles to the same table. Same
+    /// instance-scoping reasoning as `rate_limits`: a process-wide static
+    /// would have every hub in the test suite reporting into one another's
+    /// numbers.
+    pub metrics: Arc<metrics::Metrics>,
 }
 
 impl AppState {
@@ -254,11 +268,62 @@ fn restrict_to_owner(path: &str) -> Result<()> {
 /// stuck `Verified` by an earlier failed payout attempt, and sweeps the
 /// auth replay guard. Runs for the lifetime of the process.
 async fn sweep_loop(state: Arc<AppState>) {
-    let mut ticker = interval(Duration::from_secs(60));
+    let mut ticker = interval(Duration::from_secs(SWEEP_INTERVAL_SECONDS));
+    // Lag is measured between consecutive pass *starts* rather than
+    // against tokio's own tick schedule, because `interval` fires
+    // immediately when it is behind: by the time we are woken, the
+    // lateness we want to report has already been absorbed. The gap
+    // between starts, minus the interval, is the same number and is one
+    // the loop can actually see. `None` on the first pass because there
+    // is no previous start to measure against, and reporting the process
+    // uptime as lag would page on every boot.
+    let mut previous_start: Option<Instant> = None;
     loop {
         ticker.tick().await;
+        let started = Instant::now();
+        if let Some(previous) = previous_start {
+            let lag = started
+                .duration_since(previous)
+                .saturating_sub(Duration::from_secs(SWEEP_INTERVAL_SECONDS));
+            let lag_ms = lag.as_millis() as u64;
+            state.metrics.sweep_last_lag_ms.store(lag_ms, Ordering::Relaxed);
+            state.metrics.sweep_max_lag_ms.fetch_max(lag_ms, Ordering::Relaxed);
+        }
+        previous_start = Some(started);
+
         run_sweep_once(&state, chrono::Utc::now()).await;
+
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        state.metrics.sweep_last_duration_ms.store(elapsed_ms, Ordering::Relaxed);
+        state.metrics.sweep_duration_ms_total.fetch_add(elapsed_ms, Ordering::Relaxed);
+        state.metrics.sweep_passes.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// How often the sweep runs. Named rather than inline now that the lag
+/// calculation needs the same number the ticker was built from -- two
+/// copies of it would make the lag silently wrong the day someone retunes
+/// the interval.
+const SWEEP_INTERVAL_SECONDS: u64 = 60;
+
+/// Takes the board's write lock, charging the wait to the sweep's
+/// contention counter.
+///
+/// The sweep is the hub's only routine *writer*, so it is the one caller
+/// that has to wait for every reader to drain -- which makes its wait the
+/// most informative single sample of board contention available without
+/// instrumenting every handler (deferred by plan §10.1). A rising number
+/// here means readers are holding the board long enough to starve the
+/// writer, which is the shape worth alerting on; it does not, and cannot,
+/// report contention between two readers.
+async fn board_write_timed(state: &AppState) -> tokio::sync::RwLockWriteGuard<'_, TaskBoard> {
+    let queued_at = Instant::now();
+    let guard = state.board.write().await;
+    state
+        .metrics
+        .sweep_board_lock_wait_ms_total
+        .fetch_add(queued_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+    guard
 }
 
 /// One sweep pass, pulled out of `sweep_loop` so tests can drive it
@@ -287,7 +352,7 @@ const PAYOUT_RESOLUTION_GRACE_SECONDS: i64 = 30;
 
 async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc>) {
     let reopened = {
-        let mut board = state.board.write().await;
+        let mut board = board_write_timed(state).await;
         board.expire_claims(now)
     };
     for task_id in reopened {
@@ -295,7 +360,7 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
     }
 
     let cancelled = {
-        let mut board = state.board.write().await;
+        let mut board = board_write_timed(state).await;
         board.cancel_understaffed_consensus_tasks(now)
     };
     for task_id in cancelled {
@@ -308,7 +373,7 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
     }
 
     let resolved = {
-        let mut board = state.board.write().await;
+        let mut board = board_write_timed(state).await;
         board.resolve_expired_consensus_tasks(now)
     };
     for task_id in resolved {
@@ -346,7 +411,7 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
     }
 
     let finalized = {
-        let mut board = state.board.write().await;
+        let mut board = board_write_timed(state).await;
         board.finalize_unchallenged_disputable_tasks(now)
     };
     for task_id in finalized {
@@ -423,6 +488,95 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
 
     state.replay_guard.cleanup(now);
     rate_limit::cleanup(&state.rate_limits);
+    sample_gauges(state).await;
+}
+
+/// Samples the numbers `/metrics` cannot compute for itself.
+///
+/// Everything here needs either the board lock or the node, and a scrape
+/// is allowed to touch neither (see `metrics`). Running it on the sweep's
+/// cadence is what buys that: the cost lands once a minute on a task that
+/// was already going to take both, instead of once per scrape on a route
+/// anyone can call.
+///
+/// Runs last in the pass, deliberately. Sampling before the sweep's own
+/// work would report the board as the previous minute left it, so an
+/// operator watching `hub_board_outstanding_payouts` fall would be
+/// watching it a minute late -- and that gauge exists precisely to answer
+/// "is the sweep making progress right now".
+///
+/// Failures are counted, never propagated. A sweep that cannot reach the
+/// node still has claims to expire and payouts to resolve, and the
+/// failure counters plus a rising observation age say more about a
+/// missing node than an aborted pass would.
+async fn sample_gauges(state: &Arc<AppState>) {
+    // One read lock for every board-derived number, released before any
+    // node call. Holding it across an `await` on the network would make
+    // the metrics sampler itself a source of the contention it is here to
+    // measure -- and against the node, that await is unbounded.
+    let (grants, open_tasks, outstanding_payouts, liabilities) = {
+        let board = state.board.read().await;
+        let liabilities: u64 = board
+            .all_exchange_accounts()
+            // `locked_base` is included because a balance locked behind a
+            // resting order is still money owed to the depositor: they can
+            // cancel the order and withdraw it. Counting only the free
+            // half would report a hub as solvent precisely when its order
+            // book is busiest, which is when it least deserves the
+            // benefit of the doubt. Saturating, because a solvency figure
+            // that wraps on overflow is worse than one that saturates.
+            .map(|(_, account)| account.base_balance.saturating_add(account.locked_base))
+            .fold(0u64, |total, owed| total.saturating_add(owed));
+        (
+            board.all_faucet_grants().count() as u64,
+            board
+                .all_tasks()
+                .filter(|task| !matches!(task.status, TaskStatus::Paid | TaskStatus::Closed))
+                .count() as u64,
+            board.outstanding_payout_attempts().len() as u64,
+            liabilities,
+        )
+    };
+    state.metrics.faucet_grants.store(grants, Ordering::Relaxed);
+    state.metrics.board_open_tasks.store(open_tasks, Ordering::Relaxed);
+    state.metrics.board_outstanding_payouts.store(outstanding_payouts, Ordering::Relaxed);
+    state.metrics.exchange_liabilities.store(liabilities, Ordering::Relaxed);
+
+    match state.node.chain_tip().await {
+        Ok(height) => {
+            state.metrics.chain_height.store(height as u64, Ordering::Relaxed);
+            // Stamped only on success, which is what makes the age
+            // meaningful: a hub that has lost its node keeps reporting the
+            // last height it knew, and the age is the only thing that says
+            // the number is stale.
+            state
+                .metrics
+                .chain_observed_at_unix
+                .store(chrono::Utc::now().timestamp().max(0) as u64, Ordering::Relaxed);
+        }
+        Err(e) => {
+            state.metrics.chain_observation_failures.fetch_add(1, Ordering::Relaxed);
+            debug!("sweep: could not read the chain tip for metrics: {e}");
+        }
+    }
+
+    // Solvency gets its own node call rather than being derived from
+    // anything already fetched, because it is the one number where being
+    // wrong is a financial statement rather than an operational one: the
+    // custody address's on-chain balance should always be at least
+    // `hub_exchange_liabilities`, and nothing else in the hub checks it
+    // (`docs/deployment.md` §8.3). It is computed here rather than per
+    // scrape for the same reason as the chain tip -- and unlike the chain
+    // tip, per-scrape would be actively dangerous, since it would let an
+    // unauthenticated caller drive balance lookups against the pool that
+    // real withdrawals queue on.
+    match state.node.balance(&state.exchange_custody_public_key).await {
+        Ok(balance) => state.metrics.exchange_custody_balance.store(balance, Ordering::Relaxed),
+        Err(e) => {
+            state.metrics.exchange_solvency_check_failures.fetch_add(1, Ordering::Relaxed);
+            debug!("sweep: could not read the custody balance for metrics: {e}");
+        }
+    }
 }
 
 /// Fetches `task_id` and persists it, logging (rather than failing) on
@@ -559,6 +713,11 @@ async fn main() -> Result<()> {
     // A hub that cannot read its own replay log still comes up -- just
     // not with a hole in it. The fallback costs two minutes of refused
     // writes and is loud about why.
+    // Built before the guard and the node client, because both of them
+    // hold their own handle to it and must report into the same table the
+    // router will later render.
+    let metrics = metrics::Metrics::new();
+
     let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
         Ok((guard, restored)) => {
             println!("restored {restored} replay-guard signature(s) still inside the drift window");
@@ -573,12 +732,13 @@ async fn main() -> Result<()> {
             );
             auth::ReplayGuard::booting(chrono::Utc::now())
         }
-    };
+    }
+    .with_metrics(metrics.clone());
 
     let state = Arc::new(AppState {
         board: RwLock::new(board),
         store,
-        node: NodeClient::new(node_addresses),
+        node: NodeClient::new(node_addresses).with_metrics(metrics.clone()),
         operator_private_key,
         operator_public_key,
         payout_lock: Mutex::new(()),
@@ -591,6 +751,7 @@ async fn main() -> Result<()> {
         replay_guard,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
+        metrics,
     });
 
     tokio::spawn(sweep_loop(state.clone()));
@@ -653,6 +814,28 @@ async fn shutdown_signal() {
     }
 }
 
+/// Renders the hub's counters in Prometheus text format.
+///
+/// Reads atomics and one dashmap, and nothing else -- no board lock, no
+/// store transaction, no node round trip. That is a deliberate property
+/// rather than an accident of what happened to be easy: this endpoint is
+/// the cheapest thing to call on the hub, so anything expensive behind it
+/// would make it the most efficient amplifier on the box. The numbers
+/// that genuinely need the node or the board are sampled by the sweep and
+/// read here as plain integers, at the cost of being up to one sweep
+/// interval stale.
+///
+/// The content type is Prometheus's own `version=0.0.4`, which is what
+/// scrapers content-negotiate on; without it some clients fall back to
+/// treating the body as an untyped blob.
+async fn render_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let now_unix = chrono::Utc::now().timestamp().max(0) as u64;
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.render(now_unix),
+    )
+}
+
 /// Wires up every route against the given state. Pulled out of `main` so
 /// tests can stand up the exact same router against a real (ephemeral
 /// port) HTTP server, without duplicating the route list.
@@ -682,6 +865,12 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health))
+        // Lives here rather than in `handlers` on purpose: every other
+        // route in that module reaches the board, the store or the node,
+        // and this one must reach none of them (see `metrics`). Keeping
+        // it beside the router makes that separation visible, and keeps
+        // this pass out of a file another workstream is rewriting.
+        .route("/metrics", get(render_metrics))
         .route("/tasks", get(handlers::list_tasks).post(handlers::create_task))
         .route("/tasks/consensus", post(handlers::create_consensus_task))
         .route("/tasks/escrow", post(handlers::create_task_escrow))
@@ -1326,10 +1515,15 @@ mod tests {
         // in the suite goes through the durable write path too, not just
         // the tests that are about it.
         let replay_guard = auth::ReplayGuard::restore(store.clone(), Utc::now()).unwrap().0;
+        // The same table the guard and the node client report into, so a
+        // test can drive a request and then assert on the counter it
+        // moved -- wiring these separately would give three tables and a
+        // test that silently asserts on an empty one.
+        let metrics = metrics::Metrics::new();
         let state = Arc::new(AppState {
             board: RwLock::new(TaskBoard::new()),
             store,
-            node: NodeClient::new(vec![node_address]),
+            node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
             operator_public_key,
             payout_lock: Mutex::new(()),
@@ -1339,9 +1533,10 @@ mod tests {
             escrow_secret: EscrowSecret::generate(),
             rate_limits: rate_limit::new_table(),
             trusted_proxies,
-            replay_guard,
+            replay_guard: replay_guard.with_metrics(metrics.clone()),
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
+            metrics,
         });
 
         let app = build_router(state.clone());
@@ -1774,6 +1969,112 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "degraded");
+    }
+
+    /// The endpoint renders, and a counter actually tracks traffic --
+    /// the two halves of "is this thing plugged in", which a metrics
+    /// route can fail independently and silently. A scrape that renders
+    /// perfectly well while every number stays at zero is the failure
+    /// mode worth a test, because it looks healthy in exactly the way an
+    /// unmonitored hub does.
+    #[tokio::test]
+    async fn metrics_renders_and_a_driven_request_moves_its_counter() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 0).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        for _ in 0..3 {
+            let resp = hub.client.get(format!("{}/health", hub.base_url)).send().await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        }
+
+        let resp = hub.client.get(format!("{}/metrics", hub.base_url)).send().await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert!(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("text/plain")),
+            "a scraper content-negotiates on this; a JSON content type makes the body an untyped blob"
+        );
+        let body = resp.text().await.unwrap();
+
+        assert!(body.contains("# TYPE hub_sweep_passes_total counter"), "the exposition format needs its TYPE lines:\n{body}");
+        assert_eq!(
+            body.lines()
+                .find(|line| line.starts_with(r#"hub_http_requests_total{route="/health",method="GET",status="2xx"}"#)),
+            Some(r#"hub_http_requests_total{route="/health",method="GET",status="2xx"} 3"#),
+            "three health checks must show as three, not as zero or as one:\n{body}"
+        );
+        assert!(
+            body.contains(r#"hub_http_request_duration_seconds_count{route="/health",method="GET"} 3"#),
+            "the latency histogram must have seen the same three requests:\n{body}"
+        );
+        // The scrape itself is recorded *after* the body is rendered, so
+        // this first one cannot appear in its own output. Asserted rather
+        // than left implicit because the alternative -- a scrape that
+        // counted itself before rendering -- would make every series
+        // permanently one ahead of reality.
+        assert!(
+            !body.contains(r#"route="/metrics""#),
+            "a scrape must not appear in its own output:\n{body}"
+        );
+    }
+
+    /// The one property that makes it safe to leave this route
+    /// unauthenticated.
+    ///
+    /// `/metrics` is the cheapest call on the hub, so if rendering it
+    /// reached the chain it would be the most efficient amplifier on the
+    /// box -- one unauthenticated request turning into a TCP round trip
+    /// competing with real payouts for the connection pool. The numbers
+    /// that need the node are sampled by the sweep instead
+    /// (`sample_gauges`), and this is what holds the next person to that.
+    #[tokio::test]
+    async fn a_metrics_scrape_never_reaches_the_node() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 0).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        // A health check first, precisely because `/health` *does* reach
+        // the node: without it a broken FakeNode would make this test
+        // pass for the wrong reason.
+        hub.client.get(format!("{}/health", hub.base_url)).send().await.unwrap();
+        let after_health = fake_node.connections_accepted();
+        assert!(after_health > 0, "the control request must have reached the node");
+
+        for _ in 0..20 {
+            let resp = hub.client.get(format!("{}/metrics", hub.base_url)).send().await.unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        }
+
+        assert_eq!(
+            fake_node.connections_accepted(),
+            after_health,
+            "twenty scrapes opened a connection to the node; /metrics must be answerable from memory alone"
+        );
+    }
+
+    /// The other side of that bargain: the numbers a scrape refuses to
+    /// compute have to actually arrive, and the sweep is what delivers
+    /// them. Without this, "the endpoint never reaches the node" would be
+    /// satisfiable by never reporting the chain at all.
+    #[tokio::test]
+    async fn the_sweep_samples_the_gauges_a_scrape_will_not_compute() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 0).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        let before = hub.client.get(format!("{}/metrics", hub.base_url)).send().await.unwrap().text().await.unwrap();
+        assert!(before.contains("hub_chain_height 0"), "nothing is known before the first sweep:\n{before}");
+
+        run_sweep_once(&hub.state, Utc::now()).await;
+
+        let after = hub.client.get(format!("{}/metrics", hub.base_url)).send().await.unwrap().text().await.unwrap();
+        assert!(
+            after.contains(&format!("hub_chain_height {FAKE_NODE_CHAIN_HEIGHT}")),
+            "the sweep must have observed the chain tip on the hub's behalf:\n{after}"
+        );
     }
 
     /// A prior version of `llms_txt` documented only `hash_match`/
