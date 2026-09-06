@@ -48,11 +48,27 @@ const PAYOUTS: usize = 6;
 const BOUNTY: u64 = 1_000_000;
 const ANSWER: &str = "the answer is 42";
 
-/// One full sweep interval plus margin. The hub retries payouts for tasks
-/// stuck in `Verified`; the claim under test is that a task marked `Paid`
-/// is never revisited, so the drill has to actually wait one out rather
-/// than assert it from reading the code.
-const SWEEP_WAIT: Duration = Duration::from_secs(75);
+/// Long enough for the hub to finish recovering, which is four intervals
+/// rather than the one this drill originally needed.
+///
+/// It was 75 seconds -- one sweep plus margin -- which was right when a
+/// payout was never revisited and the only question was whether the sweep
+/// ignored `Paid` tasks. Payout confirmation (plan §6.5) made recovery a
+/// sequence rather than an event, and 75 seconds lands in the middle of it:
+/// the drill reported two of six million lost against a hub that went on to
+/// recover all six, which is a false finding in the direction that matters
+/// most.
+///
+/// The sequence it has to outlast, from `hub`: a payout is left alone for
+/// `PAYOUT_RESOLUTION_GRACE_SECONDS` (30) so a fresh send is not read as a
+/// loss, the sweep runs every 60, resolving it schedules a resend, and the
+/// resend needs its own grace and its own sweep before it can be confirmed.
+/// That is 30 + 60 twice, so 180 at best and more when a tick is missed.
+/// 260 covers it with margin and was measured: at 75 the verdict is
+/// CONFIRMED with 2,000,000 lost, at 260 it is REFUTED with none.
+///
+/// If the sweep cadence or the grace changes, this has to change with it.
+const SWEEP_WAIT: Duration = Duration::from_secs(260);
 
 pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Report> {
     // Distinct source addresses: this drill is about settlement, and
