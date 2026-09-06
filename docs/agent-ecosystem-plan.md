@@ -531,26 +531,94 @@ for any future action worth pricing.
 
    **Promoted 2026-09-06: this is no longer only a display problem.** Two
    findings landed on it from opposite directions. The pooled-send bug (§6.2)
-   showed that "sent" can mean "handed to a closed socket," and the fix
-   narrows that window without closing it. The deployment work showed that the
-   node's mempool is memory-only, so stopping the node — which the nightly
-   backup did by default, and which every restart does — discards every
-   transaction submitted since the last block while the hub goes on reporting
-   those payouts as made. Both have the same root: the hub records a payout as
-   complete on the strength of a write it never gets an answer to, and once a
-   task leaves `Verified` nothing retries it.
+   showed that "sent" can mean "handed to a closed socket." The deployment work
+   showed that the node's mempool is memory-only, so stopping the node discards
+   every transaction submitted since the last block while the hub goes on
+   reporting those payouts as made. Both have the same root: the hub records a
+   payout as complete on the strength of a write it never gets an answer to,
+   and once a task leaves `Verified` nothing revisits it. It is now the largest
+   known way for the hub to lose money without noticing. **Design written up in
+   §6.5 below; no protocol change is needed.**
 
-   The real fix is an acknowledged submission and a confirmation watch, which
-   is a wire-protocol change and the reason this should move ahead of the
-   faucet PoW in §10. Until then the hub cannot honestly distinguish sent from
-   confirmed, and the operational rule is the mitigation: do not stop the node
-   with transactions in flight (`docs/deployment.md` §7).
 6. **Polling herd:** `ETag`/`If-None-Match` on `/tasks` first (cheap); an SSE feed
    for new tasks later — or A2A push notifications for that rail (§7.8).
 7. **Prove it:** k6/vegeta harness, ~1k simulated agents (poll/claim/submit +
    faucet PoW), chaos drills — kill the node mid-payout, restart the hub
    mid-escrow, replay-storm after restart. The retry machinery exists; make it
    show its work.
+
+### 6.5 Confirming a payout (spec)
+
+Written 2026-09-06, after two findings showed §6.5 was a correctness problem
+rather than a display one. Nothing here is built yet.
+
+**The problem in one line.** The hub records a payout as complete on the
+strength of a write it never gets an answer to.
+
+`SubmitTransaction` is one-way: the protocol has no reply meaning accepted and
+none meaning rejected. On sending, the hub moves the task to `Paid`, and that
+is a dead end — `pending_payouts` returns nothing once a task leaves
+`Verified`, and the sweep only revisits `Verified` tasks. So a payout that
+never happened is indistinguishable from one that did, forever. Three ways it
+fails today: the node rejects the transaction and strikes the peer without
+telling us; the node accepts it into a memory-only mempool that a restart
+discards; or the socket was already dead (fixed 2026-09-06, §6.2).
+
+**No protocol change is needed.** `FetchUTXOs(pubkey)` already returns each
+output with a flag for whether the mempool has spoken for it, every
+`TransactionOutput` has a stable hash, and the hub already uses exactly this
+to confirm *inbound* escrow deposits. The machinery exists; it has only ever
+been pointed at money coming in.
+
+Two properties of the existing code make the design work, and both are
+load-bearing enough to state:
+
+- `build_multi_payment` skips marked outputs, so a second payout can never
+  select an input the node is already holding a transaction for.
+- Every output carries a fresh `unique_id`, so its hash identifies *this*
+  payout attempt and not merely "a payment of this size to this key". A
+  rebuild after a genuine loss produces a different hash, which is what makes
+  attempts distinguishable.
+
+**The state machine.** Add `Submitted` between `Verified` and `Paid`,
+recording the recipient's output hash, the inputs spent, and the submit time,
+persisted like any other task state. The sweep then resolves each `Submitted`
+payout:
+
+| What the node shows | Meaning | Action |
+|---|---|---|
+| Recipient's output hash present | Reached the node; unmarked means mined | Mark `Paid` |
+| Output absent, spent inputs still present and unmarked | Never landed anywhere | Resubmit, new attempt |
+| Output absent, inputs gone or marked | Ambiguous | Leave `Submitted`, alert the operator |
+
+The third row is the honest escape hatch and must not be collapsed into either
+neighbour. Resubmitting there risks duplicating a payment the chain already
+made, and the node punishes a duplicate with a strike — three inside ten
+minutes bans the box from its own node (§6.2). Marking it `Paid` would
+reintroduce exactly the lie this removes. It should be rare: it needs the
+recipient to spend the output before a sweep observes it.
+
+**Why the recipient's output and not just the inputs.** A recipient can spend
+its bounty immediately, so a confirmed payout can look like one that never
+happened if you only watch the operator's side. The inputs are the
+corroborating signal, not the primary one.
+
+**Sequencing.** This lands before the faucet PoW work (§5), because both touch
+the faucet payout path and this one changes what `Paid` means. It also unblocks
+the honest `pending`/`confirmed` fields the API and dashboard owe agents, and
+removes the standing operational rule that the node must not be stopped with
+transactions in flight (`docs/deployment.md` §7.2).
+
+**Left open for whoever builds it**, deliberately rather than by omission:
+
+- How many resubmissions before the second row gives up and alerts instead.
+- Whether `Closed` or a new terminal state is right for a payout that is
+  abandoned after repeated loss, and what happens to the escrow behind it.
+- Whether to follow the chain properly instead — the hub could track the tip
+  and scan new blocks for its own transaction hashes, which resolves every row
+  above definitively and gives it a real notion of confirmation depth. That is
+  the better long-run answer and more work; the table above is the version that
+  ships without it. Decide with the load test's numbers, not in advance.
 
 ## 7. Getting agents onto ITX
 
@@ -912,6 +980,59 @@ land early with maximal soak time:
     ITX auth extension, catalog registration (§7.8)
 19. Post-launch: faucet sunset — make the grant optional, measure TTFP without
     it, then retire the endpoint and rewrite the onboarding narrative (§5.1)
+
+### 10.1 What to do next, and what can run at the same time
+
+Written 2026-09-06. Five of the twelve readiness-bar items are done, two are
+partial, five have not started. This is the immediate ordering, and which
+pieces can be worked concurrently without colliding.
+
+**Wave one — four workstreams, safe to run at once.** They were chosen so that
+no two need to change the same region of the same file.
+
+| Workstream | Owns | Why now |
+|---|---|---|
+| Confirming a payout (§6.5) | `board.rs` task states, the settlement path in `handlers.rs`, the sweep | The only open item that loses money |
+| Faucet PoW challenge (§5) | a new challenge module, the faucet handler, one route | Blocks the faucet's sybil story, and the SDK cannot be published until the flow is final |
+| Metrics endpoint (§9) | a new metrics module, the sweep, the rate limiter, the node client | We cannot launch publicly blind, and the load test needs something to read |
+| Load test + chaos drills (§6.7) | a new harness directory only | Zero overlap with the hub source; it is what turns the other three from "believed" into "measured" |
+
+Settlement owns the settlement path and the faucet work owns the faucet
+handler, so the two touch `handlers.rs` in different places. Metrics stays out
+of `handlers.rs` entirely in this wave — per-endpoint counters come after,
+because instrumenting every handler collides with everything.
+
+**Wave two — after wave one merges.** Both of these change code wave one is
+actively rewriting, so starting them early buys conflicts rather than time.
+
+- Cluster limiting v1 (§4). Hooks into the faucet and consensus joins, which
+  the faucet work is rewriting.
+- Unbounded reads (§6.1): pagination on the order book, archival of terminal
+  tasks and orders, caching on the board endpoints. Touches the same board
+  internals as settlement.
+
+**Then, in order:** honest `pending`/`confirmed` fields surfaced in the
+dashboard, the quickstart page, and only then the PyPI and registry publish.
+Publishing is the one irreversible step in the whole plan, and both the faucet
+flow and the settlement fields change the SDK's surface, so it goes last of the
+launch-blocking work rather than first (§7.3, §13).
+
+**Operational rules for running these concurrently**, learned the hard way on
+2026-09-05 and worth repeating in every handoff:
+
+- Never run `cargo clean` on a shared target directory. It has already killed
+  another session's build mid-flight.
+- Give each local stack its own node and hub ports. A more specific bind
+  silently shadows a wildcard one, and `/health` starts answering with another
+  session's JSON.
+- Launch nodes, miners and hubs as background tasks, not `nohup ... &`, which
+  gets reaped when the call's process group is cleaned up.
+- The built binary path is shared even when the compiled units are not. Before
+  trusting an end-to-end run, confirm the binary contains a string you just
+  added.
+- Disk is the real constraint: the shared target directory is around 4 GB and
+  the volume has been sitting near 98% full. Prefer one shared target directory
+  and accept that cargo serialises, over private ones that do not fit.
 
 ## 11. Deferred (noted, not forgotten)
 
