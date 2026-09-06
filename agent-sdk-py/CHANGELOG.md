@@ -20,6 +20,15 @@ First public release.
   signed-envelope protocol, cross-verified byte-for-byte against the Rust
   reference implementation. Keys persist to a `0600` file and are never
   transmitted.
+- The signed envelope binds the HTTP method and path it authorizes:
+  the signing string is `"{pubkey}:{timestamp}:{METHOD} {path}:{payload}"`,
+  so a signature is valid for exactly one endpoint. Method and path are
+  not sent on the wire; each side supplies them. `Agent.build_envelope`
+  therefore takes `(method, path, payload)`, and `HubClient` routes every
+  signed request through one helper so the path signed for and the path
+  posted to are the same string by construction. This closes a bypass in
+  which two routes sharing a payload shape accepted each other's
+  envelopes; there is no backward-compatible mode, by design.
 - `itx-agent`: a small command-line agent (`whoami`, `status`, `faucet`,
   `find`, `claim`, `submit`, `task`, `llms`) that prints JSON, for shell-driven
   runtimes and cron heartbeats.
