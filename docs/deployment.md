@@ -506,10 +506,12 @@ Notes that are not boilerplate:
   killed mid-handler dies with its envelope already spent and cannot be
   retried. `systemctl restart itx-hub` sends SIGTERM and the hub finishes what
   it is doing first; `kill -9` does not.
-- **Stopping the node is not free either, and it is much worse.** See §7.2:
-  the mempool is memory-only, so a node restart destroys every transaction
-  submitted since the last mined block — including payouts the hub has already
-  recorded as done.
+- **Stopping the node is not free either.** See §7.2: the mempool is
+  memory-only, so a node restart still discards every transaction submitted
+  since the last mined block. Since 2026-09-06 the hub detects and re-sends
+  the *task bounties* among them on its own (plan §6.5); faucet grants, escrow
+  disbursements and exchange withdrawals in that window are still lost
+  silently.
 
 ### Verifying a cold start
 
@@ -766,45 +768,51 @@ they are on the box (§6.5).
 this is a single-node deployment — so that file *is* the ledger. Losing it loses
 every balance the hub reports.
 
-> ### ⚠ Stopping the node destroys money in flight
+> ### ⚠ Stopping the node still costs, but no longer silently
 >
 > This applies to the backup, to `systemctl restart itx-node`, to a deploy, to
-> §9.0's containment lever, and to the box rebooting. It is the single most
-> expensive thing in this document and nothing warns you at the time.
+> §9.0's containment lever, and to the box rebooting.
 >
 > **The node's mempool is memory-only.** `btclib::store` defines exactly three
 > tables — `blocks`, `meta`, `bans` — and `node/src/util.rs`'s
 > `persist_chain_state` writes blocks and the active chain and nothing else. A
 > transaction that has been accepted but not yet mined exists in one process's
-> RAM and nowhere else.
+> RAM and nowhere else. Stopping the node still discards it. That has not
+> changed and cannot be changed from the hub's side.
 >
-> **The hub has already recorded those payouts as done.** `submit_transaction`
-> in `hub/src/node_client.rs` is fire-and-forget: success means the bytes were
-> sent. The 60s sweep in `hub/src/main.rs` only retries tasks still `Verified`,
-> and `board.rs`'s `pending_payouts` only answers while the task is `Verified`,
-> so once a task flips to `Paid` nothing will ever look at it again.
+> **What changed, 2026-09-06: the hub now notices.** A task bounty is no longer
+> marked `Paid` on a successful send. It goes to `Submitted`, and the sweep
+> asks the node what became of it — is the recipient's output on chain, or are
+> the inputs still sitting unspent? A payout the node lost is detected and
+> re-sent automatically, up to four submissions, and a payout that is genuinely
+> unresolvable stays `Submitted` and says so in the log rather than being
+> quietly called paid. See plan §6.5.
 >
-> Put together: **every bounty payout, faucet grant, escrow refund, dispute-bond
-> settlement, exchange withdrawal and custody sweep submitted since the last
-> mined block is destroyed**, while the task still reads `Paid` and the exchange
-> account stays debited. No log line, no alert, no retry. At a ~35s block
-> cadence that is up to 35 seconds of settlements per stop, every time.
+> **So a node stop no longer destroys bounty payouts.** It delays them by up to
+> a sweep interval plus the resolution grace, i.e. under two minutes, and the
+> hub recovers them without a human. The old instruction to audit `GET
+> /tasks?status=paid` by hand after every restart is withdrawn.
 >
-> **After any node stop or restart, check:**
+> **Three payment paths are still fire-and-forget** and a node stop does still
+> destroy those: **faucet grants, escrow disbursement** (refunds, dispute-bond
+> settlement, the exchange deposit sweep) **and exchange withdrawals**. They are
+> the same fix against a different status field and are listed as outstanding in
+> plan §6.5.
 >
-> 1. The chain height before and after — `curl -s localhost:9100/health` — and
->    whether a block was mined in the minute before you stopped.
-> 2. Tasks that went `Paid` in that window against the chain. There is no
->    endpoint for this; `GET /tasks?status=paid` plus the recipient's balance is
->    the manual version.
-> 3. Exchange withdrawals in the same window, the same way, against the custody
->    address.
-> 4. Anything that looks wrong is a manual re-send from the operator wallet.
->    There is no re-drive path in the hub.
+> **After any node stop or restart:**
 >
-> The real fix is for the hub to track confirmation instead of assuming it —
-> plan §2 item 10, "honest pending/confirmed states". Until then, treat a node
-> stop as a settlement outage, and take it deliberately.
+> 1. `curl -s localhost:9100/health` for chain height before and after.
+> 2. `GET /tasks?status=submitted` — payouts the hub is still waiting on. This
+>    list draining to empty over the next few minutes is the recovery working.
+>    A task sitting here for more than a few sweeps wants §9.10.
+> 3. `GET /tasks?status=payoutfailed` — payouts the hub proved it could not
+>    land and gave up on. These need you; see §9.10.
+> 4. Faucet grants, exchange withdrawals and escrow disbursements in the window,
+>    by hand, against the recipient's balance. There is still no re-drive path
+>    for these three.
+>
+> It is no longer the single most expensive thing in this document, and taking
+> the node down for a backup no longer costs bounty settlements.
 
 Both `.redb` files have a live writer, and copying one underneath a running
 process can capture a state that no single instant ever had: `cp` reads the file
@@ -844,7 +852,9 @@ The flags:
   the outage.
 - **`--stop-node`** — the old behaviour, for a planned maintenance backup where
   you have drained the hub and waited out a block. It prints the warning above
-  before it does anything. **Never put it in a cron line.**
+  before it does anything. Cheaper than it was — bounty payouts caught in it now
+  recover themselves — but the other three payment paths do not, so **still
+  never put it in a cron line.**
 
 There is no honest way to make the script wait for the mempool to drain instead:
 the node exposes no query for it (`FetchTemplate` would reveal it, but only to
@@ -1237,6 +1247,9 @@ moving that the hub did not send.
    confirms. Stopping the node discards the mempool (§7.2), which here is a
    feature: an attacker's submitted-but-unmined transactions go with it. Note
    that legitimate ones do too, so the §7.2 checklist still applies afterwards.
+   Bear in mind that the hub will re-send the legitimate bounty payouts among
+   them by itself once it is back up — which is right, but means "halted" is
+   not "nothing will move"; leave the hub down until you have finished §9.1.
 2. **Preserve evidence before touching anything.** Copy the journal
    (`journalctl -u itx-hub --since ... > /tmp/incident.log`), the proxy access
    log, and the `bans` state. Do not restart services to "see if it is still
@@ -1418,6 +1431,53 @@ Two things still to know:
   as much as here. Never "fix" it client-side by reusing the envelope — that is
   the attack the replay guard exists to stop.
 
+### 9.10 A payout is stuck, or the hub gave up on one
+
+Two different situations with the same shape: a worker earned a bounty and does
+not have it. Both are visible in `GET /tasks` (§10.3) and neither resolves
+itself.
+
+**`status: "Submitted"` for more than a few minutes.** The hub sent a payout and
+cannot work out what became of it: the recipient does not hold the output, and
+the inputs it would have spent are either gone or claimed by the node's mempool.
+It will not resend, deliberately — a duplicate risks paying the bounty twice and
+earns a peer strike (§9.2). Almost always benign and self-clearing (the worker
+spent the bounty before a sweep looked, or the node is sitting on the
+transaction), so check before acting:
+
+```bash
+# What the hub is waiting on, with how much of each bounty it has seen land
+curl -s localhost:9100/tasks?status=submitted | jq '.[] | {id, bounty, bounty_confirmed, bounty_pending, claimant}'
+
+# Did the money actually arrive? Ask the chain about the recipient
+itx-wallet balance --pubkey <claimant>   # or GET /reputation/<pubkey> for net_worth
+```
+
+If the recipient's balance shows the bounty, the payout landed and the hub
+simply missed the window; nothing to do but note it. Persistent cases across
+many tasks are the signal that the hub should follow the chain rather than poll
+it — plan §6.5 records this as the number that decides that.
+
+**`status: "PayoutFailed"`.** Not benign. The hub built and sent the payout four
+times and the node was shown, every time, not to have it. The money was never
+moved, no reputation was credited, and any escrow behind the task is untouched —
+deliberately, since refunding the poster would take the bounty from whoever did
+the work.
+
+1. **Find out why the node refused it**, because it will refuse the next one
+   too: `journalctl -u itx-node --since "1 hour ago" | grep -iE 'mempool|reject|strike'`.
+   The usual causes are a fee floor the hub's flat `HUB_TRANSACTION_FEE` no
+   longer clears, and the operator being out of spendable balance (§10.1).
+2. **Confirm the money really is where the hub says.** `curl -s
+   localhost:9100/tasks?status=payoutfailed | jq` gives `bounty_pending` per
+   task; check the recipient's balance against it before paying anything.
+3. **Pay it from the operator wallet by hand**, once. There is no re-drive
+   endpoint and the terminal state is deliberately not automatically
+   recoverable — an automatic exit would be a guess, which is the thing the
+   state exists to refuse.
+4. **Fix the cause before restarting the hub**, or the next payout takes the
+   same path.
+
 ---
 
 ## 10. Operational ceilings you will hit
@@ -1481,28 +1541,39 @@ actually meet it: backups must stop the hub to copy `hub.redb` consistently
 (§7.2), a restore must not open the file while the hub holds it (§9.7), and the
 drill works on a copy in a scratch directory for exactly that reason (§7.4).
 
-### 10.3 Settlement says "sent", not "confirmed"
+### 10.3 Settlement confirms itself, for bounties only
 
-`submit_transaction` is fire-and-forget with a 60s sweep retry, so a task marked
-paid means the transaction was *sent*, not that it confirmed (plan §6.5). The
-sweep loop retries stuck payouts, and its retries are the `warn!` lines §8.3
-counts as payout retry depth.
+Fixed 2026-09-06 for task bounties; still open for everything else. Read this
+with §7.2.
 
-**This is the ceiling that makes §7.2 so expensive**, and the two are worth
-reading together. The sweep only ever revisits tasks still `Verified`, and
-`pending_payouts` only answers while a task is `Verified`, so a task that
-reached `Paid` is never looked at again by anything. Combine that with a
-memory-only mempool and "sent" becomes "gone" the moment the node stops: the
-hub's record says the money moved, the chain never saw it, and no loop in the
-system will ever notice the difference. Everything §7.2 says about not stopping
-the node is downstream of this one design choice.
+`submit_transaction` is fire-and-forget: the wire protocol has no reply meaning
+accepted and none meaning rejected, so a successful send proves only that the
+bytes left the hub. **Task bounties no longer treat that as payment.** A
+verified task goes to `Submitted`, and the sweep resolves it against the node —
+the recipient's output present means it was mined; the output absent with every
+spent input still unspent and unmarked means it never landed, and it is re-sent;
+anything else is unresolvable and it waits. Four submissions is the cap, after
+which the task reaches `PayoutFailed` and stops. Plan §6.5 has the design.
 
-For operations this means: a rising count of `payout for task … failed, will
-retry` is the early signal that the node is unhealthy or the operator is out of
-spendable balance (§10.1) — often before `/health` notices. Honest
-pending/confirmed states in the API are a readiness-bar item (plan §2 item 10)
-and not yet implemented, so until then the log lines are the only place the
-distinction is visible at all.
+**Three payment paths still say "sent" and mean it:** faucet grants, escrow
+disbursement (refunds, dispute-bond settlement, the exchange deposit sweep) and
+exchange withdrawals. For these the old ceiling stands in full — the hub's
+record says the money moved, the chain may never have seen it, and nothing will
+ever notice.
+
+What to watch, all of it visible in the journal (§8.4):
+
+| Line | Means | Do |
+|---|---|---|
+| `payout for task … failed, will retry` | The hub could not build or send. Usually an unhealthy node or the operator out of spendable balance (§10.1) | Watch the rate; it often rises before `/health` notices |
+| `payout for task … never reached the chain (submission N of 4), resending` | The node did not get it, provably. Recovery working as designed | Nothing, unless N is climbing across many tasks |
+| `payout for task … is unresolved` | The ambiguous case. The hub cannot tell whether it landed | §9.10 |
+| `giving up on the payout of …` | Four proven losses. Money owed, nobody paid | §9.10, and treat as an incident |
+
+Two lists to check by hand rather than by log: `GET /tasks?status=submitted` is
+what the hub is still waiting on (should drain within a couple of minutes;
+anything older is stuck), and `GET /tasks?status=payoutfailed` is what it gave
+up on (should be empty).
 
 ---
 

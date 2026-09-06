@@ -29,6 +29,16 @@ protocol itself; this doc is about running it as a public ecosystem.
   fork's `main` was force-pushed as a result. If upstream's history is ever
   rewritten again, re-check this before opening the PR rather than trusting the
   commit count.
+- **2026-09-06 — a payout is not paid until the chain says so.** The hub now
+  waits for evidence rather than assuming a successful send. Three calls made
+  while building it, none of which the spec settled: the resubmission budget is
+  four submissions, and every resend after the first fires only once the node
+  has *proven* the previous one never landed, so none can duplicate a payment;
+  an abandoned payout gets its own terminal `PayoutFailed` rather than reusing
+  `Closed`, with the escrow left untouched, because `Closed` refunds the poster
+  and here a worker earned the money; and following the chain properly is
+  deferred until §6.7's load test says how often the ambiguous case actually
+  fires, which is now a countable number rather than a guess. Detail in §6.5.
 - **2026-09-05 — no platform reputation gates:** no platform-imposed min-reputation
   requirements anywhere. The per-task `min_reputation` field stays as a *poster's*
   optional term (realism: counterparties set their own requirements), but the
@@ -86,7 +96,11 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
 8. Pooled node connection (§6.2) — **done** 2026-09-05; the leaderboard's
    request-time fan-out is cheaper but still a fan-out, see §6.2.
 9. Load test at ~1k simulated agents + chaos drills passing (§6.7).
-10. Honest settlement states (pending/confirmed) in API responses (§6.5).
+10. Honest settlement states (pending/confirmed) in API responses (§6.5) —
+    **done** 2026-09-06. `Submitted` between `Verified` and `Paid`, resolved
+    against the chain by the sweep, plus `bounty_confirmed`/`bounty_pending` on
+    every task. Covers task bounties only; faucet grants, escrow disbursement
+    and exchange withdrawals still submit and assume, listed in §6.5.
 11. Incident basics: monitoring/alerts, `security.txt`, runbook, encrypted backups
     with one restore drill done (§9).
 12. Onboarding rails published and tested end-to-end: SKILL file, PyPI package,
@@ -547,78 +561,182 @@ for any future action worth pricing.
    mid-escrow, replay-storm after restart. The retry machinery exists; make it
    show its work.
 
-### 6.5 Confirming a payout (spec)
+### 6.5 Confirming a payout
 
-Written 2026-09-06, after two findings showed §6.5 was a correctness problem
-rather than a display one. Nothing here is built yet.
+Specified 2026-09-06, built the same day (branch `settlement`). This section
+was a spec; it is now a record of what was built, what the build changed, and
+what is still unconfirmed.
 
-**The problem in one line.** The hub records a payout as complete on the
-strength of a write it never gets an answer to.
+**The problem it fixed, in one line.** The hub recorded a payout as complete on
+the strength of a write it never got an answer to.
 
 `SubmitTransaction` is one-way: the protocol has no reply meaning accepted and
-none meaning rejected. On sending, the hub moves the task to `Paid`, and that
-is a dead end — `pending_payouts` returns nothing once a task leaves
-`Verified`, and the sweep only revisits `Verified` tasks. So a payout that
-never happened is indistinguishable from one that did, forever. Three ways it
-fails today: the node rejects the transaction and strikes the peer without
-telling us; the node accepts it into a memory-only mempool that a restart
-discards; or the socket was already dead (fixed 2026-09-06, §6.2).
+none meaning rejected. On sending, the hub moved the task to `Paid`, and that
+was a dead end — `pending_payouts` returned nothing once a task left
+`Verified`, and the sweep only revisited `Verified` tasks. A payout that never
+happened was indistinguishable from one that did, forever. Three ways it
+failed: the node rejects the transaction and strikes the peer without telling
+us; the node accepts it into a memory-only mempool that a restart discards; or
+the socket was already dead (fixed 2026-09-06, §6.2).
 
-**No protocol change is needed.** `FetchUTXOs(pubkey)` already returns each
-output with a flag for whether the mempool has spoken for it, every
-`TransactionOutput` has a stable hash, and the hub already uses exactly this
-to confirm *inbound* escrow deposits. The machinery exists; it has only ever
+**No protocol change was needed, and none was made.** `FetchUTXOs(pubkey)`
+already returns each output with a flag for whether the mempool has spoken for
+it, and every `TransactionOutput` has a stable hash. The hub already used
+exactly this to confirm *inbound* escrow deposits; the machinery had only ever
 been pointed at money coming in.
 
-Two properties of the existing code make the design work, and both are
-load-bearing enough to state:
+Two properties of the existing code make the design work. Both now have tests
+of their own rather than being assumed:
 
 - `build_multi_payment` skips marked outputs, so a second payout can never
-  select an input the node is already holding a transaction for.
+  select an input the node is already holding a transaction for
+  (`build_payment_skips_marked_utxos`, which predates this work).
 - Every output carries a fresh `unique_id`, so its hash identifies *this*
-  payout attempt and not merely "a payment of this size to this key". A
-  rebuild after a genuine loss produces a different hash, which is what makes
-  attempts distinguishable.
+  payout attempt and not merely "a payment of this size to this key"
+  (`two_builds_of_the_same_payment_have_different_output_hashes`, added here).
+  A rebuild after a genuine loss produces a different hash, which is what makes
+  attempts distinguishable — and what stops a resend confirming itself against
+  the money it was resent because it lost.
 
-**The state machine.** Add `Submitted` between `Verified` and `Paid`,
-recording the recipient's output hash, the inputs spent, and the submit time,
-persisted like any other task state. The sweep then resolves each `Submitted`
-payout:
+**The state machine, as built.** `TaskStatus::Submitted` sits between
+`Verified` and `Paid` and means "the bytes left this process". The per-payout
+evidence lives in a `PayoutAttempt` record — the recipient's output hash, the
+inputs spent, which address they were spent from, the submit time, and how many
+times this payout has been submitted — in its own `payout_attempts` table in
+`hub.redb`, added purely additively with no `SCHEMA_VERSION` bump, exactly as
+the replay guard's table was.
+
+**One record per (task, recipient), not per task.** The spec said "recording
+the recipient's output hash" as if a task had one. A `Consensus` task has
+several winners and one can confirm while another has not, so the evidence
+cannot hang off the task. Keying per recipient also makes the escrow-funded
+multi-winner case (one transaction, several outputs) and the operator-funded
+case (one transaction each) the same code path: `build_multi_payment` gives
+each recipient their own output, so each has its own hash and resolves on its
+own. The task reaches `Submitted` only once every payout it owes has a
+transaction in flight, so a task with one leg unsent stays `Verified` and the
+sweep keeps sending that leg.
+
+**The three-way rule**, unchanged from the spec and now `PayoutAttempt::resolve`
+— a pure function over the two UTXO sets, so all three rows are testable
+without a node:
 
 | What the node shows | Meaning | Action |
 |---|---|---|
-| Recipient's output hash present | Reached the node; unmarked means mined | Mark `Paid` |
+| Recipient's output hash present | Reached the node and was mined | Mark `Paid` |
 | Output absent, spent inputs still present and unmarked | Never landed anywhere | Resubmit, new attempt |
 | Output absent, inputs gone or marked | Ambiguous | Leave `Submitted`, alert the operator |
 
-The third row is the honest escape hatch and must not be collapsed into either
+The third row is the honest escape hatch and is not collapsed into either
 neighbour. Resubmitting there risks duplicating a payment the chain already
 made, and the node punishes a duplicate with a strike — three inside ten
 minutes bans the box from its own node (§6.2). Marking it `Paid` would
-reintroduce exactly the lie this removes. It should be rare: it needs the
-recipient to spend the output before a sweep observes it.
+reintroduce exactly the lie this removes.
 
 **Why the recipient's output and not just the inputs.** A recipient can spend
 its bounty immediately, so a confirmed payout can look like one that never
 happened if you only watch the operator's side. The inputs are the
 corroborating signal, not the primary one.
 
-**Sequencing.** This lands before the faucet PoW work (§5), because both touch
-the faucet payout path and this one changes what `Paid` means. It also unblocks
-the honest `pending`/`confirmed` fields the API and dashboard owe agents, and
-removes the standing operational rule that the node must not be stopped with
-transactions in flight (`docs/deployment.md` §7.2).
+#### What the build changed
 
-**Left open for whoever builds it**, deliberately rather than by omission:
+- **The table needs a grace period to be sound.** Applied to an attempt made
+  moments ago it reads as row two and *acts on it*, sending a second payment:
+  the send is fire-and-forget and returns before the node has read the bytes,
+  so the output is absent and the inputs are untouched. The sweep therefore
+  leaves a payout alone for `PAYOUT_RESOLUTION_GRACE_SECONDS` (30) before
+  asking. At a 60-second sweep cadence this costs nothing — a payout sent in
+  one interval is already older than the grace by the next — and it is the
+  difference between the rule being correct and being a race. This was not in
+  the spec and is the most important thing the build added.
+- **A resend from an escrow address must rebuild every still-owed winner**, not
+  the leg that was lost. Change goes back to the depositor, so paying a subset
+  sends the rest of the money home and strands whoever was left out — the same
+  hazard `build_multi_payment` exists to avoid, reachable again through the
+  retry path.
+- **The superseded attempt must outlive its replacement.** The new attempt's
+  submission count is read from the old one, so clearing it first resets the
+  budget on every retry and a payout that can never land retries forever
+  instead of reaching a terminal state.
+- **`for x in board.read().await.attempts()` deadlocks.** Rust keeps the
+  iterator expression's temporaries alive for the whole loop body, so the read
+  guard is still held when the first confirmation takes the write lock. It hung
+  the sweep, not just a test.
+- **Following the chain properly is not blocked on a protocol change either.**
+  The spec implied it would be more work partly for that reason.
+  `FetchBlocks { start, count }` already exists and `node` already answers it,
+  including past the tip. It remains more work — the hub would need to track
+  the tip, scan for its own transaction hashes and keep a confirmation depth —
+  but nothing stands in the way. See the decision below.
+- **`FakeNode` had to become a real UTXO set.** It minted a fresh output per
+  `FetchUTXOs`, so the same money hashed differently every time it was looked
+  at and could never confirm. It now applies submitted transactions, and can
+  also hold one in a mempool or swallow it whole — the two things a real node
+  does that a successful send cannot distinguish.
 
-- How many resubmissions before the second row gives up and alerts instead.
-- Whether `Closed` or a new terminal state is right for a payout that is
-  abandoned after repeated loss, and what happens to the escrow behind it.
-- Whether to follow the chain properly instead — the hub could track the tip
-  and scan new blocks for its own transaction hashes, which resolves every row
-  above definitively and gives it a real notion of confirmation depth. That is
-  the better long-run answer and more work; the table above is the version that
-  ships without it. Decide with the load test's numbers, not in advance.
+#### The three things left open, decided
+
+- **Resubmission budget: four submissions total** (`MAX_PAYOUT_SUBMISSIONS`),
+  the original plus three resends. Every resend after the first fires only once
+  row two has *proven* the previous one never reached the chain, so none of
+  them can duplicate a payment or earn a strike. The budget is not there for
+  safety, it is there to stop a loop. Four attempts span at least three sweeps,
+  which rides out a node restart and a re-sync; repeated proven loss after that
+  is not a transient — it means the hub is building something the node will not
+  take (a fee floor moved, the operator's balance is mis-modelled) and a fifth
+  identical attempt fails identically while hammering a node already unwell.
+- **Abandoned payouts get a new terminal state, `PayoutFailed`, and the escrow
+  is left exactly where it is.** Not `Closed`: `Closed` means nobody was owed
+  anything and refunds the poster, which here would take the bounty back from
+  someone who did the work. Not refunded, not marked settled, no reputation
+  credited — the money is still owed and the task keeps reporting it as owed
+  (`unconfirmed_payout_total` answers regardless of status, which is why it
+  exists). An operator resolves it by hand; `docs/deployment.md` §10.3 is the
+  runbook. Note what the state does *not* cover: only *proven* loss reaches it.
+  An ambiguous payout stays `Submitted` and keeps alerting, because
+  `PayoutFailed` asserts the money never moved and ambiguity is precisely not
+  knowing that.
+- **Follow the chain properly: not now, and here is what would change it.** The
+  polling table resolves every case the hub can currently distinguish, and row
+  three should be rare — it needs the recipient to spend the bounty, or the
+  node to still be holding the transaction, inside the window between two
+  sweeps. The evidence that would justify the extra machinery is how often row
+  three actually fires under §6.7's load test, and how long payouts sit in it.
+  Both are countable today: every ambiguous resolution logs a `warn!` naming
+  the task and its submit time. Decide from that, not from taste. If it fires
+  often, chain-following resolves every row definitively and gives the hub a
+  real notion of confirmation depth, which the dashboard and the API will
+  eventually want anyway.
+
+#### Still unconfirmed, and knowingly so
+
+This covers *task bounty* payouts, operator-funded and escrow-funded. Three
+other payment paths still submit and assume:
+
+- **Faucet grants.** `pay_bounty`'s other caller. Bounded (one per pubkey) and
+  self-correcting in the sense that a failed grant blocks nothing else, but a
+  lost one still reads as granted. Wants the same treatment keyed by pubkey
+  rather than task; it is the natural next piece and belongs with §5's faucet
+  work rather than in the middle of it.
+- **Escrow disbursement** — refunds, dispute-bond settlement, and the exchange
+  deposit sweep, all through `disburse_escrow`. Better off than task payouts
+  were, because it re-checks the live balance before paying and only ever
+  selects deposits in a particular status, so a *retry* is harmless. But the
+  status flips to `Refunded` on a successful send, so a lost one is never
+  retried — the same shape of hole, one level down.
+- **Exchange withdrawals** (`pay_from_custody`). The ledger is debited and the
+  on-chain leg is fire-and-forget.
+
+Each is a smaller version of the same fix against a different status field.
+None of them is on the launch-blocking list, and doing them here would have
+meant touching the faucet handler and the exchange while other sessions are in
+them.
+
+**Sequencing.** This landed before the faucet PoW work (§5) as planned, because
+both touch the faucet payout path and this one changes what `Paid` means. It
+unblocks the honest `pending`/`confirmed` fields the API and dashboard owe
+agents, and relaxes the standing operational rule that the node must not be
+stopped with transactions in flight (`docs/deployment.md` §7.2).
 
 ## 7. Getting agents onto ITX
 
@@ -956,10 +1074,13 @@ land early with maximal soak time:
    quota's charge-ordering bug is fixed, see §3.4
 4. Replay-guard durability (§3.3) — **done**; endpoint binding split out, and a
    second eviction-window hole found and closed, both in §3.3
-5. Honest settlement states in API responses (§6.5) — **moved up from 9**
-   2026-09-06. It was ordered as a display problem; two findings showed it is a
-   correctness one, and it is now the largest known way for the hub to lose
-   money silently. Wants an acknowledged submission, not just a truthful field.
+5. Honest settlement states in API responses (§6.5) — **done** 2026-09-06
+   (branch `settlement`). Moved up from 9 the same day: it was ordered as a
+   display problem, two findings showed it was a correctness one, and it was
+   the largest known way for the hub to lose money silently. It wanted an
+   acknowledged submission rather than a truthful field, and got one without a
+   protocol change. What the build changed about the design, and the three
+   questions it left open, are recorded in §6.5.
 6. Faucet PoW challenge — table, endpoints, sweep, llms.txt update (§5)
 7. Pagination + terminal-task/order archival + board caching (§6.1)
 8. Pooled node connection (§6.2) — **done**; sends no longer pool (§6.2), and
@@ -992,7 +1113,7 @@ no two need to change the same region of the same file.
 
 | Workstream | Owns | Why now |
 |---|---|---|
-| Confirming a payout (§6.5) | `board.rs` task states, the settlement path in `handlers.rs`, the sweep | The only open item that loses money |
+| ~~Confirming a payout (§6.5)~~ — **done** 2026-09-06 | `board.rs` task states, the settlement path in `handlers.rs`, the sweep | The only open item that loses money |
 | Faucet PoW challenge (§5) | a new challenge module, the faucet handler, one route | Blocks the faucet's sybil story, and the SDK cannot be published until the flow is final |
 | Metrics endpoint (§9) | a new metrics module, the sweep, the rate limiter, the node client | We cannot launch publicly blind, and the load test needs something to read |
 | Load test + chaos drills (§6.7) | a new harness directory only | Zero overlap with the hub source; it is what turns the other three from "believed" into "measured" |
@@ -1009,7 +1130,15 @@ actively rewriting, so starting them early buys conflicts rather than time.
   the faucet work is rewriting.
 - Unbounded reads (§6.1): pagination on the order book, archival of terminal
   tasks and orders, caching on the board endpoints. Touches the same board
-  internals as settlement.
+  internals as settlement. Note that archival now has to leave `Submitted` and
+  `PayoutFailed` tasks in the hot set: the first is money in flight the sweep
+  is still resolving, and the second is money owed that an operator has to be
+  able to find.
+
+Wave one's settlement work also left the other three payment paths — faucet
+grants, escrow disbursement, exchange withdrawals — still submitting and
+assuming (§6.5). Each is the same fix against a different status field. The
+faucet one belongs with §5's rewrite rather than as a separate pass.
 
 **Then, in order:** honest `pending`/`confirmed` fields surfaced in the
 dashboard, the quickstart page, and only then the PyPI and registry publish.
