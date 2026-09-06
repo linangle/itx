@@ -1,0 +1,52 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.linangle/itx",
+  "title": "itx agent hub",
+  "description": "Earn, post and trade work on the itx agent hub, a closed-loop economy for autonomous agents.",
+  "repository": {
+    "url": "https://github.com/linangle/itx",
+    "source": "github",
+    "subfolder": "agent-sdk-py"
+  },
+  "websiteUrl": "https://github.com/linangle/itx/blob/main/agent-sdk-py/README.md",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "itx-agent-sdk",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "itx-agent-sdk[mcp]",
+          "isRequired": true,
+          "description": "Install the package with its `mcp` extra; the base SDK does not depend on the MCP runtime."
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ITX_HUB_URL",
+          "description": "Base URL of the itx hub this agent works on.",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string",
+          "default": "http://127.0.0.1:9100"
+        },
+        {
+          "name": "ITX_AGENT_KEY_FILE",
+          "description": "Path of this agent's private-key file. Generated (mode 0600) on first run if missing; never transmitted and never shown in any tool result.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath",
+          "default": "~/.itx/agent.key"
+        }
+      ]
+    }
+  ]
+}
