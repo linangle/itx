@@ -3,6 +3,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use btclib::crypto::PublicKey;
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -60,6 +61,22 @@ pub enum Tier {
     Chain,
 }
 
+/// Signed requests one verified key may make per window, across every
+/// route and from wherever it connects.
+///
+/// This is the axis an IP limit cannot cover: keygen is free and a
+/// determined client can spread itself over many addresses (§4), at which
+/// point every per-IP bucket it touches looks idle. Charging the key as
+/// well means the identity carries a budget with it.
+///
+/// Deliberately *not* tiered by endpoint, unlike the per-IP buckets. The
+/// tiers exist because the middleware knows what a route costs before
+/// running it; this one exists to bound an identity's total write rate,
+/// and splitting it per tier would only hand an attacker the sum of the
+/// parts. Sixty a minute is one per second, far above what an honest
+/// agent does and far below what one needs to be a nuisance.
+pub const MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW: u32 = 60;
+
 impl Tier {
     const fn max_per_window(self) -> u32 {
         match self {
@@ -110,14 +127,53 @@ fn tier_for(method: &Method, path: &str) -> Tier {
 /// them.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Bucket {
+    /// A network source, bucketed per endpoint tier -- charged by the
+    /// middleware before a handler runs.
     Ip(IpAddr, Tier),
+    /// A verified identity, one bucket for every signed request it makes
+    /// -- charged by a handler once the envelope's signature checks out.
+    /// Keyed by the pubkey's string form, the same shape the board and
+    /// the net-worth cache already key agents by.
+    Pubkey(String),
 }
 
 impl Bucket {
     fn max_per_window(&self) -> u32 {
         match self {
             Bucket::Ip(_, tier) => tier.max_per_window(),
+            Bucket::Pubkey(_) => MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW,
         }
+    }
+}
+
+/// Returned when a verified key has spent its window's budget. Its own
+/// type rather than a bare `bool` so a handler can pass it straight out
+/// with `?` and get a 429 (see `ApiError`), the same status the per-IP
+/// middleware returns.
+#[derive(Debug, thiserror::Error)]
+#[error("per-key request quota exceeded, slow down")]
+pub struct QuotaExceeded;
+
+/// Charges `pubkey` for one signed request, after its signature has been
+/// verified.
+///
+/// After, not before, and that ordering is the whole subtlety. The
+/// pubkey on an unverified envelope is just a string the sender chose,
+/// so charging it early would let anyone burn a victim's quota by
+/// putting the victim's key on junk requests. Verification is what makes
+/// the claim real -- and it is also the expensive step this quota exists
+/// to bound, which is why the cheap checks come first inside
+/// `SignedEnvelope::verify_signature`: clock drift is rejected before
+/// the payload is ever hashed or a signature ever checked, and the body
+/// is size-capped by axum's extractor before that. What remains -- one
+/// ECDSA verify per request from a genuine key -- is bounded by the
+/// per-IP tier the middleware already charged.
+pub fn charge_pubkey(state: &crate::AppState, pubkey: &PublicKey) -> Result<(), QuotaExceeded> {
+    let bucket = Bucket::Pubkey(pubkey.to_string());
+    if check_and_record(&state.rate_limits, bucket, Utc::now()) {
+        Ok(())
+    } else {
+        Err(QuotaExceeded)
     }
 }
 
@@ -465,6 +521,47 @@ mod tests {
     }
 
     #[test]
+    fn a_key_is_limited_across_changing_addresses() {
+        let table = new_table();
+        let key = "some-pubkey".to_string();
+        let now = Utc::now();
+
+        // Every request from a different address, so no per-IP bucket
+        // ever fills -- the exact evasion the key axis exists to cover.
+        for i in 0..MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW {
+            let ip: IpAddr = format!("203.0.113.{}", i % 256).parse().unwrap();
+            assert!(check_and_record(&table, Bucket::Ip(ip, Tier::Write), now));
+            assert!(check_and_record(&table, Bucket::Pubkey(key.clone()), now));
+        }
+        assert!(
+            !check_and_record(&table, Bucket::Pubkey(key), now),
+            "the key's own budget must run out even though every address looked idle"
+        );
+    }
+
+    #[test]
+    fn one_keys_exhausted_quota_does_not_touch_another_key_or_its_own_address() {
+        let table = new_table();
+        let spender = "spender".to_string();
+        let now = Utc::now();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        for _ in 0..MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW {
+            assert!(check_and_record(&table, Bucket::Pubkey(spender.clone()), now));
+        }
+        assert!(!check_and_record(&table, Bucket::Pubkey(spender), now));
+
+        assert!(
+            check_and_record(&table, Bucket::Pubkey("neighbour".to_string()), now),
+            "another key behind the same address must not inherit an exhausted quota"
+        );
+        assert!(
+            check_and_record(&table, Bucket::Ip(ip, Tier::Write), now),
+            "the address's own tiered budget is a separate axis"
+        );
+    }
+
+    #[test]
     fn cleanup_evicts_only_lapsed_windows() {
         let table = new_table();
         let stale: IpAddr = "127.0.0.1".parse().unwrap();
@@ -472,10 +569,16 @@ mod tests {
         let now = Utc::now();
         check_and_record(&table, Bucket::Ip(stale, Tier::Read), now - Duration::seconds(WINDOW_SECONDS + 5));
         check_and_record(&table, Bucket::Ip(fresh, Tier::Read), now);
+        // Keys are swept on the same terms as addresses -- one table, one
+        // sweep, so neither axis can quietly grow forever.
+        check_and_record(&table, Bucket::Pubkey("stale-key".into()), now - Duration::seconds(WINDOW_SECONDS + 5));
+        check_and_record(&table, Bucket::Pubkey("fresh-key".into()), now);
 
         cleanup(&table);
 
         assert!(table.get(&Bucket::Ip(stale, Tier::Read)).is_none());
         assert!(table.get(&Bucket::Ip(fresh, Tier::Read)).is_some());
+        assert!(table.get(&Bucket::Pubkey("stale-key".into())).is_none());
+        assert!(table.get(&Bucket::Pubkey("fresh-key".into())).is_some());
     }
 }

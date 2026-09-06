@@ -1299,6 +1299,63 @@ mod tests {
         );
     }
 
+    /// The evasion the key axis exists to close: spread the same key over
+    /// enough addresses and every per-IP bucket it touches looks idle.
+    /// Driven through a trusted proxy so each request genuinely lands in
+    /// a fresh address bucket -- if the per-IP limit were what stopped
+    /// this, the test would never reach a 429 at all.
+    ///
+    /// `/tasks/:id/claim` on a task that does not exist is the cheapest
+    /// route that still verifies a signature: the envelope is checked
+    /// (and charged) before the board is consulted, so every request
+    /// under quota comes back 404 and the first one over comes back 429.
+    #[tokio::test]
+    async fn a_key_is_limited_across_addresses_even_when_no_address_is() {
+        let operator_key = PrivateKey::new_key();
+        let trusted = rate_limit::parse_trusted_proxies("127.0.0.1").unwrap();
+        let hub = spawn_hub_with_trusted_proxies(operator_key, dead_address().await, trusted).await;
+
+        let agent = PrivateKey::new_key();
+        let task_id = Uuid::new_v4();
+        let claim = |address: String| {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+                .header("x-forwarded-for", address)
+                .json(&envelope(&agent, handlers::ClaimPayload { task_id }))
+                .send()
+        };
+
+        for i in 0..rate_limit::MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW {
+            let status = claim(format!("203.0.113.{}", i % 256)).await.unwrap().status();
+            assert_eq!(
+                status,
+                reqwest::StatusCode::NOT_FOUND,
+                "within quota the request should reach the board and simply not find the task"
+            );
+        }
+
+        let status = claim("203.0.113.200".to_string()).await.unwrap().status();
+        assert_eq!(
+            status,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "the key's own budget must run out even though every address it used looked idle"
+        );
+
+        // A different key from the same (already-used) address is
+        // untouched -- the quota follows the identity, not the network.
+        let neighbour = PrivateKey::new_key();
+        let status = hub
+            .client
+            .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.1")
+            .json(&envelope(&neighbour, handlers::ClaimPayload { task_id }))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+    }
+
     /// The dashboard polls the full task list on a timer, and that JSON
     /// gzips well -- so the compression layer is load-bearing for the
     /// site's latency, not an optimization detail. reqwest here has no
