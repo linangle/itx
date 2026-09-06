@@ -221,7 +221,7 @@ comparable; rates per second are not.
 | `rate-limit-tiers` | Confirmed §3.4 | 120 reads / 59 writes served, others unaffected |
 | `quota-isolation` | Confirmed §3.4 | 60 served, 15 refused; bystander 10 of 10 |
 | `payout-ceiling` | Confirmed §6.4b | 31 payouts, 30 blocks, never 2 in one block |
-| `signed-write-cost` | **Refuted §6.3** | verify 0.2–0.3ms, durable claim 3.2–4.4ms |
+| `signed-write-cost` | **Refuted §6.3** | verify 0.18–0.27ms, durable claim 3.2–4.4ms |
 
 **`node-crash`.** Six bounties paid with the miner stopped so the pre-block
 window stayed open, then the node `SIGKILL`ed. The hub returned `paid: true`
@@ -272,13 +272,13 @@ condition has to be constructed first — see above — and a drill that skipped
 that would have found no ceiling at all.
 
 **`signed-write-cost`.** An unauthenticated read is 0.1ms. Verification, drift
-and the quota charge together are 0.2–0.3ms. The durable replay claim behind
-them is 3.2–4.4ms — fifteen to twenty times more. Plan §6 item 3 names
+and the quota charge together are 0.18–0.27ms. The durable replay claim behind
+them is 3.2–4.4ms — fifteen to twenty-two times more. Plan §6 item 3 names
 signature-verify CPU as the third thing to break; the verify is a rounding
 error next to the fsync it sits in front of.
 
-The spread across three runs is itself the evidence for *why*. The verify held
-at 0.20, 0.21 and 0.27ms; the claim behind it moved between 3.21 and 4.35ms,
+The spread across four runs is itself the evidence for *why*. The verify held
+between 0.18 and 0.27ms; the claim behind it moved between 3.21 and 4.35ms,
 and its worst run was the one that happened to overlap `cargo test
 --workspace`. A cost that is flat under CPU contention and moves under disk
 contention is a disk cost.

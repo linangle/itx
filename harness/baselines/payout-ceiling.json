@@ -1,9 +1,9 @@
 {
   "name": "drill: payout-ceiling",
-  "started_at": "2026-09-06T09:08:32.962061Z",
+  "started_at": "2026-09-06T10:08:53.606682Z",
   "environment": {
-    "commit": "e7e5f32d8d7b9a71899044b1a39e8da8681bd988",
-    "dirty": true,
+    "commit": "540b6dd389d2f00fc15d19cbbe89fce12327e4f0",
+    "dirty": false,
     "profile": "release",
     "host": "Darwin arm64",
     "cpus": 10,
@@ -19,8 +19,8 @@
       "plan_item": "§6.4b",
       "verdict": "confirmed",
       "facts": {
-        "attempts": 714,
-        "attempts_per_block": 23.8,
+        "attempts": 719,
+        "attempts_per_block": 23.97,
         "blocks_elapsed": 30,
         "busiest_single_block": 1,
         "payouts_by_height": {
@@ -58,27 +58,27 @@
         },
         "payouts_granted": 31,
         "payouts_per_block": 1.03,
-        "refused_for_balance": 683,
+        "refused_for_balance": 688,
         "single_output_value": 14999999000
       },
       "notes": [
         "The miner was moved off the operator and the operator's wallet collapsed to a single 14999999000-unit output before measuring, because a wallet holding one coinbase output per block does not have this ceiling at all.",
-        "31 payouts landed across 30 blocks (1.03 per block, busiest block 1) against 714 offered. The operator's change is unconfirmed until mined, so the wallet has nothing to select from until the next block arrives."
+        "31 payouts landed across 30 blocks (1.03 per block, busiest block 1) against 719 offered. The operator's change is unconfirmed until mined, so the wallet has nothing to select from until the next block arrives."
       ],
       "findings": [],
       "latency": [
         {
           "label": "POST /faucet",
-          "requests": 714,
-          "success_rate": 0.04341736694677871,
+          "requests": 719,
+          "success_rate": 0.043115438108484005,
           "by_status": {
             "200": 31,
-            "500": 683
+            "500": 688
           },
-          "p50_ms": 5.631291,
-          "p90_ms": 11.921291,
-          "p99_ms": 33.630624999999995,
-          "max_ms": 50.978458999999994,
+          "p50_ms": 5.391666,
+          "p90_ms": 7.285917,
+          "p99_ms": 18.406625,
+          "max_ms": 43.12,
           "per_second": null
         }
       ]

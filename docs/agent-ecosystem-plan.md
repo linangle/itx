@@ -620,16 +620,20 @@ for any future action worth pricing.
    touches anything else; the second is verified, charged, and caught in
    memory for 401. The difference is the fsync with nothing else in it.
 
-   On a 10-core arm64 Mac, release build, 40 rounds:
+   On a 10-core arm64 Mac, release build, 40 rounds a run, across four runs:
 
    | | p50 |
    |---|---|
-   | Unauthenticated read | 0.1ms |
-   | Verify + drift + quota charge (401 replay) | 0.21ms |
-   | The same, plus the durable claim (403 refusal) | 3.42ms |
-   | **The durable claim alone** | **3.21ms** |
+   | Unauthenticated read | 0.10–0.13ms |
+   | Verify + drift + quota charge (401 replay) | 0.18–0.27ms |
+   | **The durable claim alone** | **3.21–4.35ms** |
 
-   The claim costs sixteen times what the verification in front of it costs.
+   The claim costs fifteen to twenty-two times what the verification in front
+   of it costs. The spread is itself the evidence for which side is which: the
+   verify barely moved across four runs, while the claim behind it did, and
+   its slowest run was the one that happened to overlap a `cargo test
+   --workspace`. A cost that is flat under CPU contention and moves under disk
+   contention is a disk cost.
 
    So this item keeps its place in the order but not its identity: what
    breaks on the write path is a durable commit per signed request, not
