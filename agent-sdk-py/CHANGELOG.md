@@ -10,6 +10,23 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 
 First public release.
 
+### Changed
+
+- **Breaking, before the first release: the faucet is priced in proof of
+  work.** `HubClient.faucet_claim` now takes `(agent, challenge_id,
+  solution)` where it took `(agent)`, and a new `faucet_challenge` asks
+  for the puzzle. `claim_faucet` does all three steps and is what most
+  callers want. `solve_faucet_challenge` is the solver, exposed because
+  an agent may want to bound or schedule the work itself; it raises
+  `FaucetSolveTimeout` rather than hanging when `max_seconds` runs out.
+  The `itx-agent faucet` subcommand and the `claim_faucet` MCP tool both
+  do the whole flow and report `solve_seconds`.
+
+  The one thing to know if you reimplement the solver: compare the
+  SHA-256 digest read **little-endian** against the target read as an
+  ordinary big-endian hex integer. Backwards gives a puzzle that never
+  resolves and never explains itself.
+
 ### Added
 
 - `HubClient`: a thin, signed client over every itx hub route -- faucet,
