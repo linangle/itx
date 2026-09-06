@@ -9,7 +9,9 @@ use btclib::envelope::MAX_REQUEST_DRIFT_SECONDS;
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{de::DeserializeOwned, Serialize};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// How long a claimed signature has to be remembered for, counted from
 /// the moment this hub accepted it.
@@ -75,6 +77,11 @@ const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
 /// the restart hole; it does not lift the single-instance ceiling.
 pub struct ReplayGuard {
     seen: DashMap<Vec<u8>, DateTime<Utc>>,
+    /// Where this guard's counters go. Its own handle for the same reason
+    /// `NodeClient`'s is: the guard is constructed before `AppState`
+    /// exists, and defaults to a private table so an unwired guard still
+    /// functions. `with_metrics` joins it to the one `/metrics` renders.
+    metrics: Arc<crate::metrics::Metrics>,
     /// The durable twin of `seen`, or `None` for a guard that keeps no
     /// record across restarts and falls back to `accepting_from`.
     store: Option<Arc<HubStore>>,
@@ -107,7 +114,7 @@ impl ReplayGuard {
         }
         let restored = seen.len();
         Ok((
-            Self { seen, store: Some(store), accepting_from: None },
+            Self { seen, store: Some(store), accepting_from: None, metrics: crate::metrics::Metrics::new() },
             restored,
         ))
     }
@@ -130,6 +137,7 @@ impl ReplayGuard {
             seen: DashMap::new(),
             store: None,
             accepting_from: Some(started_at + Duration::seconds(REPLAY_MEMORY_SECONDS)),
+            metrics: crate::metrics::Metrics::new(),
         }
     }
 
@@ -140,7 +148,15 @@ impl ReplayGuard {
     /// absurd. `booting` and `restore` are covered directly in this
     /// module's tests instead.
     pub fn open() -> Self {
-        Self { seen: DashMap::new(), store: None, accepting_from: None }
+        Self { seen: DashMap::new(), store: None, accepting_from: None, metrics: crate::metrics::Metrics::new() }
+    }
+
+    /// Points this guard's counters at `metrics`. See
+    /// `NodeClient::with_metrics` for why this is a separate step rather
+    /// than a constructor argument.
+    pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Whether `now` is still inside this instance's restart window.
@@ -165,14 +181,33 @@ impl ReplayGuard {
     /// prevent, at the moment the hub has proven it cannot record one.
     fn claim(&self, signature: Vec<u8>, now: DateTime<Utc>) -> Result<(), AuthError> {
         if self.seen.insert(signature.clone(), now).is_some() {
+            self.metrics.replay_signatures_rejected.fetch_add(1, Ordering::Relaxed);
             return Err(AuthError::Replayed);
         }
         if let Some(store) = &self.store {
-            if let Err(e) = store.record_seen_signature(&signature, now.timestamp()) {
+            // Timed, because this fsync is what bounds the hub's whole
+            // write path: the load test measured it at fifteen to
+            // twenty-two times the ECDSA verify that precedes it
+            // (`docs/agent-ecosystem-plan.md` §6.3). A hub that has got
+            // slow is far more likely to have a slow disk than a busy
+            // CPU, and without this number nothing in the metrics would
+            // say so.
+            let started = Instant::now();
+            let outcome = store.record_seen_signature(&signature, now.timestamp());
+            self.metrics
+                .replay_durable_write_ms_total
+                .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+            if let Err(e) = outcome {
+                // Counted before the log line, and counted on the failure
+                // path first: each of these is a burned envelope and a
+                // request the client cannot retry, which makes it the one
+                // replay-guard number worth paging on.
+                self.metrics.replay_durable_write_failures.fetch_add(1, Ordering::Relaxed);
                 error!("replay guard could not record a signature durably: {e}");
                 return Err(AuthError::GuardUnavailable(e.to_string()));
             }
         }
+        self.metrics.replay_signatures_claimed.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -187,7 +222,17 @@ impl ReplayGuard {
     /// a tuning choice.
     pub fn cleanup(&self, now: DateTime<Utc>) {
         let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
+        // Measured as a difference rather than counted inside the retain
+        // closure: `DashMap::retain` gives no count back, and the
+        // before/after length is exact here because `cleanup` is only
+        // called from the sweep, which is the one caller that could race
+        // it. A concurrent claim would make this off by one, which is a
+        // price worth paying to keep the eviction rule one readable line.
+        let before = self.seen.len();
         cleanup_replay_guard(&self.seen, cutoff);
+        self.metrics
+            .replay_signatures_evicted
+            .fetch_add(before.saturating_sub(self.seen.len()) as u64, Ordering::Relaxed);
         if let Some(store) = &self.store {
             // Logged rather than propagated: a sweep that cannot prune
             // is a growing table, not an unsafe one, and the sweep loop

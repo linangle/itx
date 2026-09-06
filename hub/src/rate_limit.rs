@@ -8,6 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use std::collections::HashSet;
 use std::net::{AddrParseError, IpAddr, SocketAddr};
+use std::time::Instant;
 
 /// How often a client's request count resets.
 const WINDOW_SECONDS: i64 = 60;
@@ -38,6 +39,15 @@ pub enum Tier {
     /// Not unlimited, though: `health` asks the node for its chain tip,
     /// so every call is a real TCP round trip (see `handlers::health`).
     Health,
+    /// `GET /metrics`. Its own bucket for the same reason `Health` has
+    /// one, and it is the stronger case of the two: a 429 on a scrape is
+    /// not a slow graph, it is a gap in the series, and a monitor that
+    /// cannot read the hub reports the hub as down. Sharing the `Read`
+    /// bucket would mean the read flood you are trying to diagnose is
+    /// also what blinds you to it. Rendering a scrape touches only
+    /// atomics and never the node or the board (see `metrics`), so this
+    /// budget costs the hub nothing it needs to ration.
+    Metrics,
     /// Every other read. Served from the in-memory board, and left at
     /// the number that has always applied so no existing client changes
     /// behaviour. Two of these (`/leaderboard`, `/reputation/:pubkey`)
@@ -81,9 +91,30 @@ impl Tier {
     const fn max_per_window(self) -> u32 {
         match self {
             Tier::Health => 120,
+            // Two scrapers on a 5-second interval, with room to spare for
+            // an operator running `curl` while diagnosing something.
+            Tier::Metrics => 120,
             Tier::Read => MAX_REQUESTS_PER_WINDOW,
             Tier::Write => 60,
             Tier::Chain => 20,
+        }
+    }
+}
+
+impl Tier {
+    /// This tier's slot in `metrics::Metrics::rate_limited_by_tier`.
+    /// Written as a match rather than a `#[derive]`d discriminant so that
+    /// reordering the enum cannot silently start charging rejections to
+    /// the wrong label; `metrics::TIER_NAMES` is the other half of this
+    /// pairing and `tier_indices_match_their_metric_names` holds the two
+    /// together.
+    pub(crate) fn metric_index(self) -> usize {
+        match self {
+            Tier::Health => 0,
+            Tier::Metrics => 1,
+            Tier::Read => 2,
+            Tier::Write => 3,
+            Tier::Chain => 4,
         }
     }
 }
@@ -106,7 +137,11 @@ fn tier_for(method: &Method, path: &str) -> Tier {
     let segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
 
     if *method == Method::GET || *method == Method::HEAD {
-        return if segments.as_slice() == ["health"] { Tier::Health } else { Tier::Read };
+        return match segments.as_slice() {
+            ["health"] => Tier::Health,
+            ["metrics"] => Tier::Metrics,
+            _ => Tier::Read,
+        };
     }
 
     match segments.as_slice() {
@@ -173,6 +208,11 @@ pub fn charge_pubkey(state: &crate::AppState, pubkey: &PublicKey) -> Result<(), 
     if check_and_record(&state.rate_limits, bucket, Utc::now()) {
         Ok(())
     } else {
+        // Counted here rather than folded into the per-IP tier totals:
+        // the two controls answer different questions, and an operator
+        // seeing per-key rejections with flat per-IP ones is looking at
+        // one busy identity, not at a flood.
+        state.metrics.rate_limited_per_key_quota.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Err(QuotaExceeded)
     }
 }
@@ -286,12 +326,60 @@ pub async fn middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    let started = Instant::now();
     let ip = client_ip(&req, connect_addr, &state.trusted_proxies);
     let tier = tier_for(req.method(), req.uri().path());
+    // Resolved before the request is consumed by `next.run`, and resolved
+    // to a *template* rather than the path itself -- see
+    // `metrics::route_template` for why a raw path in a label is a memory
+    // leak with a monitoring endpoint in front of it.
+    let method = static_method_name(req.method());
+    let template = crate::metrics::route_template(req.uri().path());
+
     if !check_and_record(&state.rate_limits, Bucket::Ip(ip, tier), Utc::now()) {
+        state.metrics.rate_limited_by_tier[tier.metric_index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Recorded as a served request too, not just as a rejection. A
+        // 429 is a response the client waited for, and leaving it out of
+        // the histogram would make a hub that is rejecting everything
+        // look idle rather than overloaded.
+        state.metrics.observe_request(method, template, started.elapsed().as_secs_f64(), StatusCode::TOO_MANY_REQUESTS.as_u16());
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded, slow down").into_response();
     }
-    next.run(req).await
+
+    let response = next.run(req).await;
+    // This is the hub's only per-route timing, and it is deliberately
+    // here rather than in each handler. The middleware already wraps the
+    // whole router, so one edit covers every route and none of them has
+    // to be touched -- which is what lets per-endpoint latency land in
+    // the same pass as the rest of the metrics instead of waiting for
+    // the handler rewrite plan §10.1 defers. What it measures is the
+    // whole served request minus the outer compression layer, which is
+    // the number an operator actually wants: the `/leaderboard`
+    // pathology in §6.1 is visible in exactly this measurement.
+    state.metrics.observe_request(method, template, started.elapsed().as_secs_f64(), response.status().as_u16());
+    response
+}
+
+/// The method name as a `'static` string, so it can be a metric label
+/// without allocating one per request.
+///
+/// `Method::as_str` borrows from the request, and the per-route table is
+/// keyed by `&'static str` to keep the key cheap to hash and impossible
+/// to grow without bound. Anything outside the standard set collapses to
+/// one shared label rather than being rejected -- an exotic method is
+/// still a request that took time, and it is already going to 404 or 405
+/// on its own.
+fn static_method_name(method: &Method) -> &'static str {
+    match *method {
+        Method::GET => "GET",
+        Method::POST => "POST",
+        Method::HEAD => "HEAD",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        Method::PATCH => "PATCH",
+        Method::OPTIONS => "OPTIONS",
+        _ => "OTHER",
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +430,9 @@ mod tests {
         let post = Method::POST;
 
         assert_eq!(tier_for(&get, "/health"), Tier::Health);
+        // Monitoring's two routes each get their own budget, so neither a
+        // read flood nor the other one can make the hub look down.
+        assert_eq!(tier_for(&get, "/metrics"), Tier::Metrics);
         for read in ["/tasks", "/tasks/some-id", "/leaderboard", "/llms.txt", "/exchange/orders", "/board/summary"] {
             assert_eq!(tier_for(&get, read), Tier::Read, "{read} is a read");
         }
@@ -386,6 +477,42 @@ mod tests {
         );
         assert_eq!(tier_for(&Method::DELETE, "/tasks/some-id"), Tier::Write);
         assert_eq!(tier_for(&Method::GET, "/health/"), Tier::Health, "a trailing slash is the same route");
+    }
+
+    /// `Tier::metric_index` and `metrics::TIER_NAMES` are two halves of
+    /// one mapping kept in separate files, so nothing but a test stops
+    /// them drifting -- and drift here is silent, mislabelling one tier's
+    /// rejections as another's rather than failing.
+    #[test]
+    fn tier_indices_match_their_metric_names() {
+        use crate::metrics::TIER_NAMES;
+        for (tier, expected) in [
+            (Tier::Health, "health"),
+            (Tier::Metrics, "metrics"),
+            (Tier::Read, "read"),
+            (Tier::Write, "write"),
+            (Tier::Chain, "chain"),
+        ] {
+            assert_eq!(TIER_NAMES[tier.metric_index()], expected, "{tier:?} is mislabelled in the metrics output");
+        }
+    }
+
+    #[test]
+    fn a_metrics_scrape_is_not_charged_to_the_read_budget() {
+        let table = new_table();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let now = Utc::now();
+
+        // A client that has exhausted the ordinary read budget -- the
+        // exact situation in which an operator most needs to scrape.
+        for _ in 0..MAX_REQUESTS_PER_WINDOW {
+            assert!(check_and_record(&table, Bucket::Ip(ip, Tier::Read), now));
+        }
+        assert!(!check_and_record(&table, Bucket::Ip(ip, Tier::Read), now));
+        assert!(
+            check_and_record(&table, Bucket::Ip(ip, Tier::Metrics), now),
+            "a read flood must not 429 the scrape that would explain it"
+        );
     }
 
     #[test]

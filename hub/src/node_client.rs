@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use btclib::crypto::PublicKey;
 use btclib::network::Message;
 use btclib::types::{Transaction, TransactionOutput};
+use crate::metrics::Metrics;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -107,6 +110,15 @@ const MAX_POOLED_CONNECTIONS: usize = 8;
 pub struct NodeClient {
     addresses: Vec<String>,
     pool: Arc<Pool>,
+    /// Where this client's pool counters go.
+    ///
+    /// Its own handle rather than a reference back to `AppState`, because
+    /// a `NodeClient` is built before the state that will own it exists
+    /// (and several tests build one with no state at all). Defaults to a
+    /// private table nobody scrapes, so an uninstrumented client still
+    /// works and simply reports into the void -- `with_metrics` is what
+    /// joins it to the one `/metrics` renders.
+    metrics: Arc<Metrics>,
 }
 
 /// The idle connections, and the permit that bounds how many exist.
@@ -190,7 +202,18 @@ impl NodeClient {
         NodeClient {
             addresses,
             pool: Arc::new(Pool::new(size.max(1))),
+            metrics: Metrics::new(),
         }
+    }
+
+    /// Points this client's counters at `metrics`, which is how the pool
+    /// numbers reach `/metrics`. Consuming and returning `self` so the
+    /// wiring in `main` stays one expression, and so a client that is
+    /// never joined up is a visibly unfinished line rather than a silent
+    /// gap in the dashboard.
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Dials a node, preferring earlier addresses, and points the pool at
@@ -200,6 +223,7 @@ impl NodeClient {
         for address in &self.addresses {
             match Self::connect_one(address).await {
                 Ok(stream) => {
+                    self.metrics.node_connections_opened.fetch_add(1, Ordering::Relaxed);
                     self.pool.adopt(address).await;
                     return Ok((address.clone(), stream));
                 }
@@ -209,6 +233,11 @@ impl NodeClient {
                 }
             }
         }
+        // Counted only once every address has been tried, so the number
+        // means "the hub had no node" rather than "one address was
+        // down" -- with a failover list configured those are very
+        // different incidents and only the first is an outage.
+        self.metrics.node_connect_failures.fetch_add(1, Ordering::Relaxed);
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no node addresses configured")))
     }
 
@@ -228,21 +257,46 @@ impl NodeClient {
     /// The connection is held for the whole exchange and only returned to
     /// the pool once the reply has been read, which is what keeps two
     /// concurrent operations from interleaving their bytes on one socket.
-    async fn request(&self, message: &Message) -> Result<Message> {
-        let _permit = self
+    /// Takes a pool permit, distinguishing "one was free" from "we
+    /// queued for one".
+    ///
+    /// The distinction is the whole point. The pool is a fixed size, so
+    /// saturation does not show up as an error anywhere -- it shows up as
+    /// every node operation quietly getting slower while the hub waits
+    /// its turn. By the time that is visible in request latency it has
+    /// already been true for a while, and nothing in the logs says why.
+    /// `try_acquire` costs one atomic on the common path and turns that
+    /// into a counter you can alert on.
+    async fn acquire_permit(&self) -> tokio::sync::SemaphorePermit<'_> {
+        if let Ok(permit) = self.pool.permits.try_acquire() {
+            return permit;
+        }
+        self.metrics.node_pool_saturation_waits.fetch_add(1, Ordering::Relaxed);
+        let queued_at = Instant::now();
+        let permit = self
             .pool
             .permits
             .acquire()
             .await
             .expect("the node client's semaphore is never closed");
+        self.metrics
+            .node_pool_wait_ms_total
+            .fetch_add(queued_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+        permit
+    }
+
+    async fn request(&self, message: &Message) -> Result<Message> {
+        let _permit = self.acquire_permit().await;
 
         if let Some((address, mut stream)) = self.pool.take().await {
             match Self::exchange(&mut stream, message).await {
                 Ok(reply) => {
+                    self.metrics.node_connections_reused.fetch_add(1, Ordering::Relaxed);
                     self.pool.put(&address, stream).await;
                     return Ok(reply);
                 }
                 Err(e) => {
+                    self.metrics.node_connections_retried.fetch_add(1, Ordering::Relaxed);
                     // Dropping `stream` rather than returning it is the
                     // point: a failed exchange may have left an unread
                     // reply (or half of one) in the socket, and the next
@@ -286,12 +340,7 @@ impl NodeClient {
     /// and closes, that pooled socket is dead, and `request`'s retry is
     /// exactly the thing that handles it.
     async fn send(&self, message: &Message) -> Result<()> {
-        let _permit = self
-            .pool
-            .permits
-            .acquire()
-            .await
-            .expect("the node client's semaphore is never closed");
+        let _permit = self.acquire_permit().await;
 
         let (address, mut stream) = self.connect().await?;
         message.send_async(&mut stream).await?;

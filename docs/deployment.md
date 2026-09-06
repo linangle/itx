@@ -1113,30 +1113,103 @@ Alert on:
 
 ### 8.3 The metrics in plan §9, and which of them you can actually get
 
-Stated plainly, because the gap is large and discovering it during an incident
-is expensive: **the hub exposes no metrics endpoint.** There is no `/metrics`,
-no Prometheus dependency, no counters. Everything below is either derived from
-the proxy's access log or is not currently observable.
+**Updated 2026-09-06: the hub now exposes `/metrics`.** Prometheus text
+format, rendered from in-memory counters. What follows is the scoreboard;
+every row says obtainable or not, and the "how" column names the series.
 
 | Metric (plan §9) | Available today? | How |
 |---|---|---|
-| per-endpoint p99 | **yes** | proxy access log; Caddy's JSON format carries `duration` and `uri` |
-| 429 rate, per endpoint | **yes** | proxy access log status codes |
-| node connection health | **yes** | `/health` status + `chain_height` advancing |
-| payout retry depth | **partly** | count `payout for task … failed, will retry` and `sweep: retried and paid out task` in the journal. Both are `warn!` in the code, but the journal records them at `info` like everything else (§8.4), so they are found by grepping the text, not by priority — and it is a log count, not a gauge |
-| faucet burn rate | **no** | a successful grant is not logged at all (only a persist *failure* is). Derivable by counting `faucet_grants` in the store, not by watching |
-| sweep-loop lag | **no** | the 60s loop logs its actions, never its own timing |
-| board lock contention | **no** | nothing instruments the `RwLock` |
-| exchange solvency | **no** | no endpoint aggregates liabilities; `/exchange/account/:pubkey` is per-key |
+| per-endpoint p99 | **yes** | `hub_http_request_duration_seconds` histogram, labelled by route template and method. Also still in the proxy access log |
+| 429 rate, per endpoint | **yes** | `hub_rate_limited_total{tier=…}` for the per-IP tiers, `hub_rate_limited_per_key_total` for the per-key quota, and `hub_http_requests_total{status="4xx"}` per route |
+| node connection health | **yes** | `hub_node_connections_{opened,reused,retried}_total`, `hub_node_connect_failures_total`, and `hub_node_pool_saturation_waits_total` for queueing before it shows as latency |
+| payout retry depth | **yes** | `hub_board_outstanding_payouts`, a gauge sampled each sweep — this was previously a log grep, and a log count is not a depth |
+| sweep-loop lag | **yes** | `hub_sweep_last_lag_ms` / `hub_sweep_max_lag_ms`, with `hub_sweep_last_duration_ms` beside them. Lag is the alert; duration is the explanation |
+| exchange solvency | **yes** | `hub_exchange_custody_balance` against `hub_exchange_liabilities`, both sampled each sweep, with `hub_exchange_solvency_check_failures_total` to say when the pair is stale |
+| replay guard / commit latency | **yes** | `hub_replay_signatures_{claimed,rejected,evicted}_total`, `hub_replay_durable_write_failures_total`, and `hub_replay_durable_write_ms_total` — the last is the fsync that bounds the whole write path (plan §6.3) |
+| chain height + freshness | **yes** | `hub_chain_height` with `hub_chain_observation_age_seconds`. The age is the point: a hub that lost its node keeps reporting the last height it knew |
+| faucet grants | **yes** | `hub_faucet_grants`, sampled from the board each sweep |
+| faucet burn *in units* | **no** | grants × grant size, and the grant size belongs to the faucet workstream (plan §5), which is rewriting it and may make it vary with PoW difficulty. Deliberately not duplicated here: a second copy of that constant would go stale silently and report a wrong number of coins burned. Lands with §5 |
+| board lock contention | **partly** | `hub_sweep_board_lock_wait_ms_total` — the sweep's own wait for the board *write* lock, which only proceeds once every reader has drained, so it detects readers starving the writer. It cannot see reader-versus-reader contention. Full coverage needs the per-handler instrumentation plan §10.1 defers |
 | challenge solve-rate | **n/a** | the faucet PoW does not exist yet (plan §5) |
 
-The four gaps are the ones that tell you the hub is in trouble *before* users
-do, so they are worth instrumenting before launch rather than after. Exchange
-solvency especially: the custody address's on-chain balance should always be at
-least the sum of every account's `base_balance`, and nothing checks it.
+**Where the endpoint is exposed, and why.** `/metrics` is a route on the
+hub's ordinary port, not a second listener. The §1 threat model asks to
+reduce the reachable surface to exactly one port, and a second listener
+adds one; with `--bind 127.0.0.1` and the proxy in front (§4), the proxy
+is already the thing deciding who reaches what, so that is where the
+decision belongs. **Block it there** — the section below has the config.
+It is not secret in the sense the three keys are (it exposes no pubkey and
+no per-agent row, and the custody balance it reports is on a public
+chain), but aggregate liabilities and faucet burn are operational detail a
+stranger has no reason to read.
 
-Until then, p99 and the 429 rate from the proxy log are the working signals. A
-usable p99 from Caddy's JSON log:
+Two properties hold it safe to leave unauthenticated behind that proxy,
+and both are enforced by tests rather than by intent:
+
+- **A scrape never reaches the node.** It is the cheapest call on the hub,
+  so a fan-out to the chain would make it the most efficient amplifier on
+  the box — one unauthenticated request turning into a TCP round trip
+  competing with real payouts for the connection pool. Everything needing
+  the node (the chain tip, the custody balance) is sampled by the sweep
+  instead. `a_metrics_scrape_never_reaches_the_node` in `hub/src/main.rs`
+  is the guard.
+- **A scrape never takes the board lock.** Board contention is one of the
+  things being measured, and an observer that queued for the same lock
+  would be reporting on itself.
+
+The cost of both is staleness: any board- or chain-derived gauge is up to
+one sweep interval (60s) old. That is the right trade for an operational
+dashboard and the wrong one for anything transactional, which is why none
+of these numbers is used for a decision inside the hub.
+
+**`/metrics` has its own rate-limit tier.** A 429 on a scrape reads as an
+outage to a monitor, and sharing the `Read` bucket would mean the read
+flood you are trying to diagnose is also what blinds you to it. Verified
+end to end: with the read tier exhausted and returning 429, `/metrics` and
+`/health` both still answer 200.
+
+**Alert on these.** The first three are the ones that fire before users
+notice:
+
+| Alert | Expression | Why |
+|---|---|---|
+| Sweep stalled | `hub_sweep_last_lag_ms > 30000` | payouts, claim expiry and escrow refunds all ride the sweep. Lag, not duration: duration says the work got slower, lag says it is not being started |
+| Chain observation stale | `hub_chain_observation_age_seconds > 180` | three blocks at the 16s target. Catches a lost node, which `hub_chain_height` alone cannot — it keeps reporting the last height known |
+| Insolvent | `hub_exchange_custody_balance < hub_exchange_liabilities` | the one number where being wrong is a financial statement. Pair it with `increase(hub_exchange_solvency_check_failures_total[10m]) > 0`, or a hub that stopped checking looks solvent |
+| Commit path degraded | `rate(hub_replay_durable_write_ms_total[5m]) / rate(hub_replay_signatures_claimed_total[5m]) > 50` | the write path is bounded by this fsync (§6.3), not by CPU. Request rate alone will not explain a slow hub |
+| Burned envelopes | `increase(hub_replay_durable_write_failures_total[5m]) > 0` | each one is a request the client cannot retry. Page, do not graph |
+| Node pool saturated | `rate(hub_node_pool_saturation_waits_total[5m]) > 1` | queueing on the node, visible before it becomes request latency |
+| Every client 429ing | `hub_rate_limited_total{tier="read"}` rising across all clients at once | §4.3's failure 1 — see below; this is the alert that catches it |
+
+Alert on the **429 rate going to ~100% across all clients at once**. That is not
+an attack; that is §4.3's failure 1 — `--trusted-proxies` unset or wrong, every
+agent sharing the proxy's bucket. It is the one alert that catches a silent
+misconfiguration nothing else reports. `hub_rate_limited_per_key_total` is what
+tells the two apart: a genuine flood moves both counters, that misconfiguration
+moves only the per-IP one.
+
+**Blocking `/metrics` at the proxy.** Caddy:
+
+```caddyfile
+@metrics path /metrics
+respond @metrics 404
+```
+
+nginx:
+
+```nginx
+location = /metrics {
+    allow 127.0.0.1;
+    deny all;
+}
+```
+
+Scrape it from the box itself (`curl -s localhost:9100/metrics`), or open
+it to the monitoring host only.
+
+The proxy's access log remains a useful cross-check, and is the only
+source that survives the hub process dying. A usable p99 from Caddy's JSON
+log:
 
 ```bash
 jq -r 'select(.request.uri) | "\(.request.uri) \(.duration)"' \
@@ -1616,6 +1689,31 @@ in flight:
 | **A node restart no longer destroys a payout** (§7.2) | stopped the miner, submitted a 2000 bounty, killed the node with it in the mempool, restarted node and miner | `never reached the chain (submission 1 of 4), resending`, then `confirmed on chain after 2 submission(s)` — recovered in two sweeps, no human involved |
 | …and the resend does not double-pay | agent's on-chain balance vs. its credited earnings after the recovery | `total_earned: 3000` and `net_worth: 3000` across both tasks — the bounty was paid once, not twice |
 | The operator's two lists drain | `GET /tasks?status=submitted` and `?status=payoutfailed` after the drill | both `[]` |
+
+The metrics rows were run on 2026-09-06 against a local stack — node, miner
+and hub from this tree on ports 9030/9130, binaries copied out of the build
+directory first and checked with `strings` so the process under test was
+provably the one just built:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| `/metrics` renders | `curl` after driving 26 reads across six routes | `200`, `content-type: text/plain; version=0.0.4`, 204 lines |
+| Counters track real traffic | compared per-route counts against what was sent | `/tasks` 12, `/health` 5, `/leaderboard` 4, `/board/summary` 3 — exact |
+| Dynamic segments do not become labels | two different task uuids, then two invented paths | both uuids collapsed to `route="/tasks/:id"` (count 2), both invented paths to `route="other"` (count 2) |
+| The sweep observes the chain | waited one sweep pass | `hub_chain_height 2`, `hub_chain_observation_age_seconds 37`, `hub_chain_observation_failures_total 0` |
+| The pool is reusing connections | read the pool counters after the reads above | `opened 1`, `reused 6`, `retried 0`, `saturation_waits 0` |
+| **A scrape does not reach the node** | 20 scrapes, counting node connections either side | connections unchanged; a `/health` control request first, to prove the counter moves at all |
+| **A read flood does not 429 the scrape** | 130 reads to exhaust the `Read` tier, then scraped | `/tasks` → `429`, `/metrics` → `200`, `/health` → `200`; `hub_rate_limited_total{tier="read"} 34`, every other tier `0` |
+| Rejections are visible per route | same flood | `hub_http_requests_total{route="/tasks",…,status="4xx"} 34` alongside `status="2xx" 109` |
+
+**Not verified, and worth saying plainly:** the sweep's board-lock wait, the
+node retry and saturation counters, the replay-guard series and the solvency
+pair were all exercised as code (unit tests, and the workspace suite is green
+at 353) but were only ever observed at zero on a quiet local stack. Nothing
+here has watched them move under real contention, an unreachable node, or a
+failing disk. The load harness (§6.7 of the plan) is what should drive them,
+and doing so is the obvious next thing: this pass built the instrument and
+did not yet put it under load.
 
 **Reasoned but not run**, because the target is a Linux box and the checks were
 done on macOS:
