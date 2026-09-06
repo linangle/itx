@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let client = reqwest::Client::new();
 
     let reservation: Value =
-        client.post(format!("{base_url}/exchange/deposit")).json(&build_envelope(&key, ())).send().await?.json().await?;
+        client.post(format!("{base_url}/exchange/deposit")).json(&build_envelope(&key, "POST", "/exchange/deposit", ())).send().await?.json().await?;
     let escrow_id = reservation["escrow_id"].as_str().unwrap().to_string();
     let deposit_pubkey = PublicKey::from_sec1_bytes(&hex::decode(reservation["deposit_address"].as_str().unwrap())?)?;
     println!("reserved deposit {escrow_id}, address {}", reservation["deposit_address"]);
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
 
     let account: Value = client
         .post(format!("{base_url}/exchange/deposit/{escrow_id}/confirm"))
-        .json(&build_envelope(&key, ConfirmExchangeDepositPayload { escrow_id }))
+        .json(&build_envelope(&key, "POST", &format!("/exchange/deposit/{escrow_id}/confirm"), ConfirmExchangeDepositPayload { escrow_id }))
         .send()
         .await?
         .json()

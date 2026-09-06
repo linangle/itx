@@ -39,11 +39,13 @@ fn fixture_entry<T: Serialize>(
     private_key: &PrivateKey,
     key_seed_bytes: [u8; 32],
     timestamp: DateTime<Utc>,
+    method: &str,
+    path: &str,
     payload: T,
 ) -> Value {
-    let envelope = SignedEnvelope::new_at(private_key, timestamp, payload);
+    let envelope = SignedEnvelope::new_at(private_key, timestamp, method, path, payload);
     let signing_string = envelope
-        .signing_string()
+        .signing_string(method, path)
         .expect("every fixture payload below is a plain serializable struct");
     let payload_json = serde_json::to_string(&envelope.payload).unwrap();
     json!({
@@ -51,6 +53,8 @@ fn fixture_entry<T: Serialize>(
         "private_key_hex": hex::encode(key_seed_bytes),
         "pubkey_hex": envelope.pubkey,
         "timestamp": envelope.timestamp.to_rfc3339(),
+        "method": method,
+        "path": path,
         "payload_json": payload_json,
         "expected_signing_string": signing_string,
         "expected_signature_hex": envelope.signature,
@@ -87,13 +91,23 @@ fn main() {
         .unwrap()
         + chrono::Duration::milliseconds(123);
 
-    fixtures.push(fixture_entry("unit_payload", &key_a, seed_a, t1, ()));
+    fixtures.push(fixture_entry("unit_payload", &key_a, seed_a, t1, "POST", "/faucet", ()));
+
+    // The same key, timestamp and payload as `unit_payload`, differing
+    // only in the path -- and `/faucet` and `/exchange/deposit` are one
+    // of the five route pairs the old payload-only recipe could not tell
+    // apart. A Python implementation that ignored the path would produce
+    // the signature above for this entry and fail here, which is the
+    // single most valuable thing this fixture file now pins.
+    fixtures.push(fixture_entry("same_payload_different_path", &key_a, seed_a, t1, "POST", "/exchange/deposit", ()));
 
     fixtures.push(fixture_entry(
         "simple_struct",
         &key_a,
         seed_a,
         t1,
+        "POST",
+        "/tasks/11111111-2222-3333-4444-555555555555/claim",
         ClaimLikePayload {
             task_id: "11111111-2222-3333-4444-555555555555".to_string(),
         },
@@ -104,6 +118,8 @@ fn main() {
         &key_b,
         seed_b,
         t2,
+        "POST",
+        "/tasks/escrow",
         RichPayload {
             description: "reference SDK fixture task".to_string(),
             bounty: 1_000_000,
@@ -117,6 +133,8 @@ fn main() {
         &key_b,
         seed_b,
         t1,
+        "POST",
+        "/tasks",
         RichPayload {
             description: "no tags".to_string(),
             bounty: 10,
@@ -136,6 +154,8 @@ fn main() {
         &key_a,
         seed_a,
         t2,
+        "POST",
+        "/tasks/consensus",
         UnicodeStressPayload {
             note: "caf\u{e9} \"quoted\" \\ newline:\n \u{30c6}\u{30b9}\u{30c8} \u{1f984}".to_string(),
         },
