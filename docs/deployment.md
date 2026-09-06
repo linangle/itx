@@ -551,7 +551,32 @@ which is why the drill compares the fingerprint.
 
 Record the live fingerprint somewhere outside the backup system (a password
 manager, the runbook) so the drill has something independent to compare against.
-The hub prints it at the end of every backup run.
+The backup script prints it at the end of every run.
+
+**This is not optional, and the reason is a real property of the scheme:
+backups are encrypted, not signed.** The recipient key is a *public* key, so
+anyone can encrypt to it — an attacker who can write to the backup directory can
+produce an archive that decrypts cleanly, whose `MANIFEST.sha256` agrees
+perfectly with its own contents, and which restores into a working hub holding
+keys they chose. Encryption buys confidentiality here, not authenticity.
+
+Demonstrated, not assumed. Against a deliberately tampered archive with a
+regenerated manifest, the drill's step 2 passes and **step 3 is what catches
+it**:
+
+```
+== 2. verifying the manifest
+all files match their recorded checksums
+
+== 3. checking the escrow secret
+32 bytes, sha256 2b08d5f6…
+DRILL FAILED: escrow secret fingerprint 2b08d5f6… does not match the expected 44da4e7f…
+```
+
+So `--expect-escrow-sha256` and `--expect-operator` are the load-bearing
+arguments, not conveniences. Signing the archives as well (`gpg --sign`) would
+close the gap for tampering at rest and is worth adding; it does not help
+against a compromised hub box, which can sign whatever it likes.
 
 ### 7.4 The drill
 
@@ -632,12 +657,24 @@ handshake. So every one of these bans the prober for an hour:
 - an uptime monitor configured for "TCP connect"
 - a port scanner, including your own security scan
 
-Two things make it worse than a self-inflicted hour of monitoring downtime:
+**And the check keeps reporting green the whole time.** Verified on a live node:
+after the ban, a second `nc -z` still prints `succeeded!` and exits 0. The node
+accepts the TCP connection and *then* drops it on the ban check
+(`rejecting connection from banned peer …`), so at the TCP level the port looks
+exactly as healthy as before. The monitoring that caused the outage will not be
+the monitoring that reports it.
+
+Three things make it worse than a self-inflicted hour of monitoring downtime:
 
 - **The ban is persisted** (`load_persisted`, restored from `blockchain.redb` at
   startup) and deliberately survives a restart, so restarting the node does not
   clear it. That is correct — a restart must not hand a banned peer its access
-  back for free — but it means the obvious remedy does nothing.
+  back for free — but it means the obvious remedy does nothing. Confirmed: a
+  restarted node logs `restored 1 ban(s) from a previous run` and goes straight
+  back to rejecting.
+- **The ban is invisible from outside.** Per above, the port still accepts
+  connections; only a peer that gets as far as the handshake learns it is
+  banned.
 - **On a single box, the hub, the miner, and monitoring usually share an
   address.** Banning "the prober" therefore bans the hub. The hub keeps serving
   reads and reports `degraded` from `/health` while every payout, balance
@@ -678,9 +715,15 @@ therefore 60 new connections a minute to the node — not a hammering, but not
 the free endpoint the name suggests either.
 
 Poll it every 30s, which is what `deploy/Caddyfile` sets. The endpoint has its
-own generous rate-limit tier precisely so a monitor never sees a 429 there,
-because a 429 on `/health` reads to a monitor as "the hub is down" — the wrong
-thing to say under load.
+own rate-limit tier (`Tier::Health`, 120 requests per 60s window per client)
+precisely so a read flood cannot make monitoring lie: a 429 on `/health` reads
+to an uptime check as "the hub is down", which is the wrong thing to say under
+load.
+
+120/min is two per second, so a 30s poll uses about 1% of the budget and several
+independent monitors still fit comfortably. Note that the proxy's own
+`health_interval` draws from the same bucket when it shares an address with
+your monitoring.
 
 Alert on:
 

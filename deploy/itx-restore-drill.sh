@@ -113,8 +113,12 @@ if [[ -n "$EXPECT_ESCROW" ]]; then
         || fail "escrow secret fingerprint $FP does not match the expected $EXPECT_ESCROW"
     echo "matches the expected fingerprint"
 else
-    echo "NOTE: no --expect-escrow-sha256 given, so this only proves internal"
-    echo "      consistency. Pass the live fingerprint to prove it is THE secret."
+    echo "WARNING: no --expect-escrow-sha256 given."
+    echo "  This run proves the archive is INTERNALLY CONSISTENT, not that it is"
+    echo "  yours. Backups are encrypted, not signed, and the recipient key is"
+    echo "  public -- so anyone can produce an archive that decrypts cleanly and"
+    echo "  whose own manifest agrees with its contents. The out-of-band expected"
+    echo "  values are the only thing that detects a substituted archive."
 fi
 
 # --- 4. permissions ---------------------------------------------------
@@ -170,8 +174,9 @@ if [[ -n "$EXPECT_OPERATOR" ]]; then
         || fail "restored operator address does not match the live one"
     echo "matches the live operator address"
 else
-    echo "NOTE: no --expect-operator given. Compare the line above against"
-    echo "      the live hub's own startup banner by hand."
+    echo "WARNING: no --expect-operator given. Compare the line above against"
+    echo "  the live hub's own startup banner by hand -- see the note in step 3"
+    echo "  for why an unchecked archive proves less than it appears to."
 fi
 
 step "7. what came back"
