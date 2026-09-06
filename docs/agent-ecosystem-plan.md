@@ -684,12 +684,25 @@ for any future action worth pricing.
    the depositor can do it, which bounds who is exposed and does not make the
    books any less wrong.
 
-   Measured: five confirmations interrupted by `SIGKILL` mid-handler; one
-   deposit produced two `Open` tasks of 1,000,000 ITX each, verified
-   independently by restarting a hub against the drill's own store and listing
-   tasks. Four of the five were clean — no task, retry recreates it — and the
-   `SIGTERM` phase, which the hub drains, lost nothing at all. So this is
+   Measured: confirmations interrupted by `SIGKILL` mid-handler produced one
+   deposit backing two `Open` tasks of 1,000,000 ITX each — verified
+   independently of the drill by restarting a hub against its store and
+   listing tasks, which showed the same description twice with two ids. The
+   others were clean: no task, and the retry recreates it. The `SIGTERM`
+   phase, which the hub drains, lost nothing in any run. So this is
    specifically a crash, not a deploy.
+
+   **The reproduction is probabilistic and the drill says so.** The interval
+   is one step wide, so whether a `SIGKILL` lands inside it is chance; the
+   drill stages a dozen confirmations across one handler's duration to
+   sample the timeline, and still reproduces the duplicate in some runs and
+   not others. Its hard-kill phase therefore reports *inconclusive* rather
+   than confirmed when it finds nothing, because it can demonstrate the bug
+   and cannot demonstrate its absence. **Do not sign the fix off on a green
+   drill run.** The hub has no fault-injection point that would make this
+   deterministic, and adding one was out of scope for the harness — but the
+   fix below removes the need for one, because a single transaction leaves
+   no interval to land in.
 
    It is the deposit-side twin of §6.5. Both come from a durable state machine
    whose steps are separate commits with no ordering that makes an interrupted

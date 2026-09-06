@@ -1,6 +1,6 @@
 {
   "name": "drill: escrow-restart",
-  "started_at": "2026-09-06T09:46:24.087586Z",
+  "started_at": "2026-09-06T09:47:41.204760Z",
   "environment": {
     "commit": "434f1f149f954360806900b7f5b2fed09c65628d",
     "dirty": false,
@@ -24,7 +24,7 @@
         "confirmations_in_flight": 5,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 12.859709,
+        "handler_latency_ms": 12.634459000000001,
         "never_answered": 0,
         "recovered_by_retry": 0,
         "tasks_before": 1,
@@ -42,10 +42,10 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 12.859709,
-          "p90_ms": 12.859709,
-          "p99_ms": 12.859709,
-          "max_ms": 12.859709,
+          "p50_ms": 12.634459000000001,
+          "p90_ms": 12.634459000000001,
+          "p99_ms": 12.634459000000001,
+          "max_ms": 12.634459000000001,
           "per_second": null
         },
         {
@@ -55,10 +55,10 @@
           "by_status": {
             "200": 5
           },
-          "p50_ms": 57.780291,
-          "p90_ms": 68.392542,
-          "p99_ms": 68.392542,
-          "max_ms": 68.392542,
+          "p50_ms": 38.379375,
+          "p90_ms": 47.235333999999995,
+          "p99_ms": 47.235333999999995,
+          "max_ms": 47.235333999999995,
           "per_second": null
         },
         {
@@ -68,10 +68,10 @@
           "by_status": {
             "409": 5
           },
-          "p50_ms": 4.776375,
-          "p90_ms": 5.648667,
-          "p99_ms": 5.648667,
-          "max_ms": 5.648667,
+          "p50_ms": 3.863334,
+          "p90_ms": 5.144208,
+          "p99_ms": 5.144208,
+          "max_ms": 5.144208,
           "per_second": null
         }
       ]
@@ -86,7 +86,7 @@
         "confirmations_in_flight": 5,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 12.978125,
+        "handler_latency_ms": 19.305,
         "never_answered": 4,
         "recovered_by_retry": 4,
         "tasks_before": 7,
@@ -104,10 +104,10 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 12.978125,
-          "p90_ms": 12.978125,
-          "p99_ms": 12.978125,
-          "max_ms": 12.978125,
+          "p50_ms": 19.305,
+          "p90_ms": 19.305,
+          "p99_ms": 19.305,
+          "max_ms": 19.305,
           "per_second": null
         },
         {
@@ -117,10 +117,10 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 12.827542000000001,
-          "p90_ms": 12.827542000000001,
-          "p99_ms": 12.827542000000001,
-          "max_ms": 12.827542000000001,
+          "p50_ms": 10.234083,
+          "p90_ms": 10.234083,
+          "p99_ms": 10.234083,
+          "max_ms": 10.234083,
           "per_second": null
         },
         {
@@ -131,10 +131,10 @@
             "200": 4,
             "409": 1
           },
-          "p50_ms": 11.036707999999999,
-          "p90_ms": 17.938125,
-          "p99_ms": 17.938125,
-          "max_ms": 17.938125,
+          "p50_ms": 11.6175,
+          "p90_ms": 13.725458,
+          "p99_ms": 13.725458,
+          "max_ms": 13.725458,
           "per_second": null
         }
       ]

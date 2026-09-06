@@ -184,7 +184,7 @@ comparable; rates per second are not.
 |---|---|---|
 | `node-crash` | Confirmed §6.5 | **6,000,000 ITX destroyed**, 6 of 6 payouts |
 | `escrow-restart` (SIGTERM) | Confirmed | 5 of 5 confirmations drained cleanly |
-| `escrow-restart` (SIGKILL) | **Refuted** | 1 deposit funded 2 tasks |
+| `escrow-restart` (SIGKILL) | **Refuted** (2 runs of 5) | 1 deposit funded 2 tasks |
 | `replay-storm` | Confirmed §3.3 | 0 of 30 replays accepted after a SIGKILL |
 | `rate-limit-tiers` | Confirmed §3.4 | 120 reads / 59 writes served, others unaffected |
 | `quota-isolation` | Confirmed §3.4 | 60 served, 15 refused; bystander 10 of 10 |
@@ -198,14 +198,25 @@ six tasks still read `Paid` after a full sweep interval — the sweep only
 revisits `Verified`, so nothing will ever look at them again. This is the
 baseline the settlement confirmation work has to move.
 
-**`escrow-restart`.** A drained restart is clean: five interrupted
-confirmations all completed and none was lost. A crash is not. `SIGKILL` mid
-handler produced one deposit backing two `Open` tasks of 1,000,000 each,
-because the handler persists the task and *then* the deposit's `Consumed`
-status, and a process that stops between the two leaves a task on disk beside
-a deposit that still reads `Reserved`. Verified independently by restarting a
-hub against the drill's own store and listing tasks. Written up as plan §6.5b;
-not fixed here.
+**`escrow-restart`.** A drained restart is clean: every interrupted
+confirmation completed and none was lost, in every run. A crash is not.
+`SIGKILL` mid-handler produced one deposit backing two `Open` tasks of
+1,000,000 each, because the handler persists the task and *then* the deposit's
+`Consumed` status, and a process that stops between the two leaves a task on
+disk beside a deposit that still reads `Reserved`. Verified independently of
+the drill by restarting a hub against its store and listing tasks: the same
+description, twice, under two ids. Written up as plan §6.5b; not fixed here.
+
+**It reproduced in two runs of five, and the drill is built to say so.** The
+interval is one step wide, so whether a `SIGKILL` lands inside it is chance.
+The drill stages a dozen confirmations across one measured handler's duration
+to sample the timeline rather than firing them all at one instant — an earlier
+version did the latter, which put every request at the same point and made the
+whole drill a coin flip. Even staggered it misses. So the hard-kill phase
+reports **inconclusive**, never confirmed, when it finds nothing: it can
+demonstrate the bug and cannot demonstrate its absence, and the hub has no
+fault-injection point that would make it deterministic. Do not sign a fix off
+on a green run of this drill.
 
 **`replay-storm`.** Thirty envelopes spent, the hub `SIGKILL`ed so nothing
 could flush on the way out, all thirty replayed the instant `/health` answered.
