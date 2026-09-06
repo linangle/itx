@@ -1108,20 +1108,37 @@ pub async fn confirm_task_escrow(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let task = {
+    let (task, deposit) = {
         let mut board = state.board.write().await;
         let EscrowConfirmation::TaskCreated(task) =
             board.confirm_escrow(escrow_id, observed_amount, Utc::now())?;
-        task
+        // Read the deposit back under the same write lock that just
+        // consumed it, so what gets persisted below is this
+        // confirmation's own Consumed record rather than whatever state
+        // a concurrent caller might have left between the two locks.
+        let deposit = board
+            .get_pending_deposit(escrow_id)
+            .expect("confirm_escrow consumed this deposit, and no path removes one")
+            .clone();
+        (task, deposit)
     };
-    state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
-    // The now-Consumed deposit's status also needs persisting, or a
-    // restart before the next sweep tick would see it as still Reserved.
-    if let Some(deposit) = state.board.read().await.get_pending_deposit(escrow_id) {
-        if let Err(e) = state.store.save_pending_deposit(deposit) {
-            error!("failed to persist consumed escrow {escrow_id}: {e}");
-        }
-    }
+    // One transaction, not two. The task and the deposit's Consumed
+    // status are the same fact, and committing them separately was a
+    // money bug: a hub killed between the two commits came back with a
+    // task on disk beside a deposit still reading Reserved, and the
+    // depositor could confirm the same escrow again for a second task
+    // funded by one payment (plan §6.5b, and see
+    // `HubStore::save_task_and_deposit` for why one transaction rather
+    // than merely reordering the two).
+    //
+    // Failing here now leaves neither record on disk. In-memory the
+    // board has already moved on, but nothing durable has, so a restart
+    // reverts to a Reserved deposit and the depositor's retry is a clean
+    // recovery -- the same outcome as a crash a moment earlier.
+    state
+        .store
+        .save_task_and_deposit(&task, &deposit)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(TaskDto::from(&task)))
 }
 
@@ -1218,10 +1235,25 @@ pub async fn confirm_dispute_escrow(
 
     let confirm_result = {
         let mut board = state.board.write().await;
-        board.confirm_dispute_bond(escrow_id, observed_amount, Utc::now())
+        let outcome = board.confirm_dispute_bond(escrow_id, observed_amount, Utc::now());
+        // Carry the deposit out beside the task, read under the same
+        // write lock that consumed it -- exactly as `confirm_task_escrow`
+        // does, and for the same reason. Only the success arm consumes a
+        // deposit; the closed-window arm deliberately leaves it Reserved
+        // for the refund below.
+        match outcome {
+            Ok(task) => {
+                let deposit = board
+                    .get_pending_deposit(escrow_id)
+                    .expect("confirm_dispute_bond consumed this deposit, and no path removes one")
+                    .clone();
+                Ok((task, deposit))
+            }
+            Err(e) => Err(e),
+        }
     };
-    let task = match confirm_result {
-        Ok(task) => task,
+    let (task, deposit) = match confirm_result {
+        Ok(confirmed) => confirmed,
         Err(BoardError::DisputeWindowClosed) => {
             if let Some(deposit) = state.board.read().await.get_pending_deposit(escrow_id).cloned() {
                 refund_escrow(&state, &deposit).await;
@@ -1230,14 +1262,16 @@ pub async fn confirm_dispute_escrow(
         }
         Err(e) => return Err(e.into()),
     };
-    state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
-    // The now-Consumed deposit's status also needs persisting, or a
-    // restart before the next sweep tick would see it as still Reserved.
-    if let Some(deposit) = state.board.read().await.get_pending_deposit(escrow_id) {
-        if let Err(e) = state.store.save_pending_deposit(deposit) {
-            error!("failed to persist consumed dispute-bond escrow {escrow_id}: {e}");
-        }
-    }
+    // One transaction, not two -- see `confirm_task_escrow` and plan
+    // §6.5b. This handler was never drilled, but it has the identical
+    // shape: a crash between the task's commit and the deposit's leaves
+    // a task already moved to Disputed beside a bond deposit that still
+    // reads Reserved, and confirming it again attaches a second dispute
+    // paid for once.
+    state
+        .store
+        .save_task_and_deposit(&task, &deposit)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(TaskDto::from(&task)))
 }
 
@@ -2270,23 +2304,29 @@ pub async fn confirm_exchange_deposit(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let depositor = {
+    let (depositor, account, deposit) = {
         let mut board = state.board.write().await;
         let (depositor, _credited) =
             board.confirm_exchange_deposit(escrow_id, observed_amount, HUB_TRANSACTION_FEE, Utc::now())?;
-        depositor
+        // Balance and deposit both read back under the write lock that
+        // did the crediting, so the pair persisted below is internally
+        // consistent -- see `confirm_task_escrow`.
+        let account = board.exchange_account(&depositor);
+        let deposit = board
+            .get_pending_deposit(escrow_id)
+            .expect("confirm_exchange_deposit consumed this deposit, and no path removes one")
+            .clone();
+        (depositor, account, deposit)
     };
-    let account = state.board.read().await.exchange_account(&depositor);
-    if let Err(e) = state.store.save_exchange_account(&depositor, &account) {
-        error!("failed to persist exchange account for {depositor}: {e}");
-    }
-    // The now-Consumed deposit's status also needs persisting, or a
-    // restart before the next sweep tick would see it as still Reserved.
-    if let Some(deposit) = state.board.read().await.get_pending_deposit(escrow_id) {
-        if let Err(e) = state.store.save_pending_deposit(deposit) {
-            error!("failed to persist consumed escrow {escrow_id}: {e}");
-        }
-    }
+    // One transaction, not two -- see `confirm_task_escrow` and plan
+    // §6.5b. Never drilled either, and the worst of the three to get
+    // wrong: the effect is a ledger balance rather than a task, so a
+    // second credit from one payment is spendable and tradeable the
+    // moment it lands, and can leave the exchange before anyone notices.
+    state
+        .store
+        .save_exchange_account_and_deposit(&depositor, &account, &deposit)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     if sweep_exchange_deposit(&state, escrow_id).await {
         info!("swept exchange deposit {escrow_id} into pooled custody");
     }
