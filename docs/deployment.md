@@ -1026,3 +1026,45 @@ spendable balance (§10.1) — often before `/health` notices. Honest
 pending/confirmed states in the API are a readiness-bar item (plan §2 item 10)
 and not yet implemented, so until then the log lines are the only place the
 distinction is visible at all.
+
+---
+
+## 11. What in here was actually tested
+
+Written down so a reader knows which claims are verified and which are
+reasoned. Everything below was run on 2026-09-05 against a local stack (node +
+hub from this tree) behind Caddy 2.11.4.
+
+**Verified by running it:**
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| `deploy/Caddyfile` is valid | `caddy validate` | valid (one misleading warning, §4.2) |
+| TLS terminates in front of the hub | `curl` over HTTPS to the real hub | `200`, HTTP/2, `{"status":"ok","chain_height":5}` |
+| A spoofed `X-Forwarded-For` is discarded | client sends one address, a chain, and repeated headers | upstream sees exactly one entry: the real client |
+| `Forwarded` / `X-Real-IP` are cleared | client sends both | neither reaches the upstream |
+| Stripping actually protects the rate limit | 130 reads through the proxy, each with a different spoofed address | 119 × `200`, 11 × `429` — one shared bucket, spoofing gained nothing |
+| …and that the limit fails without it | same 130 reads sent to the hub from a trusted peer with the header passed through | 130 × `200`, 0 × `429` — limit defeated |
+| `localhost` upstream yields an IPv6 peer | `reverse_proxy localhost:9100` vs `127.0.0.1:9100` | `::1` vs `127.0.0.1` (§4.3) |
+| `security.txt` needs the proxy | requested via proxy, then direct from the hub | `200` via proxy, `404` direct |
+| A `nc -z` probe bans the node | one probe against an isolated node | `banning peer 127.0.0.1 until <+1h>` |
+| The ban is invisible to that probe | second `nc -z` after the ban | still `succeeded!`, while the node logs `rejecting connection from banned peer` |
+| The ban survives a restart | restarted the node | `restored 1 ban(s) from a previous run` |
+| The backup round-trips | `itx-backup.sh` → `itx-restore-drill.sh` | drill passed all seven steps |
+| The drill fails when it should | bit flipped in the escrow secret | caught at step 2 (manifest) |
+| …and when the manifest is regenerated to match | same tamper, manifest rebuilt | passed step 2, **caught at step 3** by the out-of-band fingerprint |
+
+**Reasoned but not run**, because the target is a Linux box and the checks were
+done on macOS:
+
+- `deploy/nftables.conf` and `deploy/ufw.sh` — the rules follow from §2's
+  topology, but no Linux host was available to apply them. Run `nft -c -f` on
+  the real host before committing to them, and verify from off-box per §3.
+- The systemd units — syntax and directives are conventional, but they have not
+  been loaded by a running systemd. Check `systemd-analyze verify` on the host.
+- `itx-backup.sh`'s service stop/start path. The drill was run with `--no-stop`,
+  since there is no systemd on the test machine, so the `systemctl stop` branch
+  and its `resume` trap are untested. Exercise them once on the real host.
+
+**Also observed in passing:** the node logs `Listening on 0.0.0.0:9500` and
+binds IPv4 only — same as the hub, and the same reason §1 leans on the firewall.
