@@ -45,10 +45,16 @@ const FEE: u64 = 1_000;
 /// target, which is enough to tell one-per-block from many-per-block
 /// without making the drill take a coffee break.
 const MEASURE_FOR: Duration = Duration::from_secs(150);
-/// Pause between attempts. Short enough to offer far more payouts than a
-/// one-per-block ceiling could absorb, long enough not to spend the run
-/// arguing with the chain-tier rate limiter.
-const ATTEMPT_EVERY: Duration = Duration::from_millis(400);
+/// Pause between attempts.
+///
+/// What matters is not the absolute rate but how many payouts are offered
+/// per *block*, since that is the thing the ceiling is measured against.
+/// A run that offers barely more than one per block cannot tell a ceiling
+/// of one from a ceiling of three, so `attempts_per_block` is reported
+/// and the verdict is withheld when it comes out too low to have
+/// falsified anything. At 200ms against the block times this chain
+/// actually produces, it lands around twenty-five offered per block.
+const ATTEMPT_EVERY: Duration = Duration::from_millis(200);
 
 /// Collapses `key`'s confirmed outputs into exactly one, by having it pay
 /// itself everything minus the fee. Returns the amount now sitting in that
@@ -157,6 +163,7 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let end_height = chain.height().await?;
     let blocks = (end_height - start_height).max(1);
     let per_block = granted as f64 / blocks as f64;
+    let offered_per_block = attempts as f64 / blocks as f64;
     let busiest_block = per_height.values().copied().max().unwrap_or(0);
 
     harness.stack.shutdown().await;
@@ -165,6 +172,10 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     // holding -- a payout landing just either side of a block boundary is
     // ordinary. Materially more than that is the claim failing.
     let ceiling_holds = per_block <= 2.0 && busiest_block <= 2;
+    // A run that offered barely more than one payout per block cannot
+    // distinguish a ceiling of one from a ceiling of three. Say so rather
+    // than confirming the plan on evidence that could not have refuted it.
+    let offered_enough = offered_per_block >= 3.0;
 
     let mut section = Section::new("Payout ceiling with a single operator output")
         .plan_item("§6.4b")
@@ -173,6 +184,7 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .fact("payouts_granted", granted)
         .fact("refused_for_balance", refused_for_balance)
         .fact("blocks_elapsed", blocks)
+        .fact("attempts_per_block", (offered_per_block * 100.0).round() / 100.0)
         .fact("payouts_per_block", (per_block * 100.0).round() / 100.0)
         .fact("busiest_single_block", busiest_block)
         .fact(
@@ -189,7 +201,14 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
              coinbase output per block does not have this ceiling at all."
         ));
 
-    section = if ceiling_holds {
+    section = if !offered_enough {
+        section.verdict(Verdict::Inconclusive).note(format!(
+            "The run offered only {offered_per_block:.2} payouts per block, which cannot tell a \
+             ceiling of one from a ceiling of three -- both would produce roughly this result. \
+             Blocks on a young test chain arrive far faster than the sixteen-second target. \
+             Shorten ATTEMPT_EVERY or lengthen the run and re-run before believing the number."
+        ))
+    } else if ceiling_holds {
         section.verdict(Verdict::Confirmed).note(format!(
             "{granted} payouts landed across {blocks} blocks ({per_block:.2} per block, busiest \
              block {busiest_block}) against {attempts} offered. The operator's change is \

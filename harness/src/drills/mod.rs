@@ -24,6 +24,7 @@ pub mod payout_ceiling;
 pub mod quota_isolation;
 pub mod rate_limit_tiers;
 pub mod replay_storm;
+pub mod signed_write_cost;
 
 /// How much confirmed operator coin a drill waits for before it starts
 /// spending. Enough to cover every payout a drill makes several times
@@ -104,6 +105,7 @@ pub const ALL: &[&str] = &[
     "rate-limit-tiers",
     "quota-isolation",
     "payout-ceiling",
+    "signed-write-cost",
 ];
 
 /// Runs one drill by name.
@@ -121,6 +123,7 @@ pub async fn run(
         "rate-limit-tiers" => rate_limit_tiers::run(repo, bin_dir, work_dir).await,
         "quota-isolation" => quota_isolation::run(repo, bin_dir, work_dir).await,
         "payout-ceiling" => payout_ceiling::run(repo, bin_dir, work_dir).await,
+        "signed-write-cost" => signed_write_cost::run(repo, bin_dir, work_dir).await,
         other => anyhow::bail!("unknown drill {other}; known drills are {}", ALL.join(", ")),
     }
 }
