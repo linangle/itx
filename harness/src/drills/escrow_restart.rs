@@ -15,11 +15,23 @@
 //! must not end up funding none while the depositor's coin sits at an
 //! address only the hub can derive.
 //!
-//! The kill is timed off a measured confirmation rather than a guessed
-//! delay: one confirmation is run normally first, and the batch is
-//! interrupted at half that latency. A fixed sleep would land after the
-//! handlers on a fast machine and before them on a slow one, which is how
-//! a drill quietly stops testing anything.
+//! # Hitting the window on purpose
+//!
+//! The dangerous interval is one step wide -- between the task's commit
+//! and the deposit's -- so a drill that fires every confirmation at the
+//! same instant and then kills the hub puts all of them at the *same*
+//! point in the handler, and either catches that interval for all of them
+//! or for none. The first version did exactly that and reproduced the bug
+//! in two runs out of three, which is a coin flip wearing a lab coat.
+//!
+//! So the confirmations are started staggered across one measured
+//! handler's duration, and the kill lands at the end of it. Each request
+//! is then at a different point in the handler when the process dies, and
+//! the batch covers the timeline rather than sampling one spot on it. The
+//! duration comes from a control confirmation run normally first, because
+//! a fixed sleep lands after the handlers on a fast machine and before
+//! them on a slow one, which is how a drill quietly stops testing
+//! anything.
 
 use crate::client::{ConfirmEscrowPayload, CreateTaskPayload, HubClient};
 use crate::report::{Report, Section, Verdict};
@@ -165,7 +177,7 @@ async fn phase(
         "the control confirmation failed before anything was interrupted: {}",
         control_reply.error_text()
     );
-    let interrupt_after = control_reply.latency / 2;
+    let handler_takes = control_reply.latency;
 
     let mut escrows = Vec::new();
     for index in 0..BATCH {
@@ -178,11 +190,16 @@ async fn phase(
     let before = tasks_by_description(&hub).await?;
 
     let mut inflight = tokio::task::JoinSet::new();
-    for escrow in &escrows {
+    for (index, escrow) in escrows.iter().enumerate() {
         let hub = hub.clone();
         let poster = poster.clone();
         let id = escrow.id.clone();
+        // Started `index/BATCH` of a handler's duration apart, so that at
+        // the moment of the kill each one is at a different point in the
+        // handler and the batch spans the timeline.
+        let start_after = handler_takes.mul_f64(index as f64 / BATCH as f64);
         inflight.spawn(async move {
+            tokio::time::sleep(start_after).await;
             hub.post_signed(
                 &poster,
                 &format!("/tasks/escrow/{id}/confirm"),
@@ -194,7 +211,7 @@ async fn phase(
         });
     }
 
-    tokio::time::sleep(interrupt_after).await;
+    tokio::time::sleep(handler_takes).await;
     if hard {
         harness.stack.kill_hub().await?;
     } else {
@@ -274,7 +291,7 @@ async fn phase(
     ))
     .plan_item("§6.7")
     .fact("confirmations_in_flight", BATCH)
-    .fact("control_latency_ms", control_reply.latency.as_secs_f64() * 1000.0)
+    .fact("handler_latency_ms", control_reply.latency.as_secs_f64() * 1000.0)
     .fact("answered_success", answered_ok)
     .fact("answered_error", answered_error)
     .fact("never_answered", never_answered)
@@ -304,6 +321,17 @@ async fn phase(
                  operator, who holds the escrow secret, but the depositor cannot reach it and \
                  nothing tells them so."
             ));
+    } else if hard && survived == 0 {
+        // Nothing got as far as persisting a task, so nothing was ever in
+        // the interval between the two commits -- the one this phase
+        // exists to test. Reporting that as safe would be reporting the
+        // absence of an experiment as the absence of a bug.
+        section = section.verdict(Verdict::Inconclusive).note(
+            "The kill landed before any handler had persisted a task, so no confirmation was \
+             ever inside the window between the task's commit and the deposit's. Nothing was \
+             lost and nothing was duplicated, but this run did not test the dangerous \
+             interval. Re-run it.",
+        );
     } else {
         section = section.verdict(Verdict::Confirmed).note(
             "Every interrupted confirmation ended in a state a client can act on: either the \
