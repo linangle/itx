@@ -73,6 +73,16 @@ itx.example.com {
 			# or a second proxy is added by someone who does not know the
 			# rule. A spoofed header from a client is discarded here and
 			# never reaches the hub at all.
+			#
+			# `caddy validate` emits "Unnecessary header_up
+			# X-Forwarded-For: the reverse proxy's default behavior is
+			# to pass headers to the upstream" for this line. The
+			# warning is wrong here and must not be "fixed" by deleting
+			# it -- verified against Caddy 2.11.4: with the line, a
+			# client sending `X-Forwarded-For: 203.0.113.9` (or a whole
+			# invented chain, or repeated headers) reaches the upstream
+			# as exactly one entry, the real client address. Without it,
+			# the client's value is preserved and appended to.
 			header_up X-Forwarded-For {remote_host}
 
 			# The hub does not read these, but a future handler might, and

@@ -226,10 +226,24 @@ same box:
 hub --port 9100 --trusted-proxies 127.0.0.1,::1
 ```
 
-Include `::1`. Caddy and nginx both resolve `localhost` to IPv6 first on many
-systems, and the hub compares the *peer address it sees*, not a name — a proxy
-dialling `[::1]:9100` against a hub trusting only `127.0.0.1` is untrusted, and
-the failure is the silent one below.
+`::1` is defensive rather than required, and the reason is worth knowing.
+Verified on a live proxy: writing the upstream as a **hostname** makes the
+address the upstream sees IPv6 —
+
+```
+reverse_proxy 127.0.0.1:9100   ->  upstream sees 127.0.0.1
+reverse_proxy localhost:9100   ->  upstream sees ::1
+```
+
+— because `localhost` resolves to `::1` first. The hub compares the *peer
+address it sees*, not a name, so a proxy dialling `[::1]:9100` against a hub
+trusting only `127.0.0.1` is untrusted, and fails silently as below.
+
+Today's hub cannot actually be reached that way: it binds `0.0.0.0`, which is
+IPv4-only, so it never accepts an IPv6 connection and the peer is always an IPv4
+address. A proxy configured with `localhost` falls back to IPv4 and works.
+Include `::1` anyway — it costs nothing, and it is already correct on the day
+the hub gains a `--bind` flag (§1) and someone binds it dual-stack.
 
 The hub prints which it trusts at startup. Read the line; it is the only
 confirmation you get:
