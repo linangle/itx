@@ -107,8 +107,19 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    it was before item 10 landed the same day, and the number the fix is
    scored against.
 
-   **All three failures are now closed, and this item can be ticked once the
-   drills are re-run against the merged tree.** §6.5b was the last of them,
+   **All three failures are closed and the drills have been re-run against the
+   merged tree (2026-09-06): seven drills, no bug found.** `node-crash`
+   reports REFUTED with nothing lost silently, `escrow-restart`'s hard-kill
+   phase reports inconclusive with no duplicate, and the other five hold as
+   before. Two things the re-run corrected are worth knowing, because both
+   were the drills scoring the old behaviour rather than the new one. The
+   payout drill's wait was one sweep when recovery is now a multi-sweep
+   sequence, and its loss metric counted a visibly-pending payout as
+   destroyed — it reported a million lost against a hub that had lost
+   nothing, which a restart against its own store disproved (five `Paid`,
+   one `Submitted` with the bounty correctly pending). A drill written
+   against a bug needs re-reading when the bug is fixed; its arithmetic
+   encodes assumptions the fix invalidates. §6.5b was the last of them,
    fixed 2026-09-06 on branch `escrow`: all three escrow confirm handlers now
    commit their effect and the deposit's `Consumed` status in one redb
    transaction. Note the drill's own caveat, which still stands and was
