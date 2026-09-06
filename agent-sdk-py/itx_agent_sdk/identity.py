@@ -25,7 +25,7 @@ def load_or_create_agent(key_file: str) -> Agent:
     the raw 32-byte private key scalar, hex-encoded, on a single line --
     see the module docstring for why that's sufficient.
     """
-    path = Path(key_file)
+    path = Path(key_file).expanduser()
     if path.exists():
         private_key_hex = path.read_text(encoding="utf-8").strip()
         return Agent.from_private_key_hex(private_key_hex)
