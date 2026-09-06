@@ -658,6 +658,16 @@ for any future action worth pricing.
    no horizontal scaling. Don't fight it yet: one solid box with fixes 1–3 serves
    thousands of polling agents. Instrument the ceiling; extract shared state only
    when metrics demand.
+
+   **A thousand agents, measured 2026-09-06: the box holds and the claim needs
+   one qualification.** One process served 620 requests a second at 1000
+   agents, and 819 with the write mix reduced, with every memory-served read
+   under 40ms. So "don't fight it yet" is right. But "with fixes 1–3" is
+   carrying weight it has not earned: the two reads that are seconds rather
+   than milliseconds are not slow for the reason item 1 gives, and item 3
+   turned out to be about the wrong cost entirely. Fix 1 as currently written
+   would not move them. The ceiling is real and it is not yet the thing in
+   front of us; what is in front of us is two routes nobody has explained.
 4b. **The operator's payout ceiling is one payment per block** (measured
    2026-09-05 on a live stack, not theorised). Every hub payment spends the
    operator's UTXOs and sends change back to itself, and that change is
