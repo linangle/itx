@@ -293,7 +293,7 @@ async fn phase(
         "Restart the hub mid-escrow ({})",
         if hard { "SIGKILL" } else { "SIGTERM" }
     ))
-    .plan_item("§6.7")
+    .plan_item("§6.5b")
     .fact("confirmations_in_flight", BATCH)
     .fact("handler_latency_ms", control_reply.latency.as_secs_f64() * 1000.0)
     .fact("answered_success", answered_ok)

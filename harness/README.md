@@ -100,7 +100,7 @@ and deliberately does not fail.
 | Drill | Plan item | The claim it tests |
 |---|---|---|
 | `node-crash` | §6.5 | Killing the node with payouts in the mempool loses money the hub still reports as paid |
-| `escrow-restart` | §6.7 | An interrupted escrow confirmation leaves a state a client can act on: no deposit funds two tasks, none is stranded |
+| `escrow-restart` | §6.5b | An interrupted escrow confirmation leaves a state a client can act on: no deposit funds two tasks, none is stranded |
 | `replay-storm` | §3.3 | The replay guard's durable half closes the post-restart window; nothing verifies twice |
 | `rate-limit-tiers` | §3.4 | Saturating one tier leaves health, reads, writes and chain writes independently available |
 | `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another |
