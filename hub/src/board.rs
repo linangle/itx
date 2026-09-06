@@ -1922,14 +1922,29 @@ impl TaskBoard {
     /// settled, which would say the worker was paid. It stays exactly
     /// where it is for an operator to resolve by hand; see
     /// `TaskStatus::PayoutFailed`.
-    pub fn mark_payout_failed(&mut self, task_id: Uuid) -> Result<(), BoardError> {
+    ///
+    /// Returns every attempt it dropped, including a sibling leg's,
+    /// because the caller has to delete each one from the store as well.
+    /// Leaving one behind would be silently corrosive rather than
+    /// merely untidy: it survives a restart, comes back on a board whose
+    /// task is now terminal, and every sweep afterwards tries to resolve
+    /// it and logs a failure it can never clear.
+    pub fn mark_payout_failed(&mut self, task_id: Uuid) -> Result<Vec<PayoutAttempt>, BoardError> {
         let task = self.tasks.get_mut(&task_id).ok_or(BoardError::NotFound)?;
         if !matches!(task.status, TaskStatus::Verified | TaskStatus::Submitted) {
             return Err(BoardError::NotVerified);
         }
         task.status = TaskStatus::PayoutFailed;
-        self.payout_attempts.retain(|(id, _), _| *id != task_id);
-        Ok(())
+        let dropped: Vec<PayoutAttempt> = self
+            .payout_attempts
+            .keys()
+            .filter(|(id, _)| *id == task_id)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|key| self.payout_attempts.remove(&key))
+            .collect();
+        Ok(dropped)
     }
 
     /// Reopens any `Claimed` task whose deadline has passed, so an

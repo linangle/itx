@@ -2837,6 +2837,14 @@ mod tests {
             board.unsubmitted_payouts(task_id).is_empty(),
             "and nothing will be sent again without an operator"
         );
+        drop(board);
+        // The store has to be emptied too, or the attempt comes back at
+        // the next restart attached to a task that is now terminal and
+        // is re-resolved, and re-logged as a failure, every sweep after.
+        assert!(
+            hub.state.store.load_all_payout_attempts().unwrap().is_empty(),
+            "an abandoned task must leave nothing behind for a restart to resurrect"
+        );
     }
 
     /// A payout in flight has to survive a restart, or the hub simply

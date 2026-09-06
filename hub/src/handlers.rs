@@ -2101,12 +2101,24 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
     // polled -- which is right: whatever is wrong with the funding
     // source is not one recipient's problem, and the whole task is now
     // an operator's to settle.
-    if let Err(e) = state.board.write().await.mark_payout_failed(attempt.task_id) {
-        error!("failed to mark task {} payout-failed: {e}", attempt.task_id);
-        return;
-    }
-    if let Err(e) = state.store.delete_payout_attempt(attempt.task_id, &attempt.recipient) {
-        error!("failed to drop the abandoned payout attempt for task {}: {e}", attempt.task_id);
+    let dropped = match state.board.write().await.mark_payout_failed(attempt.task_id) {
+        Ok(dropped) => dropped,
+        Err(e) => {
+            error!("failed to mark task {} payout-failed: {e}", attempt.task_id);
+            return;
+        }
+    };
+    // Every attempt the board dropped, not just this one: a sibling leg
+    // left in the store comes back at the next restart attached to a
+    // task that is now terminal, and is then re-resolved and re-logged
+    // every sweep with no way to ever clear it.
+    for dropped in &dropped {
+        if let Err(e) = state.store.delete_payout_attempt(dropped.task_id, &dropped.recipient) {
+            error!(
+                "failed to drop the abandoned payout attempt for task {} to {}: {e}",
+                dropped.task_id, dropped.recipient
+            );
+        }
     }
     if let Some(task) = state.board.read().await.get_task(attempt.task_id) {
         if let Err(e) = state.store.save_task(task) {
