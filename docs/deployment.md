@@ -1604,6 +1604,19 @@ check is listed separately below, because most of it could only be reasoned.
 | The drill fails when it should | bit flipped in the escrow secret | caught at step 2 (manifest) |
 | …and when the manifest is regenerated to match | same tamper, manifest rebuilt | passed step 2, **caught at step 3** by the out-of-band fingerprint |
 
+The settlement-confirmation rows were run on 2026-09-06 against a real local
+stack — node, miner and hub from this tree, no fakes — because the claim §7.2
+now makes is one that can only be checked by actually stopping a node with money
+in flight:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| A submitted payout reports as unconfirmed | posted, claimed and submitted a task, then read it immediately | `paid: true` in the submit response, but `status: "Submitted"`, `bounty_pending: 1000`, `bounty_confirmed: 0`, reputation `completed: 0` |
+| …and confirms itself | waited one sweep | `status: "Paid"`, `bounty_confirmed: 1000`; `payout … confirmed on chain after 1 submission(s)` |
+| **A node restart no longer destroys a payout** (§7.2) | stopped the miner, submitted a 2000 bounty, killed the node with it in the mempool, restarted node and miner | `never reached the chain (submission 1 of 4), resending`, then `confirmed on chain after 2 submission(s)` — recovered in two sweeps, no human involved |
+| …and the resend does not double-pay | agent's on-chain balance vs. its credited earnings after the recovery | `total_earned: 3000` and `net_worth: 3000` across both tasks — the bounty was paid once, not twice |
+| The operator's two lists drain | `GET /tasks?status=submitted` and `?status=payoutfailed` after the drill | both `[]` |
+
 **Reasoned but not run**, because the target is a Linux box and the checks were
 done on macOS:
 

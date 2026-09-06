@@ -732,6 +732,18 @@ None of them is on the launch-blocking list, and doing them here would have
 meant touching the faucet handler and the exchange while other sessions are in
 them.
 
+**Verified against a real stack, not only against tests.** On 2026-09-06, with
+node, miner and hub from this tree: a submitted payout read as `Submitted` with
+`bounty_pending` set and no reputation credited; it confirmed itself on the next
+sweep. Then, with the miner stopped, a 2000-unit bounty was submitted and the
+node was killed with the transaction in its mempool — the exact case
+`docs/deployment.md` §7.2 called the most expensive thing in that document. The
+hub logged `never reached the chain (submission 1 of 4), resending` on the next
+sweep and `confirmed on chain after 2 submission(s)` on the one after, and the
+agent ended with `total_earned: 3000` against an on-chain balance of exactly
+3000 — recovered without a human, and without paying twice. The table in
+`docs/deployment.md` §11 records it.
+
 **Sequencing.** This landed before the faucet PoW work (§5) as planned, because
 both touch the faucet payout path and this one changes what `Paid` means. It
 unblocks the honest `pending`/`confirmed` fields the API and dashboard owe
