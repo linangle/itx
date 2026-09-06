@@ -32,10 +32,10 @@ hardware module, no on-chain governance that can freeze a compromised operator.
 The chain will faithfully execute whatever the holder of these keys signs. So
 the deployment's entire job reduces to three things:
 
-1. **Reduce the reachable surface to exactly one port** (§2, §3).
-2. **Keep the three secrets off every path an attacker can reach** (§5).
-3. **Make compromise and loss survivable** — detected (§7), recoverable (§6),
-   and rehearsed (§6.4).
+1. **Reduce the reachable surface to exactly one port** (§2, §3, §4).
+2. **Keep the three secrets off every path an attacker can reach** (§5, §6).
+3. **Make compromise and loss survivable** — detected (§8), recoverable (§7),
+   rehearsed (§7.4), and with a plan for the bad day (§9).
 
 The Moltbook comparison in the plan's §3 is the right frame: one config mistake
 (a client-side key, no row-level security) turned into 1.5M plaintext API keys.
