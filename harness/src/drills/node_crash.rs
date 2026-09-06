@@ -199,19 +199,45 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let hub_reported = reported_paid as u64 * BOUNTY;
     let lost_immediately = hub_reported.saturating_sub(landed);
 
-    // Does anything ever come back for it? The sweep retries tasks stuck
-    // in `Verified`; these are `Paid`, which is the claim being tested.
+    // Does anything ever come back for it?
+    //
+    // The accounting here changed with payout confirmation (plan §6.5), and
+    // the distinction it draws is the whole point of that work. Before it,
+    // `Paid` was terminal and money missing from the chain was money gone
+    // with nothing left saying so -- so "reported minus landed" was exactly
+    // the silent loss. Now a payout the chain has not taken can sit in
+    // `Submitted`, which the sweep keeps working and the API reports as a
+    // pending bounty, or reach `PayoutFailed` once its budget is spent.
+    // Neither is silent, and counting them as losses reports a bug that is
+    // not there.
+    //
+    // So the three are counted apart, and only the first is the failure this
+    // drill exists to catch: money the hub still calls `Paid` that the chain
+    // does not have.
     tokio::time::sleep(SWEEP_WAIT).await;
     let mut landed_after_sweep = 0u64;
     let mut still_marked_paid = 0usize;
+    let mut lost = 0u64;
+    let mut pending = 0u64;
+    let mut failed_visibly = 0u64;
     for (agent, task_id) in &paid_agents {
-        landed_after_sweep += chain.confirmed_balance(&agent.public_key()).await?;
+        let on_chain = chain.confirmed_balance(&agent.public_key()).await?;
+        landed_after_sweep += on_chain;
         let task = hub.get(&format!("/tasks/{task_id}")).await?;
-        if task.body.get("status").and_then(Value::as_str) == Some("Paid") {
-            still_marked_paid += 1;
+        let status = task.body.get("status").and_then(Value::as_str).unwrap_or("?");
+        if on_chain >= BOUNTY {
+            continue;
+        }
+        match status {
+            "Paid" => {
+                still_marked_paid += 1;
+                lost += BOUNTY;
+            }
+            "PayoutFailed" => failed_visibly += BOUNTY,
+            // `Submitted`, or anything earlier the sweep still owns.
+            _ => pending += BOUNTY,
         }
     }
-    let lost = hub_reported.saturating_sub(landed_after_sweep);
 
     harness.stack.shutdown().await;
 
@@ -224,6 +250,8 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .fact("itx_lost_before_sweep", lost_immediately)
         .fact("itx_landed_after_one_sweep", landed_after_sweep)
         .fact("itx_lost", lost)
+        .fact("itx_pending_visibly", pending)
+        .fact("itx_failed_visibly", failed_visibly)
         .fact("agents_actually_paid", agents_paid_on_chain)
         .fact("tasks_still_marked_paid", still_marked_paid)
         .fact("chain_height_at_crash", height_before)
@@ -246,10 +274,9 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
             ))
             .finding(format!(
                 "Killing the node with payouts in the mempool destroyed {lost} ITX across \
-                 {} payouts, with no trace left in the hub: the tasks remain `Paid`, the \
-                 agents were never credited on-chain, and the sweep does not look at `Paid` \
-                 tasks. This is §6.5 exactly, measured rather than predicted.",
-                reported_paid - agents_paid_on_chain
+                 {still_marked_paid} payouts, with no trace left in the hub: the tasks still \
+                 read `Paid`, the agents were never credited on-chain, and nothing will \
+                 revisit them. This is §6.5 exactly, measured rather than predicted."
             ));
     } else if reported_paid == 0 {
         section = section.verdict(Verdict::Inconclusive).note(
@@ -257,6 +284,16 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
              this means the operator ran out of confirmed outputs -- see the payout-ceiling \
              drill, which is about exactly that.",
         );
+    } else if pending > 0 || failed_visibly > 0 {
+        section = section.verdict(Verdict::Refuted).note(format!(
+            "Nothing was lost silently. {landed_after_sweep} of {hub_reported} ITX is on the \
+             chain; {pending} is still `Submitted`, which the sweep owns and the API reports \
+             as a pending bounty, and {failed_visibly} reached `PayoutFailed`. The failure \
+             this drill was written for is money the hub still calls `Paid` that the chain \
+             does not have, and there is none of it. Recovery is a multi-sweep sequence, so \
+             a non-zero pending figure here means the wait ended mid-sequence rather than \
+             that anything is wrong."
+        ));
     } else {
         section = section.verdict(Verdict::Refuted).note(
             "Every payout the hub reported was on the chain after the crash. Either the \
