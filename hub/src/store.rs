@@ -11,6 +11,23 @@ const REPUTATION_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("re
 // pubkey sec1 bytes -> grant time (Unix seconds). Mirrors the node's own
 // bans table: same "durable set of pubkeys/IPs with a timestamp" shape.
 const FAUCET_GRANTS_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("faucet_grants");
+// challenge uuid bytes -> serialized `faucet_pow::Challenge`. The
+// faucet's proof-of-work challenges, outstanding and redeemed alike
+// (plan §5).
+//
+// Durable rather than in-memory-only for the reason FAUCET_GRANTS_TABLE
+// is: a restart must not hand back a grant, and here it must not hand
+// back a *solved challenge* either. An attacker who watched the hub go
+// down would otherwise replay a solution it had already spent. Additive
+// in the same way REPLAY_GUARD_TABLE was, so no SCHEMA_VERSION bump and
+// an older store gains it empty.
+//
+// Like the replay guard and unlike everything else here, part of this is
+// garbage: an unredeemed challenge past its expiry can never be used
+// again, and a redeemed one stops mattering once its own expiry is far
+// enough behind. `prune_faucet_challenges` collects both.
+const FAUCET_CHALLENGES_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("faucet_challenges");
 // uuid bytes -> serialized PendingDeposit (private key included -- see
 // its own doc comment for why this must be durable before its address is
 // ever handed out). Additive relative to the schema this hub shipped
@@ -157,6 +174,7 @@ impl HubStore {
             write_txn.open_table(TRADES_TABLE)?;
             write_txn.open_table(AGENT_NAMES_TABLE)?;
             write_txn.open_table(REPLAY_GUARD_TABLE)?;
+            write_txn.open_table(FAUCET_CHALLENGES_TABLE)?;
             write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
@@ -388,6 +406,82 @@ impl HubStore {
         }
         write_txn.commit()?;
         Ok(())
+    }
+
+    /// Persists an issued or updated challenge.
+    ///
+    /// **Deliberately not committed together with the faucet grant it
+    /// pays for**, which is the opposite of the call §6.5b forced on the
+    /// escrow side, and for a reason worth writing down: the two records
+    /// want opposite failure modes.
+    ///
+    /// The redemption must be durable *before* the payout, or a hub that
+    /// dies mid-payment comes back with the solution still spendable and
+    /// the attacker replays it. That is the replay guard's rule and it
+    /// applies here for the same reason.
+    ///
+    /// The grant must be durable *after* the payout, or a payment that
+    /// fails leaves the key permanently marked as having been granted and
+    /// locks out an agent that never received anything.
+    ///
+    /// One transaction cannot satisfy both. Splitting them means a crash
+    /// between the two costs the agent its solved challenge and pays it
+    /// nothing, which is recoverable -- it solves another -- and a crash
+    /// after the payout can at worst grant twice, which now costs the
+    /// attacker a full proof of work rather than being free.
+    pub fn save_faucet_challenge(&self, challenge: &crate::faucet_pow::Challenge) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, FAUCET_CHALLENGES_TABLE, challenge.id.as_bytes(), challenge)
+        })
+    }
+
+    /// Every challenge still worth holding, for the in-memory book to
+    /// restore at boot.
+    pub fn load_all_faucet_challenges(&self) -> Result<Vec<crate::faucet_pow::Challenge>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(FAUCET_CHALLENGES_TABLE)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let challenge: crate::faucet_pow::Challenge = ciborium::from_reader(value.value())
+                .map_err(|e| HubStoreError::Serialization(e.to_string()))?;
+            out.push(challenge);
+        }
+        Ok(out)
+    }
+
+    /// Drops challenges that can no longer affect any decision, and
+    /// reports how many went.
+    ///
+    /// An unredeemed challenge is useless the moment it expires. A
+    /// redeemed one still has a job -- refusing a second redemption --
+    /// but only until its own expiry is `REDEEMED_RETENTION_SECONDS`
+    /// behind, after which the challenge would be refused for being
+    /// expired anyway and the record is only costing space.
+    pub fn prune_faucet_challenges(&self, now_unix: i64) -> Result<usize> {
+        let stale: Vec<crate::faucet_pow::Challenge> = self
+            .load_all_faucet_challenges()?
+            .into_iter()
+            .filter(|c| {
+                let horizon = if c.is_redeemed() {
+                    c.expires_at + crate::faucet_pow::REDEEMED_RETENTION_SECONDS
+                } else {
+                    c.expires_at
+                };
+                now_unix > horizon
+            })
+            .collect();
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        self.in_one_write_txn(|txn| {
+            let mut table = txn.open_table(FAUCET_CHALLENGES_TABLE)?;
+            for challenge in &stale {
+                table.remove(challenge.id.as_bytes().as_slice())?;
+            }
+            Ok(())
+        })?;
+        Ok(stale.len())
     }
 
     pub fn load_all_faucet_grants(&self) -> Result<Vec<PublicKey>> {
@@ -1014,6 +1108,89 @@ mod tests {
         // Pruning again removes nothing: the sweep runs every minute
         // forever, so it has to be idempotent and cheap when idle.
         assert_eq!(store.prune_seen_signatures(now - 100).unwrap(), 0);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The faucet-challenge table is additive on the same terms as the
+    /// replay table below, and this is the test that keeps it honest:
+    /// the money-guarding property is that a store predating the
+    /// proof-of-work faucet opens, gains the table empty, and keeps
+    /// every grant it already recorded -- so nobody who was already
+    /// granted becomes eligible again on upgrade.
+    #[test]
+    fn a_store_from_before_the_faucet_challenge_table_still_opens() {
+        let path = temp_db_path("older_build_faucet");
+        let granted = PrivateKey::new_key().public_key();
+        {
+            let db = redb::Database::create(&path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                write_txn.open_table(TASKS_TABLE).unwrap();
+                write_txn.open_table(REPUTATION_TABLE).unwrap();
+                let mut meta = write_txn.open_table(META_TABLE).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice()).unwrap();
+                let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
+                grants.insert(granted.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let store = HubStore::open_or_create(&path).unwrap();
+        assert!(
+            store.load_all_faucet_challenges().unwrap().is_empty(),
+            "the new table must arrive empty rather than failing to open"
+        );
+        assert_eq!(
+            store.load_all_faucet_grants().unwrap(),
+            vec![granted],
+            "an upgrade must not re-open the faucet to a key already granted"
+        );
+
+        let key = PrivateKey::new_key();
+        let challenge = crate::faucet_pow::Challenge::issue(
+            &key.public_key(),
+            crate::faucet_pow::target_for_expected_hashes(8),
+            Utc::now(),
+        );
+        store.save_faucet_challenge(&challenge).unwrap();
+        assert_eq!(store.load_all_faucet_challenges().unwrap().len(), 1);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Pruning takes an expired challenge and leaves a redeemed one
+    /// alone until its own longer horizon, which is the asymmetry that
+    /// keeps a spent solution unusable rather than merely absent.
+    #[test]
+    fn pruning_keeps_a_redeemed_challenge_longer_than_an_abandoned_one() {
+        let path = temp_db_path("prune_faucet");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let key = PrivateKey::new_key();
+        let target = crate::faucet_pow::target_for_expected_hashes(8);
+        let issued = Utc::now();
+
+        let abandoned = crate::faucet_pow::Challenge::issue(&key.public_key(), target, issued);
+        let mut redeemed = crate::faucet_pow::Challenge::issue(&key.public_key(), target, issued);
+        redeemed.redeemed_at = Some(issued.timestamp());
+        store.save_faucet_challenge(&abandoned).unwrap();
+        store.save_faucet_challenge(&redeemed).unwrap();
+
+        // Just past expiry: the abandoned one is garbage, the redeemed
+        // one is still doing its job.
+        let just_expired = abandoned.expires_at + 1;
+        assert_eq!(store.prune_faucet_challenges(just_expired).unwrap(), 1);
+        let left = store.load_all_faucet_challenges().unwrap();
+        assert_eq!(left.len(), 1);
+        assert!(left[0].is_redeemed());
+
+        // Past the retention horizon it can go too: by now the challenge
+        // would be refused as expired even if the record were missing.
+        let past_retention =
+            redeemed.expires_at + crate::faucet_pow::REDEEMED_RETENTION_SECONDS + 1;
+        assert_eq!(store.prune_faucet_challenges(past_retention).unwrap(), 1);
+        assert!(store.load_all_faucet_challenges().unwrap().is_empty());
+        assert_eq!(store.prune_faucet_challenges(past_retention).unwrap(), 0, "idempotent");
 
         std::fs::remove_file(&path).ok();
     }

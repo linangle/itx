@@ -106,7 +106,18 @@ class FakeHub:
     def __init__(self, base_url: str, rate_limiter: Any):
         self.base_url = base_url
 
-    def faucet_claim(self, agent):
+    def faucet_challenge(self, agent):
+        # A real challenge at a difficulty the test solves in
+        # microseconds, so the tool's actual solving path runs rather
+        # than being stubbed past.
+        return {
+            "challenge_id": "0f5f1e1a-0000-4000-8000-00000000abcd",
+            "target": f"{(1 << 256) // 64:064x}",
+            "expected_hashes": 64,
+            "preimage_template": "mcp-test:{solution}",
+        }
+
+    def faucet_claim(self, agent, challenge_id=None, solution=None):
         return {"amount": 50_000_000}
 
     def create_task_escrow(self, agent, *a, **k):

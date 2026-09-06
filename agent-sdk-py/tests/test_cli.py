@@ -77,24 +77,67 @@ def test_whoami_reports_pubkey_and_paths_but_never_the_private_key(env):
     assert private_hex not in json.dumps(result)
 
 
-def test_faucet_reports_a_grant_and_then_already_claimed(env):
-    client, run, _ = env
-    client.faucet_claim.return_value = {"amount": 50_000_000}
-    first = run("faucet")
-    assert first["already_claimed"] is False
-    assert first["grant"] == {"amount": 50_000_000}
+def _cli_challenge(expected_hashes: int = 64) -> dict:
+    target = (1 << 256) // expected_hashes
+    return {
+        "challenge_id": "0f5f1e1a-0000-4000-8000-00000000abcd",
+        "target": f"{target:064x}",
+        "expected_hashes": expected_hashes,
+        "preimage_template": "cli-test:{solution}",
+    }
 
-    client.faucet_claim.side_effect = HubError(409, {"error": "already claimed"})
-    second = run("faucet")
-    assert second["already_claimed"] is True
-    assert second["pubkey"] == first["pubkey"]
+
+def test_faucet_solves_a_challenge_then_reports_the_grant(env):
+    client, run, _ = env
+    client.faucet_challenge.return_value = _cli_challenge()
+    client.faucet_claim.return_value = {"amount": 50_000_000}
+
+    result = run("faucet")
+
+    assert result["already_claimed"] is False
+    assert result["solved"] is True
+    assert result["grant"] == {"amount": 50_000_000}
+    # The solve time is reported because it is the only step here that
+    # takes real time, and a cron log should show what it cost.
+    assert isinstance(result["solve_seconds"], float)
+    assert result["expected_hashes"] == 64
+    # Redeemed with the id it was issued, not a fresh one.
+    client.faucet_claim.assert_called_once()
+    assert client.faucet_claim.call_args[0][1] == "0f5f1e1a-0000-4000-8000-00000000abcd"
+
+
+def test_faucet_reports_already_claimed_without_solving(env):
+    """The refusal comes at the challenge step, so an already-granted key
+    never spends the CPU."""
+    client, run, _ = env
+    client.faucet_challenge.side_effect = HubError(409, {"error": "already claimed"})
+
+    result = run("faucet")
+
+    assert result["already_claimed"] is True
+    client.faucet_claim.assert_not_called()
 
 
 def test_faucet_reraises_anything_but_a_409(env):
     client, run, _ = env
-    client.faucet_claim.side_effect = HubError(503, {"error": "no node"})
+    client.faucet_challenge.side_effect = HubError(503, {"error": "no node"})
     with pytest.raises(HubError):
         run("faucet")
+
+
+def test_faucet_gives_up_rather_than_hanging_on_an_unreachable_difficulty(env):
+    """An operator can raise the knob past what a given machine can do.
+    That has to end in a JSON answer, not a wedged cron job."""
+    client, run, _ = env
+    impossible = _cli_challenge()
+    impossible["target"] = f"{0:064x}"
+    client.faucet_challenge.return_value = impossible
+
+    result = run("faucet", "--max-seconds", "0.25")
+
+    assert result["solved"] is False
+    assert "error" in result
+    client.faucet_claim.assert_not_called()
 
 
 def test_find_scans_the_open_board_with_the_capability_filter(env):

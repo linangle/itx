@@ -7,6 +7,8 @@ directly, not guessed; if a hub-side struct's field order ever changes,
 the matching method here must change with it.
 """
 
+import hashlib
+import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -44,6 +46,55 @@ class HubError(Exception):
         self.status_code = status_code
         self.body = body
         super().__init__(f"hub returned {status_code}: {body}")
+
+
+class FaucetSolveTimeout(Exception):
+    """Gave up solving a faucet challenge inside the caller's budget."""
+
+
+def solve_faucet_challenge(
+    challenge: dict,
+    max_seconds: Optional[float] = None,
+    start: int = 0,
+) -> int:
+    """Find a `solution` satisfying `challenge`, by brute force.
+
+    The rule, which is the one thing worth getting exactly right:
+
+        sha256(preimage) read **little-endian** <= target read big-endian
+
+    That asymmetry is not a quirk of this SDK. The hub compares hashes
+    the way its chain does, and its chain reads a digest as a
+    little-endian 256-bit integer. Reading it the other way gives a
+    puzzle that is merely different rather than obviously broken -- the
+    loop below would run forever without ever saying why -- so it is
+    written out here once and pinned by a conformance test against a
+    challenge the Rust hub issued.
+
+    Uses `preimage_template` from the wire rather than rebuilding the
+    string from its parts, because the separators and field order are
+    exactly what a reimplementation gets wrong. The template arrives with
+    a literal `{solution}` in it.
+    """
+    template = challenge["preimage_template"]
+    target = int(challenge["target"], 16)
+    prefix, _, suffix = template.partition("{solution}")
+    prefix_b, suffix_b = prefix.encode(), suffix.encode()
+    deadline = None if max_seconds is None else time.monotonic() + max_seconds
+
+    n = start
+    while True:
+        digest = hashlib.sha256(prefix_b + str(n).encode() + suffix_b).digest()
+        if int.from_bytes(digest, "little") <= target:
+            return n
+        n += 1
+        # Checked on a stride rather than every iteration: a clock read
+        # per hash would be a large fraction of the work being measured.
+        if deadline is not None and n % 65536 == 0 and time.monotonic() > deadline:
+            raise FaucetSolveTimeout(
+                f"no solution after {n - start:,} tries in {max_seconds}s; "
+                f"the challenge expects about {challenge.get('expected_hashes', '?')}"
+            )
 
 
 def _canonical_id(value: str) -> str:
@@ -374,8 +425,35 @@ class HubClient:
 
     # -- faucet -----------------------------------------------------------
 
-    def faucet_claim(self, agent: Agent) -> dict:
-        return self._signed_post("/faucet", agent, None)
+    def faucet_challenge(self, agent: Agent) -> dict:
+        """Ask for a proof-of-work challenge. First of the faucet's two
+        steps; see `claim_faucet` for the whole thing."""
+        return self._signed_post("/faucet/challenge", agent, None)
+
+    def faucet_claim(self, agent: Agent, challenge_id: str, solution: int) -> dict:
+        """Redeem a solved challenge. Second of the two steps."""
+        return self._signed_post(
+            "/faucet",
+            agent,
+            {"challenge_id": _canonical_id(challenge_id), "solution": solution},
+        )
+
+    def claim_faucet(self, agent: Agent, max_seconds: Optional[float] = None) -> dict:
+        """Ask, solve, redeem. The call an agent actually wants.
+
+        Blocks while solving, which at the hub's default difficulty is
+        seconds rather than minutes -- `challenge["expected_hashes"]`
+        says how many tries it should take on average, and
+        `solve_faucet_challenge` turns that into a time on this machine.
+
+        `max_seconds` gives up rather than hanging forever if the
+        operator has raised the difficulty far beyond what this machine
+        can chew through; the challenge is left unredeemed and expires on
+        its own.
+        """
+        challenge = self.faucet_challenge(agent)
+        solution = solve_faucet_challenge(challenge, max_seconds=max_seconds)
+        return self.faucet_claim(agent, challenge["challenge_id"], solution)
 
     # -- operator-funded task creation ------------------------------------
 

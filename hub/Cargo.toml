@@ -39,3 +39,8 @@ hex = { workspace = true }
 # test -- never part of the shipped `hub` binary's dependency tree.
 reqwest = { version = "0.12", features = ["json"] }
 sdk = { path = "../sdk" }
+# One test in `faucet_pow` hashes a preimage the way a non-Rust client
+# would, to pin the byte-order convention `Hash` uses. Reaching for the
+# digest directly is the point -- going through `Hash` would test the
+# convention against itself.
+sha256 = { workspace = true }

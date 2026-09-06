@@ -88,8 +88,10 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    findings opened in the process and both since closed, see §3.3.
 4. Tiered, per-endpoint rate limits + per-pubkey quotas (§3.4) — **done**
    2026-09-05; the quota's ordering bug is fixed, see §3.4.
-5. Faucet PoW challenge live with tunable difficulty (§5) — bootstrap only,
-   retired per §5.1 once the task supply carries new agents.
+5. Faucet PoW challenge live with tunable difficulty (§5) — **done**
+   2026-09-06. `POST /faucet/challenge` then `POST /faucet` with a solution;
+   difficulty is `--faucet-pow-expected-hashes`. Bootstrap only, retired per
+   §5.1 once the task supply carries new agents.
 6. Cluster limiting v1 enforced on faucet and consensus joins (§4).
 7. Unbounded-read fixes: pagination on every list route, archival of terminal
    tasks/orders, caching on board endpoints (§6.1).
@@ -473,6 +475,78 @@ an active attack.
 
 **Sweep additions:** expire stale challenges; prune redeemed records older than
 some horizon.
+
+### 5.2 What was built (2026-09-06)
+
+The spec above survived contact, and this records where the build sharpened it.
+
+**The flow is as specified.** `POST /faucet/challenge` issues a challenge bound
+to the calling key; `POST /faucet` carries `{challenge_id, solution}`. The
+preimage is `"{challenge_id}:{server_nonce_hex}:{pubkey_hex}:{action}:{solution}"`,
+hashed with `Hash::hash_bytes` and compared to the target recorded at issuance.
+Every requirement in the table above has a test named after it in
+`hub/src/faucet_pow.rs`.
+
+**Difficulty is expressed in expected hashes, not as a target.** A raw 256-bit
+target is unreadable and nobody can tell by looking whether one is tighter than
+another. `--faucet-pow-expected-hashes` defaults to 20,000,000 and
+`target_for_expected_hashes` converts. The default was calibrated by measuring
+the client that will actually solve these, not guessed: Python's `hashlib` over
+the 183-byte preimage runs at 1.48 million hashes a second on one core, which
+puts the median near fourteen seconds. Four live claims through the real CLI
+took 1.9, 3.0, 5.7 and 16.5 seconds — the spread being what a geometric
+distribution looks like, and all inside §5's ten-to-sixty-second target.
+
+**The two durable writes are deliberately *not* one transaction**, which is the
+opposite of the call §6.5b forced on the escrow side and the most interesting
+thing the build decided. They want opposite failure modes. The redemption must
+be durable *before* the payout or a hub that dies mid-payment comes back with
+the solution still spendable. The grant must be durable *after* it, or a failed
+payment locks a key out of a faucet it never received. One transaction cannot
+satisfy both. Split, a crash between them costs the agent its solved challenge
+and pays nothing, which is recoverable; the older hazard of a double grant now
+costs an attacker a second full proof of work rather than being free.
+
+**A key that already has its grant is refused at the challenge step**, before
+it spends any CPU. Refusing after a minute of work would be a rude way to say
+no, and the check is free.
+
+**Asking twice replaces rather than accumulates.** Refusing a second request
+would strand a client that lost its first challenge to a dropped response for
+the full ten minutes, and buys nothing: the limit exists to stop a *stock*
+accumulating, and one is not a stock.
+
+**The byte order is the cross-language trap.** `Hash::hash_bytes` reads the
+digest as a little-endian `U256`, so a client must compare
+`int.from_bytes(digest, "little") <= target`. Getting it backwards yields a
+puzzle that is merely different rather than obviously broken — the solver runs
+forever and never says why. It is written out in the module docs, in
+`/llms.txt`, in the Python solver's docstring, and pinned by a Rust test that
+hashes the way a client would rather than going through `Hash`. It was then
+proved for real: the Python CLI solved a challenge issued by the Rust hub and
+was paid, four times.
+
+**The wire carries a `preimage_template`** with a literal `{solution}` in it,
+so a client never reconstructs the separators or field order itself. Redundant
+with the other fields and worth the bytes, because that reconstruction is
+exactly what a reimplementation gets wrong.
+
+**A breaking change to a published route, made on purpose.** `POST /faucet`
+took an empty payload and now takes two fields. This is the same argument
+§3.3 made for endpoint binding: it had to land before §7.3 puts the SDKs on
+PyPI, because after third parties pin a version it stops being an edit across
+files we control and becomes a migration. It also retired one of the
+payload-less route pairs the endpoint-binding test used, and created another
+(`/faucet/challenge` and `/exchange/deposit`) — a reminder that the protection
+is the binding, not an audit of which routes currently collide.
+
+**Still open:** difficulty is a startup flag, not a live knob, so tightening it
+under an active attack still means a restart — the same gap §3.4 records for
+the rate limits, and worth fixing for both at once. Auto-retargeting from
+claims per hour remains deferred (§11). And the operator's one-payout-per-block
+ceiling (§6.4b) bounds the faucet at about four grants a minute however cheap
+the puzzle is, which §6.7 measured and which matters more than difficulty for
+onboarding a crowd.
 
 ### 5.1 Sunsetting the faucet
 
@@ -1610,7 +1684,8 @@ land early with maximal soak time:
    acknowledged submission rather than a truthful field, and got one without a
    protocol change. What the build changed about the design, and the three
    questions it left open, are recorded in §6.5.
-6. Faucet PoW challenge — table, endpoints, sweep, llms.txt update (§5)
+6. Faucet PoW challenge — table, endpoints, sweep, llms.txt update (§5) —
+   **done** 2026-09-06; see §5.2 for what the build changed
 7. Pagination + terminal-task/order archival + board caching (§6.1)
 8. Pooled node connection (§6.2) — **done**; sends no longer pool (§6.2), and
    the leaderboard precompute is still deliberately open

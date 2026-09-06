@@ -1,6 +1,7 @@
 use tracing::*;
 
 mod auth;
+mod faucet_pow;
 mod board;
 mod escrow_key;
 mod handlers;
@@ -106,6 +107,14 @@ pub struct AppState {
     /// half is one specific store file, so it cannot be shared by two
     /// hubs the way a bare signature set could.
     pub replay_guard: auth::ReplayGuard,
+    /// The faucet's outstanding and recently-redeemed proof-of-work
+    /// challenges (§5). Instance-scoped and paired with a durable table
+    /// for the reason `auth::ReplayGuard` is: a redemption only this
+    /// process remembers is replayable across a restart.
+    pub faucet_challenges: faucet_pow::ChallengeBook,
+    /// The difficulty knob, kept alongside the book so `/faucet/challenge`
+    /// can report it without recomputing it from the target.
+    pub faucet_expected_hashes: u64,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -215,6 +224,14 @@ struct Args {
     /// (generated on first run if missing). Back this up: without it, any
     /// escrow address already handed out becomes unsweepable.
     escrow_secret_file: String,
+    #[argh(option, default = "faucet_pow::DEFAULT_EXPECTED_HASHES")]
+    /// how much work a faucet grant costs, in expected SHA-256 hashes.
+    /// The default is calibrated so this project's own Python client
+    /// solves in about fourteen seconds on one core; raise it to make
+    /// the faucet dearer under attack, lower it to make onboarding
+    /// quicker. Applies to challenges issued from now on -- work already
+    /// under way is judged against the target it was issued with.
+    faucet_pow_expected_hashes: u64,
     #[argh(option, default = "String::new()")]
     /// comma-separated addresses of the reverse proxies in front of this
     /// hub, whose `X-Forwarded-For` header the rate limiter should
@@ -487,6 +504,7 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
     }
 
     state.replay_guard.cleanup(now);
+    state.faucet_challenges.cleanup(now);
     rate_limit::cleanup(&state.rate_limits);
     sample_gauges(state).await;
 }
@@ -735,6 +753,19 @@ async fn main() -> Result<()> {
     }
     .with_metrics(metrics.clone());
 
+    // Aborts startup if the table cannot be read, the same as the tasks
+    // and faucet grants loaded above and for a sharper reason: a
+    // redemption this hub cannot see is a solved challenge it will
+    // happily accept a second time. Coming up without it would be coming
+    // up with the hole the durable table exists to close.
+    let faucet_target = faucet_pow::target_for_expected_hashes(args.faucet_pow_expected_hashes);
+    let (faucet_challenges, restored_challenges) =
+        faucet_pow::ChallengeBook::restore(store.clone(), faucet_target, chrono::Utc::now())?;
+    println!(
+        "restored {restored_challenges} faucet challenge(s); a grant costs {} expected hashes",
+        args.faucet_pow_expected_hashes
+    );
+
     let state = Arc::new(AppState {
         board: RwLock::new(board),
         store,
@@ -749,6 +780,8 @@ async fn main() -> Result<()> {
         rate_limits: rate_limit::new_table(),
         trusted_proxies,
         replay_guard,
+        faucet_challenges,
+        faucet_expected_hashes: args.faucet_pow_expected_hashes,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
         metrics,
@@ -884,6 +917,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/tasks/:id/dispute/escrow", post(handlers::create_dispute_escrow))
         .route("/tasks/:id/dispute/confirm", post(handlers::confirm_dispute_escrow))
         .route("/tasks/:id/dispute/resolve", post(handlers::resolve_dispute))
+        .route("/faucet/challenge", post(handlers::faucet_challenge))
         .route("/faucet", post(handlers::faucet_claim))
         .route("/reputation/:pubkey", get(handlers::get_reputation))
         .route("/leaderboard", get(handlers::leaderboard))
@@ -1492,6 +1526,11 @@ mod tests {
         }
     }
 
+    /// Eight expected hashes: enough that the first nonce tried is
+    /// usually not a hit, so the solving path is genuinely exercised,
+    /// and cheap enough to be invisible in a test run.
+    const TEST_FAUCET_EXPECTED_HASHES: u64 = 8;
+
     async fn spawn_hub(operator_private_key: PrivateKey, node_address: String) -> TestHub {
         spawn_hub_with_trusted_proxies(operator_private_key, node_address, rate_limit::TrustedProxies::new()).await
     }
@@ -1515,6 +1554,17 @@ mod tests {
         // in the suite goes through the durable write path too, not just
         // the tests that are about it.
         let replay_guard = auth::ReplayGuard::restore(store.clone(), Utc::now()).unwrap().0;
+        // Test hubs get a difficulty a solver clears in a handful of
+        // tries. The production default is calibrated for a Python
+        // client and would put a minute of CPU inside every test that
+        // touches the faucet.
+        let faucet_challenges = faucet_pow::ChallengeBook::restore(
+            store.clone(),
+            faucet_pow::target_for_expected_hashes(TEST_FAUCET_EXPECTED_HASHES),
+            Utc::now(),
+        )
+        .unwrap()
+        .0;
         // The same table the guard and the node client report into, so a
         // test can drive a request and then assert on the counter it
         // moved -- wiring these separately would give three tables and a
@@ -1534,6 +1584,8 @@ mod tests {
             rate_limits: rate_limit::new_table(),
             trusted_proxies,
             replay_guard: replay_guard.with_metrics(metrics.clone()),
+            faucet_challenges,
+            faucet_expected_hashes: TEST_FAUCET_EXPECTED_HASHES,
             names: RwLock::new(NameRegistry::new()),
             net_worths: RwLock::new(None),
             metrics,
@@ -1608,6 +1660,309 @@ mod tests {
         (task_id, claimant)
     }
 
+    /// Walks the faucet's two-step flow: ask for a challenge, solve it,
+    /// redeem it. Returns the redemption response so a caller can assert
+    /// on the status.
+    ///
+    /// Every faucet test goes through here rather than posting to
+    /// `/faucet` directly, which is the point: the flow is now two
+    /// signed calls and a proof of work, and a test that shortcuts it
+    /// would stop being a test of what agents actually do.
+    async fn claim_faucet(hub: &TestHub, key: &PrivateKey) -> reqwest::Response {
+        let challenge = request_faucet_challenge(hub, key).await;
+        redeem_faucet_challenge(hub, key, &challenge).await
+    }
+
+    /// The first leg on its own, for tests that need the challenge
+    /// itself rather than just the grant.
+    async fn request_faucet_challenge(hub: &TestHub, key: &PrivateKey) -> Value {
+        let resp = hub
+            .client
+            .post(format!("{}/faucet/challenge", hub.base_url))
+            .json(&envelope(key, "/faucet/challenge", ()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK, "challenge issuance");
+        resp.json().await.unwrap()
+    }
+
+    /// Solves `challenge` the way a client does -- rebuilding the
+    /// preimage from the wire fields rather than from the hub's own
+    /// `Challenge` type, so this exercises the same reconstruction an
+    /// SDK has to get right.
+    fn solve_faucet_challenge(challenge: &Value) -> u64 {
+        let template = challenge["preimage_template"].as_str().unwrap();
+        let target = btclib::U256::from_str_radix(challenge["target"].as_str().unwrap(), 16).unwrap();
+        (0u64..)
+            .find(|n| {
+                Hash::hash_bytes(template.replace("{solution}", &n.to_string()).as_bytes())
+                    .matches_target(target)
+            })
+            .unwrap()
+    }
+
+    async fn redeem_faucet_challenge(
+        hub: &TestHub,
+        key: &PrivateKey,
+        challenge: &Value,
+    ) -> reqwest::Response {
+        let payload = handlers::FaucetClaimPayload {
+            challenge_id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+            solution: solve_faucet_challenge(challenge),
+        };
+        hub.client
+            .post(format!("{}/faucet", hub.base_url))
+            .json(&envelope(key, "/faucet", payload))
+            .send()
+            .await
+            .unwrap()
+    }
+
+
+    /// The happy path, end to end over HTTP: ask, solve, get paid.
+    #[tokio::test]
+    async fn a_solved_challenge_earns_the_faucet_grant() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        assert_eq!(challenge["action"], "faucet");
+        assert_eq!(challenge["pubkey"], agent.public_key().to_string());
+        assert!(challenge["preimage_template"].as_str().unwrap().ends_with(":{solution}"));
+
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    }
+
+    /// The work has to be real. A claim carrying a nonce that does not
+    /// meet the target is refused, which is the whole point of the
+    /// exercise -- without this the endpoint is the old unpriced faucet
+    /// with extra steps.
+    #[tokio::test]
+    async fn an_unsolved_claim_is_refused() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let good = solve_faucet_challenge(&challenge);
+        // A nonce that is definitely not the one found above. Adding one
+        // could land on another solution at this easy difficulty, so the
+        // test asserts on a value it has checked is wrong.
+        let bad = (0u64..)
+            .filter(|n| *n != good)
+            .find(|n| {
+                let template = challenge["preimage_template"].as_str().unwrap();
+                let target =
+                    btclib::U256::from_str_radix(challenge["target"].as_str().unwrap(), 16).unwrap();
+                !Hash::hash_bytes(template.replace("{solution}", &n.to_string()).as_bytes())
+                    .matches_target(target)
+            })
+            .unwrap();
+
+        let payload = handlers::FaucetClaimPayload {
+            challenge_id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+            solution: bad,
+        };
+        let resp = hub
+            .client
+            .post(format!("{}/faucet", hub.base_url))
+            .json(&envelope(&agent, "/faucet", payload))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+
+    /// Work done for one key must not pay another. This is the property
+    /// that stops one miner farming solutions for a swarm, and it is
+    /// checked twice by construction -- the pubkey is inside the hash
+    /// and the challenge is bound to it server-side -- so the test
+    /// presents a genuinely solved challenge under the wrong signature
+    /// and expects the server-side binding to catch it.
+    #[tokio::test]
+    async fn one_keys_solution_cannot_be_redeemed_by_another_key() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let alice = PrivateKey::new_key();
+        let bob = PrivateKey::new_key();
+
+        let for_alice = request_faucet_challenge(&hub, &alice).await;
+        let payload = handlers::FaucetClaimPayload {
+            challenge_id: for_alice["challenge_id"].as_str().unwrap().parse().unwrap(),
+            solution: solve_faucet_challenge(&for_alice),
+        };
+        let resp = hub
+            .client
+            .post(format!("{}/faucet", hub.base_url))
+            .json(&envelope(&bob, "/faucet", payload))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "bob must not spend alice's work"
+        );
+    }
+
+    /// One challenge, one grant. The second redemption is refused for
+    /// being spent rather than for the pubkey already having a grant, so
+    /// the test uses a key whose grant was rolled back -- otherwise both
+    /// guards would fire and it would not be clear which one did.
+    #[tokio::test]
+    async fn a_challenge_cannot_be_redeemed_twice() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &challenge).await.status(),
+            reqwest::StatusCode::OK
+        );
+
+        // Clear the grant so the faucet's own once-per-key rule cannot
+        // be what refuses the second attempt.
+        hub.state.board.write().await.revoke_faucet_grant(&agent.public_key());
+
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::CONFLICT,
+            "a spent challenge must be refused as spent"
+        );
+    }
+
+    /// The reason the redemption record is durable. An attacker who
+    /// watches the hub go down and replays a solution the instant it
+    /// returns must find the challenge already spent -- an in-memory
+    /// book would have forgotten it.
+    #[tokio::test]
+    async fn a_redeemed_challenge_is_still_spent_after_a_restart() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let id: Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+        let solution = solve_faucet_challenge(&challenge);
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &challenge).await.status(),
+            reqwest::StatusCode::OK
+        );
+
+        // A second book over the same store, with its own empty memory:
+        // exactly what a restart produces.
+        let (restarted, restored) = faucet_pow::ChallengeBook::restore(
+            hub.state.store.clone(),
+            faucet_pow::target_for_expected_hashes(TEST_FAUCET_EXPECTED_HASHES),
+            Utc::now(),
+        )
+        .unwrap();
+        assert!(restored > 0, "the redeemed challenge must come back from disk");
+        assert!(
+            matches!(
+                restarted.redeem(id, &agent.public_key(), solution, Utc::now()),
+                Err(faucet_pow::RedemptionError::AlreadyRedeemed)
+            ),
+            "a restart must not make a spent solution spendable again"
+        );
+    }
+
+    /// An expired challenge is refused, and the sweep eventually stops
+    /// carrying it. Both halves matter: the first is the rule, the
+    /// second is what keeps the table from growing by a row per
+    /// challenge ever issued.
+    #[tokio::test]
+    async fn an_expired_challenge_is_refused_and_then_collected() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let id: Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+        let solution = solve_faucet_challenge(&challenge);
+
+        let past_expiry =
+            Utc::now() + chrono::Duration::seconds(faucet_pow::CHALLENGE_TTL_SECONDS + 1);
+        assert!(matches!(
+            hub.state
+                .faucet_challenges
+                .redeem(id, &agent.public_key(), solution, past_expiry),
+            Err(faucet_pow::RedemptionError::Expired)
+        ));
+
+        run_sweep_once(&hub.state, past_expiry).await;
+        assert_eq!(
+            hub.state.faucet_challenges.len(),
+            0,
+            "an expired, unredeemed challenge is garbage and the sweep must take it"
+        );
+        assert!(hub.state.store.load_all_faucet_challenges().unwrap().is_empty());
+    }
+
+    /// One outstanding challenge per key. Asking again replaces rather
+    /// than accumulates, so a client cannot build a stock of puzzles to
+    /// solve at leisure and redeem in a burst.
+    #[tokio::test]
+    async fn asking_twice_replaces_the_outstanding_challenge() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let first = request_faucet_challenge(&hub, &agent).await;
+        let second = request_faucet_challenge(&hub, &agent).await;
+        assert_ne!(first["challenge_id"], second["challenge_id"]);
+        assert_ne!(first["server_nonce"], second["server_nonce"], "a fresh nonce each time");
+
+        assert_eq!(
+            hub.state.faucet_challenges.outstanding_for(&agent.public_key()),
+            Some(second["challenge_id"].as_str().unwrap().parse().unwrap())
+        );
+
+        // The superseded one is gone rather than merely unreferenced, so
+        // a late solution against it is told so.
+        let resp = redeem_faucet_challenge(&hub, &agent, &first).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &second).await.status(),
+            reqwest::StatusCode::OK
+        );
+    }
+
+    /// A key that has already been granted is turned away before it
+    /// spends any work, which is the difference between a rate limiter
+    /// and a rude one.
+    #[tokio::test]
+    async fn an_already_granted_key_is_refused_a_challenge() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        assert_eq!(claim_faucet(&hub, &agent).await.status(), reqwest::StatusCode::OK);
+
+        let resp = hub
+            .client
+            .post(format!("{}/faucet/challenge", hub.base_url))
+            .json(&envelope(&agent, "/faucet/challenge", ()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+    }
+
     #[tokio::test]
     async fn full_http_task_lifecycle_pays_out_through_a_real_router() {
         let operator_key = PrivateKey::new_key();
@@ -1615,22 +1970,18 @@ mod tests {
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let agent_key = PrivateKey::new_key();
 
-        let resp = hub
-            .client
-            .post(format!("{}/faucet", hub.base_url))
-            .json(&envelope(&agent_key, "/faucet", ()))
-            .send()
-            .await
-            .unwrap();
+        let resp = claim_faucet(&hub, &agent_key).await;
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
-        // a FRESH envelope (new signature) for an already-granted pubkey
-        // -- distinct from the replay case, which reuses the same
-        // signature (see `replayed_envelope_is_rejected`).
+        // A second, fully-solved attempt by an already-granted pubkey --
+        // distinct from the replay case, which reuses one signature (see
+        // `replayed_envelope_is_rejected`). Refused at the challenge
+        // step now, before any work is spent, which is the friendlier
+        // place to say no.
         let resp = hub
             .client
-            .post(format!("{}/faucet", hub.base_url))
-            .json(&envelope(&agent_key, "/faucet", ()))
+            .post(format!("{}/faucet/challenge", hub.base_url))
+            .json(&envelope(&agent_key, "/faucet/challenge", ()))
             .send()
             .await
             .unwrap();
@@ -1785,7 +2136,17 @@ mod tests {
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let agent_key = PrivateKey::new_key();
-        let env = envelope(&agent_key, "/faucet", ());
+        // A genuinely solved claim, so the replay below is refused for
+        // being a replay and not for being unsolved.
+        let challenge = request_faucet_challenge(&hub, &agent_key).await;
+        let env = envelope(
+            &agent_key,
+            "/faucet",
+            handlers::FaucetClaimPayload {
+                challenge_id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+                solution: solve_faucet_challenge(&challenge),
+            },
+        );
 
         let first = hub
             .client
@@ -1879,10 +2240,17 @@ mod tests {
     }
 
     /// The finding, closed at the HTTP layer rather than only in the
-    /// recipe: `/faucet` and `/exchange/deposit` both take a payload-less
-    /// envelope, so before the path was bound in, one signed envelope was
-    /// accepted at either. The signature is genuine and unexpired here --
-    /// the only thing wrong with it is the door it is being presented at.
+    /// recipe: two routes taking a payload-less envelope would, before
+    /// the path was bound in, accept each other's. The signature is
+    /// genuine and unexpired here -- the only thing wrong with it is the
+    /// door it is being presented at.
+    ///
+    /// The pair used to be `/faucet` and `/exchange/deposit`. Giving the
+    /// faucet a proof-of-work payload retired that pairing and created
+    /// this one, `/faucet/challenge` and `/exchange/deposit`, which is
+    /// the useful reminder: payload-less routes keep appearing, so the
+    /// protection has to be the binding rather than an audit of which
+    /// routes currently collide.
     #[tokio::test]
     async fn an_envelope_signed_for_one_route_is_rejected_at_another() {
         let operator_key = PrivateKey::new_key();
@@ -1890,7 +2258,7 @@ mod tests {
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let agent_key = PrivateKey::new_key();
 
-        let for_faucet = envelope(&agent_key, "/faucet", ());
+        let for_faucet = envelope(&agent_key, "/faucet/challenge", ());
         let resp = hub
             .client
             .post(format!("{}/exchange/deposit", hub.base_url))
@@ -1901,7 +2269,7 @@ mod tests {
         assert_eq!(
             resp.status(),
             reqwest::StatusCode::UNAUTHORIZED,
-            "an envelope signed for /faucet must not be accepted at /exchange/deposit"
+            "an envelope signed for /faucet/challenge must not be accepted at /exchange/deposit"
         );
 
         // The same envelope at the route it was actually signed for still
@@ -1911,7 +2279,7 @@ mod tests {
         // passes, junk bytes cannot spend someone else's slot.)
         let resp = hub
             .client
-            .post(format!("{}/faucet", hub.base_url))
+            .post(format!("{}/faucet/challenge", hub.base_url))
             .json(&for_faucet)
             .send()
             .await
@@ -1926,10 +2294,19 @@ mod tests {
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let agent_key = PrivateKey::new_key();
 
-        let stale = envelope_at(&agent_key, "/faucet", (), Utc::now() - chrono::Duration::minutes(10));
+        // `/faucet/challenge` rather than `/faucet`, because the drift
+        // check runs before the payload is looked at and this route
+        // still takes an empty one -- so the test stays about the
+        // timestamp rather than about solving a puzzle first.
+        let stale = envelope_at(
+            &agent_key,
+            "/faucet/challenge",
+            (),
+            Utc::now() - chrono::Duration::minutes(10),
+        );
         let resp = hub
             .client
-            .post(format!("{}/faucet", hub.base_url))
+            .post(format!("{}/faucet/challenge", hub.base_url))
             .json(&stale)
             .send()
             .await
@@ -2084,6 +2461,31 @@ mod tests {
     /// reads to learn the API. This doesn't check the prose itself (too
     /// brittle), just that every endpoint/kind introduced since the
     /// original version is at least mentioned somewhere.
+    /// The manual has to carry the faucet's new shape, because an agent
+    /// following it is the only client that exists before the SDK is
+    /// published. The byte-order line is singled out: it is the one part
+    /// a reader can get wrong and then hash forever without a hit.
+    #[tokio::test]
+    async fn llms_txt_documents_the_faucet_proof_of_work() {
+        let operator_key = PrivateKey::new_key();
+        let hub = spawn_hub(operator_key, dead_address().await).await;
+        let llms = hub.client.get(format!("{}/llms.txt", hub.base_url)).send().await.unwrap().text().await.unwrap();
+        for expected in [
+            "POST /faucet/challenge",
+            "preimage_template",
+            "expected_hashes",
+            "little-endian",
+            "int.from_bytes(sha256(preimage.encode()).digest(), \"little\") <= int(target, 16)",
+            "\"solution\": N",
+        ] {
+            assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
+        }
+        assert!(
+            llms.contains(&TEST_FAUCET_EXPECTED_HASHES.to_string()),
+            "the difficulty must be the hub's live value, not a hardcoded one"
+        );
+    }
+
     #[tokio::test]
     async fn llms_txt_mentions_every_task_kind_and_the_escrow_and_dispute_flows() {
         let operator_key = PrivateKey::new_key();

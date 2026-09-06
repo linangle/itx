@@ -446,6 +446,8 @@ mod tests {
             "/tasks/some-id/dispute/confirm",
             "/tasks/some-id/dispute/resolve",
             "/faucet",
+            // The grant itself pays out on chain. Issuing its challenge
+            // does not, and is classified below with the local writes.
             "/exchange/deposit/some-id/confirm",
             "/exchange/withdraw",
         ] {
@@ -460,6 +462,7 @@ mod tests {
             "/tasks/some-id/claim",
             "/tasks/some-id/cancel",
             "/tasks/some-id/dispute/escrow",
+            "/faucet/challenge",
             "/exchange/deposit",
             "/exchange/orders",
             "/exchange/orders/some-id/cancel",
