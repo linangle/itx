@@ -43,39 +43,54 @@ itx.example.com {
 		max_size 64KB
 	}
 
-	reverse_proxy 127.0.0.1:9100 {
-		# THE security-relevant line.
-		#
-		# Caddy's default is to APPEND the client to any X-Forwarded-For
-		# the client itself sent. The hub reads the list right to left and
-		# skips its own proxies (hub/src/rate_limit.rs, client_ip), so
-		# appending is in fact safe today -- the rightmost entry is the
-		# one we observed.
-		#
-		# We replace instead of appending anyway, so that exactly one
-		# entry exists and it is the address this proxy actually saw.
-		# That makes the config correct under a left-to-right reader too,
-		# which is what protects it if the hub's parsing is ever changed
-		# or a second proxy is added by someone who does not know the
-		# rule. A spoofed header from a client is discarded here and
-		# never reaches the hub at all.
-		header_up X-Forwarded-For {remote_host}
+	# RFC 9116 disclosure contact. Served here because the hub's router
+	# has no route for it and adding one would be a code change; the
+	# proxy is the right place for a static well-known file anyway.
+	# Install with:
+	#     sudo install -Dm644 deploy/security.txt \
+	#         /etc/caddy/well-known/security.txt
+	handle /.well-known/security.txt {
+		root * /etc/caddy/well-known
+		rewrite * /security.txt
+		header Content-Type "text/plain; charset=utf-8"
+		file_server
+	}
 
-		# The hub does not read these, but a future handler might, and
-		# they should mean what they say rather than whatever a client
-		# asserted.
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-Host {host}
-		header_up -Forwarded
-		header_up -X-Real-IP
+	handle {
+		reverse_proxy 127.0.0.1:9100 {
+			# THE security-relevant line.
+			#
+			# Caddy's default is to APPEND the client to any X-Forwarded-For
+			# the client itself sent. The hub reads the list right to left and
+			# skips its own proxies (hub/src/rate_limit.rs, client_ip), so
+			# appending is in fact safe today -- the rightmost entry is the
+			# one we observed.
+			#
+			# We replace instead of appending anyway, so that exactly one
+			# entry exists and it is the address this proxy actually saw.
+			# That makes the config correct under a left-to-right reader too,
+			# which is what protects it if the hub's parsing is ever changed
+			# or a second proxy is added by someone who does not know the
+			# rule. A spoofed header from a client is discarded here and
+			# never reaches the hub at all.
+			header_up X-Forwarded-For {remote_host}
 
-		# Health of the upstream, not of the node. /health makes the hub
-		# open a fresh TCP connection to the node (node_client opens one
-		# per call), so this interval is a real cost -- see
-		# docs/deployment.md §8.2. 30s, not 1s.
-		health_uri /health
-		health_interval 30s
-		health_timeout 5s
+			# The hub does not read these, but a future handler might, and
+			# they should mean what they say rather than whatever a client
+			# asserted.
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+			header_up -Forwarded
+			header_up -X-Real-IP
+
+			# Health of the upstream, not of the node. /health makes the hub
+			# open a fresh TCP connection to the node (node_client opens one
+			# per call), so this interval is a real cost -- see
+			# docs/deployment.md §8.2. 30s, not 1s.
+			health_uri /health
+			health_interval 30s
+			health_timeout 5s
+		}
 	}
 
 	# Deliberately NO `encode` directive. The hub already gzips its own

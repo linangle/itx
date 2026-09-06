@@ -736,3 +736,159 @@ Two habits worth having:
   agent-authored text (plan §3.5, §3.6) and some of it reaches log lines. Do not
   build alerting that parses log *content* as though it were trustworthy, and
   prefer the journal's structured fields to grepping free text where you can.
+
+---
+
+## 9. Incident runbook
+
+### 9.0 The one lever you have
+
+Worth knowing before the specific playbooks, because it shapes all of them:
+**the operator runs the only node and the only miner.** Stopping `itx-node`
+stops the chain — nothing confirms, no transaction settles, no key is worth
+anything to anyone holding it.
+
+Centralization is a liability in every other section of this document. Here it
+is the containment primitive, and it is the only one: there is no key
+revocation, no freeze, no multisig, no governance. If the treasury is being
+drained, the move is to halt the chain.
+
+It is drastic and it is available in one command. Know that before you need it.
+
+```bash
+sudo systemctl stop itx-node itx-miner    # nothing settles from here on
+```
+
+### 9.1 Suspected key compromise
+
+The worst case, and the one to rehearse. Any of: the box was accessed, a secret
+was copied off it, a backup archive leaked with its identity file, or funds are
+moving that the hub did not send.
+
+1. **Halt.** `sudo systemctl stop itx-hub itx-node itx-miner`. In that order —
+   the hub first so it stops signing, the chain second so nothing already signed
+   confirms.
+2. **Preserve evidence before touching anything.** Copy the journal
+   (`journalctl -u itx-hub --since ... > /tmp/incident.log`), the proxy access
+   log, and the `bans` state. Do not restart services to "see if it is still
+   happening"; a restart rotates logs you may need and re-opens the payout path.
+3. **Establish which secret.** They have very different blast radii (§6.1) and
+   very different responses:
+   - **Operator key** — the treasury and faucet funding. Loss is bounded by its
+     balance, which is why §6.1 says keep working capital there, not reserves.
+   - **Exchange custody key** — every depositor's balance at once. This is the
+     one with real counterparty harm.
+   - **Escrow secret** — every escrow *in flight*: bounties, dispute bonds,
+     exchange deposits not yet swept.
+4. **Understand what recovery is and is not available.** There is no revocation.
+   A new key is a new address; it does not invalidate the old one. Concretely:
+   - Funds still at a compromised address must be *moved* to a new one, and that
+     requires the chain running — which is what you just halted. Restarting the
+     node to move funds also restarts the attacker's ability to move them. If
+     they are watching, they have the same access you do and no approval step.
+     Decide deliberately, with the amounts in front of you, rather than
+     reflexively restarting.
+   - Rotating the escrow secret is **not retroactive** (§6.3). Deposits reserved
+     under the old secret still need it. A compromise here means every
+     outstanding escrow address should be treated as attacker-controlled until
+     swept or expired.
+5. **Rebuild the box, do not clean it.** The secrets were readable, so assume
+   everything on the host was. Restore from a backup predating the compromise
+   (§7.4 is the drill for exactly this), onto fresh infrastructure, with new
+   keys where step 4 allows it.
+6. **Disclose.** Say what was taken, when, and what it means for agent balances.
+   The plan's §3 is unambiguous about which half of Moltbook's handling did the
+   permanent damage, and it was not the response.
+
+### 9.2 The node has banned the box
+
+**Symptom:** `/health` returns `503 degraded`, the node process is running and
+healthy in its own logs, and everything requiring the chain fails.
+
+**Cause, nine times in ten:** something TCP-probed port 9000. See §8.1 — the ban
+is one hour, persisted, and survives a restart.
+
+1. Confirm: `journalctl -u itx-node | grep -i banning` — the node logs
+   `banning peer <ip> until <time>` at `warn`.
+2. If the banned address is the box's own, that is the diagnosis.
+3. **Find and disable the prober first**, or you will be banned again the moment
+   the hour is up. Look at anything added recently: a monitoring check, a deploy
+   script's wait loop, a security scan.
+4. Wait out the hour. Restarting the node does *not* clear it.
+5. Only if waiting is not survivable: stop the node, delete the row from the
+   `bans` table in `blockchain.redb` with an external redb tool, restart. Stopping
+   is mandatory — redb is single-process.
+
+### 9.3 Every agent is getting 429s
+
+**Symptom:** the 429 rate jumps to ~100% across all clients simultaneously.
+
+Simultaneity across *all* clients is the tell. A real attack raises the 429 rate
+for the attacker's buckets; this raises it for everyone at once, because everyone
+is now sharing one bucket.
+
+1. Check the hub's startup banner: `journalctl -u itx-hub -b | grep -i trusting`.
+2. `trusting no proxy` while a proxy is in front of the hub is §4.3's failure 1
+   — every request is charged to the proxy's address.
+3. Fix `--trusted-proxies` in `deploy/itx-hub.service` (include `::1`), then
+   `daemon-reload` and restart.
+
+If the banner is correct, it is a genuine load or attack event: consult the
+proxy access log for the distribution of source addresses, and note that the
+rate limits are compile-time constants (plan §3.4), so tightening them under an
+active attack means a redeploy. That is a known gap, not something you can knob.
+
+### 9.4 The faucet appears stalled
+
+Not a bug. See §10 — the operator can hold zero *spendable* balance immediately
+after any payout, which bounds operator-funded payouts at roughly one per block.
+
+### 9.5 The hub will not start, or refuses authenticated writes
+
+Read the banner first; it usually says which.
+
+- **`WARNING: replay log unreadable … authenticated writes are refused for the
+  next 120s`** — the hub is up and serving reads, and deliberately closing the
+  post-restart replay window the slow way (plan §3.3). If it says this on *every*
+  start, the replay log is genuinely unreadable and needs investigating; if it
+  says it once after a crash, it is working as designed. Read routes are
+  unaffected either way.
+- **`escrow secret at … must be exactly 32 bytes, found N`** — the hub is
+  refusing to start rather than derive escrow addresses from a truncated or
+  wrong file. This is the good failure. Restore the secret (§7.4); do not
+  "fix" the file's length.
+- **Store won't open** — likely a torn copy (§7.2) or a second process holding
+  it. `fuser /var/lib/itx/hub.redb` before concluding it is corrupt.
+
+### 9.6 Chain height has stopped advancing
+
+1. Is the miner running? `systemctl status itx-miner`. If it is restart-looping,
+   the node is down or unreachable — go to §9.2.
+2. Is the node running and unbanned?
+3. If both are healthy and height is static, the miner is connected but not
+   submitting; check its log for template errors.
+
+Effective cadence is ~35s per block on a local stack (16s target, 5s miner
+template interval), so alert at ~5 minutes of no movement, not one.
+
+### 9.7 Restoring from backup
+
+Full procedure in §7.4. The ordering constraint that bites under pressure: **stop
+the hub before anything else opens `hub.redb`.** redb is single-process, and the
+drill script's scratch-directory approach exists precisely so you can rehearse
+without tripping over that.
+
+### 9.8 Disclosure inbox
+
+`deploy/security.txt` → `/.well-known/security.txt`, served by the proxy (the
+hub has no route for it). Install:
+
+```bash
+sudo install -Dm644 deploy/security.txt /etc/caddy/well-known/security.txt
+sudo systemctl reload caddy
+curl -sS https://itx.example.com/.well-known/security.txt
+```
+
+Set `Contact:` to an inbox someone actually reads and `Expires:` to a real date
+under a year out, then put its renewal on a calendar. An expired `security.txt`
+is worse than none — it advertises that the contact was maintained once.
