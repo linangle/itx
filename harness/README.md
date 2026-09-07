@@ -38,6 +38,15 @@ every worktree, which is a merge conflict by construction. A more specific bind
 silently shadows a wildcard one, so a shared port does not produce an error —
 it produces a measurement of somebody else's hub.
 
+**A drill that is killed hard leaves its whole stack running.** `kill_on_drop`
+cannot fire when the parent takes a SIGKILL, so node, miner and hub keep going
+and hold the ports. The next run then finds a *working* stack there: readiness
+passes, `/health` answers, and it proceeds against the previous run's hub with
+a different operator key — which presents as a hang in setup, waiting for a
+balance that will never arrive. The stack now connects to each port before it
+spawns anything and refuses with a sentence instead. If you see it, look for
+stray `node`/`miner`/`hub` processes under the work root and kill them.
+
 ```bash
 CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out harness/results
 ```

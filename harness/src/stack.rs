@@ -231,6 +231,7 @@ impl Stack {
         if self.node.is_some() {
             return Ok(());
         }
+        refuse_if_occupied(self.config.node_port, "node").await?;
         self.node = Some(self.spawn(
             "node",
             &[
@@ -295,6 +296,7 @@ impl Stack {
         if self.hub.is_some() {
             return Ok(());
         }
+        refuse_if_occupied(self.config.hub_port, "hub").await?;
         let mut args = vec![
             "--port".into(),
             self.config.hub_port.to_string(),
@@ -372,6 +374,41 @@ impl Stack {
         let _ = self.stop_hub().await;
         let _ = self.stop_node().await;
     }
+}
+
+/// Refuses to start if something is already listening on `port`.
+///
+/// A drill killed hard leaves its node, miner and hub running --
+/// `kill_on_drop` cannot fire when the parent takes a SIGKILL -- and the
+/// next run then finds a *working* stack on its ports. That is the worst
+/// possible shape for the failure: the readiness checks pass, `/health`
+/// answers, and the run proceeds against the previous run's hub, which
+/// holds a different operator key. What it looks like from outside is a
+/// drill hanging in setup waiting for a balance that will never arrive,
+/// and then failing with a message about funding.
+///
+/// One connect before anything is spawned turns that into a sentence.
+/// It also catches the case the module header warns about from the other
+/// direction: another workstream's stack on a port this one assumed.
+///
+/// Deliberately not a retry-until-free: a port that is busy is a
+/// question for a person, and waiting on it is how a drill ends up
+/// measuring whatever eventually let go of it.
+async fn refuse_if_occupied(port: u16, what: &str) -> Result<()> {
+    let probe = tokio::time::timeout(
+        Duration::from_millis(500),
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await;
+    if matches!(probe, Ok(Ok(_))) {
+        return Err(anyhow!(
+            "something is already listening on 127.0.0.1:{port}, which is where this drill's \
+             {what} goes. Most likely a previous drill was killed and left its stack running \
+             (look for stray node/miner/hub processes under the work root); otherwise another \
+             workstream has the port, and ITX_DRILL_NODE_PORT / ITX_DRILL_HUB_PORT move this one."
+        ));
+    }
+    Ok(())
 }
 
 async fn kill_now(child: &mut Option<Child>) -> Result<()> {
