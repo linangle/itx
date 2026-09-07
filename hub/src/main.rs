@@ -9,6 +9,7 @@ mod metrics;
 mod names;
 mod node_client;
 mod rate_limit;
+mod reconcile;
 mod store;
 
 use anyhow::Result;
@@ -712,6 +713,25 @@ async fn main() -> Result<()> {
         restored_payouts,
     );
 
+    // Cross-check what just came off disk, before anything is served
+    // from it. Every table above was loaded independently and every row
+    // blind-inserted, so records that disagree simply arrive
+    // disagreeing; until this existed, nothing said so (plan §6.5c).
+    //
+    // **Reports, does not repair, and does not refuse to start.** That
+    // last part is a decision rather than a default, and it is argued
+    // in the plan: refusing to boot converts every one of these into an
+    // outage, and the ones that can occur are money already moved or
+    // money already locked -- none of which a stopped hub makes better,
+    // while a stopped hub does stop the sweep that is the only
+    // automatic recovery the hub has. So it starts, loudly. Making this
+    // fatal is a per-class judgement someone can add later on the back
+    // of the metric, which is deliberately emitted for every class
+    // including the zeroes so an alert can be written before the first
+    // incident.
+    let reconciliation = reconcile::reconcile(&board);
+    reconciliation.log();
+
     let mut names = NameRegistry::new();
     for (pubkey, name) in store.load_all_agent_names()? {
         names.restore(pubkey, name);
@@ -746,6 +766,19 @@ async fn main() -> Result<()> {
     // hold their own handle to it and must report into the same table the
     // router will later render.
     let metrics = metrics::Metrics::new();
+    // Published as soon as the table exists, so the first scrape of a
+    // freshly started hub already carries the verdict on the store it
+    // started from. The reconciliation itself ran earlier -- before
+    // anything could be served -- because a boot check that runs after
+    // the router is up is a check the first request beats.
+    for class in metrics::RECONCILIATION_CLASSES {
+        let count = reconciliation
+            .findings
+            .iter()
+            .filter(|finding| finding.kind.label() == class)
+            .count() as u64;
+        metrics.reconciliation_disagreements.insert(class, count);
+    }
 
     let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
         Ok((guard, restored)) => {
