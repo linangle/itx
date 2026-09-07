@@ -1,22 +1,22 @@
 {
   "name": "drill: escrow-restart",
-  "started_at": "2026-09-06T10:02:43.615151Z",
+  "started_at": "2026-09-07T08:10:11.453475Z",
   "environment": {
-    "commit": "1b1378460590511b583fc9639e69a1fbbc5f92ef",
-    "dirty": false,
+    "commit": "44fef477fa7d325508d80fb6887b3d113d3d39ba",
+    "dirty": true,
     "profile": "release",
     "host": "Darwin arm64",
     "cpus": 10,
     "binaries": {
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/hub": "69afd36a4b7dd5552727e8521ea1c2e57a899474abfd8ac43f4c574a0cd463cc",
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
     }
   },
   "sections": [
     {
       "title": "Restart the hub mid-escrow (SIGTERM)",
-      "plan_item": "§6.7",
+      "plan_item": "§6.5b",
       "verdict": "confirmed",
       "facts": {
         "answered_error": 0,
@@ -24,7 +24,7 @@
         "confirmations_in_flight": 12,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 10.369917,
+        "handler_latency_ms": 7.801667,
         "never_answered": 0,
         "recovered_by_retry": 0,
         "tasks_before": 1,
@@ -34,6 +34,8 @@
         "Every interrupted confirmation ended in a state a client can act on: either the task exists, or the escrow is still confirmable with a fresh envelope. No deposit funded two tasks and none was stranded."
       ],
       "findings": [],
+      "accepted": [],
+      "healthy_verdict": "confirmed",
       "latency": [
         {
           "label": "POST /tasks/escrow/:id/confirm",
@@ -42,10 +44,10 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 10.369917,
-          "p90_ms": 10.369917,
-          "p99_ms": 10.369917,
-          "max_ms": 10.369917,
+          "p50_ms": 7.801667,
+          "p90_ms": 7.801667,
+          "p99_ms": 7.801667,
+          "max_ms": 7.801667,
           "per_second": null
         },
         {
@@ -55,10 +57,10 @@
           "by_status": {
             "200": 12
           },
-          "p50_ms": 100.002333,
-          "p90_ms": 120.859916,
-          "p99_ms": 124.643417,
-          "max_ms": 124.643417,
+          "p50_ms": 56.116125000000004,
+          "p90_ms": 67.980083,
+          "p99_ms": 72.082459,
+          "max_ms": 72.082459,
           "per_second": null
         },
         {
@@ -68,34 +70,36 @@
           "by_status": {
             "409": 12
           },
-          "p50_ms": 3.13125,
-          "p90_ms": 5.034166,
-          "p99_ms": 9.933334,
-          "max_ms": 9.933334,
+          "p50_ms": 3.719791,
+          "p90_ms": 4.24125,
+          "p99_ms": 4.791042,
+          "max_ms": 4.791042,
           "per_second": null
         }
       ]
     },
     {
       "title": "Restart the hub mid-escrow (SIGKILL)",
-      "plan_item": "§6.7",
-      "verdict": "refuted",
+      "plan_item": "§6.5b",
+      "verdict": "inconclusive",
       "facts": {
         "answered_error": 0,
         "answered_success": 0,
         "confirmations_in_flight": 12,
-        "deposits_funding_two_tasks": 1,
+        "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 10.4925,
+        "handler_latency_ms": 6.336417,
         "never_answered": 12,
         "recovered_by_retry": 11,
         "tasks_before": 14,
         "tasks_that_survived_the_restart": 1
       },
-      "notes": [],
-      "findings": [
-        "1 escrow deposit(s) funded a second task after a hub restart. The confirmation handler creates the task, persists it, and only then persists the deposit's `Consumed` status; a process that stops between the second and third step leaves a task on disk beside a deposit that still reads `Reserved`, and the deposit can be confirmed again. One deposit, two bounties."
+      "notes": [
+        "No deposit funded two tasks and none was stranded in this run. That is a failure to reproduce, not a clean bill of health: the window is one step wide, 1 of 12 handlers got as far as committing a task, and nothing here can force the kill to land between that commit and the deposit's. See plan §6.5b, which was written from a run that did reproduce it and confirmed independently against the store."
       ],
+      "findings": [],
+      "accepted": [],
+      "healthy_verdict": "confirmed",
       "latency": [
         {
           "label": "POST /tasks/escrow/:id/confirm",
@@ -104,23 +108,24 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 10.4925,
-          "p90_ms": 10.4925,
-          "p99_ms": 10.4925,
-          "max_ms": 10.4925,
+          "p50_ms": 6.336417,
+          "p90_ms": 6.336417,
+          "p99_ms": 6.336417,
+          "max_ms": 6.336417,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (retry)",
           "requests": 12,
-          "success_rate": 1.0,
+          "success_rate": 0.9166666666666666,
           "by_status": {
-            "200": 12
+            "200": 11,
+            "409": 1
           },
-          "p50_ms": 10.594458,
-          "p90_ms": 12.103208,
-          "p99_ms": 12.333791999999999,
-          "max_ms": 12.333791999999999,
+          "p50_ms": 8.875,
+          "p90_ms": 11.064459000000001,
+          "p99_ms": 13.964,
+          "max_ms": 13.964,
           "per_second": null
         }
       ]

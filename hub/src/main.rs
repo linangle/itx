@@ -9,6 +9,7 @@ mod metrics;
 mod names;
 mod node_client;
 mod rate_limit;
+mod reconcile;
 mod store;
 
 use anyhow::Result;
@@ -394,12 +395,23 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         board.resolve_expired_consensus_tasks(now)
     };
     for task_id in resolved {
-        let task = persist_task_by_id(state, task_id, "resolved consensus").await;
         // A deadline-triggered resolution can ding reputation for several
         // assignees at once (every no-show/loser), not just whichever
         // pubkey happens to be at hand -- persist every one of them, or
-        // the penalty is silently lost on the next restart. Batched into
-        // one redb transaction rather than one write per assignee.
+        // the penalty is silently lost on the next restart.
+        //
+        // The task and all of those records go in **one** transaction,
+        // which is the sweep's half of the fix `persist_consensus_submission`
+        // is the handler's half of. It used to save the task and then
+        // batch the reputations separately, dropping the batch's error,
+        // so a lost batch silently forgave everyone who lost that round
+        // while the task recording the round stayed on disk (plan
+        // §6.5c). Reputation is the input to `min_reputation`, so a lost
+        // penalty is a penalized agent still claiming excluded work.
+        let task = {
+            let board = state.board.read().await;
+            board.get_task(task_id).cloned()
+        };
         if let Some(task) = &task {
             let entries: Vec<(PublicKey, Reputation)> = {
                 let board = state.board.read().await;
@@ -411,9 +423,9 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
                     })
                     .collect()
             };
-            if let Err(e) = state.store.save_reputation_batch(&entries) {
+            if let Err(e) = state.store.save_task_and_reputation_batch(task, &entries) {
                 error!(
-                    "failed to persist reputation for consensus assignees of task {task_id} after resolution: {e}"
+                    "failed to persist resolved consensus task {task_id} and its assignees' reputation: {e}"
                 );
             }
             // A tie (Closed, no winner) needs its escrow refunded, same as
@@ -701,6 +713,25 @@ async fn main() -> Result<()> {
         restored_payouts,
     );
 
+    // Cross-check what just came off disk, before anything is served
+    // from it. Every table above was loaded independently and every row
+    // blind-inserted, so records that disagree simply arrive
+    // disagreeing; until this existed, nothing said so (plan §6.5c).
+    //
+    // **Reports, does not repair, and does not refuse to start.** That
+    // last part is a decision rather than a default, and it is argued
+    // in the plan: refusing to boot converts every one of these into an
+    // outage, and the ones that can occur are money already moved or
+    // money already locked -- none of which a stopped hub makes better,
+    // while a stopped hub does stop the sweep that is the only
+    // automatic recovery the hub has. So it starts, loudly. Making this
+    // fatal is a per-class judgement someone can add later on the back
+    // of the metric, which is deliberately emitted for every class
+    // including the zeroes so an alert can be written before the first
+    // incident.
+    let reconciliation = reconcile::reconcile(&board);
+    reconciliation.log();
+
     let mut names = NameRegistry::new();
     for (pubkey, name) in store.load_all_agent_names()? {
         names.restore(pubkey, name);
@@ -735,6 +766,19 @@ async fn main() -> Result<()> {
     // hold their own handle to it and must report into the same table the
     // router will later render.
     let metrics = metrics::Metrics::new();
+    // Published as soon as the table exists, so the first scrape of a
+    // freshly started hub already carries the verdict on the store it
+    // started from. The reconciliation itself ran earlier -- before
+    // anything could be served -- because a boot check that runs after
+    // the router is up is a check the first request beats.
+    for class in metrics::RECONCILIATION_CLASSES {
+        let count = reconciliation
+            .findings
+            .iter()
+            .filter(|finding| finding.kind.label() == class)
+            .count() as u64;
+        metrics.reconciliation_disagreements.insert(class, count);
+    }
 
     let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
         Ok((guard, restored)) => {
@@ -3590,6 +3634,289 @@ mod tests {
         assert_eq!(restored.reputation(&claimant).completed, 0);
     }
 
+    /// Why `save_confirmed_payout` has to be one transaction, stated as
+    /// the state its absence produced rather than as prose: a
+    /// `Submitted` task on disk with no attempt tracking it, which is
+    /// what a crash between the old code's first commit (the attempt
+    /// deletion) and its second (the task) left behind.
+    ///
+    /// Walking the selectors turns out to say something sharper than
+    /// "the payout is forgotten", and the assertions below are written
+    /// to record it. Neither sweep pass will touch such a task -- the
+    /// resolution pass reads `outstanding_payout_attempts`, which is
+    /// empty, and the settlement pass reads `verified_unpaid_tasks`,
+    /// which takes only `Verified`. But `unsubmitted_payouts` still
+    /// names the payout as owed, and `try_settle_verified_task` does
+    /// accept a `Submitted` task. So the recovery path exists and is
+    /// never called; and if an operator called it by hand it would
+    /// **re-send a payout that already confirmed on chain**, because the
+    /// attempt that was the double-spend guard is exactly what got
+    /// deleted. Not a state any ordering fixes -- the reverse order
+    /// strands a resolved payout that is re-resolved every sweep forever
+    /// -- which is why the fix is a transaction.
+    ///
+    /// Mirrors
+    /// `store::tests::two_separate_commits_leave_a_window_where_the_task_exists_alone`:
+    /// the suite states the mechanism of the bug, not just its cure.
+    #[tokio::test]
+    async fn a_submitted_task_with_no_attempt_is_recovered_by_nothing() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let (task_id, claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        fake_node.wait_for_submissions_seen(1).await;
+
+        // The first of the old two commits, and nothing after it. In the
+        // real failure the transaction had already confirmed on chain --
+        // that is what `record_confirmed_payout` is called about -- so
+        // what is reconstructed here is the store's state, not the
+        // chain's.
+        hub.state.store.delete_payout_attempt(task_id, &claimant).unwrap();
+
+        let restored = board_as_a_restart_would_load_it(&hub);
+        assert_eq!(
+            restored.get_task(task_id).unwrap().status,
+            TaskStatus::Submitted,
+            "the task is mid-settlement on disk, which is the whole problem"
+        );
+        assert!(
+            restored.outstanding_payout_attempts().is_empty(),
+            "the resolution pass reads this, and there is nothing in it"
+        );
+        assert!(
+            restored.verified_unpaid_tasks().is_empty(),
+            "and the settlement pass will not take a Submitted task -- by design, since \
+             Submitted means nothing is left unsent"
+        );
+        // So no sweep pass will ever look at this task again. The
+        // payout is still listed as owed, which sounds like a way back
+        // and is worse than none: nothing consults the list, and the
+        // attempt that would have stopped a second send is the record
+        // that was deleted.
+        assert_eq!(
+            restored.unsubmitted_payouts(task_id).len(),
+            1,
+            "the payout still reads as owed, so a hand-run settlement would send it again -- \
+             against a transaction that already confirmed, with its double-spend guard gone"
+        );
+    }
+
+    /// The invariant `try_settle_verified_task`'s refusal rests on:
+    /// **a `Submitted` task never has anything unsent.**
+    ///
+    /// If this is ever false, refusing to send becomes a bug rather than
+    /// a safety measure -- so it is pinned rather than argued. The proof
+    /// in the code is that `record_payout_attempt` is the only path into
+    /// `Submitted` and requires the set to be empty, and nothing
+    /// afterwards can grow it; what this walks is the one case that
+    /// looks like a counterexample, a multi-winner task with one leg
+    /// confirmed and its attempt cleared while another is still in
+    /// flight.
+    #[tokio::test]
+    async fn a_submitted_task_never_has_an_unsent_payout() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee1 = PrivateKey::new_key();
+        let assignee2 = PrivateKey::new_key();
+
+        let payload = handlers::EscrowConsensusTaskPayload {
+            description: "two winners, confirmed one at a time".to_string(),
+            bounty: 900,
+            num_assignees: 2,
+            join_window_minutes: 60,
+            submission_window_minutes: 30,
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/consensus/escrow", hub.base_url))
+            .json(&envelope(&poster_key, "/tasks/consensus/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        fake_node
+            .fund(
+                parse_pubkey(reservation["deposit_address"].as_str().unwrap()),
+                reservation["required_amount"].as_u64().unwrap(),
+            )
+            .await;
+        let task: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let task_id: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+        for assignee in [&assignee1, &assignee2] {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+        for assignee in [&assignee1, &assignee2] {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "42".to_string() }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+
+        // Both legs are on the wire, so the task is Submitted and the
+        // set is empty -- the entry condition, which is the easy half.
+        let assert_invariant = |label: &'static str| {
+            let hub = &hub;
+            async move {
+                let board = hub.state.board.read().await;
+                if board.get_task(task_id).unwrap().status == TaskStatus::Submitted {
+                    assert!(
+                        board.unsubmitted_payouts(task_id).is_empty(),
+                        "{label}: a Submitted task with something unsent would make \
+                         try_settle_verified_task's refusal a bug"
+                    );
+                }
+            }
+        };
+        assert_eq!(
+            hub.state.board.read().await.get_task(task_id).unwrap().status,
+            TaskStatus::Submitted,
+            "both winners' transactions went out, so nothing is left unsent"
+        );
+        assert_invariant("both in flight").await;
+
+        // Now the interesting half: confirm exactly one winner, which
+        // marks them paid and clears *their* attempt while the other is
+        // still in flight. The task stays Submitted, and the set has to
+        // stay empty -- `owed_payouts` drops the paid recipient in the
+        // same breath as the attempt going away.
+        let one = hub.state.board.read().await.outstanding_payout_attempts()[0].clone();
+        for _ in 0..200 {
+            let landed = fake_node
+                .outputs_of(&one.recipient)
+                .await
+                .iter()
+                .any(|(output, _)| output.hash() == one.output_hash);
+            if landed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        handlers::resolve_payout_attempt(&hub.state, &one).await;
+
+        let board = hub.state.board.read().await;
+        assert_eq!(
+            board.get_task(task_id).unwrap().status,
+            TaskStatus::Submitted,
+            "one winner paid, one still in flight -- still mid-settlement"
+        );
+        assert_eq!(board.outstanding_payout_attempts().len(), 1, "and one attempt left");
+        drop(board);
+        assert_invariant("one confirmed, one in flight").await;
+    }
+
+    /// The double-pay that the refusal prevents, driven end to end.
+    ///
+    /// This is the state `a_submitted_task_with_no_attempt_is_recovered
+    /// _by_nothing` walks the selectors of; here the one path that *does*
+    /// accept such a task is actually called, the way an operator
+    /// resolving the task by hand would call it. Before the refusal it
+    /// re-sent the bounty -- against a transaction that may already be
+    /// on the chain, with the attempt that was the double-spend guard
+    /// being exactly the record that went missing.
+    #[tokio::test]
+    async fn a_submitted_task_with_no_attempt_is_refused_rather_than_paid_again() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let (task_id, claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        let sent_once = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(sent_once.len(), 1, "the bounty went out once, legitimately");
+
+        // Lose the attempt, in memory and on disk: the state the old
+        // `record_confirmed_payout`'s first commit left behind when its
+        // second never landed, and the state a rolled-back binary
+        // reloaded.
+        hub.state.board.write().await.clear_payout_attempt(task_id, &claimant);
+        hub.state.store.delete_payout_attempt(task_id, &claimant).unwrap();
+        {
+            let board = hub.state.board.read().await;
+            assert_eq!(board.get_task(task_id).unwrap().status, TaskStatus::Submitted);
+            assert_eq!(
+                board.unsubmitted_payouts(task_id).len(),
+                1,
+                "the payout reads as owed again, which is what used to make this sendable"
+            );
+        }
+
+        assert!(
+            !handlers::try_settle_verified_task(&hub.state, task_id).await,
+            "must refuse: the evidence that would say whether this landed died with the attempt"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            1,
+            "and above all it must not have put a second bounty on the wire"
+        );
+        assert_eq!(
+            hub.state.metrics.payout_sends_refused.load(Ordering::Relaxed),
+            1,
+            "the refusal has to be visible to an operator, not just silent"
+        );
+
+        // And the sweep does not reach this task at all -- not because
+        // it refuses, but because no pass selects it, which is what
+        // `a_submitted_task_with_no_attempt_is_recovered_by_nothing`
+        // establishes. Asserted here so the two tests cannot drift: it
+        // is why the refusal above is a guard on the *hand-run* path and
+        // why detection belongs to the boot reconciliation rather than
+        // to a new sweep pass. The state cannot begin mid-run any more
+        // (`save_confirmed_payout` is one transaction), so a hub that
+        // has one loaded it, and boot is exactly when that is checked.
+        let refusals_before = hub.state.metrics.payout_sends_refused.load(Ordering::Relaxed);
+        run_sweep_once(&hub.state, Utc::now()).await;
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            1,
+            "a sweep must not put a second bounty on the wire either"
+        );
+        assert_eq!(
+            hub.state.metrics.payout_sends_refused.load(Ordering::Relaxed),
+            refusals_before,
+            "and it must not even have tried: the sweep's settlement pass reads \
+             verified_unpaid_tasks, which takes only Verified"
+        );
+        assert_eq!(
+            reconcile::reconcile(&*hub.state.board.read().await)
+                .count(reconcile::Disagreement::SubmittedTaskWithNoPayoutAttempt),
+            1,
+            "so the reconciliation is the detector, and it does see it"
+        );
+    }
+
     #[tokio::test]
     async fn try_settle_verified_task_never_double_pays_concurrent_callers() {
         let operator_key = PrivateKey::new_key();
@@ -4800,6 +5127,73 @@ mod tests {
         );
     }
 
+    /// The deterministic half of the escrow-durability story, and the
+    /// reason this test is written against the *store* rather than the
+    /// board: `mark_escrow_refunded` only ever changed memory, so a
+    /// refunded deposit came back `Reserved` on **every** restart -- not
+    /// as a race, but always. Three things followed, and all three are
+    /// what this pins: the sweep re-selected every deposit ever refunded
+    /// in the hub's history (`overdue_reserved_escrows` filters on
+    /// `Reserved`), so a long-lived deployment's boot sweep grew without
+    /// bound; a depositor whose refund had already gone out could confirm
+    /// the escrow again, with only the on-chain balance check standing in
+    /// the way; and a dispute bond re-credited its winner (see
+    /// `a_settled_dispute_bond_is_not_settled_again_after_a_restart`).
+    #[tokio::test]
+    async fn a_refunded_escrow_reloads_as_refunded() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent_key = PrivateKey::new_key();
+
+        let payload = handlers::EscrowTaskPayload {
+            description: "funded, then left to expire".to_string(),
+            bounty: 1_000,
+            expected_output_hash: hex::encode(Hash::hash_bytes(b"x").as_bytes()),
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow", hub.base_url))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
+        // Funded but never confirmed, so the sweep refunds it on chain
+        // rather than finding an empty address -- the case that actually
+        // moves money and therefore the one worth being durable about.
+        fake_node.fund(deposit_pubkey, reservation["required_amount"].as_u64().unwrap()).await;
+
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(61)).await;
+        assert_eq!(
+            hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status,
+            board::EscrowStatus::Refunded,
+            "in memory the refund happened, which was never the part in doubt"
+        );
+
+        // What a restart actually restores: a fresh board filled from the
+        // store, nothing carried over in memory.
+        let mut restored = TaskBoard::new();
+        for deposit in hub.state.store.load_all_pending_deposits().unwrap() {
+            restored.restore_pending_deposit(deposit);
+        }
+        assert_eq!(
+            restored.get_pending_deposit(escrow_id).unwrap().status,
+            board::EscrowStatus::Refunded,
+            "a deposit whose money has already gone back must not reload as Reserved"
+        );
+        assert!(
+            restored.overdue_reserved_escrows(Utc::now() + chrono::Duration::minutes(61)).is_empty(),
+            "and it must not be handed to the sweep again for the life of the deployment"
+        );
+    }
+
     #[tokio::test]
     async fn cancel_task_refunds_an_agent_funded_task_to_its_poster() {
         let operator_key = PrivateKey::new_key();
@@ -5240,6 +5634,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(challenger_rep["failed"], 1);
+    }
+
+    /// A fresh `TaskBoard` filled from `hub`'s own store and nothing
+    /// else -- what a restart actually restores, in the same order
+    /// `main` does it. Every "does this survive a restart" assertion
+    /// wants this rather than the live board, because the live board is
+    /// precisely the copy that is not in question.
+    fn board_as_a_restart_would_load_it(hub: &TestHub) -> TaskBoard {
+        let store = &hub.state.store;
+        let mut board = TaskBoard::new();
+        for task in store.load_all_tasks().unwrap() {
+            board.restore_task(task);
+        }
+        for (pubkey, reputation) in store.load_all_reputation().unwrap() {
+            board.restore_reputation(pubkey, reputation);
+        }
+        for deposit in store.load_all_pending_deposits().unwrap() {
+            board.restore_pending_deposit(deposit);
+        }
+        for (pubkey, account) in store.load_all_exchange_accounts().unwrap() {
+            board.restore_exchange_account(pubkey, account);
+        }
+        for attempt in store.load_all_payout_attempts().unwrap() {
+            board.restore_payout_attempt(attempt);
+        }
+        board
+    }
+
+    /// The consequence of a non-durable `Refunded` that does not
+    /// self-heal: `settle_dispute_bond` credits the winner's
+    /// `total_earned` durably but marked the bond's deposit `Refunded`
+    /// only in memory, so a restart reloaded the bond as `Consumed`,
+    /// `tasks_with_unsettled_dispute_bonds` selected it again, and the
+    /// whole settlement re-ran -- at every boot, for the life of the
+    /// deployment.
+    ///
+    /// What that costs is narrower than it first appears, and the
+    /// correction is worth carrying here because this test's earlier
+    /// wording had it wrong: the on-chain leg does not duplicate, and
+    /// neither does the reputation credit. `credit_forfeited_bond` is
+    /// applied with the net amount the *retry* computed, and the retry
+    /// reads the drained address, so it adds zero (measured against a
+    /// pre-fix binary -- plan §6.5c). The defect is unbounded repeated
+    /// work, not a wrong ledger. It is still worth a durable status: the
+    /// ledger survives only because the credit happens to derive from a
+    /// live balance rather than the recorded bond amount.
+    ///
+    /// Asserted against the *restored* board, since what the live one
+    /// thinks was never the question.
+    #[tokio::test]
+    async fn a_settled_dispute_bond_is_not_settled_again_after_a_restart() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee_key = PrivateKey::new_key();
+        let challenger_key = PrivateKey::new_key();
+
+        let task_id =
+            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
+                .await;
+        file_dispute_via_http(&hub, &fake_node, task_id, &challenger_key, "actually correct").await;
+        hub.client
+            .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
+            .json(&envelope(
+                &hub.operator_key, &format!("/tasks/{task_id}/dispute/resolve"),
+                handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::AssigneeWins },
+            ))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        fake_node.wait_for_submitted_count(2).await;
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+
+        let earned_once = hub.state.board.read().await.reputation(&assignee_key.public_key()).total_earned;
+        assert_eq!(earned_once, 900 + 900, "bounty plus the forfeited bond, credited once");
+
+        let restored = board_as_a_restart_would_load_it(&hub);
+        assert_eq!(
+            restored.reputation(&assignee_key.public_key()).total_earned,
+            earned_once,
+            "the credit itself was always durable -- this is the control, not the finding"
+        );
+        assert!(
+            restored.tasks_with_unsettled_dispute_bonds().is_empty(),
+            "a bond already disbursed must not be selected for settlement again: pre-fix it \
+             was, at every boot for the life of the deployment, each pass a node round trip \
+             inside the sweep"
+        );
     }
 
     #[tokio::test]

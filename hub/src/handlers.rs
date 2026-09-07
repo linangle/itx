@@ -39,10 +39,11 @@ const FAUCET_GRANT_AMOUNT: u64 = 50_000_000;
 /// unbounded `i64` from a request body can get arbitrarily close to that.
 /// A year is already far more generous than any real testnet task needs.
 const MAX_CONSENSUS_WINDOW_MINUTES: i64 = 60 * 24 * 365;
-/// Upper bound on `num_assignees`. Each resolution persists one redb
-/// write transaction per assignee (see `persist_other_assignees_reputation`
-/// and the sweep's equivalent), so this also caps how much synchronous
-/// disk I/O one task's resolution can trigger.
+/// Upper bound on `num_assignees`. A resolution persists every
+/// assignee's reputation record together with the task, in a single redb
+/// transaction (see `persist_consensus_submission` and the sweep's
+/// equivalent), so this caps how large that one transaction -- and the
+/// board lock hold building it -- can get.
 const MAX_CONSENSUS_ASSIGNEES: u32 = 100;
 /// `GET /tasks`'s page size when the caller doesn't specify `limit`.
 const DEFAULT_TASKS_PAGE_SIZE: usize = 50;
@@ -1355,14 +1356,24 @@ pub async fn resolve_dispute(
         let mut board = state.board.write().await;
         board.resolve_dispute(task_id, envelope.payload.outcome)?
     };
-    let task = state.board.read().await.get_task(task_id).expect("just resolved, must still exist").clone();
-    state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
-    // resolve_dispute dinged the loser's reputation immediately, mirroring
-    // resolve_consensus's "dinged at resolution" convention -- persist it.
-    let loser_reputation = state.board.read().await.reputation(&loser);
-    if let Err(e) = state.store.save_reputation(&loser, &loser_reputation) {
-        error!("failed to persist dispute-loser reputation for {loser}: {e}");
-    }
+    // resolve_dispute dinged the loser's reputation immediately,
+    // mirroring resolve_consensus's "dinged at resolution" convention.
+    // One transaction with the task, and the failure surfaced rather
+    // than logged behind a 200: this used to save the task, then the
+    // reputation, and swallow the second error -- so a caller could be
+    // told the dispute was resolved while the ding that resolution
+    // consisted of never reached disk (plan §6.5c).
+    let (task, loser_reputation) = {
+        let board = state.board.read().await;
+        (
+            board.get_task(task_id).expect("just resolved, must still exist").clone(),
+            board.reputation(&loser),
+        )
+    };
+    state
+        .store
+        .save_task_and_reputation(&task, &loser, &loser_reputation)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     try_settle_verified_task(&state, task_id).await;
     settle_dispute_bond(&state, task_id).await;
@@ -1555,7 +1566,12 @@ async fn submit_consensus_task(
         let resolved = board.submit_consensus_answer(task_id, pubkey.clone(), output)?;
         (resolved, board.get_task(task_id).expect("just touched it").clone())
     };
-    persist_task_and_reputation(state, &task_after_submit, &pubkey).await?;
+    // The task and every reputation this submission touched, in one
+    // commit -- including, when this submission resolved the task, every
+    // other assignee dinged by that resolution. Three separate writes
+    // before, the last of them error-dropping (see
+    // `persist_consensus_submission`).
+    persist_consensus_submission(state, &task_after_submit, &pubkey, resolved).await?;
 
     if !resolved {
         return Ok(Json(SubmitResultDto {
@@ -1565,11 +1581,6 @@ async fn submit_consensus_task(
             resolved: Some(false),
         }));
     }
-
-    // Resolution can ding reputation for every assignee who disagreed,
-    // not just this caller -- persist all of them, not only the one
-    // `persist_task_and_reputation` above already covered.
-    persist_other_assignees_reputation(state, &task_after_submit, &pubkey).await;
 
     // Resolution just happened -- pay out every winner it produced right
     // away rather than waiting for the next sweep. Deliberately
@@ -1655,23 +1666,65 @@ static PAYOUT_IN_FLIGHT: DashMap<(Uuid, String), ()> = DashMap::new();
 /// An escrow-funded task (see `Task::escrow_id`) is settled entirely
 /// differently from an operator-funded one -- see `settle_escrow_funded_task`.
 pub async fn try_settle_verified_task(state: &AppState, task_id: Uuid) -> bool {
-    let (payouts, escrow) = {
+    let (payouts, escrow, status) = {
         let board = state.board.read().await;
         match board.get_task(task_id) {
             Some(t) if matches!(t.status, TaskStatus::Verified | TaskStatus::Submitted) => {
                 let escrow = t.escrow_id.and_then(|id| board.get_pending_deposit(id).cloned());
                 // Not `pending_payouts`: a recipient whose transaction is
                 // already on the wire is still owed, but must not be sent
-                // a second one. `Submitted` is accepted above precisely so
-                // a multi-winner task with one leg unsent still gets that
-                // leg sent -- the subtraction here is what keeps the rest
-                // from being duplicated in the process.
-                (board.unsubmitted_payouts(task_id), escrow)
+                // a second one. The subtraction here is what keeps a
+                // multi-winner task's in-flight legs from being
+                // duplicated while an unsent one is sent.
+                (board.unsubmitted_payouts(task_id), escrow, t.status)
             }
             _ => return false,
         }
     };
     if payouts.is_empty() {
+        return false;
+    }
+
+    // A `Submitted` task with something still unsent cannot happen
+    // through correct operation, and this is the one place that would
+    // have acted on it as though it could.
+    //
+    // The invariant: `record_payout_attempt` (board.rs) is the *only*
+    // path into `Submitted` and it moves a task there only when
+    // `unsubmitted_payouts` is empty; nothing afterwards can grow that
+    // set, because the sole production caller of `clear_payout_attempt`
+    // pairs it with `mark_recipient_paid`, which drops that recipient
+    // out of `owed_payouts` in the same breath. So reaching here means
+    // the *store* lost a `PayoutAttempt` row -- the state plan §6.5c
+    // describes, produced by the old `record_confirmed_payout`'s first
+    // commit landing without its second, or by the rollback hole.
+    //
+    // The comment that used to sit above justified accepting `Submitted`
+    // as letting "a multi-winner task with one leg unsent still get that
+    // leg sent". That case is `Verified`, not `Submitted`, by
+    // construction of `record_payout_attempt` -- so the branch was dead
+    // in every healthy hub and live only here, where sending is the
+    // worst available action: the attempt that was the double-spend
+    // guard is precisely the record that went missing, so a send would
+    // re-pay a bounty whose transaction may already be on the chain.
+    //
+    // Refusing is not a guess. §6.5's three-way rule needs the output
+    // hash to call a payout confirmed and the spent inputs to call it
+    // lost, and both died with the attempt -- so this state carries
+    // strictly less evidence than the rule's "ambiguous" row, which §6.5
+    // already decided is left alone rather than collapsed into either
+    // neighbour. An operator resolves it; `docs/deployment.md` §10.3
+    // carries the procedure and the one sound test that does exist.
+    if status == TaskStatus::Submitted {
+        state.metrics.payout_sends_refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        error!(
+            "refusing to send {} payout(s) for task {task_id}: it reads Submitted with payouts \
+             still unsent, which means a PayoutAttempt row was lost \
+             [submitted_task_with_no_payout_attempt]. Sending now could pay a bounty twice -- \
+             the record that would have prevented it is the one that is missing. This needs an \
+             operator (docs/deployment.md §10.3).",
+            payouts.len()
+        );
         return false;
     }
 
@@ -1802,27 +1855,42 @@ async fn settle_escrow_funded_task(
     true
 }
 
-/// Refunds whatever balance remains at `deposit`'s address back to its
-/// `depositor`, then marks it `Refunded` -- shared by the sweep's
-/// overdue-unconfirmed-reservation path (nothing may have ever arrived)
-/// and by `refund_closed_task_escrow` (a materialized task that turned
-/// out to end without a winner: a Consensus tie, an understaffed
-/// cancellation, or an operator `cancel_task`), since both are "this
-/// escrow's money has nowhere left to go but back to whoever deposited
-/// it."
+/// What else, beyond the deposit's own `Refunded` status, a disbursement
+/// has to make durable -- and therefore what has to be committed in the
+/// *same* redb transaction as that status.
+///
+/// A parameter rather than a step each caller applies after the fact,
+/// because "after the fact" is exactly what the bug was: the reputation
+/// credit was durable and the status was not, so a restart reloaded the
+/// bond as still owing and the settlement ran a second time (plan
+/// §6.5c).
+enum EscrowCredit {
+    /// Nothing but the deposit itself. A plain refund back to the
+    /// depositor never earns anything -- getting your own money back
+    /// isn't "earning" -- and the exchange sweep moves the hub's own
+    /// money between the hub's own addresses.
+    None,
+    /// A forfeited dispute bond: the recipient's `total_earned` grows by
+    /// what actually reached them, which is the one case where receiving
+    /// an escrow's balance is earning it (see
+    /// `TaskBoard::credit_forfeited_bond`).
+    ForfeitedBond,
+}
+
 /// Sends `deposit`'s current on-chain balance to `recipient` -- who need
 /// not be `deposit.depositor`: a resolved dispute can send a bond forward
 /// to the winning party instead of back to whoever posted it (see
-/// `settle_dispute_bond`) -- then marks the deposit settled. Returns the
-/// *net* amount actually sent (after the network fee, `None` if nothing
-/// was sent or the attempt failed) -- callers crediting reputation off
-/// this must use that, not `deposit.required_amount`, which overstates
-/// it by the fee. Deliberately does *not* touch reputation itself -- a
-/// plain refund never should (getting your own money back isn't
-/// "earning"), and a forfeited-bond credit is a distinct, explicit step
-/// the caller applies separately (see `TaskBoard::credit_forfeited_bond`)
-/// only in the one case where it's warranted.
-async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: &PublicKey) -> Option<u64> {
+/// `settle_dispute_bond`) -- then marks the deposit `Refunded`, durably,
+/// together with whatever `credit` says that earned. Returns the *net*
+/// amount actually sent (after the network fee, `None` if nothing was
+/// sent or any step failed) -- a caller reporting the amount must use
+/// that, not `deposit.required_amount`, which overstates it by the fee.
+async fn disburse_escrow(
+    state: &AppState,
+    deposit: &PendingDeposit,
+    recipient: &PublicKey,
+    credit: EscrowCredit,
+) -> Option<u64> {
     let Some(_guard) = EscrowSettlementGuard::try_acquire(deposit.id) else {
         return None;
     };
@@ -1851,8 +1919,77 @@ async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: 
             return None;
         }
     }
-    if let Err(e) = state.board.write().await.mark_escrow_refunded(deposit.id) {
+
+    // `mark_escrow_refunded` used to be the whole of this, and it only
+    // ever touched memory: `save_pending_deposit`'s five call sites are
+    // all *creating* a reservation, so no path wrote a `Refunded` status
+    // to disk. A refunded deposit therefore reloaded as `Reserved` -- on
+    // every restart, not as a race -- and three things followed. The
+    // sweep re-selected every deposit ever refunded in the deployment's
+    // history, because `overdue_reserved_escrows` filters on `Reserved`.
+    // A depositor whose refund had already gone out could confirm the
+    // escrow again, with only the on-chain balance check in the way. And
+    // a settled dispute bond was handed back to the sweep at every boot,
+    // because its credit *was* persisted and its status was not (plan
+    // §6.5c, which also records what that re-settlement does and does
+    // not cost: it credits zero, since the retry reads a drained
+    // address, so the damage is unbounded repeated work rather than a
+    // wrong ledger).
+    //
+    // One write lock held across the store commit, and the board put
+    // back exactly as it was if that commit fails. That ordering matters
+    // here in a way it does not in the confirm handlers (§6.5b), which
+    // let the board move on and rely on the depositor's retry: nothing
+    // retries a sweep-driven disbursement except the sweep, and the
+    // sweep selects from *memory*. A board that had moved on while disk
+    // had not would simply never be revisited -- the same lost
+    // settlement, reached without a crash.
+    let mut board = state.board.write().await;
+    let Some(previous_deposit) = board.get_pending_deposit(deposit.id).cloned() else {
+        error!("escrow {} is no longer on the board and cannot be marked refunded", deposit.id);
+        return None;
+    };
+    let previous_reputation = match credit {
+        EscrowCredit::None => None,
+        EscrowCredit::ForfeitedBond => Some(board.reputation(recipient)),
+    };
+    if let Err(e) = board.mark_escrow_refunded(deposit.id) {
         error!("failed to mark escrow {} refunded: {e}", deposit.id);
+        return None;
+    }
+    // Read back under the same write lock that just settled it, so what
+    // is persisted below is this disbursement's own `Refunded` record
+    // rather than whatever a concurrent caller might have left between
+    // two separate acquisitions -- the same reasoning as
+    // `confirm_task_escrow`'s.
+    let settled = board
+        .get_pending_deposit(deposit.id)
+        .expect("just marked refunded above, and no path removes a deposit")
+        .clone();
+    let persisted = match credit {
+        // Already one transaction by itself; there is no companion
+        // record for a plain refund or a custody sweep to disagree with.
+        EscrowCredit::None => state.store.save_pending_deposit(&settled),
+        EscrowCredit::ForfeitedBond => {
+            // net_amount, not deposit.required_amount -- the latter is
+            // the gross funded amount including the network fee, which
+            // never reaches the recipient and so must not count as
+            // earned.
+            board.credit_forfeited_bond(recipient, net_amount);
+            let reputation = board.reputation(recipient);
+            state.store.save_deposit_and_reputation(&settled, recipient, &reputation)
+        }
+    };
+    if let Err(e) = persisted {
+        error!(
+            "failed to persist the settlement of escrow {} to {}: {e} -- rolling the board back \
+             so the sweep retries it rather than believing a settlement that is not on disk",
+            deposit.id, recipient
+        );
+        board.restore_pending_deposit(previous_deposit);
+        if let Some(previous) = previous_reputation {
+            board.restore_reputation(recipient.clone(), previous);
+        }
         return None;
     }
     Some(net_amount)
@@ -1866,7 +2003,7 @@ async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: 
 /// or an operator `cancel_task`), since both are "this escrow's money has
 /// nowhere left to go but back to whoever deposited it."
 pub async fn refund_escrow(state: &AppState, deposit: &PendingDeposit) {
-    disburse_escrow(state, deposit, &deposit.depositor).await;
+    disburse_escrow(state, deposit, &deposit.depositor, EscrowCredit::None).await;
 }
 
 /// If `task_id` was escrow-funded, refunds whatever remains at its
@@ -1925,20 +2062,19 @@ pub async fn settle_dispute_bond(state: &AppState, task_id: Uuid) -> bool {
     };
     let (bond_deposit, winner, is_forfeiture) = settlement;
 
-    let Some(net_amount) = disburse_escrow(state, &bond_deposit, &winner).await else {
-        return false;
-    };
-    if is_forfeiture {
-        // net_amount, not bond_deposit.required_amount -- the latter is
-        // the gross funded amount including the network fee, which never
-        // reaches the recipient and so must not count as earned.
-        state.board.write().await.credit_forfeited_bond(&winner, net_amount);
-        let reputation = state.board.read().await.reputation(&winner);
-        if let Err(e) = state.store.save_reputation(&winner, &reputation) {
-            error!("failed to persist forfeited-bond reputation credit for {winner}: {e}");
-        }
-    }
-    true
+    // The forfeiture credit is `disburse_escrow`'s to apply, not this
+    // function's, and that is the substance of the fix rather than a
+    // tidy-up: applied here it was a separate commit from the bond's
+    // `Refunded` status, so the credit survived a restart and the status
+    // did not. The bond then reloaded `Consumed`,
+    // `tasks_with_unsettled_dispute_bonds` selected it again, and this
+    // ran again at every boot for the life of the deployment. It
+    // credited nothing on those re-runs -- the retry reads a drained
+    // address -- so what it cost was a node round trip per pass rather
+    // than a wrong ledger (plan §6.5c has the measurement, and why
+    // relying on that is not a defence).
+    let credit = if is_forfeiture { EscrowCredit::ForfeitedBond } else { EscrowCredit::None };
+    disburse_escrow(state, &bond_deposit, &winner, credit).await.is_some()
 }
 
 /// Pays `recipient` their `amount`-sized share of `task_id`'s bounty and
@@ -2195,7 +2331,9 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
     // polled -- which is right: whatever is wrong with the funding
     // source is not one recipient's problem, and the whole task is now
     // an operator's to settle.
-    let dropped = match state.board.write().await.mark_payout_failed(attempt.task_id) {
+    let mut board = state.board.write().await;
+    let previous_task = board.get_task(attempt.task_id).cloned();
+    let dropped = match board.mark_payout_failed(attempt.task_id) {
         Ok(dropped) => dropped,
         Err(e) => {
             error!("failed to mark task {} payout-failed: {e}", attempt.task_id);
@@ -2206,19 +2344,40 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
     // left in the store comes back at the next restart attached to a
     // task that is now terminal, and is then re-resolved and re-logged
     // every sweep with no way to ever clear it.
-    for dropped in &dropped {
-        if let Err(e) = state.store.delete_payout_attempt(dropped.task_id, &dropped.recipient) {
-            error!(
-                "failed to drop the abandoned payout attempt for task {} to {}: {e}",
-                dropped.task_id, dropped.recipient
-            );
+    //
+    // One transaction with the task, not N deletions and then a save.
+    // Split, a crash between them left the task non-terminal on disk
+    // beside attempts that were already gone -- the exact state the
+    // paragraph above says this exists to prevent, produced by the code
+    // meant to prevent it (plan §6.5c).
+    let dropped_keys: Vec<(Uuid, PublicKey)> =
+        dropped.iter().map(|a| (a.task_id, a.recipient.clone())).collect();
+    // Read back under the same write lock that made it terminal, the
+    // way the confirm handlers do. `expect` rather than a graceful
+    // return: `mark_payout_failed` just succeeded on this task and no
+    // path removes one, and a graceful return here would be the one
+    // exit that leaves the board terminal with nothing on disk.
+    let failed_task = board
+        .get_task(attempt.task_id)
+        .expect("mark_payout_failed just succeeded on this task, and no path removes one")
+        .clone();
+    if let Err(e) = state.store.save_task_and_drop_payout_attempts(&failed_task, &dropped_keys) {
+        error!(
+            "failed to record task {} as payout-failed: {e} -- rolling the board back, so the \
+             sweep keeps polling rather than abandoning a payout only in memory",
+            attempt.task_id
+        );
+        if let Some(previous) = previous_task {
+            board.restore_task(previous);
         }
-    }
-    if let Some(task) = state.board.read().await.get_task(attempt.task_id) {
-        if let Err(e) = state.store.save_task(task) {
-            error!("failed to persist payout-failed task {}: {e}", attempt.task_id);
+        for previous in dropped {
+            board.restore_payout_attempt(previous);
         }
+        return;
     }
+    // Released before the log line: nothing below touches the board,
+    // and this is the sweep's write lock.
+    drop(board);
     error!(
         "giving up on the payout of {} for task {} to {}: {} submissions, every one of them \
          proven never to have reached the chain. The money is still owed and the escrow is \
@@ -2243,50 +2402,78 @@ async fn record_confirmed_payout(
     recipient: &PublicKey,
     amount: u64,
 ) -> bool {
-    if let Err(e) = state.board.write().await.mark_recipient_paid(task_id, recipient, amount) {
+    // One write lock across every board change and the single commit
+    // that makes them durable, and the board put back if that commit
+    // fails -- the same posture as `disburse_escrow`, for the same
+    // reason.
+    //
+    // This function used to write up to four separate commits and
+    // deleted the attempt *first*, logging every failure and returning
+    // `true` regardless. A crash or a store error between the deletion
+    // and the task save left a task reading `Submitted` on disk with no
+    // attempt tracking it: `outstanding_payout_attempts` had nothing to
+    // resolve and `verified_unpaid_tasks` will not take a `Submitted`
+    // task either, so the money had moved on chain and the hub had
+    // permanently forgotten it (plan §6.5c). Returning `true` on a
+    // failed write is what made that silent -- the caller reported the
+    // payout finished on the strength of writes it never checked, which
+    // is the very habit §6.5 was written to remove.
+    let mut board = state.board.write().await;
+    let previous_task = board.get_task(task_id).cloned();
+    let previous_reputation = board.reputation(recipient);
+    let previous_attempt = board.payout_attempt(task_id, recipient).cloned();
+    let previous_account = board.exchange_account(recipient);
+
+    if let Err(e) = board.mark_recipient_paid(task_id, recipient, amount) {
         error!(
             "payout for task {task_id} to {recipient} confirmed on-chain but mark_recipient_paid failed: {e}"
         );
         return false;
     }
-    // Only once the board agrees the money landed: an attempt left
-    // behind costs one redundant resolution next sweep, whereas one
-    // dropped early would stop the hub tracking a payout it has not
-    // finished recording.
-    state.board.write().await.clear_payout_attempt(task_id, recipient);
-    if let Err(e) = state.store.delete_payout_attempt(task_id, recipient) {
-        error!("failed to drop the resolved payout attempt for task {task_id}/{recipient}: {e}");
-    }
+    board.clear_payout_attempt(task_id, recipient);
 
-    // One combined read for both, rather than two separate lock
-    // acquisitions -- nothing mutates the board between them.
-    let (final_task, reputation) = {
-        let board = state.board.read().await;
-        (board.get_task(task_id).cloned(), board.reputation(recipient))
+    // Same reasoning as `abandon_payout`'s read-back: `expect`, because
+    // `mark_recipient_paid` just succeeded on this task and no path
+    // removes one, and a graceful return would be the single exit that
+    // leaves the board paid with nothing committed.
+    let final_task = board
+        .get_task(task_id)
+        .expect("mark_recipient_paid just succeeded on this task, and no path removes one")
+        .clone();
+    // A task tagged "compute" pays its winner in the tradeable compute
+    // asset, on top of (not instead of) the ordinary bounty payout --
+    // placed strictly after mark_recipient_paid already succeeded, so it
+    // inherits that call's own dedup/retry safety (PAYOUT_IN_FLIGHT,
+    // re-checked live state) for free rather than needing a guard of its
+    // own.
+    let compute_account = if final_task.capabilities.contains("compute") {
+        board.credit_compute(recipient, amount);
+        Some(board.exchange_account(recipient))
+    } else {
+        None
     };
-    if let Some(final_task) = &final_task {
-        if let Err(e) = state.store.save_task(final_task) {
-            error!("failed to persist task {task_id}: {e}");
+    let reputation = board.reputation(recipient);
+
+    if let Err(e) = state.store.save_confirmed_payout(
+        &final_task,
+        recipient,
+        &reputation,
+        compute_account.as_ref(),
+    ) {
+        error!(
+            "failed to record the confirmed payout for task {task_id} to {recipient}: {e} -- \
+             rolling the board back so the sweep resolves it again rather than reporting a \
+             payout the store never accepted"
+        );
+        if let Some(previous) = previous_task {
+            board.restore_task(previous);
         }
-        // A task tagged "compute" pays its winner in the tradeable
-        // compute asset, on top of (not instead of) the ordinary bounty
-        // payout above -- placed strictly after mark_recipient_paid
-        // already succeeded, so it inherits that call's own dedup/retry
-        // safety (PAYOUT_IN_FLIGHT, re-checked live state) for free
-        // rather than needing a guard of its own.
-        if final_task.capabilities.contains("compute") {
-            let account = {
-                let mut board = state.board.write().await;
-                board.credit_compute(recipient, amount);
-                board.exchange_account(recipient)
-            };
-            if let Err(e) = state.store.save_exchange_account(recipient, &account) {
-                error!("failed to persist compute credit for {recipient}: {e}");
-            }
+        board.restore_reputation(recipient.clone(), previous_reputation);
+        board.restore_exchange_account(recipient.clone(), previous_account);
+        if let Some(previous) = previous_attempt {
+            board.restore_payout_attempt(previous);
         }
-    }
-    if let Err(e) = state.store.save_reputation(recipient, &reputation) {
-        error!("failed to persist reputation for {recipient}: {e}");
+        return false;
     }
     true
 }
@@ -4223,7 +4410,17 @@ async fn pay_from_custody(state: &AppState, recipient: &PublicKey, amount: u64) 
 /// re-checks live balance before paying anything, so a crash between
 /// the sweep's on-chain payment and its `Refunded` write just costs one
 /// harmless retry that pays nothing (balance already 0) and finishes
-/// the status flip. Returns whether the sweep is now complete (no
+/// the status flip.
+///
+/// That idempotence claim was **false** until `Refunded` became durable:
+/// the status flip never reached disk at all, so every deposit ever
+/// swept came back `Consumed` and was re-swept at every boot for the
+/// life of the deployment -- one node round trip each, serialized inside
+/// the sweep pass ahead of payout resolution, growing with total history
+/// rather than with live state. Harmless per pass and unbounded in
+/// aggregate. Named here because a reader trusting the paragraph above
+/// would have built on a false premise (plan §6.5c). Returns whether the
+/// sweep is now complete (no
 /// balance left to move, whether that's because it just swept
 /// everything or because there was nothing to sweep in the first
 /// place) -- `false` only on an actual failure worth retrying later.
@@ -4237,47 +4434,71 @@ pub async fn sweep_exchange_deposit(state: &AppState, deposit_id: Uuid) -> bool 
             _ => return true,
         }
     };
-    disburse_escrow(state, &deposit, &state.exchange_custody_public_key).await.is_some()
+    disburse_escrow(state, &deposit, &state.exchange_custody_public_key, EscrowCredit::None)
+        .await
+        .is_some()
 }
 
+/// Persists a submission's task and the submitter's reputation in one
+/// transaction.
+///
+/// It was two, and that is not merely untidy bookkeeping: reputation is
+/// the input to a task's `min_reputation` term, so a failure record that
+/// did not land beside the task recording it lets a penalized agent keep
+/// claiming work a poster meant to exclude them from (plan §6.5c).
 async fn persist_task_and_reputation(
     state: &AppState,
     task: &Task,
     submitter: &PublicKey,
 ) -> Result<(), ApiError> {
-    state.store.save_task(task).map_err(|e| ApiError::Internal(e.to_string()))?;
     let reputation = state.board.read().await.reputation(submitter);
     state
         .store
-        .save_reputation(submitter, &reputation)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(())
+        .save_task_and_reputation(task, submitter, &reputation)
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
-/// Persists every `Consensus` assignee's reputation except `already_saved`
-/// (typically the caller, whose reputation `persist_task_and_reputation`
-/// already covered). `resolve_consensus` can ding several assignees'
-/// reputation in one go -- without this, only whichever single pubkey a
-/// caller happened to already have in hand would ever get its reputation
-/// change written to disk, silently losing everyone else's penalty across
-/// a restart. Written as a single batched transaction (see
-/// `HubStore::save_reputation_batch`) rather than one redb write per
-/// assignee, capped at `MAX_CONSENSUS_ASSIGNEES` fsyncs either way.
-async fn persist_other_assignees_reputation(state: &AppState, task: &Task, already_saved: &PublicKey) {
+/// A `Consensus` submission's task and every reputation record it
+/// touched, in one transaction: the submitter's always, and -- once the
+/// submission completed the set and resolved the task -- every other
+/// assignee's, since `resolve_consensus` dings each one who disagreed or
+/// never showed.
+///
+/// This was the worst of the split writes. The submitter's reputation
+/// went through one commit with the task in another, and everyone
+/// else's through a third whose error was **logged and dropped**, so a
+/// lost batch silently forgave every agent who lost that round while the
+/// task recording the round stayed on disk (plan §6.5c). One transaction
+/// for the whole resolution, and a failure the caller hears about.
+///
+/// Still capped at `MAX_CONSENSUS_ASSIGNEES` records, which now bounds
+/// the size of one transaction rather than a count of them.
+async fn persist_consensus_submission(
+    state: &AppState,
+    task: &Task,
+    submitter: &PublicKey,
+    resolved: bool,
+) -> Result<(), ApiError> {
     let entries: Vec<(PublicKey, Reputation)> = {
         let board = state.board.read().await;
-        task.consensus_assignees()
-            .into_iter()
-            .filter(|assignee| assignee != already_saved)
-            .map(|assignee| {
-                let reputation = board.reputation(&assignee);
-                (assignee, reputation)
-            })
-            .collect()
+        let mut entries = vec![(submitter.clone(), board.reputation(submitter))];
+        if resolved {
+            entries.extend(
+                task.consensus_assignees()
+                    .into_iter()
+                    .filter(|assignee| assignee != submitter)
+                    .map(|assignee| {
+                        let reputation = board.reputation(&assignee);
+                        (assignee, reputation)
+                    }),
+            );
+        }
+        entries
     };
-    if let Err(e) = state.store.save_reputation_batch(&entries) {
-        error!("failed to persist reputation for consensus assignees of task {} after resolution: {e}", task.id);
-    }
+    state
+        .store
+        .save_task_and_reputation_batch(task, &entries)
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 #[cfg(test)]

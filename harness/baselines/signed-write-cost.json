@@ -1,16 +1,16 @@
 {
   "name": "drill: signed-write-cost",
-  "started_at": "2026-09-06T10:08:55.667695Z",
+  "started_at": "2026-09-07T08:07:44.134129Z",
   "environment": {
-    "commit": "8735e10db960083357b264414f618103e40fbed1",
-    "dirty": false,
+    "commit": "44fef477fa7d325508d80fb6887b3d113d3d39ba",
+    "dirty": true,
     "profile": "release",
     "host": "Darwin arm64",
     "cpus": 10,
     "binaries": {
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/hub": "69afd36a4b7dd5552727e8521ea1c2e57a899474abfd8ac43f4c574a0cd463cc",
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
     }
   },
   "sections": [
@@ -19,19 +19,21 @@
       "plan_item": "§6.3",
       "verdict": "refuted",
       "facts": {
-        "claim_to_verify_ratio": 21.78,
-        "durable_claim_p50_ms": 4.01,
+        "claim_to_verify_ratio": 7.25,
+        "durable_claim_p50_ms": 4.55,
         "rounds": 40,
-        "unauthenticated_read_p50_ms": 0.08,
-        "verify_and_quota_p50_ms": 0.18,
-        "verify_plus_durable_claim_p50_ms": 4.19
+        "unauthenticated_read_p50_ms": 0.3,
+        "verify_and_quota_p50_ms": 0.63,
+        "verify_plus_durable_claim_p50_ms": 5.18
       },
       "notes": [
         "The two signed measurements are the same envelope on the same route from the same key. They differ by exactly one step: the first is claimed and fsynced before the handler refuses it, the second is caught by the in-memory replay set at the claim and never written."
       ],
-      "findings": [
-        "§6 item 3 names signature-verify CPU as the third thing to break, but verification and the quota charge together cost 0.18ms while the durable replay claim behind them costs 4.01ms -- 22x more. Signed writes are bounded by one fsync per request, not by ECDSA. That also means the write path does not scale with cores, and that batching or group-committing the replay guard's writes is worth more than anything done to the verify."
+      "findings": [],
+      "accepted": [
+        "§6 item 3 names signature-verify CPU as the third thing to break, but verification and the quota charge together cost 0.63ms while the durable replay claim behind them costs 4.55ms -- 7x more. Signed writes are bounded by one fsync per request, not by ECDSA. That also means the write path does not scale with cores, and that batching or group-committing the replay guard's writes is worth more than anything done to the verify."
       ],
+      "healthy_verdict": "refuted",
       "latency": [
         {
           "label": "read (no signature)",
@@ -40,10 +42,10 @@
           "by_status": {
             "200": 40
           },
-          "p50_ms": 0.080042,
-          "p90_ms": 0.099833,
-          "p99_ms": 0.293333,
-          "max_ms": 0.293333,
+          "p50_ms": 0.299083,
+          "p90_ms": 0.37074999999999997,
+          "p99_ms": 1.234125,
+          "max_ms": 1.234125,
           "per_second": null
         },
         {
@@ -53,10 +55,10 @@
           "by_status": {
             "403": 40
           },
-          "p50_ms": 4.190084000000001,
-          "p90_ms": 5.167666,
-          "p99_ms": 6.385292,
-          "max_ms": 6.385292,
+          "p50_ms": 5.1755,
+          "p90_ms": 6.522666,
+          "p99_ms": 9.424750000000001,
+          "max_ms": 9.424750000000001,
           "per_second": null
         },
         {
@@ -66,10 +68,10 @@
           "by_status": {
             "401": 40
           },
-          "p50_ms": 0.183917,
-          "p90_ms": 0.210417,
-          "p99_ms": 0.27099999999999996,
-          "max_ms": 0.27099999999999996,
+          "p50_ms": 0.6275000000000001,
+          "p90_ms": 0.8943329999999999,
+          "p99_ms": 1.397375,
+          "max_ms": 1.397375,
           "per_second": null
         }
       ]

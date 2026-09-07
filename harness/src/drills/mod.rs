@@ -18,6 +18,7 @@ use btclib::crypto::PublicKey;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod escrow_refund;
 pub mod escrow_restart;
 pub mod node_crash;
 pub mod payout_ceiling;
@@ -101,6 +102,7 @@ pub async fn wait_until_funded(chain: &ChainView, pubkey: &PublicKey, target: u6
 pub const ALL: &[&str] = &[
     "node-crash",
     "escrow-restart",
+    "escrow-refund",
     "replay-storm",
     "rate-limit-tiers",
     "quota-isolation",
@@ -119,6 +121,7 @@ pub async fn run(
     match name {
         "node-crash" => node_crash::run(repo, bin_dir, work_dir).await,
         "escrow-restart" => escrow_restart::run(repo, bin_dir, work_dir).await,
+        "escrow-refund" => escrow_refund::run(repo, bin_dir, work_dir).await,
         "replay-storm" => replay_storm::run(repo, bin_dir, work_dir).await,
         "rate-limit-tiers" => rate_limit_tiers::run(repo, bin_dir, work_dir).await,
         "quota-isolation" => quota_isolation::run(repo, bin_dir, work_dir).await,

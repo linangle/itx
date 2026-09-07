@@ -35,10 +35,122 @@ working directory it wipes first and fills with chain data.
 CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out harness/results
 ```
 
-One at a time, by name: `node-crash`, `escrow-restart`, `replay-storm`,
-`rate-limit-tiers`, `quota-isolation`, `payout-ceiling`, `signed-write-cost`.
+One at a time, by name: `node-crash`, `escrow-restart`, `escrow-refund`,
+`replay-storm`, `rate-limit-tiers`, `quota-isolation`, `payout-ceiling`,
+`signed-write-cost`.
+
+**`escrow-refund` is the one drill here that can assert.** Every other drill
+samples something — a race, a window, a rate — and so a clean run is weak
+evidence; `escrow-restart` says as much in its own report, returning
+*inconclusive* rather than clean when it finds nothing. `escrow-refund` asks
+whether a refunded deposit's status survives a restart, which is not a race: it
+either persists or it does not, on every restart, so one run is a verdict.
+It exists because seven drills that all sampled missed the worst defect the hub
+has had (plan §6.5c). When adding a drill, prefer a question shaped like this
+one's.
+
+## Run a new drill against the buggy binary before you believe it
+
+A drill that reports CONFIRMED has told you nothing until you have watched it
+report REFUTED. The first version of `escrow-refund` passed — and passed against
+a hub built from the commit before the fix, which is what exposed it. It
+cancelled a task and inferred the deposit's status from which check refused a
+retried confirmation, and that inference was simply blind: a cancelled task's
+deposit is already `Consumed`, and the hub rejects every non-`Reserved` status
+with the same error, so the buggy and fixed hubs answered identically. The drill
+was rewritten around a consequence that does differ.
+
+This is the companion to the older lesson below about re-reading a drill when its
+bug is fixed. Both are the same failure — a drill whose arithmetic no longer
+matches the thing it names — and neither is visible from a green run. Keep a
+pre-fix binary to hand: `strings target/release/hub | grep '<a string the fix
+added>'` tells you which one you have, and `--build-dir` points a drill at it
+without touching your tree.
 The process exits non-zero if any drill refuted the plan or found a bug, so it
 can be put in front of a change and be told rather than read.
+
+## A verdict is not a health check, and the report says which is which
+
+`Verdict` answers a question about the **plan**: did the predicted thing
+happen. Whether that is good news depends on what the plan predicted, and for
+about half these drills it predicted a failure — so `Refuted` is the healthy
+answer and `Confirmed` is the regression. `node-crash` is the clearest case:
+§6.5 said killing the node mid-payout destroys money the hub still reports as
+paid, and once the fix landed the drill refutes it, permanently.
+
+So a section declares which verdict means "nothing to act on":
+
+```rust
+Section::new("Kill the node mid-payout").healthy_when(Verdict::Refuted)
+```
+
+`Confirmed` is the default, which is right for most drills. Three consequences
+worth knowing:
+
+- **`Inconclusive` is never a failure on its own.** It is the absence of an
+  answer, not a bad one, and for a sampling drill it is the expected post-fix
+  outcome — `escrow-restart` cannot observe the absence of a race. A drill that
+  wants an undecided run to be loud says so with a finding, as `escrow-refund`
+  does when no sweep pass completed inside its window.
+- **The exit code and `compare` both derive from this**, rather than from
+  "refuted is bad". Before it existed, a healthy `node-crash`,
+  `escrow-restart` and `signed-write-cost` all exited non-zero — so
+  `harness drill all` was red whatever the hub did, and the "put it in front of
+  a change and be told" property this file claims did not hold.
+- **`compare` reads the healthy verdict from the *current* report**, not the
+  baseline, so baselines written before the field existed still score
+  correctly.
+
+### Findings you have already looked at
+
+`Section::accepted_finding` is for something a drill reliably observes that has
+been investigated and is not a defect. It does not fail a run and `compare` does
+not treat it as new. Two are in use: `escrow-restart`'s dropped-confirmation
+count on `SIGTERM`, which a five-run A/B reproduced at the same rate before the
+fix and is therefore pre-existing drain variance (§6.5b); and
+`signed-write-cost`'s fsync-dominates result, which the plan has already been
+corrected to say (§6.3).
+
+**Say why in the text.** An accepted finding with no reasoning is
+indistinguishable from one somebody silenced to get a green run, and the next
+reader has no way to tell them apart.
+
+## Baselines: which run to check in
+
+`harness compare --baseline harness/baselines/<drill>.json --against <a run>`
+exits non-zero if a verdict got worse or a finding appeared. Which run belongs
+in `baselines/` is not the same answer for every drill, and getting it wrong
+makes the comparison useless rather than wrong-looking:
+
+**Baseline every drill on a run of the code you want to keep** — its healthy
+run — rather than on the pre-fix run that first found the bug. That is the
+opposite of the convention through 2026-09-06 and the reason is the
+healthy-verdict field above: once the comparison knows which verdict is
+healthy, a healthy baseline is what makes it a gate.
+
+- **An asserting drill** (`escrow-refund`) baselines on its healthy run and the
+  gate is exact: a reintroduced bug turns confirmed into refuted and exits
+  non-zero. Verified in both directions — baseline against itself is silent and
+  exits 0, baseline against a pre-fix run reports `confirmed -> refuted` and
+  exits 1.
+- **A sampling drill** (`escrow-restart`) baselines on its healthy run too,
+  which is what closed §6.5b's refuted-to-refuted gap. Its SIGKILL half sits at
+  `inconclusive` when healthy, so the bug returning reads as `refuted` — a
+  problem where the baseline was not one. Against the old pre-fix baseline that
+  same regression compared refuted-to-refuted and exited 0.
+- **A pessimistic-claim drill** (`node-crash`) baselines on its healthy run,
+  which reports **refuted**, and declares `healthy_when(Verdict::Refuted)` so
+  the comparison scores it the right way round.
+
+The "before" is not lost by doing this: a drill's pre-fix numbers are the
+evidence a fix is argued from, and they belong in the plan section that argues
+it, where they are read. `escrow-restart`'s superseded pre-fix baseline is in
+git history at the commit that replaced it, and its numbers are quoted in plan
+§6.5b.
+
+Keep facts out of a report if they change every run for no reason — a uuid, a
+timestamp — or every comparison carries a diff line and stops being read. Put
+them in a `note`, which `compare` does not diff.
 
 `--build-dir` chooses where `node`, `miner` and `hub` are taken from
 (`target/release` by default). They are **copied** into the run's own directory
@@ -91,21 +203,33 @@ CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- compare \
 ```
 
 Sections are matched by title and facts by key, and it exits non-zero when
-something got worse — a verdict that turned into a refutation, or a finding
-that was not there before. A finding *going away* is somebody's fix landing
-and deliberately does not fail.
+something got worse — a verdict that stopped being the section's *healthy* one
+(see above; for `node-crash` that means becoming confirmed, not refuted), or an
+unaccepted finding that was not there before. A finding *going away* is
+somebody's fix landing and deliberately does not fail, and neither does a
+verdict moving back to healthy.
+
+Fact changes are printed but never fail on their own: a fact is a measurement,
+and deciding which direction of a number is bad is the drill's job, not the
+comparison's. Keep a fact out of a report if it changes every run for no
+reason — a uuid, a timestamp — or every comparison carries a diff line and
+stops being read. Put it in a `note`, which `compare` does not diff.
 
 ## What each drill proves
 
-| Drill | Plan item | The claim it tests |
-|---|---|---|
-| `node-crash` | §6.5 | Killing the node with payouts in the mempool loses money the hub still reports as paid |
-| `escrow-restart` | §6.5b | An interrupted escrow confirmation leaves a state a client can act on: no deposit funds two tasks, none is stranded |
-| `replay-storm` | §3.3 | The replay guard's durable half closes the post-restart window; nothing verifies twice |
-| `rate-limit-tiers` | §3.4 | Saturating one tier leaves health, reads, writes and chain writes independently available |
-| `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another |
-| `payout-ceiling` | §6.4b | With a single operator output, payouts are bounded at about one per block |
-| `signed-write-cost` | §6.3 | Signature-verify CPU is what the write path's time goes on |
+Read the third column with the second: where the claim is a prediction of
+failure, refuting it is the good news, and the "healthy" column says so.
+
+| Drill | Plan item | The claim it tests | Healthy |
+|---|---|---|---|
+| `node-crash` | §6.5 | Killing the node with payouts in the mempool loses money the hub still reports as paid | **refuted** |
+| `escrow-restart` | §6.5b | An interrupted escrow confirmation leaves a state a client can act on: no deposit funds two tasks, none is stranded | confirmed (SIGKILL half can only reach inconclusive) |
+| `replay-storm` | §3.3 | The replay guard's durable half closes the post-restart window; nothing verifies twice | confirmed |
+| `rate-limit-tiers` | §3.4 | Saturating one tier leaves health, reads, writes and chain writes independently available | confirmed |
+| `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another | confirmed |
+| `payout-ceiling` | §6.4b | With a single operator output, payouts are bounded at about one per block | confirmed |
+| `escrow-refund` | §6.5c | A refunded escrow deposit's status survives a restart, so the sweep does not re-select it | confirmed |
+| `signed-write-cost` | §6.3 | Signature-verify CPU is what the write path's time goes on | **refuted** (a settled measurement, §6.3) |
 
 Three of them need explaining, because the way they are set up is the
 measurement.

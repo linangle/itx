@@ -1648,6 +1648,69 @@ what the hub is still waiting on (should drain within a couple of minutes;
 anything older is stuck), and `GET /tasks?status=payoutfailed` is what it gave
 up on (should be empty).
 
+#### A `Submitted` task with no payout attempt — added 2026-09-07
+
+The one settlement state the hub will not resolve for you, and the only one it
+refuses to act on at all. Plan §6.5c is the background.
+
+**How you learn about it.** The startup banner, at `error`:
+
+```
+store reconciliation: [submitted_task_with_no_payout_attempt] task <id> reads
+Submitted with no payout attempt tracking it: <n> ITX left the hub and nothing
+is waiting for it
+```
+
+and `hub_reconciliation_disagreements{class="submitted_task_with_no_payout_attempt"}`
+carries the count for as long as that process runs. If anything then calls the
+settlement path for such a task, `hub_payout_sends_refused_total` climbs and the
+journal says `refusing to send … a PayoutAttempt row was lost`.
+
+**Why the hub stops here.** The `PayoutAttempt` held the recipient's output hash
+and the inputs the transaction spent. §10.3's rule needs the first to call a
+payout confirmed and the second to call it lost, and both died with the record —
+so this state has *strictly less* evidence than the "unresolvable" row above,
+which the hub already declines to guess at. Worse, the attempt was also the
+double-spend guard, so the one code path that would still send is the one that
+could pay the bounty twice. It refuses instead.
+
+**Do not "just re-run settlement."** That was possible before 2026-09-07 and is
+what this state's danger consisted of.
+
+**The one sound test, and it only covers escrow-funded tasks.** An escrow
+deposit address is single-purpose: nobody but its depositor was ever told it
+exists, so every UTXO there is unambiguously that deposit's money. So:
+
+1. Get the task's `escrow_id`, then the deposit address for it.
+2. Ask the node what that address holds (the wallet's balance query, or the hub's
+   own `FetchUTXOs`).
+3. **If it still holds at least the bounty plus the fee, unmarked, no payment has
+   been made or is pending from it** — the payout demonstrably never landed, and
+   paying the winner by hand is safe.
+4. **If it is drained or the funds are mempool-marked**, something went out.
+   Whether it reached the winner is now a question for the chain: look for an
+   output of exactly the bounty at the winner's address, in a block after the
+   task's `created_at`. That is suggestive and *not* proof — two payouts of the
+   same size to the same key are indistinguishable by value alone, which is why
+   the hub will not conclude it either.
+
+For an **operator-funded** task there is no equivalent test. The source is the
+shared operator address, so its balance says nothing about one payout. Reconcile
+against the chain by hand, and prefer paying the worker a second time over
+leaving them unpaid only if you can show the first payment is absent.
+
+**Then clear the state** so the banner stops and the task stops reading as
+mid-settlement. There is no endpoint for this on purpose: the fix depends on
+what you found, and a button that guessed would be the bug again.
+
+**How you get here at all.** Only from a store written by an older binary: the
+pre-2026-09-07 `record_confirmed_payout` deleted the attempt in one commit and
+saved the task in another, so a crash in between left this; and a rollback to a
+build predating the `payout_attempts` table made every attempt invisible at once
+(§6.5c bug 5, now fenced off by the schema stamp). Both writes are single
+transactions now, so a current hub cannot create this state — which is why the
+check runs at boot and not on the sweep.
+
 ---
 
 ## 11. What in here was actually tested

@@ -194,6 +194,32 @@ pub struct Metrics {
     /// log count for the reason §8.3 gives: grepping the journal tells you
     /// a retry happened, not how many are outstanding right now.
     pub board_outstanding_payouts: AtomicU64,
+    /// Payout sends refused because the task asking for one was
+    /// `Submitted` with something still unsent -- a combination
+    /// unreachable through correct operation (see
+    /// `handlers::try_settle_verified_task`), so every increment means
+    /// the store lost a `PayoutAttempt` row.
+    ///
+    /// A counter and not a gauge even though it describes a standing
+    /// condition, because it fires once per affected task per sweep and
+    /// keeps firing until an operator resolves it: a rate that will not
+    /// return to zero is exactly the alert wanted here, where a gauge
+    /// sampled after the fix would read healthy while the money is still
+    /// unaccounted for.
+    pub payout_sends_refused: AtomicU64,
+
+    // ---- store reconciliation -----------------------------------------
+    /// Disagreements the boot reconciliation pass found in the store, by
+    /// class (see `reconcile::Disagreement`). Set once at startup and
+    /// never touched again, which is exactly what makes it alertable: it
+    /// is a property of the store this process started from, so any
+    /// non-zero value is worth paging on and stays visible until the
+    /// process that found it is replaced.
+    ///
+    /// A gauge and not a log count, for the reason §8.3 gives about
+    /// retry depth: the banner tells you a disagreement was found, this
+    /// tells you it is still true of the hub you are running.
+    pub reconciliation_disagreements: DashMap<&'static str, u64>,
 
     // ---- per-route request timing -------------------------------------
     /// Latency and status counts per route template.
@@ -210,6 +236,19 @@ pub struct Metrics {
     /// fallthrough is a fixed string.
     pub routes: DashMap<RouteKey, RouteStats>,
 }
+
+/// Every `reconcile::Disagreement` label, so `render` can emit a row
+/// per class whether or not any were found. Kept here rather than
+/// derived from the enum because this module deliberately does not
+/// depend on `reconcile`; `reconcile::tests::every_disagreement_has_a
+/// _stable_label` pins the strings on the other side, and
+/// `tests::every_reconciliation_class_is_rendered` pins that these two
+/// lists agree.
+pub const RECONCILIATION_CLASSES: [&str; 3] = [
+    "orphaned_consumed_deposit",
+    "locked_balance_with_no_open_order",
+    "submitted_task_with_no_payout_attempt",
+];
 
 /// Tier names, in the order `Metrics::rate_limited_by_tier` indexes them.
 pub const TIER_NAMES: [&str; 5] = ["health", "metrics", "read", "write", "chain"];
@@ -388,6 +427,20 @@ impl Metrics {
 
         gauge(&mut out, "hub_board_open_tasks", "Non-terminal tasks on the board, as of the last sweep.", self.board_open_tasks.load(Ordering::Relaxed));
         gauge(&mut out, "hub_board_outstanding_payouts", "Payouts submitted but not yet confirmed, as of the last sweep.", self.board_outstanding_payouts.load(Ordering::Relaxed));
+        counter(&mut out, "hub_payout_sends_refused_total", "Payout sends refused because the task was Submitted with something unsent, which means a lost PayoutAttempt row.", self.payout_sends_refused.load(Ordering::Relaxed));
+
+        // Emitted for every class, including the zeroes. A label that
+        // only appears once something is wrong gives an operator no way
+        // to write an alert before the first incident, and no way to
+        // tell "clean" from "not scraped".
+        out.push_str("# HELP hub_reconciliation_disagreements Store records found disagreeing at boot, by class.\n");
+        out.push_str("# TYPE hub_reconciliation_disagreements gauge\n");
+        for label in RECONCILIATION_CLASSES {
+            let value = self.reconciliation_disagreements.get(label).map(|v| *v).unwrap_or(0);
+            out.push_str(&format!(
+                "hub_reconciliation_disagreements{{class=\"{label}\"}} {value}\n"
+            ));
+        }
 
         out.push_str("# HELP hub_http_requests_total Responses served, by route template and status class.\n");
         out.push_str("# TYPE hub_http_requests_total counter\n");
@@ -477,6 +530,65 @@ mod tests {
     /// per-route timing quietly lumps real endpoints in with the 404s --
     /// which is exactly the aggregation that would hide the `/leaderboard`
     /// pathology this instrumentation exists to see (plan §6.1).
+    /// The reconciliation gauge emits one row per class whether or not
+    /// anything was found, so an operator can write the alert before the
+    /// first incident and can tell a clean store from an unscraped one.
+    #[test]
+    fn every_reconciliation_class_is_rendered_including_the_zeroes() {
+        let metrics = Metrics::new();
+        let rendered = metrics.render(0);
+        // Prometheus wants HELP and TYPE at the start of a line. Asserted
+        // because the first version of this block emitted an indented
+        // TYPE line and every other assertion here passed anyway --
+        // "contains the rows" says nothing about the header above them.
+        assert!(rendered.contains(
+            "\n# TYPE hub_reconciliation_disagreements gauge\nhub_reconciliation_disagreements{"
+        ));
+        for class in RECONCILIATION_CLASSES {
+            assert!(
+                rendered.contains(&format!("hub_reconciliation_disagreements{{class=\"{class}\"}} 0")),
+                "a fresh hub must publish {class} at zero, not omit it"
+            );
+        }
+
+        metrics
+            .reconciliation_disagreements
+            .insert("orphaned_consumed_deposit", 2);
+        let rendered = metrics.render(0);
+        assert!(rendered
+            .contains("hub_reconciliation_disagreements{class=\"orphaned_consumed_deposit\"} 2"));
+        assert!(
+            rendered.contains(
+                "hub_reconciliation_disagreements{class=\"locked_balance_with_no_open_order\"} 0"
+            ),
+            "and the other classes must keep reporting zero rather than disappearing"
+        );
+    }
+
+    /// `RECONCILIATION_CLASSES` is a hand-kept copy of
+    /// `reconcile::Disagreement`'s labels -- this module does not depend
+    /// on `reconcile` -- so something has to notice when the two drift.
+    /// A class missing here is a disagreement the hub finds, logs, and
+    /// never publishes.
+    #[test]
+    fn the_rendered_classes_match_the_disagreements_that_exist() {
+        let mut from_enum = [
+            crate::reconcile::Disagreement::OrphanedConsumedDeposit,
+            crate::reconcile::Disagreement::LockedBalanceWithNoOpenOrder,
+            crate::reconcile::Disagreement::SubmittedTaskWithNoPayoutAttempt,
+        ]
+        .map(|kind| kind.label())
+        .to_vec();
+        let mut rendered = RECONCILIATION_CLASSES.to_vec();
+        from_enum.sort_unstable();
+        rendered.sort_unstable();
+        assert_eq!(
+            rendered, from_enum,
+            "every Disagreement variant needs a row in RECONCILIATION_CLASSES; if a variant was \
+             added, add it to the array above too so this test keeps meaning something"
+        );
+    }
+
     #[test]
     fn every_served_route_has_a_template_of_its_own() {
         for (method, path) in [
