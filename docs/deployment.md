@@ -480,6 +480,16 @@ Notes that are not boilerplate:
   still comes up and serves reads, reporting `degraded` from `/health`. That is
   more useful than a hub that refuses to start, and it is what §8.2's alerting
   assumes.
+- **A freshly deployed hub cannot pay out for one block, on purpose.** Before
+  the listener opens it splits its wallet across many outputs, because a
+  payment's change is unconfirmed until mined and a one-output wallet can
+  therefore make one payment per block (plan §6.4b). That first split spends
+  the only confirmed output there was, so until it is mined the hub answers
+  faucet grants with 503 and `Retry-After`. Expect it once, at first start on
+  a funded operator, and expect `hub_operator_ready_outputs` to read 0 for that
+  block. A restart of a warm hub does nothing — its wallet is already split.
+  If it persists, the hub could not reach the node at boot; check
+  `hub_operator_fan_out_failures_total`.
 - **`--trusted-proxies 127.0.0.1,::1`** is in the hub's `ExecStart`. If you move
   the proxy off-box, this is the line to change, and §4.3 is the reason it
   matters.
@@ -1128,9 +1138,10 @@ every row says obtainable or not, and the "how" column names the series.
 | replay guard / commit latency | **yes** | `hub_replay_signatures_{claimed,rejected,evicted}_total`, `hub_replay_durable_write_failures_total`, and `hub_replay_durable_write_ms_total` — the last is the fsync that bounds the whole write path (plan §6.3) |
 | chain height + freshness | **yes** | `hub_chain_height` with `hub_chain_observation_age_seconds`. The age is the point: a hub that lost its node keeps reporting the last height it knew |
 | faucet grants | **yes** | `hub_faucet_grants`, sampled from the board each sweep |
+| operator payout capacity | **yes** | `hub_operator_ready_outputs`, sampled each sweep — confirmed operator outputs large enough to fund a payment on their own. This *is* the payout ceiling (plan §6.4b): one payment consumes one output and returns its change unconfirmed, so the hub makes about this many payments per block. `hub_operator_fan_outs_total` and `hub_operator_fan_out_failures_total` say whether the hub is keeping it topped up |
 | faucet burn *in units* | **no** | grants × grant size, and the grant size belongs to the faucet workstream (plan §5), which is rewriting it and may make it vary with PoW difficulty. Deliberately not duplicated here: a second copy of that constant would go stale silently and report a wrong number of coins burned. Lands with §5 |
 | board lock contention | **partly** | `hub_sweep_board_lock_wait_ms_total` — the sweep's own wait for the board *write* lock, which only proceeds once every reader has drained, so it detects readers starving the writer. It cannot see reader-versus-reader contention. Full coverage needs the per-handler instrumentation plan §10.1 defers |
-| challenge solve-rate | **n/a** | the faucet PoW does not exist yet (plan §5) |
+| challenge solve-rate | **no** | the faucet PoW landed 2026-09-06 (plan §5), but nothing counts issuances against redemptions. `hub_faucet_grants` is the redeemed side only. Worth having: the ratio is what says whether the difficulty is set anywhere near right |
 
 **Where the endpoint is exposed, and why.** `/metrics` is a route on the
 hub's ordinary port, not a second listener. The §1 threat model asks to
@@ -1179,6 +1190,8 @@ notice:
 | Commit path degraded | `rate(hub_replay_durable_write_ms_total[5m]) / rate(hub_replay_signatures_claimed_total[5m]) > 50` | the write path is bounded by this fsync (§6.3), not by CPU. Request rate alone will not explain a slow hub |
 | Burned envelopes | `increase(hub_replay_durable_write_failures_total[5m]) > 0` | each one is a request the client cannot retry. Page, do not graph |
 | Node pool saturated | `rate(hub_node_pool_saturation_waits_total[5m]) > 1` | queueing on the node, visible before it becomes request latency |
+| Operator wallet flat | `hub_operator_ready_outputs < 4` | the hub is about to start refusing faucet grants and operator-funded settlement, and the 503s it sends will look like a client problem. Four rather than zero, because zero is already the outage. Expect it to read 0 for one block on a fresh deploy while the first split confirms (plan §6.4b) |
+| Wallet cannot be reshaped | `increase(hub_operator_fan_out_failures_total[10m]) > 0` | the hub could not read, build or send a split. Nothing else says so: the wallet simply stays short and every payout starts failing a minute later for what looks like an unrelated reason |
 | Every client 429ing | `hub_rate_limited_total{tier="read"}` rising across all clients at once | §4.3's failure 1 — see below; this is the alert that catches it |
 
 Alert on the **429 rate going to ~100% across all clients at once**. That is not
