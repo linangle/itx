@@ -551,10 +551,18 @@ impl HubStore {
 
     /// Same as `save_reputation`, but for several pubkeys at once in a
     /// single redb write transaction (one fsync total) rather than one
-    /// per entry. A `Consensus` task's resolution can update every
-    /// assignee's reputation in one go (see `Task::consensus_assignees`),
-    /// so callers persisting that should batch here instead of looping
-    /// over individual `save_reputation` calls.
+    /// per entry.
+    ///
+    /// Neither this nor `save_reputation` has a production caller any
+    /// more, and that is the point rather than an oversight: every
+    /// reputation change the hub makes is caused by something else it is
+    /// also writing -- a task, a settled escrow -- and belongs in that
+    /// record's transaction, not in one of its own (plan §6.5c). The
+    /// `Consensus` resolution this was written for now goes through
+    /// `save_task_and_reputation_batch`. Both are kept as the primitives
+    /// those pair-writers are built out of and as the thing the
+    /// round-trip tests exercise; a new caller wanting one should first
+    /// ask what else it is committing.
     pub fn save_reputation_batch(&self, entries: &[(PublicKey, Reputation)]) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
@@ -1575,6 +1583,66 @@ mod tests {
             capabilities: Default::default(),
         };
         (task, deposit)
+    }
+
+    /// A resolution's task and every reputation record it dinged are one
+    /// fact and must be one commit. Reputation is the input to a task's
+    /// `min_reputation` term, so a penalty that does not land beside the
+    /// task recording it lets a penalized agent keep claiming work a
+    /// poster meant to exclude them from -- and the consensus path used
+    /// to drop that batch's error entirely.
+    #[test]
+    fn a_resolution_commits_its_task_and_every_reputation_together_or_not_at_all() {
+        let path = temp_db_path("task_and_reputation_batch");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, _) = confirmed_escrow_pair();
+        let losers: Vec<(PublicKey, Reputation)> = (0..3)
+            .map(|_| {
+                (
+                    PrivateKey::new_key().public_key(),
+                    Reputation { completed: 0, failed: 1, total_earned: 0 },
+                )
+            })
+            .collect();
+
+        // Staged and then failed: the interval a crash would land in,
+        // hit deterministically rather than by chance.
+        let result = store.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), &task)?;
+            for (pubkey, reputation) in &losers {
+                stage_record(
+                    txn,
+                    REPUTATION_TABLE,
+                    pubkey.to_sec1_bytes().as_slice(),
+                    reputation,
+                )?;
+            }
+            Err(HubStoreError::Serialization("injected mid-transaction failure".into()))
+        });
+        assert!(result.is_err());
+        assert!(store.load_all_tasks().unwrap().is_empty());
+        assert!(
+            store.load_all_reputation().unwrap().is_empty(),
+            "a resolution that did not commit must not have penalized anybody"
+        );
+
+        store.save_task_and_reputation_batch(&task, &losers).unwrap();
+        assert_eq!(store.load_all_tasks().unwrap().len(), 1);
+        let stored = store.load_all_reputation().unwrap();
+        assert_eq!(stored.len(), 3, "every assignee's ding, not just the caller's");
+        assert!(
+            stored.iter().all(|(_, reputation)| reputation.failed == 1),
+            "and each one as it was resolved, not defaulted"
+        );
+
+        // A resolution that penalized nobody still has a task to write,
+        // so the empty case must not be a no-op the way
+        // `save_reputation_batch`'s is.
+        let (other_task, _) = confirmed_escrow_pair();
+        store.save_task_and_reputation_batch(&other_task, &[]).unwrap();
+        assert_eq!(store.load_all_tasks().unwrap().len(), 2);
+
+        std::fs::remove_file(&path).ok();
     }
 
     /// A `Submitted` task and the attempt tracking its payout, as the

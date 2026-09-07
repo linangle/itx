@@ -39,10 +39,11 @@ const FAUCET_GRANT_AMOUNT: u64 = 50_000_000;
 /// unbounded `i64` from a request body can get arbitrarily close to that.
 /// A year is already far more generous than any real testnet task needs.
 const MAX_CONSENSUS_WINDOW_MINUTES: i64 = 60 * 24 * 365;
-/// Upper bound on `num_assignees`. Each resolution persists one redb
-/// write transaction per assignee (see `persist_other_assignees_reputation`
-/// and the sweep's equivalent), so this also caps how much synchronous
-/// disk I/O one task's resolution can trigger.
+/// Upper bound on `num_assignees`. A resolution persists every
+/// assignee's reputation record together with the task, in a single redb
+/// transaction (see `persist_consensus_submission` and the sweep's
+/// equivalent), so this caps how large that one transaction -- and the
+/// board lock hold building it -- can get.
 const MAX_CONSENSUS_ASSIGNEES: u32 = 100;
 /// `GET /tasks`'s page size when the caller doesn't specify `limit`.
 const DEFAULT_TASKS_PAGE_SIZE: usize = 50;
@@ -1355,14 +1356,24 @@ pub async fn resolve_dispute(
         let mut board = state.board.write().await;
         board.resolve_dispute(task_id, envelope.payload.outcome)?
     };
-    let task = state.board.read().await.get_task(task_id).expect("just resolved, must still exist").clone();
-    state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
-    // resolve_dispute dinged the loser's reputation immediately, mirroring
-    // resolve_consensus's "dinged at resolution" convention -- persist it.
-    let loser_reputation = state.board.read().await.reputation(&loser);
-    if let Err(e) = state.store.save_reputation(&loser, &loser_reputation) {
-        error!("failed to persist dispute-loser reputation for {loser}: {e}");
-    }
+    // resolve_dispute dinged the loser's reputation immediately,
+    // mirroring resolve_consensus's "dinged at resolution" convention.
+    // One transaction with the task, and the failure surfaced rather
+    // than logged behind a 200: this used to save the task, then the
+    // reputation, and swallow the second error -- so a caller could be
+    // told the dispute was resolved while the ding that resolution
+    // consisted of never reached disk (plan §6.5c).
+    let (task, loser_reputation) = {
+        let board = state.board.read().await;
+        (
+            board.get_task(task_id).expect("just resolved, must still exist").clone(),
+            board.reputation(&loser),
+        )
+    };
+    state
+        .store
+        .save_task_and_reputation(&task, &loser, &loser_reputation)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     try_settle_verified_task(&state, task_id).await;
     settle_dispute_bond(&state, task_id).await;
@@ -1555,7 +1566,12 @@ async fn submit_consensus_task(
         let resolved = board.submit_consensus_answer(task_id, pubkey.clone(), output)?;
         (resolved, board.get_task(task_id).expect("just touched it").clone())
     };
-    persist_task_and_reputation(state, &task_after_submit, &pubkey).await?;
+    // The task and every reputation this submission touched, in one
+    // commit -- including, when this submission resolved the task, every
+    // other assignee dinged by that resolution. Three separate writes
+    // before, the last of them error-dropping (see
+    // `persist_consensus_submission`).
+    persist_consensus_submission(state, &task_after_submit, &pubkey, resolved).await?;
 
     if !resolved {
         return Ok(Json(SubmitResultDto {
@@ -1565,11 +1581,6 @@ async fn submit_consensus_task(
             resolved: Some(false),
         }));
     }
-
-    // Resolution can ding reputation for every assignee who disagreed,
-    // not just this caller -- persist all of them, not only the one
-    // `persist_task_and_reputation` above already covered.
-    persist_other_assignees_reputation(state, &task_after_submit, &pubkey).await;
 
     // Resolution just happened -- pay out every winner it produced right
     // away rather than waiting for the next sweep. Deliberately
@@ -4368,44 +4379,66 @@ pub async fn sweep_exchange_deposit(state: &AppState, deposit_id: Uuid) -> bool 
         .is_some()
 }
 
+/// Persists a submission's task and the submitter's reputation in one
+/// transaction.
+///
+/// It was two, and that is not merely untidy bookkeeping: reputation is
+/// the input to a task's `min_reputation` term, so a failure record that
+/// did not land beside the task recording it lets a penalized agent keep
+/// claiming work a poster meant to exclude them from (plan §6.5c).
 async fn persist_task_and_reputation(
     state: &AppState,
     task: &Task,
     submitter: &PublicKey,
 ) -> Result<(), ApiError> {
-    state.store.save_task(task).map_err(|e| ApiError::Internal(e.to_string()))?;
     let reputation = state.board.read().await.reputation(submitter);
     state
         .store
-        .save_reputation(submitter, &reputation)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(())
+        .save_task_and_reputation(task, submitter, &reputation)
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
-/// Persists every `Consensus` assignee's reputation except `already_saved`
-/// (typically the caller, whose reputation `persist_task_and_reputation`
-/// already covered). `resolve_consensus` can ding several assignees'
-/// reputation in one go -- without this, only whichever single pubkey a
-/// caller happened to already have in hand would ever get its reputation
-/// change written to disk, silently losing everyone else's penalty across
-/// a restart. Written as a single batched transaction (see
-/// `HubStore::save_reputation_batch`) rather than one redb write per
-/// assignee, capped at `MAX_CONSENSUS_ASSIGNEES` fsyncs either way.
-async fn persist_other_assignees_reputation(state: &AppState, task: &Task, already_saved: &PublicKey) {
+/// A `Consensus` submission's task and every reputation record it
+/// touched, in one transaction: the submitter's always, and -- once the
+/// submission completed the set and resolved the task -- every other
+/// assignee's, since `resolve_consensus` dings each one who disagreed or
+/// never showed.
+///
+/// This was the worst of the split writes. The submitter's reputation
+/// went through one commit with the task in another, and everyone
+/// else's through a third whose error was **logged and dropped**, so a
+/// lost batch silently forgave every agent who lost that round while the
+/// task recording the round stayed on disk (plan §6.5c). One transaction
+/// for the whole resolution, and a failure the caller hears about.
+///
+/// Still capped at `MAX_CONSENSUS_ASSIGNEES` records, which now bounds
+/// the size of one transaction rather than a count of them.
+async fn persist_consensus_submission(
+    state: &AppState,
+    task: &Task,
+    submitter: &PublicKey,
+    resolved: bool,
+) -> Result<(), ApiError> {
     let entries: Vec<(PublicKey, Reputation)> = {
         let board = state.board.read().await;
-        task.consensus_assignees()
-            .into_iter()
-            .filter(|assignee| assignee != already_saved)
-            .map(|assignee| {
-                let reputation = board.reputation(&assignee);
-                (assignee, reputation)
-            })
-            .collect()
+        let mut entries = vec![(submitter.clone(), board.reputation(submitter))];
+        if resolved {
+            entries.extend(
+                task.consensus_assignees()
+                    .into_iter()
+                    .filter(|assignee| assignee != submitter)
+                    .map(|assignee| {
+                        let reputation = board.reputation(&assignee);
+                        (assignee, reputation)
+                    }),
+            );
+        }
+        entries
     };
-    if let Err(e) = state.store.save_reputation_batch(&entries) {
-        error!("failed to persist reputation for consensus assignees of task {} after resolution: {e}", task.id);
-    }
+    state
+        .store
+        .save_task_and_reputation_batch(task, &entries)
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 #[cfg(test)]

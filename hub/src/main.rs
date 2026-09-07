@@ -394,12 +394,23 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         board.resolve_expired_consensus_tasks(now)
     };
     for task_id in resolved {
-        let task = persist_task_by_id(state, task_id, "resolved consensus").await;
         // A deadline-triggered resolution can ding reputation for several
         // assignees at once (every no-show/loser), not just whichever
         // pubkey happens to be at hand -- persist every one of them, or
-        // the penalty is silently lost on the next restart. Batched into
-        // one redb transaction rather than one write per assignee.
+        // the penalty is silently lost on the next restart.
+        //
+        // The task and all of those records go in **one** transaction,
+        // which is the sweep's half of the fix `persist_consensus_submission`
+        // is the handler's half of. It used to save the task and then
+        // batch the reputations separately, dropping the batch's error,
+        // so a lost batch silently forgave everyone who lost that round
+        // while the task recording the round stayed on disk (plan
+        // §6.5c). Reputation is the input to `min_reputation`, so a lost
+        // penalty is a penalized agent still claiming excluded work.
+        let task = {
+            let board = state.board.read().await;
+            board.get_task(task_id).cloned()
+        };
         if let Some(task) = &task {
             let entries: Vec<(PublicKey, Reputation)> = {
                 let board = state.board.read().await;
@@ -411,9 +422,9 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
                     })
                     .collect()
             };
-            if let Err(e) = state.store.save_reputation_batch(&entries) {
+            if let Err(e) = state.store.save_task_and_reputation_batch(task, &entries) {
                 error!(
-                    "failed to persist reputation for consensus assignees of task {task_id} after resolution: {e}"
+                    "failed to persist resolved consensus task {task_id} and its assignees' reputation: {e}"
                 );
             }
             // A tie (Closed, no winner) needs its escrow refunded, same as
