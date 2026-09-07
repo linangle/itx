@@ -88,6 +88,11 @@ pub struct AppState {
     /// across a restart: a fresh process starts with this empty, and
     /// empty means "check", which is the safe direction.
     pub operator_fan_out_inflight: Mutex<Vec<btclib::sha256::Hash>>,
+    /// The same, for the exchange's pooled custody address. Its own list
+    /// rather than a shared one because the two wallets are reshaped
+    /// independently, under different locks, and one being mid-split
+    /// says nothing about the other.
+    pub custody_fan_out_inflight: Mutex<Vec<btclib::sha256::Hash>>,
     /// The exchange's pooled custody address -- deliberately a *separate*
     /// key from `operator_private_key`, not a reuse of it, so exchange
     /// liabilities (money owed back to depositors) never comingle with
@@ -313,13 +318,17 @@ fn restrict_to_owner(path: &str) -> Result<()> {
 ///
 /// A hub whose node is unreachable at boot must still come up: the node
 /// may be starting alongside it, and every route that does not touch
-/// the chain works regardless. `maintain_operator_outputs` already logs
-/// and counts its own failure, and the sweep tries again in a minute.
-async fn maintain_operator_outputs_at_boot(state: &Arc<AppState>) {
+/// the chain works regardless. Each maintenance call already logs and
+/// counts its own failure, and the sweep tries again in a minute. Both
+/// are now bounded by `node_client`'s timeouts, so an unreachable node
+/// delays the listener by seconds rather than indefinitely.
+async fn maintain_wallets_at_boot(state: &Arc<AppState>) {
     handlers::maintain_operator_outputs(state).await;
+    handlers::maintain_custody_outputs(state).await;
     println!(
-        "operator wallet: {} spendable output(s), keeping {}",
+        "operator wallet: {} spendable output(s), custody: {}, keeping {} each",
         state.metrics.operator_ready_outputs.load(Ordering::Relaxed),
+        state.metrics.custody_ready_outputs.load(Ordering::Relaxed),
         state.operator_wallet_outputs,
     );
 }
@@ -565,6 +574,12 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
     // a wallet the same pass is about to drain -- and the fan-out takes
     // `payout_lock`, which those retries want too.
     handlers::maintain_operator_outputs(state).await;
+    // Custody after the deposit sweep above, for the mirror of the same
+    // reason: a swept deposit credits custody, so reshaping first would
+    // plan against a wallet this pass is about to grow. The two wallets
+    // take different locks, so this waits on nothing the operator's
+    // fan-out is doing.
+    handlers::maintain_custody_outputs(state).await;
     sample_gauges(state).await;
 }
 
@@ -866,6 +881,7 @@ async fn main() -> Result<()> {
         payout_lock: Mutex::new(()),
         operator_wallet_outputs: args.operator_wallet_outputs,
         operator_fan_out_inflight: Mutex::new(Vec::new()),
+        custody_fan_out_inflight: Mutex::new(Vec::new()),
         exchange_custody_private_key,
         exchange_custody_public_key,
         exchange_custody_payout_lock: Mutex::new(()),
@@ -889,7 +905,7 @@ async fn main() -> Result<()> {
     // before the hub is reachable, than under the first burst of
     // arriving agents. Restarting a warm hub does nothing: its wallet
     // is already at the floor and `plan_reshape` returns `None`.
-    maintain_operator_outputs_at_boot(&state).await;
+    maintain_wallets_at_boot(&state).await;
 
     tokio::spawn(sweep_loop(state.clone()));
 
@@ -1722,6 +1738,7 @@ mod tests {
             payout_lock: Mutex::new(()),
             operator_wallet_outputs: operator_wallet::DEFAULT_WALLET_OUTPUTS,
             operator_fan_out_inflight: Mutex::new(Vec::new()),
+        custody_fan_out_inflight: Mutex::new(Vec::new()),
             exchange_custody_private_key,
             exchange_custody_public_key,
             exchange_custody_payout_lock: Mutex::new(()),
@@ -2086,6 +2103,61 @@ mod tests {
             reqwest::StatusCode::OK,
             "the replacement has to be solvable and redeemable, not just present"
         );
+    }
+
+    /// Custody gets the same treatment, and gets it independently.
+    ///
+    /// The ceiling was never the operator's alone: every withdrawal
+    /// spends a custody output and returns its change unconfirmed, so a
+    /// one-output custody wallet served one withdrawal per block. The
+    /// ordering half of the fix already applied here -- `pay_from`
+    /// orders candidates for every funding source -- but with a single
+    /// output there was nothing to order.
+    ///
+    /// The second half of this test is the part worth having: reshaping
+    /// custody must leave the operator's wallet alone. The two hold
+    /// different money under different locks, and a refactor that
+    /// collapsed them would still pass every assertion above it.
+    #[tokio::test]
+    async fn the_fan_out_splits_the_custody_wallet_independently() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let custody = hub.state.exchange_custody_public_key.clone();
+
+        fake_node.fund(custody.clone(), 15_000_000_000).await;
+        assert_eq!(
+            fake_node.outputs_of(&custody).await.len(),
+            1,
+            "custody starts as the same single-output wallet the operator did"
+        );
+
+        handlers::maintain_custody_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+
+        let outputs = fake_node.outputs_of(&custody).await;
+        assert_eq!(outputs.len(), operator_wallet::DEFAULT_WALLET_OUTPUTS);
+        assert!(
+            outputs.iter().all(|(o, _)| o.value >= operator_wallet::MIN_USEFUL_OUTPUT),
+            "every piece has to be able to fund a withdrawal, or it is not a slot"
+        );
+        assert_eq!(
+            hub.state.metrics.custody_ready_outputs.load(Ordering::Relaxed),
+            1,
+            "the gauge reports the wallet as it was read, before this reshape -- one              output, which is usable and is still a ceiling of one payment per block"
+        );
+
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            1,
+            "reshaping custody must not touch the operator's wallet"
+        );
+        assert_eq!(
+            hub.state.metrics.operator_fan_outs.load(Ordering::Relaxed),
+            0,
+            "and must not be counted as an operator fan-out"
+        );
+        assert_eq!(hub.state.metrics.custody_fan_outs.load(Ordering::Relaxed), 1);
     }
 
     /// The fan-out, end to end against a node that mines what it is

@@ -4605,18 +4605,84 @@ async fn pay_bounty(state: &AppState, recipient: &PublicKey, amount: u64) -> any
 /// has a sweep to finish, and the next pass is sixty seconds away; the
 /// counters say it happened.
 pub async fn maintain_operator_outputs(state: &AppState) {
-    let _guard = state.payout_lock.lock().await;
+    maintain_wallet(
+        state,
+        Wallet {
+            label: "operator",
+            public_key: &state.operator_public_key,
+            private_key: &state.operator_private_key,
+            lock: &state.payout_lock,
+            inflight: &state.operator_fan_out_inflight,
+            ready_gauge: &state.metrics.operator_ready_outputs,
+            fan_outs: &state.metrics.operator_fan_outs,
+            failures: &state.metrics.operator_fan_out_failures,
+        },
+    )
+    .await
+}
 
-    let utxos = match state.node.fetch_utxos(&state.operator_public_key).await {
+/// The same, for the exchange's pooled custody address.
+///
+/// Custody has the identical ceiling and had none of the fix. Every
+/// withdrawal spends a custody output and sends the change back to
+/// custody, so a one-output custody wallet serves one withdrawal per
+/// block exactly as a one-output operator wallet served one grant. The
+/// ordering half of §6.4b was already applied here -- `pay_from` orders
+/// candidates for every funding source, not just the operator's -- but
+/// nothing ever reshaped this wallet, so the ordering had a single
+/// output to choose from and nothing to preserve.
+///
+/// Under `exchange_custody_payout_lock`, not `payout_lock`: a different
+/// UTXO set, so this never has to wait on a faucet grant and a grant
+/// never waits on this.
+pub async fn maintain_custody_outputs(state: &AppState) {
+    maintain_wallet(
+        state,
+        Wallet {
+            label: "custody",
+            public_key: &state.exchange_custody_public_key,
+            private_key: &state.exchange_custody_private_key,
+            lock: &state.exchange_custody_payout_lock,
+            inflight: &state.custody_fan_out_inflight,
+            ready_gauge: &state.metrics.custody_ready_outputs,
+            fan_outs: &state.metrics.custody_fan_outs,
+            failures: &state.metrics.custody_fan_out_failures,
+        },
+    )
+    .await
+}
+
+/// One wallet the hub pays out of, and everything reshaping it needs.
+///
+/// A struct rather than eight positional arguments because six of them
+/// are references of two types and a transposed pair would compile
+/// cleanly while fanning out the wrong address with the wrong key.
+struct Wallet<'a> {
+    /// Names the wallet in this module's log lines. The counters are
+    /// already separate, so this is for whoever is reading the journal.
+    label: &'static str,
+    public_key: &'a PublicKey,
+    private_key: &'a btclib::crypto::PrivateKey,
+    lock: &'a tokio::sync::Mutex<()>,
+    inflight: &'a tokio::sync::Mutex<Vec<btclib::sha256::Hash>>,
+    ready_gauge: &'a std::sync::atomic::AtomicU64,
+    fan_outs: &'a std::sync::atomic::AtomicU64,
+    failures: &'a std::sync::atomic::AtomicU64,
+}
+
+async fn maintain_wallet(state: &AppState, wallet: Wallet<'_>) {
+    let _guard = wallet.lock.lock().await;
+
+    let utxos = match state.node.fetch_utxos(wallet.public_key).await {
         Ok(utxos) => utxos,
         Err(e) => {
-            warn!("could not read the operator's wallet to fan it out: {e}");
-            state.metrics.operator_fan_out_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            warn!("could not read the {} wallet to fan it out: {e}", wallet.label);
+            wallet.failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
     };
     let ready = crate::operator_wallet::ready_outputs(&utxos);
-    state.metrics.operator_ready_outputs.store(ready as u64, std::sync::atomic::Ordering::Relaxed);
+    wallet.ready_gauge.store(ready as u64, std::sync::atomic::Ordering::Relaxed);
 
     // A fan-out already on the wire has outputs the node cannot report
     // yet, so the wallet still *looks* short. Splitting again here
@@ -4640,13 +4706,13 @@ pub async fn maintain_operator_outputs(state: &AppState) {
     // -- and the window is sub-millisecond against a sweep interval of
     // sixty seconds.
     {
-        let mut inflight = state.operator_fan_out_inflight.lock().await;
+        let mut inflight = wallet.inflight.lock().await;
         if !inflight.is_empty() {
             let still_in_flight = utxos
                 .iter()
                 .any(|(marked, output)| *marked && inflight.contains(&output.hash()));
             if still_in_flight {
-                debug!("operator fan-out still unconfirmed; leaving the wallet alone");
+                debug!("{} fan-out still unconfirmed; leaving the wallet alone", wallet.label);
                 return;
             }
             inflight.clear();
@@ -4664,7 +4730,7 @@ pub async fn maintain_operator_outputs(state: &AppState) {
     let recipients: Vec<(PublicKey, u64)> = plan
         .shares
         .iter()
-        .map(|share| (state.operator_public_key.clone(), *share))
+        .map(|share| (wallet.public_key.clone(), *share))
         .collect();
     // Built against the plan's own inputs rather than through
     // `build_payment_from`, so the transaction spends exactly the
@@ -4676,15 +4742,15 @@ pub async fn maintain_operator_outputs(state: &AppState) {
         plan.inputs.iter().map(|output| (false, output.clone())).collect();
     let tx = match btclib::payment::build_multi_payment(
         &inputs,
-        &state.operator_private_key,
+        wallet.private_key,
         &recipients,
         HUB_TRANSACTION_FEE,
-        state.operator_public_key.clone(),
+        wallet.public_key.clone(),
     ) {
         Ok(tx) => tx,
         Err(e) => {
-            warn!("could not build the operator fan-out: {e}");
-            state.metrics.operator_fan_out_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            warn!("could not build the {} fan-out: {e}", wallet.label);
+            wallet.failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
     };
@@ -4694,22 +4760,23 @@ pub async fn maintain_operator_outputs(state: &AppState) {
     // exactly when the send half-succeeded -- and the cost of believing
     // a fan-out is in flight when it is not is one skipped sweep, while
     // the cost of the reverse is splitting a live output every minute.
-    *state.operator_fan_out_inflight.lock().await =
+    *wallet.inflight.lock().await =
         tx.inputs.iter().map(|input| input.prev_transaction_output_hash).collect();
 
     match state.node.submit_transaction(tx).await {
         Ok(()) => {
-            state.metrics.operator_fan_outs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            wallet.fan_outs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             info!(
-                "reshaping the operator's wallet: {} input(s) worth {} into {} output(s) ({ready} spendable before)",
+                "reshaping the {} wallet: {} input(s) worth {} into {} output(s) ({ready} spendable before)",
+                wallet.label,
                 plan.inputs.len(),
                 plan.inputs.iter().map(|o| o.value).sum::<u64>(),
                 plan.shares.len()
             );
         }
         Err(e) => {
-            warn!("could not submit the operator fan-out: {e}");
-            state.metrics.operator_fan_out_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            warn!("could not submit the {} fan-out: {e}", wallet.label);
+            wallet.failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }

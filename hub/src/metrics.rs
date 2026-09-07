@@ -206,6 +206,20 @@ pub struct Metrics {
     /// minute later for what looks like an unrelated reason.
     pub operator_fan_out_failures: AtomicU64,
 
+    // ---- exchange custody wallet -------------------------------------
+    /// The same three, for the exchange's pooled custody address, which
+    /// funds withdrawals and has the identical one-payment-per-block
+    /// ceiling.
+    ///
+    /// Separate series rather than a label on the operator's, because
+    /// the two wallets fail independently and for different reasons: the
+    /// operator's runs dry when the faucet is busy, custody's when
+    /// traders withdraw. An alert that could not tell them apart would
+    /// send whoever is on call to the wrong half of the hub.
+    pub custody_ready_outputs: AtomicU64,
+    pub custody_fan_outs: AtomicU64,
+    pub custody_fan_out_failures: AtomicU64,
+
     // ---- exchange solvency ------------------------------------------
     /// Summed `base_balance + locked_base` across every exchange account:
     /// what the hub owes its depositors.
@@ -457,6 +471,9 @@ impl Metrics {
         gauge(&mut out, "hub_operator_ready_outputs", "Confirmed operator outputs large enough to fund a payment, as of the last sweep -- the payout ceiling (plan 6.4b).", self.operator_ready_outputs.load(Ordering::Relaxed));
         counter(&mut out, "hub_operator_fan_outs_total", "Self-paying transactions submitted to split the operator's wallet.", self.operator_fan_outs.load(Ordering::Relaxed));
         counter(&mut out, "hub_operator_fan_out_failures_total", "Fan-outs that could not be read, built or sent.", self.operator_fan_out_failures.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_custody_ready_outputs", "Confirmed custody outputs large enough to fund a withdrawal on their own.", self.custody_ready_outputs.load(Ordering::Relaxed));
+        counter(&mut out, "hub_custody_fan_outs_total", "Custody wallet reshapes submitted.", self.custody_fan_outs.load(Ordering::Relaxed));
+        counter(&mut out, "hub_custody_fan_out_failures_total", "Custody wallet reshapes that could not be built or submitted.", self.custody_fan_out_failures.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_exchange_liabilities", "Base units owed to exchange depositors, as of the last sweep.", self.exchange_liabilities.load(Ordering::Relaxed));
         gauge(&mut out, "hub_exchange_custody_balance", "On-chain balance of the custody address, as of the last sweep.", self.exchange_custody_balance.load(Ordering::Relaxed));
