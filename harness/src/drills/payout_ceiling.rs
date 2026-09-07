@@ -49,6 +49,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const FEE: u64 = 1_000;
+/// What one faucet grant costs the operator, mirroring the hub's
+/// `FAUCET_GRANT_AMOUNT`. Only used to tell "the wallet is empty" from
+/// "the wallet is badly shaped", which is the distinction this drill
+/// exists to make and got wrong once.
+const GRANT: u64 = 50_000_000;
 /// How long to keep asking for payouts. Several blocks at a sixteen-second
 /// target, which is enough to tell one-per-block from many-per-block
 /// without making the drill take a coffee break.
@@ -66,6 +71,28 @@ const MEASURE_FOR: Duration = Duration::from_secs(150);
 /// payouts per block before it is asking a question the wallet could
 /// fail.
 const ATTEMPT_EVERY: Duration = Duration::from_millis(100);
+/// How much confirmed operator coin to accumulate before collapsing.
+///
+/// A *balance*, not an output count, and both halves of that are lessons
+/// from a run.
+///
+/// Enough that the run cannot end by spending it: this drill was written
+/// against a ceiling of one payout per block, where three coinbase
+/// outputs -- 150 coins, 300 grants -- was ample. Against a fanned-out
+/// wallet it offers forty a block, and with three it drained the
+/// operator to 49,700,000 units, just under one more grant, whereupon
+/// sixteen further blocks granted nothing and pulled `payouts_per_block`
+/// from 24 down to 9.97. That number described the drill's budget, not
+/// the hub. Eight hundred coins covers the whole run at the ceiling with
+/// room over.
+///
+/// And a balance rather than `wait_for_utxo_count`, which is what a
+/// drill needing several payouts in flight would ordinarily wait on: the
+/// hub now *makes* its own outputs, so a count is satisfied within
+/// seconds by the boot fan-out splitting whatever little the operator
+/// happens to hold. Asking for twelve outputs got two coinbases' worth
+/// of coin in twenty-four pieces, and the run ran dry exactly as before.
+const FUNDING_TARGET: u64 = 80_000_000_000;
 /// How long to wait for the hub to notice a one-output wallet and split
 /// it. Its sweep runs every sixty seconds and its boot pass runs
 /// immediately, so this is generous by design -- a drill that gave up at
@@ -176,10 +203,17 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let hub = harness.stack.hub_client()?;
     let operator = harness.stack.operator_key.clone();
 
-    // Let the operator accumulate something to collapse.
-    chain
-        .wait_for_utxo_count(&operator.public_key(), 3, Duration::from_secs(300))
+    // Let the operator accumulate something to collapse. See
+    // `FUNDING_TARGET` -- this is a budget, and a run that spends it is
+    // measuring the budget.
+    let funded = chain
+        .wait_for_balance(&operator.public_key(), FUNDING_TARGET, Duration::from_secs(600))
         .await?;
+    anyhow::ensure!(
+        funded >= FUNDING_TARGET,
+        "the operator only reached {funded} of {FUNDING_TARGET}; the run would end by \
+         running out of money rather than by finding a ceiling"
+    );
 
     // Move the miner off the operator, or every block would hand it a new
     // spendable output and quietly lift the ceiling being measured.
@@ -209,7 +243,19 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let measuring_from = Instant::now();
     let deadline = measuring_from + MEASURE_FOR;
     let mut index = 0usize;
+    let mut exhausted = false;
     while Instant::now() < deadline {
+        // Stop when the operator can no longer fund a grant from
+        // anything it holds, confirmed or not. Past that point every
+        // further block grants nothing and drags the per-block average
+        // down, and the resulting number describes how much coin the
+        // drill was given rather than how many payouts the wallet can
+        // make. Reported either way, because "it ran out" is itself
+        // worth knowing.
+        if chain.total_balance(&operator.public_key()).await.unwrap_or(u64::MAX) < GRANT + FEE {
+            exhausted = true;
+            break;
+        }
         let key = PrivateKey::new_key();
         // Its own source address per attempt: the faucet is chain-tier at
         // twenty a minute per address, and this drill offers far more than
@@ -275,6 +321,7 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .fact("payouts_per_block", (per_block * 100.0).round() / 100.0)
         .fact("grants_per_minute", (per_minute * 10.0).round() / 10.0)
         .fact("busiest_single_block", busiest_block)
+        .fact("operator_ran_out_of_coin", exhausted)
         .fact(
             "payouts_by_height",
             json!(per_height
@@ -304,6 +351,14 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
              yet, so the two latency figures are not comparable and neither is evidence about \
              the other.",
         );
+
+    if exhausted {
+        section = section.note(
+            "The run stopped early: the operator spent everything it had. The numbers above \
+             cover only the funded window, which is the point -- blocks granting nothing \
+             because the wallet is empty say nothing about its shape.",
+        );
+    }
 
     if fan_out.outputs <= 1 {
         section = section.finding(format!(
