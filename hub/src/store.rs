@@ -544,6 +544,39 @@ impl HubStore {
         })
     }
 
+    /// An order and its owner's ledger balance, committed together --
+    /// `cancel_order`'s writer, and the one place in the exchange where
+    /// splitting the two was exploitable with no crash at all.
+    ///
+    /// `TaskBoard::cancel_order` flips the order to `Cancelled` and
+    /// releases its locked balance under one lock, which is right. The
+    /// handler then wrote them as two commits and swallowed both errors
+    /// behind a 200. If the account write landed and the order write did
+    /// not, the order reloaded `Open` with its lock already released: the
+    /// owner could withdraw the freed balance while the order stayed
+    /// matchable on the book, and the fill then debited a balance that
+    /// was no longer there. The reverse order stranded the lock forever,
+    /// because `cancel_order` refuses an order that is not `Open`.
+    ///
+    /// An order's status and the balance that status implies are one
+    /// fact, so they take one commit (§6.5d).
+    pub fn save_order_and_account(
+        &self,
+        order: &Order,
+        owner: &PublicKey,
+        account: &ExchangeAccount,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, ORDERS_TABLE, order.id.as_bytes().as_slice(), order)?;
+            stage_record(
+                txn,
+                EXCHANGE_ACCOUNTS_TABLE,
+                owner.to_sec1_bytes().as_slice(),
+                account,
+            )
+        })
+    }
+
     /// `save_task_and_reputation` for a resolution that touched several
     /// agents at once: a `Consensus` task and every assignee's
     /// reputation in one commit.
@@ -2124,5 +2157,117 @@ mod tests {
         assert_eq!(deposits[0].status, crate::board::EscrowStatus::Consumed);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// A cancelled order and the balance its cancellation released, in
+    /// the exchange's version of the same claim.
+    ///
+    /// This is the pair whose split was exploitable without a crash:
+    /// a reader that saw the released lock but not the cancellation
+    /// would be reading an order still matchable on the book against an
+    /// account that has already had the money back.
+    #[test]
+    fn a_cancelled_order_and_its_released_lock_are_never_visible_apart() {
+        let path = temp_db_path("atomic_cancel");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (owner, order, account) = cancelled_order_pair();
+
+        let before = store.db.begin_read().unwrap();
+        store.save_order_and_account(&order, &owner, &account).unwrap();
+
+        let orders_then = before.open_table(ORDERS_TABLE).unwrap();
+        let accounts_then = before.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        assert!(orders_then.get(order.id.as_bytes().as_slice()).unwrap().is_none());
+        assert!(accounts_then.get(owner.to_sec1_bytes().as_slice()).unwrap().is_none());
+
+        let orders = store.load_all_orders().unwrap();
+        let accounts = store.load_all_exchange_accounts().unwrap();
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].status, crate::board::OrderStatus::Cancelled);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(
+            accounts[0].1.locked_base, 0,
+            "the lock is released in the same commit that cancels the order, or a restarted \
+             hub reads one without the other"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The exchange's twin of
+    /// `two_separate_commits_leave_a_window_where_the_task_exists_alone`,
+    /// and the reason this pair was ranked above the fill itself.
+    ///
+    /// It characterises the *old* handler: `save_exchange_account`
+    /// followed by `save_order`. Both still exist and are still correct
+    /// alone, so this passes before and after the fix. What it makes
+    /// executable is the profitable window -- a reader here sees an
+    /// account whose lock is gone beside an order still reading `Open`,
+    /// which is an order the book will still match using money its owner
+    /// is already free to withdraw.
+    #[test]
+    fn two_separate_commits_leave_a_window_where_the_lock_is_gone_but_the_order_is_open() {
+        let path = temp_db_path("cancel_two_commit_window");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (owner, cancelled, released) = cancelled_order_pair();
+
+        // The order as it still stands on disk from when it was placed:
+        // Open, with its balance locked.
+        let mut resting = cancelled.clone();
+        resting.status = crate::board::OrderStatus::Open;
+        let mut locked = released.clone();
+        locked.locked_base = 500;
+        store.save_order(&resting).unwrap();
+        store.save_exchange_account(&owner, &locked).unwrap();
+
+        // Now cancel it the way the handler used to: account first.
+        store.save_exchange_account(&owner, &released).unwrap();
+        let crashed_here = store.db.begin_read().unwrap();
+        store.save_order(&cancelled).unwrap();
+
+        let orders = crashed_here.open_table(ORDERS_TABLE).unwrap();
+        let accounts = crashed_here.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        let order_bytes = orders.get(cancelled.id.as_bytes().as_slice()).unwrap().unwrap();
+        let seen: Order = ciborium::from_reader(order_bytes.value()).unwrap();
+        let account_bytes = accounts.get(owner.to_sec1_bytes().as_slice()).unwrap().unwrap();
+        let seen_account: ExchangeAccount = ciborium::from_reader(account_bytes.value()).unwrap();
+
+        assert_eq!(
+            seen.status,
+            crate::board::OrderStatus::Open,
+            "a reader in the window still sees a matchable order"
+        );
+        assert_eq!(
+            seen_account.locked_base, 0,
+            "beside an account that has already had the locked money back -- the owner can \
+             withdraw it while the order remains on the book"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// An order cancelled down to a released lock, and the account it
+    /// was released into. `locked_base` is 0 because the cancellation
+    /// has already given the money back; `base_balance` is what the
+    /// owner is now free to spend.
+    fn cancelled_order_pair() -> (PublicKey, Order, ExchangeAccount) {
+        let owner = PrivateKey::new_key().public_key();
+        let order = Order {
+            id: Uuid::new_v4(),
+            owner: owner.clone(),
+            side: crate::board::Side::Buy,
+            price: 10,
+            quantity: 50,
+            filled: 0,
+            status: crate::board::OrderStatus::Cancelled,
+            created_at: Utc::now(),
+        };
+        let account = ExchangeAccount {
+            base_balance: 1_000,
+            locked_base: 0,
+            compute_balance: 0,
+            locked_compute: 0,
+        };
+        (owner, order, account)
     }
 }

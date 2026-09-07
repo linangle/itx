@@ -2737,14 +2737,28 @@ pub async fn cancel_order(
         ));
     }
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-    let order = state.board.write().await.cancel_order(order_id, &pubkey)?;
-    if let Err(e) = state.store.save_order(&order) {
-        error!("failed to persist cancelled order {order_id}: {e}");
-    }
-    let account = state.board.read().await.exchange_account(&pubkey);
-    if let Err(e) = state.store.save_exchange_account(&pubkey, &account) {
-        error!("failed to persist exchange account for {pubkey} after cancel: {e}");
-    }
+    // The cancelled order and the balance its cancellation released are
+    // read out under the same write lock that produced them, so the pair
+    // handed to the store is internally consistent: reacquiring the lock
+    // afterwards, as this handler used to, could persist whatever a
+    // concurrent caller had left behind in between. Same reasoning as the
+    // escrow confirm handlers (§6.5b).
+    let (order, account) = {
+        let mut board = state.board.write().await;
+        let order = board.cancel_order(order_id, &pubkey)?;
+        let account = board.exchange_account(&pubkey);
+        (order, account)
+    };
+    // Persisting is no longer best-effort. It was two commits with both
+    // errors logged behind a 200, which left the order and its lock able
+    // to disagree on disk -- see `HubStore::save_order_and_account` for
+    // what that bought an attacker. A store failure is now a 500 with
+    // nothing committed, matching what the task handlers have always
+    // done, and the client retries.
+    state
+        .store
+        .save_order_and_account(&order, &pubkey, &account)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(OrderDto::from(&order)))
 }
 
