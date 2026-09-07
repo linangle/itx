@@ -1,6 +1,9 @@
 use tracing::*;
 
-use crate::board::{ExchangeAccount, Order, PayoutAttempt, PendingDeposit, Reputation, Task, Trade};
+use crate::board::{
+    ExchangeAccount, Order, PayoutAttempt, PendingDeposit, Reputation, Task, Trade,
+    WithdrawalAttempt,
+};
 use btclib::crypto::PublicKey;
 use redb::{ReadableTable, TableDefinition};
 use std::path::Path;
@@ -99,6 +102,8 @@ const REPLAY_GUARD_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("re
 // one row per unpaid payout, and every row leaves within
 // `MAX_PAYOUT_SUBMISSIONS` sweeps of resolving.
 const PAYOUT_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("payout_attempts");
+const WITHDRAWAL_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("withdrawal_attempts");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -131,7 +136,12 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// and it has to go up at open rather than at first write: from the
 /// moment a current binary has the store, it may put a row in a table
 /// the old one cannot see.
-const SCHEMA_VERSION: u32 = 2;
+///
+/// **3 on the exchange work**, which added `withdrawal_attempts`. The
+/// first bump under the new policy, and the case it was written for: a
+/// rolled-back binary that could not see that table would read a debited
+/// ledger with no record of the payment that debited it (§6.5d).
+const SCHEMA_VERSION: u32 = 3;
 
 /// The `PAYOUT_ATTEMPTS_TABLE` key for one payout: the task's uuid
 /// followed by the recipient's SEC1 bytes. Uuid bytes are fixed-width,
@@ -227,6 +237,7 @@ impl HubStore {
             write_txn.open_table(REPLAY_GUARD_TABLE)?;
             write_txn.open_table(FAUCET_CHALLENGES_TABLE)?;
             write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
+            write_txn.open_table(WITHDRAWAL_ATTEMPTS_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
             let stored_version = match meta.get(SCHEMA_VERSION_KEY)? {
@@ -542,6 +553,42 @@ impl HubStore {
                 reputation,
             )
         })
+    }
+
+    /// A withdrawal that was handed to the node and not acknowledged.
+    ///
+    /// Written *before* the client is told the withdrawal failed, and
+    /// never removed by this build, because nothing resolves these yet.
+    /// That ordering is the whole point: the alternative the handler used
+    /// to take was to credit the balance back on any send error, which
+    /// pays a user twice whenever the transaction did in fact land. A
+    /// record an operator can find is worth more than a revert that is
+    /// right most of the time (§6.5d).
+    pub fn save_withdrawal_attempt(&self, attempt: &WithdrawalAttempt) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(
+                txn,
+                WITHDRAWAL_ATTEMPTS_TABLE,
+                attempt.id.as_bytes().as_slice(),
+                attempt,
+            )
+        })
+    }
+
+    /// Every unresolved withdrawal attempt. Read at boot for the gauge
+    /// that tells an operator how many there are, and the read a
+    /// resolver will start from.
+    pub fn load_all_withdrawal_attempts(&self) -> Result<Vec<WithdrawalAttempt>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(WITHDRAWAL_ATTEMPTS_TABLE)?;
+        let mut attempts = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let attempt: WithdrawalAttempt = ciborium::from_reader(value.value())
+                .map_err(|e| HubStoreError::Serialization(e.to_string()))?;
+            attempts.push(attempt);
+        }
+        Ok(attempts)
     }
 
     /// Everything one match touched, in one commit: the placed order,
@@ -2201,6 +2248,36 @@ mod tests {
         let deposits = store.load_all_pending_deposits().unwrap();
         assert_eq!(deposits.len(), 1);
         assert_eq!(deposits[0].status, crate::board::EscrowStatus::Consumed);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A withdrawal attempt survives the restart it exists for.
+    ///
+    /// The whole value of the record is that it outlives the process
+    /// that could not finish the payment, so round-tripping it is the
+    /// property rather than a formality.
+    #[test]
+    fn round_trips_a_withdrawal_attempt() {
+        let path = temp_db_path("withdrawal_attempt_roundtrip");
+        let store = HubStore::open_or_create(&path).unwrap();
+
+        let owner = PrivateKey::new_key().public_key();
+        let custody = PrivateKey::new_key().public_key();
+        let attempt = crate::board::WithdrawalAttempt {
+            id: Uuid::new_v4(),
+            owner: owner.clone(),
+            amount: 2_000,
+            output_hash: Hash::hash_bytes(b"the output paying the withdrawer"),
+            spent_inputs: vec![Hash::hash_bytes(b"a custody output")],
+            source: custody.clone(),
+            submitted_at: Utc::now(),
+        };
+        store.save_withdrawal_attempt(&attempt).unwrap();
+
+        let loaded = store.load_all_withdrawal_attempts().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], attempt);
 
         std::fs::remove_file(&path).ok();
     }

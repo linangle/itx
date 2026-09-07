@@ -1726,6 +1726,46 @@ build predating the `payout_attempts` table made every attempt invisible at once
 transactions now, so a current hub cannot create this state — which is why the
 check runs at boot and not on the sweep.
 
+### 10.4 A withdrawal was submitted and never acknowledged
+
+**What you will see.** A `WARN` naming a withdrawal id, an amount and a key, and
+`hub_unresolved_withdrawals_total` moving. On a restart the same withdrawals are
+listed again at boot, and `hub_unresolved_withdrawals_at_boot` carries the count.
+The agent got a 500 telling it not to retry.
+
+**What it means.** The hub built a custody payment, wrote it to the node, and the
+write returned an error. That does **not** establish the node never got the
+bytes: the send is fire-and-forget, and writing to a socket whose peer has
+already gone does not fail. So the coin may or may not be on chain, the ledger
+stays debited, and the hub is deliberately not guessing.
+
+**Why it no longer credits the balance back.** It used to, on any error. That is
+the right answer when nothing was sent and the wrong one when something was: an
+agent whose transaction did land held the coin *and* the balance, and could
+withdraw the same money again. The two cases are now told apart at the source — a
+payment that could not be *built* still reverts, silently and correctly, and that
+is the common case you will almost never hear about.
+
+**What to do.** By hand, the same way §10.3's stuck payout is resolved.
+
+1. Take the withdrawal's `output_hash` from the record.
+   `load_all_withdrawal_attempts` is the read; there is no endpoint for it yet.
+2. Ask the node what the agent's address holds. If that exact output is there the
+   withdrawal happened, the ledger is already right, and the record can go.
+3. If it is absent, check custody's own outputs against the recorded
+   `spent_inputs`. Every one still present and unmarked means the transaction
+   reached neither a block nor a mempool, so the withdrawal can be paid again —
+   or the balance credited back, if the agent would rather have it.
+4. Anything else is the ambiguous row and stays ambiguous. Do not pay a second
+   time on a hunch; wait for the chain to settle and look again.
+
+**What is not built.** Nothing resolves these automatically. The record exists so
+the money is findable, and so a resolver can be written against it: the three
+rows above are `PayoutAttempt::resolve`'s rule, which withdrawals already share,
+so what is missing is a sweep step rather than a new mechanism. Until it exists,
+a non-zero `hub_unresolved_withdrawals_at_boot` is a thing to act on rather than
+a thing to watch.
+
 ---
 
 ## 11. What in here was actually tested

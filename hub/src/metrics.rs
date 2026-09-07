@@ -186,6 +186,18 @@ pub struct Metrics {
     /// is not here yet.
     pub faucet_grants: AtomicU64,
 
+    /// Exchange withdrawals that were submitted to the node and never
+    /// acknowledged, so the ledger stays debited with the coin's fate
+    /// unknown (plan 6.5d).
+    ///
+    /// A counter rather than a gauge because nothing resolves these yet:
+    /// until a resolver exists every one of them is still outstanding,
+    /// and an operator wants to be paged on the first rather than told a
+    /// total that only ever grows. `unresolved_withdrawals_at_boot`
+    /// carries what a restart found already on disk.
+    pub unresolved_withdrawals: AtomicU64,
+    pub unresolved_withdrawals_at_boot: AtomicU64,
+
     // ---- operator wallet ---------------------------------------------
     /// Confirmed, unspoken-for operator outputs large enough to fund a
     /// payment on their own, as of the last sweep. This *is* the payout
@@ -467,6 +479,9 @@ impl Metrics {
         counter(&mut out, "hub_replay_durable_write_ms_total", "Cumulative time inside the replay guard's durable write.", self.replay_durable_write_ms_total.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_faucet_grants", "Distinct keys granted by the faucet, as of the last sweep.", self.faucet_grants.load(Ordering::Relaxed));
+
+        counter(&mut out, "hub_unresolved_withdrawals_total", "Exchange withdrawals submitted to the node and never acknowledged, whose ledger debit stands pending review (plan 6.5d).", self.unresolved_withdrawals.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_unresolved_withdrawals_at_boot", "Unresolved withdrawal attempts found in the store at startup.", self.unresolved_withdrawals_at_boot.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_operator_ready_outputs", "Confirmed operator outputs large enough to fund a payment, as of the last sweep -- the payout ceiling (plan 6.4b).", self.operator_ready_outputs.load(Ordering::Relaxed));
         counter(&mut out, "hub_operator_fan_outs_total", "Self-paying transactions submitted to split the operator's wallet.", self.operator_fan_outs.load(Ordering::Relaxed));

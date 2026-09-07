@@ -5,7 +5,7 @@ use crate::board::{
     BoardError, CloseReason, ConsensusTaskIntent, Dispute, DisputableTaskIntent, DisputeResolution,
     EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus,
     PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Side, Task, TaskBoard, TaskIntent,
-    TaskKind, TaskStatus, Trade, MAX_PAYOUT_SUBMISSIONS,
+    TaskKind, TaskStatus, Trade, WithdrawalAttempt, MAX_PAYOUT_SUBMISSIONS,
 };
 use crate::rate_limit::QuotaExceeded;
 use crate::AppState;
@@ -2780,9 +2780,16 @@ pub async fn get_exchange_account(
 /// their own on-chain address, paid out of the pooled custody address.
 /// The debit is durable *before* the payout is attempted (`debit_for_withdrawal`
 /// is a single atomic check-and-debit, the guard that stops two
-/// concurrent withdrawals from jointly overdrawing the same balance);
-/// any failure after that point credits it back, so a failed or
-/// unpersisted withdrawal never silently loses the caller's balance.
+/// concurrent withdrawals from jointly overdrawing the same balance).
+///
+/// **Whether a failure after that point credits the balance back depends
+/// on whether anything could have reached the node**, and getting that
+/// wrong in the generous direction pays a user twice. It used to credit
+/// back on any error at all: the send is fire-and-forget, so an error
+/// does not mean the node never got the bytes (§6.2 established exactly
+/// that, in the other direction), and a user whose transaction did land
+/// ended up holding the coin and the balance. See
+/// `CustodyPaymentFailure` for the split (§6.5d).
 pub async fn withdraw(
     State(state): State<Arc<AppState>>,
     // The request as it actually arrived: bound into the signature,
@@ -2802,13 +2809,57 @@ pub async fn withdraw(
         state.board.write().await.credit_back_withdrawal(&pubkey, amount);
         return Err(ApiError::Internal(format!("failed to persist withdrawal debit, aborted: {e}")));
     }
-    if let Err(e) = pay_from_custody(&state, &pubkey, amount).await {
-        state.board.write().await.credit_back_withdrawal(&pubkey, amount);
-        let reverted = state.board.read().await.exchange_account(&pubkey);
-        if let Err(e) = state.store.save_exchange_account(&pubkey, &reverted) {
-            error!("failed to persist reverted withdrawal balance for {pubkey}: {e}");
+    if let Err(failure) = pay_from_custody(&state, &pubkey, amount).await {
+        match failure {
+            // Nothing was built, so nothing was sent, and the caller's
+            // balance is unambiguously still owed to them. This is also
+            // the common case -- custody short of a spendable output is
+            // what fails here -- so the safe revert is the one that
+            // actually runs most of the time.
+            CustodyPaymentFailure::NotSent(e) => {
+                state.board.write().await.credit_back_withdrawal(&pubkey, amount);
+                let reverted = state.board.read().await.exchange_account(&pubkey);
+                if let Err(e) = state.store.save_exchange_account(&pubkey, &reverted) {
+                    error!("failed to persist reverted withdrawal balance for {pubkey}: {e}");
+                }
+                return Err(ApiError::Internal(format!(
+                    "withdrawal could not be built, nothing was sent, please retry: {e}"
+                )));
+            }
+            // A transaction was built and handed to the node, and the
+            // send reported an error -- which does not establish that the
+            // node never read it. Reverting here is what paid a user
+            // twice. The debit stands, and the attempt is recorded
+            // durably so an operator can settle it by hand until a
+            // resolver exists.
+            CustodyPaymentFailure::MaybeSent { error, attempt } => {
+                if let Err(e) = state.store.save_withdrawal_attempt(&attempt) {
+                    // The record is the only thing that makes this
+                    // recoverable, so failing to write it is worth a
+                    // louder line than the send failure itself.
+                    error!(
+                        "could not record unacknowledged withdrawal {} of {amount} to {pubkey}, \
+                         which now needs finding by hand: {e}",
+                        attempt.id
+                    );
+                } else {
+                    warn!(
+                        "withdrawal {} of {amount} to {pubkey} was submitted and not \
+                         acknowledged: the ledger stays debited and the attempt is recorded. \
+                         See docs/deployment.md 10.4. Send error: {error}",
+                        attempt.id
+                    );
+                }
+                state
+                    .metrics
+                    .unresolved_withdrawals
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Err(ApiError::Internal(format!(
+                    "withdrawal was submitted but not acknowledged and is being held for \
+                     review; do not retry, your balance is not lost: {error}"
+                )));
+            }
         }
-        return Err(ApiError::Internal(format!("withdrawal payout failed, please retry: {e}")));
     }
     let final_account = state.board.read().await.exchange_account(&pubkey);
     Ok(Json(ExchangeAccountDto::from(final_account)))
@@ -4824,16 +4875,83 @@ async fn submit_bounty_payout(
 /// which key/lock it uses: a *different* UTXO set than the operator's
 /// own, so this never contends with an unrelated operator payout (see
 /// `AppState::exchange_custody_payout_lock`'s own doc comment).
-async fn pay_from_custody(state: &AppState, recipient: &PublicKey, amount: u64) -> anyhow::Result<()> {
+/// Why a custody payment did not complete, and -- the only part that
+/// changes what a caller may safely do about it -- whether any bytes
+/// could have reached the node.
+///
+/// `pay_from` collapses both into one `anyhow::Error`, which is fine for
+/// its other callers: a lost faucet grant or escrow refund is retried by
+/// the sweep against live balances, so neither has to decide anything
+/// from the error alone. A withdrawal does, because the compensating
+/// action is crediting a user's balance back, and doing that after a
+/// transaction that actually landed pays them twice (§6.5d).
+enum CustodyPaymentFailure {
+    /// The transaction was never built -- custody had no spendable
+    /// output, or the node could not be asked. Nothing was sent, so a
+    /// caller may safely undo whatever it did in anticipation.
+    NotSent(anyhow::Error),
+    /// The transaction was built, signed and written to the node, and
+    /// the write reported an error. Writing to a socket whose peer has
+    /// gone does not fail, and a fire-and-forget send has no
+    /// acknowledgement to wait for, so this is precisely the state where
+    /// the hub cannot tell a payment that never left from one that
+    /// arrived. The attempt is carried out so the caller can record it.
+    MaybeSent {
+        error: anyhow::Error,
+        attempt: WithdrawalAttempt,
+    },
+}
+
+/// Pays `recipient` out of the pooled custody wallet, distinguishing a
+/// payment that was never built from one that may have gone out.
+///
+/// Builds and submits as two steps rather than calling `pay_from`, which
+/// is the same split `submit_task_payout` already makes and for a
+/// related reason: it needs the built transaction in hand to describe
+/// what it is about to send.
+async fn pay_from_custody(
+    state: &AppState,
+    recipient: &PublicKey,
+    amount: u64,
+) -> std::result::Result<(), CustodyPaymentFailure> {
     let _guard = state.exchange_custody_payout_lock.lock().await;
-    pay_from(
+    let recipients = [(recipient.clone(), amount)];
+    let tx = build_payment_from(
         state,
         &state.exchange_custody_private_key,
         &state.exchange_custody_public_key,
-        &[(recipient.clone(), amount)],
+        &recipients,
         &state.exchange_custody_public_key,
     )
     .await
+    .map_err(CustodyPaymentFailure::NotSent)?;
+
+    // Positional for the same reason `submit_task_payout` is:
+    // `build_multi_payment` emits one output per recipient in order and
+    // appends change last. The check is what makes that coupling safe --
+    // if the layout ever changes this fails here rather than recording a
+    // hash that makes every later resolution a lie.
+    let output = tx.outputs.first().filter(|o| o.pubkey == *recipient && o.value == amount);
+    let Some(output) = output else {
+        return Err(CustodyPaymentFailure::NotSent(anyhow::anyhow!(
+            "built withdrawal transaction does not pay {recipient} {amount} at output 0"
+        )));
+    };
+    let attempt = WithdrawalAttempt {
+        id: Uuid::new_v4(),
+        owner: recipient.clone(),
+        amount,
+        output_hash: output.hash(),
+        spent_inputs: tx.inputs.iter().map(|i| i.prev_transaction_output_hash).collect(),
+        source: state.exchange_custody_public_key.clone(),
+        submitted_at: Utc::now(),
+    };
+
+    state
+        .node
+        .submit_transaction(tx)
+        .await
+        .map_err(|error| CustodyPaymentFailure::MaybeSent { error, attempt })
 }
 
 /// Sweeps one confirmed `FundExchangeAccount` deposit into the pooled

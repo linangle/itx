@@ -369,32 +369,99 @@ impl PayoutAttempt {
         recipient_utxos: &[(bool, btclib::types::TransactionOutput)],
         source_utxos: &[(bool, btclib::types::TransactionOutput)],
     ) -> PayoutOutcome {
-        // Marked or not is irrelevant here: the recipient holding this
-        // output at all means the transaction that created it was mined.
-        // A recipient who has already spent it onward is the ambiguous
-        // row below, reached by falling through.
-        if recipient_utxos.iter().any(|(_, output)| output.hash() == self.output_hash) {
-            return PayoutOutcome::Confirmed;
-        }
-        // An attempt with no recorded inputs can prove nothing either
-        // way, and `all()` over an empty list would answer NeverLanded
-        // -- the one wrong answer here, since it authorizes a resend.
-        // `build_multi_payment` never produces such a transaction, so
-        // this is defence against a future caller rather than a case
-        // seen today.
-        if self.spent_inputs.is_empty() {
-            return PayoutOutcome::Ambiguous;
-        }
-        let unspent_at_source = |wanted: &Hash| {
-            source_utxos
-                .iter()
-                .any(|(marked, output)| !marked && output.hash() == *wanted)
-        };
-        if self.spent_inputs.iter().all(unspent_at_source) {
-            PayoutOutcome::NeverLanded
-        } else {
-            PayoutOutcome::Ambiguous
-        }
+        resolve_against(&self.output_hash, &self.spent_inputs, recipient_utxos, source_utxos)
+    }
+}
+
+/// The three-way rule itself, over one output hash and the inputs that
+/// would have paid it.
+///
+/// Lifted out of `PayoutAttempt::resolve` when exchange withdrawals
+/// needed the same rule (§6.5d). Both callers are thin wrappers, so the
+/// rule keeps one definition and one set of tests -- a second copy would
+/// be free to drift from the first, which is the failure mode the
+/// cross-language envelope fixtures exist to prevent one layer down.
+pub fn resolve_against(
+    output_hash: &Hash,
+    spent_inputs: &[Hash],
+    recipient_utxos: &[(bool, btclib::types::TransactionOutput)],
+    source_utxos: &[(bool, btclib::types::TransactionOutput)],
+) -> PayoutOutcome {
+    // Marked or not is irrelevant here: the recipient holding this
+    // output at all means the transaction that created it was mined.
+    // A recipient who has already spent it onward is the ambiguous
+    // row below, reached by falling through.
+    if recipient_utxos.iter().any(|(_, output)| output.hash() == *output_hash) {
+        return PayoutOutcome::Confirmed;
+    }
+    // An attempt with no recorded inputs can prove nothing either
+    // way, and `all()` over an empty list would answer NeverLanded
+    // -- the one wrong answer here, since it authorizes a resend.
+    // `build_multi_payment` never produces such a transaction, so
+    // this is defence against a future caller rather than a case
+    // seen today.
+    if spent_inputs.is_empty() {
+        return PayoutOutcome::Ambiguous;
+    }
+    let unspent_at_source = |wanted: &Hash| {
+        source_utxos
+            .iter()
+            .any(|(marked, output)| !marked && output.hash() == *wanted)
+    };
+    if spent_inputs.iter().all(unspent_at_source) {
+        PayoutOutcome::NeverLanded
+    } else {
+        PayoutOutcome::Ambiguous
+    }
+}
+
+/// What the hub knows about an exchange withdrawal whose on-chain leg
+/// was handed to the node and never acknowledged.
+///
+/// The custody payment is fire-and-forget like every other, so an error
+/// from the send does not establish that the node never received the
+/// bytes -- §6.2 settled that in the other direction, and this is the
+/// dangerous direction. The handler used to credit the balance back on
+/// any error and tell the client to retry, so a user whose transaction
+/// *had* landed held both the coin and the balance, and could withdraw
+/// the same money again.
+///
+/// A send that may have gone out therefore no longer reverts. The debit
+/// stands and this record is written instead, durably, before the client
+/// is told anything. It is what lets an operator find the money, and
+/// what a resolver will read when one is built (§6.5d).
+///
+/// Deliberately the same shape as `PayoutAttempt` minus the task, so the
+/// three-way rule applies to it unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WithdrawalAttempt {
+    /// Fresh per attempt. A withdrawal has no task to be keyed by and one
+    /// key may withdraw repeatedly, so the record needs an identity of
+    /// its own for an operator to name one in a runbook step.
+    pub id: Uuid,
+    pub owner: PublicKey,
+    pub amount: u64,
+    /// Hash of the `TransactionOutput` paying `owner`. Same primary
+    /// signal and same reason as a payout's: the recipient can spend it
+    /// immediately, so watching only custody's side would read a
+    /// completed withdrawal as one that never happened.
+    pub output_hash: Hash,
+    /// The inputs the transaction spends, all of them custody's.
+    pub spent_inputs: Vec<Hash>,
+    /// Custody's public key, recorded rather than inferred so a resolver
+    /// never has to re-derive which wallet paid.
+    pub source: PublicKey,
+    pub submitted_at: DateTime<Utc>,
+}
+
+impl WithdrawalAttempt {
+    /// The same three-way rule, over the same two UTXO sets.
+    pub fn resolve(
+        &self,
+        recipient_utxos: &[(bool, btclib::types::TransactionOutput)],
+        source_utxos: &[(bool, btclib::types::TransactionOutput)],
+    ) -> PayoutOutcome {
+        resolve_against(&self.output_hash, &self.spent_inputs, recipient_utxos, source_utxos)
     }
 }
 
@@ -4176,6 +4243,46 @@ mod tests {
             attempt.resolve(&[(true, paid)], &[(false, spent)]),
             PayoutOutcome::Confirmed
         );
+    }
+
+    /// A withdrawal resolves by the same rule a payout does, on every
+    /// row -- which is the claim that lets `WithdrawalAttempt` reuse
+    /// `resolve_against` instead of carrying a second copy of it.
+    ///
+    /// Worth asserting rather than assuming, because a second copy of
+    /// this rule is exactly the drift the shared function exists to
+    /// prevent, and the rows differ from one another only in which
+    /// evidence is missing.
+    #[test]
+    fn a_withdrawal_and_a_payout_resolve_identically_on_every_row() {
+        let (owner, custody) = (pubkey(), pubkey());
+        let spent = output(1_000, &custody);
+        let paid = output(100, &owner);
+        let payout = attempt(&owner, &custody, &paid, &[&spent]);
+        let withdrawal = WithdrawalAttempt {
+            id: Uuid::new_v4(),
+            owner: owner.clone(),
+            amount: 100,
+            output_hash: paid.hash(),
+            spent_inputs: vec![spent.hash()],
+            source: custody.clone(),
+            submitted_at: Utc::now(),
+        };
+
+        let confirmed = (vec![(true, paid.clone())], vec![(false, spent.clone())]);
+        let never = (vec![], vec![(false, spent.clone())]);
+        let ambiguous: (
+            Vec<(bool, btclib::types::TransactionOutput)>,
+            Vec<(bool, btclib::types::TransactionOutput)>,
+        ) = (vec![], vec![]);
+
+        for (recipient_utxos, source_utxos) in [confirmed, never, ambiguous] {
+            assert_eq!(
+                withdrawal.resolve(&recipient_utxos, &source_utxos),
+                payout.resolve(&recipient_utxos, &source_utxos),
+                "the two wrappers must not be able to disagree"
+            );
+        }
     }
 
     /// Row two. Nothing at the recipient, and every input still sitting
