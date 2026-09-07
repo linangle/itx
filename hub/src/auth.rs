@@ -37,7 +37,7 @@ use std::time::Instant;
 /// long, in memory and in the durable table. Both are still bounded by a
 /// fixed window rather than by uptime, which is the property that
 /// matters.
-const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
+pub const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
 
 /// The signed-envelope replay guard: the set of signatures this hub has
 /// already accepted, held in memory for the check and on disk so that
@@ -82,8 +82,10 @@ pub struct ReplayGuard {
     /// exists, and defaults to a private table so an unwired guard still
     /// functions. `with_metrics` joins it to the one `/metrics` renders.
     metrics: Arc<crate::metrics::Metrics>,
-    /// The durable twin of `seen`, or `None` for a guard that keeps no
-    /// record across restarts and falls back to `accepting_from`.
+    /// The durable twin of `seen`. `None` only for `open()`, the
+    /// test-only constructor: both real constructors carry a store, and
+    /// `booting` carrying one is the 2026-09-07 fix -- see its own doc
+    /// comment for what a storeless fallback silently cost.
     store: Option<Arc<HubStore>>,
     /// When this instance starts accepting authenticated requests, or
     /// `None` when there is no restart window left to wait out.
@@ -119,9 +121,9 @@ impl ReplayGuard {
         ))
     }
 
-    /// A guard that keeps no durable record, for a hub that has just
-    /// started and therefore lost whatever the previous process had
-    /// seen: refuses authenticated requests until
+    /// A guard for a hub that has just started and could not read
+    /// whatever the previous process had seen: it records durably like
+    /// any other, but refuses authenticated requests until
     /// `started_at + REPLAY_MEMORY_SECONDS`. The fallback when `restore`
     /// fails -- a hub that cannot read its replay log should still come
     /// up, just not with a hole in it.
@@ -132,10 +134,43 @@ impl ReplayGuard {
     /// verifiable for another drift window beyond that. Waiting out only
     /// one would reopen the hole this exists to close, for exactly the
     /// envelopes that live longest.
-    pub fn booting(started_at: DateTime<Utc>) -> Self {
+    ///
+    /// **It keeps the store, and that is the whole of the 2026-09-07
+    /// fix.** This used to be built with `store: None`, and nothing ever
+    /// attached one afterwards -- `with_metrics` is the only other
+    /// mutator -- so a hub that fell back here refused writes for the
+    /// window as documented and then served the rest of its life
+    /// recording **nothing durably**.
+    ///
+    /// The failure was delayed and silent: a transient read error at
+    /// boot, a week of apparently healthy running, then an ordinary
+    /// restart whose `restore` now succeeds, finds only expired rows and
+    /// comes up empty -- and every envelope accepted in the final window
+    /// before that restart replays cleanly. That is precisely the hole
+    /// this module exists to close, reopened by the code written to
+    /// close it, with `replay_durable_write_ms_total` sitting at zero
+    /// throughout and the boot banner an operator is told to read
+    /// looking entirely normal.
+    ///
+    /// Keeping the store makes the degradation what it was always
+    /// described as: the loss of the previous process's *history*, which
+    /// is exactly what the window waits out, rather than the loss of
+    /// durability itself. If the store is broken for writes as well as
+    /// reads, every claim fails and `verify` answers `GuardUnavailable`
+    /// -- a 503 -- which is the honest outcome and a visible one.
+    ///
+    /// Refusing to start was the other candidate, and it is what
+    /// `ChallengeBook::restore` does two blocks further down `main` on a
+    /// similar argument. Rejected here because the two failures are not
+    /// equivalent: a redeemed challenge this hub cannot see is a solved
+    /// puzzle it will accept a second time, with no window that closes
+    /// it, while this one is closed by waiting. Turning a transient read
+    /// error into a refusal to boot trades a bounded and now-observable
+    /// degradation for an outage.
+    pub fn booting(store: Arc<HubStore>, started_at: DateTime<Utc>) -> Self {
         Self {
             seen: DashMap::new(),
-            store: None,
+            store: Some(store),
             accepting_from: Some(started_at + Duration::seconds(REPLAY_MEMORY_SECONDS)),
             metrics: crate::metrics::Metrics::new(),
         }
@@ -407,7 +442,8 @@ mod tests {
     #[test]
     fn a_booting_guard_refuses_until_the_last_pre_restart_envelope_has_expired() {
         let boot = Utc::now();
-        let guard = ReplayGuard::booting(boot);
+        let (store, path) = temp_store();
+        let guard = ReplayGuard::booting(store, boot);
 
         // The envelope that outlives all the others is one the previous
         // process accepted from a client whose clock ran fast: stamped a
@@ -423,6 +459,8 @@ mod tests {
         // protect and the hub can serve writes again.
         assert!(!guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS)));
         assert!(!guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS + 1)));
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -436,8 +474,10 @@ mod tests {
     fn the_window_is_reported_as_its_own_error_not_as_a_replay() {
         let key = PrivateKey::new_key();
         let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
-        let guard = ReplayGuard::booting(Utc::now());
+        let (store, path) = temp_store();
+        let guard = ReplayGuard::booting(store, Utc::now());
         assert!(matches!(envelope.verify_unmetered(&guard, "POST", "/faucet"), Err(AuthError::GuardWarmingUp)));
+        std::fs::remove_file(&path).ok();
 
         // ...and the same envelope sails through once the window closes,
         // proving the refusal was the window and nothing else.
@@ -473,6 +513,53 @@ mod tests {
         assert!(!after.refuses_at(Utc::now()));
 
         drop(after);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The 2026-09-07 fix, stated as the property it restores: a guard
+    /// that fell back to `booting` still writes to disk, so the process
+    /// *after* it inherits what this one accepted.
+    ///
+    /// Before the fix this failed, in the direction that matters.
+    /// `booting` built the guard with no store and nothing ever attached
+    /// one, so a degraded process recorded nothing for the whole of its
+    /// life -- and the hole did not appear until the *next* restart,
+    /// when a now-succeeding `restore` came up empty and every envelope
+    /// from the degraded process's last window replayed cleanly. Two
+    /// restarts away from the transient error that caused it, with
+    /// nothing in between saying so.
+    ///
+    /// The refusal window is not under test here; the test above covers
+    /// that. This is about what a degraded guard leaves behind.
+    #[test]
+    fn a_degraded_guard_still_records_durably_for_its_successor() {
+        let (store, path) = temp_store();
+        let key = PrivateKey::new_key();
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
+
+        // Booted far enough in the past that its window has closed, so
+        // it is actually serving -- the state the old code spent the
+        // rest of the process in.
+        let degraded = ReplayGuard::booting(
+            store.clone(),
+            Utc::now() - Duration::seconds(REPLAY_MEMORY_SECONDS + 1),
+        );
+        assert!(!degraded.refuses_at(Utc::now()), "the window has closed, so it is serving");
+        assert_eq!(envelope.verify_unmetered(&degraded, "POST", "/faucet").unwrap(), key.public_key());
+        drop(degraded);
+
+        let (successor, restored) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
+        assert_eq!(
+            restored, 1,
+            "the degraded process's signature must be on disk -- with `store: None` it was not, \
+             and that is where the replay window silently reopened"
+        );
+        assert!(
+            matches!(envelope.verify_unmetered(&successor, "POST", "/faucet"), Err(AuthError::Replayed)),
+            "an envelope accepted by a degraded hub must not be accepted by its successor"
+        );
+
+        drop(successor);
         std::fs::remove_file(&path).ok();
     }
 

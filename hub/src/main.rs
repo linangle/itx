@@ -868,6 +868,7 @@ async fn main() -> Result<()> {
         metrics.reconciliation_disagreements.insert(class, count);
     }
 
+    let mut degraded_replay_guard = false;
     let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
         Ok((guard, restored)) => {
             println!("restored {restored} replay-guard signature(s) still inside the drift window");
@@ -875,15 +876,28 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             error!("could not restore the durable replay guard ({e}) -- falling back to refusing");
+            // The figure here used to be `MAX_REQUEST_DRIFT_SECONDS`
+            // while the code waited `REPLAY_MEMORY_SECONDS`, so the one
+            // message that tells an operator how long the hub will
+            // refuse writes told them half of it.
             println!(
                 "WARNING: replay log unreadable ({e}); authenticated writes are refused for the \n\
-                 next {}s while the post-restart replay window closes. Read routes are unaffected.",
-                btclib::envelope::MAX_REQUEST_DRIFT_SECONDS,
+                 next {}s while the post-restart replay window closes. Read routes are \n\
+                 unaffected, and signatures are still recorded durably -- what this process \n\
+                 lacks is the previous one's history. hub_replay_guard_degraded stays 1 until \n\
+                 it is restarted.",
+                auth::REPLAY_MEMORY_SECONDS,
             );
-            auth::ReplayGuard::booting(chrono::Utc::now())
+            degraded_replay_guard = true;
+            auth::ReplayGuard::booting(store.clone(), chrono::Utc::now())
         }
     }
     .with_metrics(metrics.clone());
+    // After `with_metrics`, which swaps the guard's own table for the
+    // shared one the router renders from.
+    metrics
+        .replay_guard_degraded
+        .store(u64::from(degraded_replay_guard), std::sync::atomic::Ordering::Relaxed);
 
     // Aborts startup if the table cannot be read, the same as the tasks
     // and faucet grants loaded above and for a sharper reason: a

@@ -180,6 +180,24 @@ pub struct Metrics {
     /// hub; this will.
     pub replay_durable_write_ms_total: AtomicU64,
 
+    /// 1 while this process could not restore its replay log at boot.
+    ///
+    /// The guard still records durably and still refuses writes for the
+    /// post-restart window, so the hole §3.3 closed stays closed -- what
+    /// it lost is the *history* the previous process had accumulated,
+    /// which the window exists to wait out. It is a gauge rather than a
+    /// counter because the condition is a property of the process and
+    /// cannot be recovered from without a restart, and because the thing
+    /// an operator wants to alert on is "any hub is in this state", not
+    /// how many times it has happened.
+    ///
+    /// Before 2026-09-07 this state was invisible and permanent: the
+    /// fallback guard was built without a store and nothing ever
+    /// attached one, so it served the rest of the process's life
+    /// recording nothing, with `replay_durable_write_ms_total` sitting
+    /// at zero and the boot banner reading normally on the next restart.
+    pub replay_guard_degraded: AtomicU64,
+
     // ---- faucet -----------------------------------------------------
     /// Distinct keys that have been granted, sampled from the board by
     /// the sweep. See `docs/deployment.md` §8.3 for why the burn in units
@@ -477,6 +495,7 @@ impl Metrics {
         counter(&mut out, "hub_replay_signatures_evicted_total", "Signatures evicted by the sweep once unreplayable.", self.replay_signatures_evicted.load(Ordering::Relaxed));
         counter(&mut out, "hub_replay_durable_write_failures_total", "Replay-guard claims that could not be recorded durably.", self.replay_durable_write_failures.load(Ordering::Relaxed));
         counter(&mut out, "hub_replay_durable_write_ms_total", "Cumulative time inside the replay guard's durable write.", self.replay_durable_write_ms_total.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_replay_guard_degraded", "1 if this process could not restore its replay log at boot, so it is running without the history the previous process had (plan 3.3).", self.replay_guard_degraded.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_faucet_grants", "Distinct keys granted by the faucet, as of the last sweep.", self.faucet_grants.load(Ordering::Relaxed));
 
