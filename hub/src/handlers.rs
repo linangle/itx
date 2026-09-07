@@ -2688,6 +2688,20 @@ pub async fn place_order(
             touched_accounts.insert(trade.seller.clone());
         }
         touched_orders.remove(&order.id);
+        // The placer's account, always, and not only when they appear in
+        // a trade. Placing an order *always* moves locked balance, so an
+        // order that crossed nothing still changes its owner's account --
+        // and the old code, which built this set from trades alone, wrote
+        // the order without it. The lock then existed in memory and
+        // nowhere else: a restart reloaded an open order with no locked
+        // funds behind it, free to fill against money its owner was
+        // meanwhile at liberty to spend or withdraw twice.
+        //
+        // It was invisible because the case is masked whenever the same
+        // account also trades in the same call, which is what every test
+        // and every hand-run example did. `exchange-restart`'s kill phase
+        // is what surfaced it.
+        touched_accounts.insert(order.owner.clone());
         if compute_fees > 0 || base_fees > 0 {
             touched_accounts.insert(state.operator_public_key.clone());
         }
