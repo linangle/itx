@@ -118,6 +118,18 @@ pub struct Metrics {
     /// counter that only moves when things work is how you end up blind
     /// during the incident.
     pub node_connect_failures: AtomicU64,
+    /// Node operations abandoned because they hit their time limit --
+    /// see `node_client`'s two timeout constants.
+    ///
+    /// The distinction this exists to draw: `node_connect_failures`
+    /// means the hub was refused, which is a node that is *down* and
+    /// usually obvious elsewhere. This means the hub was accepted and
+    /// then left waiting, which is a node that is wedged -- a state with
+    /// no socket-level symptom, no log line of its own anywhere else,
+    /// and, before the timeouts, no bound either. Any sustained value
+    /// here is worth paging on: every payout path shares one lock, so a
+    /// wedged node stalls settlement even while the hub looks healthy.
+    pub node_timeouts: AtomicU64,
 
     // ---- chain observation ------------------------------------------
     /// The last chain height the sweep observed.
@@ -413,6 +425,7 @@ impl Metrics {
         counter(&mut out, "hub_node_pool_saturation_waits_total", "Node operations that waited for a pool permit.", self.node_pool_saturation_waits.load(Ordering::Relaxed));
         counter(&mut out, "hub_node_pool_wait_ms_total", "Cumulative time spent waiting for a node pool permit.", self.node_pool_wait_ms_total.load(Ordering::Relaxed));
         counter(&mut out, "hub_node_connect_failures_total", "Node dial attempts that failed on every configured address.", self.node_connect_failures.load(Ordering::Relaxed));
+        counter(&mut out, "hub_node_timeouts_total", "Node operations abandoned after exceeding their time limit.", self.node_timeouts.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_chain_height", "Chain height as of the last sweep observation.", self.chain_height.load(Ordering::Relaxed));
         let observed_at = self.chain_observed_at_unix.load(Ordering::Relaxed);
