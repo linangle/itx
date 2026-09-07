@@ -144,6 +144,41 @@ pub struct Section {
     /// deliverable: the handoff asks for findings written up whether or
     /// not they get fixed.
     pub findings: Vec<String>,
+    /// Something the drill reliably observes, has been looked at, and is
+    /// agreed not to be a defect.
+    ///
+    /// Kept apart from `findings` rather than demoted to a `note`,
+    /// because the two say different things: a note is context, an
+    /// accepted finding is "we know, we checked, it is fine." It does not
+    /// fail a run and `compare` does not treat it as new.
+    ///
+    /// This exists because `escrow-restart` reports one dropped
+    /// confirmation on `SIGTERM` in most runs, which §6.5b measured
+    /// against a pre-fix control at the same rate and so identified as
+    /// pre-existing drain variance rather than anything a fix
+    /// introduced. As an ordinary finding it failed that drill's
+    /// comparison on nearly every run, for a reason everybody had
+    /// already agreed was harmless -- which is how a red signal stops
+    /// being read.
+    pub accepted: Vec<String>,
+    /// Which verdict means "nothing to act on" for this section.
+    ///
+    /// The verdict answers a question about the *plan* -- did the
+    /// predicted thing happen -- and that is not the same question as
+    /// whether the hub is healthy. Where the plan predicted safety
+    /// ("a crash leaves consistent state") the healthy answer is
+    /// `Confirmed`, which is the common case and the default. Where it
+    /// predicted a failure ("killing the node mid-payout destroys money
+    /// the hub still reports as paid") the healthy answer is `Refuted`,
+    /// and once §6.5 landed that is exactly what `node-crash` reports.
+    ///
+    /// Until this field existed, `needs_attention` read every `Refuted`
+    /// as a failure, so `node-crash` exited non-zero on a *healthy* hub
+    /// and `compare` read a §6.5 regression -- refuted back to confirmed
+    /// -- as somebody's fix landing. Three of eight drills were red when
+    /// nothing was wrong, which made `harness drill all` permanently red
+    /// and the exit code worthless.
+    pub healthy_verdict: Verdict,
     pub latency: Vec<Summary>,
 }
 
@@ -156,6 +191,8 @@ impl Section {
             facts: BTreeMap::new(),
             notes: Vec::new(),
             findings: Vec::new(),
+            accepted: Vec::new(),
+            healthy_verdict: Verdict::Confirmed,
             latency: Vec::new(),
         }
     }
@@ -183,6 +220,38 @@ impl Section {
     pub fn finding(mut self, finding: impl Into<String>) -> Self {
         self.findings.push(finding.into());
         self
+    }
+
+    /// See `Section::accepted`. Say *why* it is accepted in the text --
+    /// an accepted finding with no reasoning is indistinguishable from
+    /// one somebody silenced to get a green run.
+    pub fn accepted_finding(mut self, finding: impl Into<String>) -> Self {
+        self.accepted.push(finding.into());
+        self
+    }
+
+    /// Declares that this section is healthy when it reports `verdict`.
+    /// Defaults to `Confirmed`; see `Section::healthy_verdict` for when
+    /// it is not.
+    pub fn healthy_when(mut self, verdict: Verdict) -> Self {
+        self.healthy_verdict = verdict;
+        self
+    }
+
+    /// Whether this section's verdict is one that wants a human.
+    ///
+    /// `Inconclusive` never is, on its own. It means the drill could not
+    /// decide, which is an absence of an answer rather than a bad one --
+    /// and for a sampling drill like `escrow-restart` it is the expected
+    /// post-fix outcome, because absence of a race is not something a
+    /// sampling run can observe. A drill that wants an inconclusive run
+    /// to be loud says so with a finding, the way `escrow-refund` does
+    /// when no sweep pass completed inside its observation window.
+    pub fn verdict_needs_attention(&self) -> bool {
+        match self.verdict {
+            None | Some(Verdict::Inconclusive) => false,
+            Some(verdict) => verdict != self.healthy_verdict,
+        }
     }
 
     pub fn latency(mut self, summaries: Vec<Summary>) -> Self {
@@ -213,13 +282,21 @@ impl Report {
         self.sections.push(section);
     }
 
-    /// True when any section refuted what the plan predicted, or found a
-    /// bug. The process exit code keys off this, so a drill run in CI
-    /// fails loudly rather than leaving a file for someone to read.
+    /// True when any section reported a verdict other than its healthy
+    /// one, or found something not already accepted. The process exit
+    /// code keys off this, so a drill run in CI fails loudly rather than
+    /// leaving a file for someone to read.
+    ///
+    /// It used to key off `Refuted` and any finding at all, which made a
+    /// healthy `node-crash`, `escrow-restart` and `signed-write-cost`
+    /// all exit non-zero -- so `harness drill all` was red whatever the
+    /// hub did, and the "put it in front of a change and be told"
+    /// property the README claims did not hold. See
+    /// `Section::healthy_verdict` and `Section::accepted`.
     pub fn needs_attention(&self) -> bool {
         self.sections
             .iter()
-            .any(|s| s.verdict == Some(Verdict::Refuted) || !s.findings.is_empty())
+            .any(|s| s.verdict_needs_attention() || !s.findings.is_empty())
     }
 
     pub fn render(&self) -> String {
@@ -259,6 +336,9 @@ impl Report {
             }
             for note in &section.notes {
                 out.push_str(&format!("  note: {note}\n"));
+            }
+            for finding in &section.accepted {
+                out.push_str(&format!("  ACCEPTED: {finding}\n"));
             }
             for finding in &section.findings {
                 out.push_str(&format!("  FINDING: {finding}\n"));
@@ -339,16 +419,33 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
 
         let old_verdict = old_section.get("verdict").and_then(Value::as_str);
         let new_verdict = new_section.get("verdict").and_then(Value::as_str);
+        // Which verdict is healthy is read from the **current** report,
+        // and applied to both sides. Taking it from the baseline would
+        // mean every baseline written before the field existed defaults
+        // to `confirmed` and quietly mis-scores the pessimistic-claim
+        // drills it was added for. The current run is the one produced
+        // by today's code, so it is the one that knows.
+        let healthy = new_section
+            .get("healthy_verdict")
+            .and_then(Value::as_str)
+            .unwrap_or("confirmed");
+        // `inconclusive` is not a bad answer, it is the absence of one --
+        // see `Section::verdict_needs_attention`.
+        let is_a_problem =
+            |verdict: Option<&str>| !matches!(verdict, None | Some("inconclusive")) && verdict != Some(healthy);
         if old_verdict != new_verdict {
             out.push_str(&format!(
                 "  verdict: {} -> {}\n",
                 old_verdict.unwrap_or("none"),
                 new_verdict.unwrap_or("none")
             ));
-            // Only one direction is a regression. Going from refuted to
-            // confirmed is somebody's fix landing, and should not fail a
-            // comparison.
-            if new_verdict == Some("refuted") && old_verdict != Some("refuted") {
+            // Only one direction is a regression: becoming a problem
+            // when the baseline was not one. Which direction that *is*
+            // depends on the drill -- for `node-crash` the plan
+            // predicted the failure, so confirmed is the regression and
+            // refuted is the fix. Hardcoding "refuted is worse" read
+            // that exactly backwards.
+            if is_a_problem(new_verdict) && !is_a_problem(old_verdict) {
                 worse = true;
             }
         }
@@ -371,9 +468,9 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
             }
         }
 
-        let findings = |section: &Value| -> Vec<String> {
+        let findings_at = |section: &Value, key: &str| -> Vec<String> {
             section
-                .get("findings")
+                .get(key)
                 .and_then(Value::as_array)
                 .map(|list| {
                     list.iter()
@@ -382,15 +479,22 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
                 })
                 .unwrap_or_default()
         };
-        let old_findings = findings(old_section);
-        for finding in findings(new_section) {
-            if !old_findings.contains(&finding) {
+        // An accepted finding on either side counts as known, so a
+        // baseline predating the `accepted` field does not turn every
+        // later run's accepted text into a new finding.
+        let mut known = findings_at(old_section, "findings");
+        known.extend(findings_at(old_section, "accepted"));
+        known.extend(findings_at(new_section, "accepted"));
+        let old_findings = findings_at(old_section, "findings");
+        let new_findings = findings_at(new_section, "findings");
+        for finding in &new_findings {
+            if !known.contains(finding) {
                 out.push_str(&format!("  NEW FINDING: {finding}\n"));
                 worse = true;
             }
         }
         for finding in &old_findings {
-            if !findings(new_section).contains(finding) {
+            if !new_findings.contains(finding) {
                 out.push_str(&format!("  gone: {finding}\n"));
             }
         }
@@ -405,12 +509,26 @@ mod tests {
     use serde_json::json;
 
     fn report(verdict: &str, findings: Vec<&str>, count: i64) -> Value {
+        report_healthy_when("confirmed", verdict, findings, count)
+    }
+
+    /// `report`, for a drill whose healthy verdict is not `confirmed` --
+    /// see `Section::healthy_verdict`. Deliberately no `accepted` key on
+    /// either, so these also stand in for a baseline written before that
+    /// field existed.
+    fn report_healthy_when(
+        healthy: &str,
+        verdict: &str,
+        findings: Vec<&str>,
+        count: i64,
+    ) -> Value {
         json!({
             "environment": {"commit": "abc"},
             "started_at": "2026-09-06T00:00:00Z",
             "sections": [{
                 "title": "A drill",
                 "verdict": verdict,
+                "healthy_verdict": healthy,
                 "facts": {"itx_lost": count},
                 "findings": findings,
             }],
@@ -438,6 +556,67 @@ mod tests {
         );
         assert!(!worse);
         assert!(rendered.contains("gone: money vanished"));
+    }
+
+    /// The direction of a regression is per drill, and `node-crash` is
+    /// the one that made this matter: §6.5 predicted the failure, so
+    /// refuting it is the fix and *confirming* it again is the
+    /// regression. The old rule was hardcoded the other way and read a
+    /// re-broken payout path as somebody's fix landing.
+    #[test]
+    fn for_a_pessimistic_claim_confirmed_is_the_regression() {
+        let (rendered, worse) = compare(
+            &report_healthy_when("refuted", "refuted", vec![], 0),
+            &report_healthy_when("refuted", "confirmed", vec![], 6_000_000),
+        );
+        assert!(worse, "the plan's predicted failure happening again is the regression");
+        assert!(rendered.contains("verdict: refuted -> confirmed"));
+
+        // And the fix landing must not fail: the same drill going the
+        // other way is an improvement.
+        let (_, worse) = compare(
+            &report_healthy_when("refuted", "confirmed", vec![], 6_000_000),
+            &report_healthy_when("refuted", "refuted", vec![], 0),
+        );
+        assert!(!worse);
+    }
+
+    /// `escrow-restart`'s post-fix SIGKILL verdict, and the reason
+    /// re-baselining it closes §6.5b's refuted-to-refuted gap: from an
+    /// inconclusive baseline, the bug coming back reads as a problem
+    /// where the baseline was not one.
+    #[test]
+    fn inconclusive_is_not_a_problem_but_regressing_out_of_it_is() {
+        let (_, worse) = compare(
+            &report("inconclusive", vec![], 0),
+            &report("inconclusive", vec![], 0),
+        );
+        assert!(!worse, "a drill that still cannot decide has not got worse");
+
+        let (rendered, worse) = compare(
+            &report("inconclusive", vec![], 0),
+            &report("refuted", vec![], 1),
+        );
+        assert!(worse, "and the bug returning must fail, which refuted-to-refuted never could");
+        assert!(rendered.contains("verdict: inconclusive -> refuted"));
+    }
+
+    /// An accepted finding is known, so it must not read as new -- even
+    /// against a baseline written before the field existed, which is
+    /// every baseline currently checked in.
+    #[test]
+    fn an_accepted_finding_is_not_a_new_finding() {
+        let mut current = report("confirmed", vec![], 0);
+        current["sections"][0]["accepted"] = json!(["known drain variance"]);
+        let (rendered, worse) = compare(&report("confirmed", vec![], 0), &current);
+        assert!(!worse, "accepting a known observation must not fail a comparison");
+        assert!(!rendered.contains("NEW FINDING"));
+
+        // But a real finding alongside an accepted one still fails.
+        let mut current = report("confirmed", vec!["money vanished"], 0);
+        current["sections"][0]["accepted"] = json!(["known drain variance"]);
+        let (_, worse) = compare(&report("confirmed", vec![], 0), &current);
+        assert!(worse, "accepting one thing must not silence everything else");
     }
 
     #[test]

@@ -351,10 +351,24 @@ async fn phase(
         );
     }
 
+    // Accepted rather than reported as a finding, and §6.5b is where
+    // that was settled: this shows up in most runs, and a five-run A/B
+    // against the pre-fix build reproduced it at the same rate (three of
+    // five before, four of five after), so it is pre-existing variance in
+    // the drain and not anything a fix introduced. It costs nothing --
+    // the escrow is not consumed and the retry recovers it, which
+    // `recovered_by_retry` shows in the same report.
+    //
+    // As an ordinary finding it made `harness compare` exit non-zero on
+    // nearly every run of this drill, for a reason everybody had already
+    // agreed was harmless. That is how a red signal stops being read,
+    // and it is the reason `Section::accepted` exists.
     if !hard && never_answered > 0 {
-        section = section.finding(format!(
+        section = section.accepted_finding(format!(
             "{never_answered} confirmation(s) were dropped without an answer on SIGTERM, which \
-             the hub is supposed to drain rather than drop."
+             the hub is supposed to drain rather than drop. Known pre-existing drain variance, \
+             measured against a pre-fix control at the same rate (§6.5b); the escrow is not \
+             consumed and the retry recovers it."
         ));
     }
 

@@ -120,7 +120,19 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     // that ordering is wrong about the write path.
     let verify_dominates = verify_ms >= fsync_ms;
 
+    // A measurement drill, not a safety one: it refuted §6's claim about
+    // where a signed write's time goes, the plan was corrected on the
+    // strength of it (§6.3), and refuted is therefore the standing,
+    // correct state rather than a problem.
+    //
+    // Worth knowing what a flip would mean. If somebody makes verify
+    // dominate -- by batching or removing the replay guard's fsync, which
+    // is exactly what the finding below recommends -- this reports
+    // `Confirmed` and the run goes red. That is not a false alarm: it
+    // means the premise §6.3's correction rests on has changed and the
+    // section needs re-reading. Whoever lands that re-baselines this.
     let mut section = Section::new("Where a signed write's time actually goes")
+        .healthy_when(Verdict::Refuted)
         .plan_item("§6.3")
         .fact("rounds", ROUNDS)
         .fact("unauthenticated_read_p50_ms", round(read_ms))
@@ -145,7 +157,12 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
              so §6's ordering is right to name verify CPU as the write path's expensive half."
         ))
     } else {
-        section.verdict(Verdict::Refuted).finding(format!(
+        // Accepted, not a finding: the plan has already been corrected
+        // to say this (§6.3), so a run restating it is agreeing with the
+        // documentation rather than reporting news. As an ordinary
+        // finding it failed this drill's own exit code on every healthy
+        // run.
+        section.verdict(Verdict::Refuted).accepted_finding(format!(
             "§6 item 3 names signature-verify CPU as the third thing to break, but verification \
              and the quota charge together cost {verify_ms:.2}ms while the durable replay claim \
              behind them costs {fsync_ms:.2}ms -- {:.0}x more. Signed writes are bounded by one \

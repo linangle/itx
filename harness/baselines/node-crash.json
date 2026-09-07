@@ -1,16 +1,16 @@
 {
   "name": "drill: node-crash",
-  "started_at": "2026-09-06T22:28:11.916700Z",
+  "started_at": "2026-09-07T08:15:19.382831Z",
   "environment": {
-    "commit": "a0b71e9c29018ebf750424e913d32042805e7f9a",
+    "commit": "44fef477fa7d325508d80fb6887b3d113d3d39ba",
     "dirty": true,
     "profile": "release",
     "host": "Darwin arm64",
     "cpus": 10,
     "binaries": {
-      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/hub": "01b5aeaa13621e6d6e2290a72df7c699a3d26123a71b8c241360b8213e9aa9fd",
-      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/hub": "69afd36a4b7dd5552727e8521ea1c2e57a899474abfd8ac43f4c574a0cd463cc",
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
     }
   },
   "sections": [
@@ -24,19 +24,21 @@
         "hub_reported_paid": 6,
         "itx_failed_visibly": 0,
         "itx_hub_reported_paid": 6000000,
-        "itx_landed_after_one_sweep": 5000000,
+        "itx_landed_after_one_sweep": 6000000,
         "itx_landed_on_chain": 0,
         "itx_lost": 0,
         "itx_lost_before_sweep": 6000000,
-        "itx_pending_visibly": 1000000,
+        "itx_pending_visibly": 0,
         "payouts_attempted": 6,
         "tasks_still_marked_paid": 0
       },
       "notes": [
         "The miner was stopped before the submissions, which holds the pre-block window open rather than racing it. In production that window is everything submitted since the last block -- about eight seconds on average at a sixteen-second target.",
-        "Nothing was lost silently. 5000000 of 6000000 ITX is on the chain; 1000000 is still `Submitted`, which the sweep owns and the API reports as a pending bounty, and 0 reached `PayoutFailed`. The failure this drill was written for is money the hub still calls `Paid` that the chain does not have, and there is none of it. Recovery is a multi-sweep sequence, so a non-zero pending figure here means the wait ended mid-sequence rather than that anything is wrong."
+        "Every payout the hub reported was on the chain after the crash. Either the settlement confirmation work has landed, or the transactions were mined before the node was killed."
       ],
       "findings": [],
+      "accepted": [],
+      "healthy_verdict": "refuted",
       "latency": [
         {
           "label": "POST /tasks",
@@ -45,10 +47,10 @@
           "by_status": {
             "200": 6
           },
-          "p50_ms": 6.050624999999999,
-          "p90_ms": 14.084083000000001,
-          "p99_ms": 14.084083000000001,
-          "max_ms": 14.084083000000001,
+          "p50_ms": 6.321458000000001,
+          "p90_ms": 11.451625,
+          "p99_ms": 11.451625,
+          "max_ms": 11.451625,
           "per_second": null
         },
         {
@@ -58,10 +60,10 @@
           "by_status": {
             "200": 6
           },
-          "p50_ms": 8.119125,
-          "p90_ms": 13.548041,
-          "p99_ms": 13.548041,
-          "max_ms": 13.548041,
+          "p50_ms": 6.984833,
+          "p90_ms": 7.851957999999999,
+          "p99_ms": 7.851957999999999,
+          "max_ms": 7.851957999999999,
           "per_second": null
         },
         {
@@ -71,10 +73,10 @@
           "by_status": {
             "200": 6
           },
-          "p50_ms": 19.126541,
-          "p90_ms": 20.182583,
-          "p99_ms": 20.182583,
-          "max_ms": 20.182583,
+          "p50_ms": 13.742875,
+          "p90_ms": 15.099625,
+          "p99_ms": 15.099625,
+          "max_ms": 15.099625,
           "per_second": null
         }
       ]

@@ -241,7 +241,16 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
 
     harness.stack.shutdown().await;
 
+    // This drill tests a *pessimistic* plan claim -- §6.5 predicted that
+    // killing the node mid-payout destroys money the hub still reports as
+    // paid -- so refuting it is the fix landing, and refuted is what a
+    // healthy hub reports here. Declared, because the default assumption
+    // is the opposite and it was wrong twice over: `needs_attention` read
+    // this drill's healthy state as a failure and exited non-zero on a
+    // sound hub, and `compare` read a §6.5 regression (refuted back to
+    // confirmed) as an improvement.
     let mut section = Section::new("Kill the node mid-payout")
+        .healthy_when(Verdict::Refuted)
         .plan_item("§6.5")
         .fact("payouts_attempted", PAYOUTS)
         .fact("hub_reported_paid", reported_paid)

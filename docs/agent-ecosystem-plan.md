@@ -1056,6 +1056,64 @@ for any future action worth pricing.
    Both refutations are recorded where they belong: item 3 above, and item 5b,
    which is a bug this list did not know about.
 
+   **The verdict column above is why the harness's own signal was worthless
+   until 2026-09-07.** Read it again: for `node-crash` and `signed-write-cost`
+   the healthy answer is *Refuted* — one because §6.5 predicted the failure and
+   the fix removed it, the other because the claim it tests was simply wrong and
+   the plan was corrected rather than the code. But `Report::needs_attention`
+   keyed off `Refuted` or any finding at all, so **three of eight drills exited
+   non-zero on a completely sound hub** (those two plus `escrow-restart`, which
+   reports a known-harmless drain variance in most runs). `harness drill all`
+   was therefore red whatever the hub did, and the "put it in front of a change
+   and be told" property this section claims did not hold. Worse, `harness
+   compare` hardcoded "refuted is the bad direction" — so a §6.5 regression,
+   which turns `node-crash` from refuted back to *confirmed*, would have been
+   printed as somebody's fix landing and exited 0. The most valuable regression
+   in the repo was the one the gate could not see.
+
+   **Fixed by separating the two questions.** A section now declares which
+   verdict means "nothing to act on" (`healthy_when`, defaulting to
+   `Confirmed`), and a drill can mark an observation it has already
+   investigated as `accepted_finding` rather than a finding. `needs_attention`
+   and `compare` both derive from those instead of from a hardcoded direction,
+   and `compare` reads the healthy verdict from the *current* report so
+   baselines written before the field existed still score correctly.
+   `Inconclusive` is never a failure by itself — it is the absence of an answer,
+   and for a sampling drill it is the expected post-fix state.
+
+   Two things fell out that are worth more than the tidy-up. **§6.5b's
+   refuted-to-refuted gap closes** for `escrow-restart`: re-baselined on a
+   post-fix run its SIGKILL half sits at `inconclusive`, and the bug returning
+   reads as refuted — a problem where the baseline was not one — which
+   `compare` now catches. And the direction of a regression is per drill rather
+   than global, which is the thing the old rule could not express at all.
+
+   **So the baseline convention inverts, for every drill and not just the
+   asserting ones.** Through 2026-09-06 a baseline was the *pre-fix* run,
+   because for a sampling drill a clean run is a failure to reproduce and makes
+   poor evidence. That reasoning was about the run's value as *evidence*, and
+   it is still right — but a baseline's job is to be the thing a future run is
+   gated against, and for that it has to be the state you want to keep. Every
+   drill now baselines on its healthy run. The pre-fix numbers are not lost:
+   they are the evidence a fix is argued from, so they belong in the plan
+   section that argues it, where somebody reads them — §6.5b for
+   `escrow-restart`, §6.5 for `node-crash`, §6.5c above for `escrow-refund` —
+   rather than in a file whose only reader is a diff tool.
+
+   **Measured, not asserted:** `signed-write-cost` and `escrow-restart` both
+   exited 0 on a healthy hub after the change, having exited 1 before it. The
+   `escrow-restart` run that proved it happened not to produce its drain
+   variance — that fires in roughly four runs of five — so the accepted-finding
+   path itself is covered by `an_accepted_finding_is_not_a_new_finding` and by a
+   later run rather than by that one.
+
+   Both directions are pinned by tests (`for_a_pessimistic_claim_confirmed_is_the_regression`,
+   `inconclusive_is_not_a_problem_but_regressing_out_of_it_is`,
+   `an_accepted_finding_is_not_a_new_finding`), and the accepted findings each
+   say in their own text why they are accepted — an accepted finding without
+   that reasoning is indistinguishable from one somebody silenced to get a
+   green run.
+
    **What the load half found**, at 1000 agents against a 200-task board on a
    10-core arm64 Mac, release build, 60 seconds:
 
