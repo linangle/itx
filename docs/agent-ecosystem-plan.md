@@ -151,6 +151,15 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    missed by it. Coverage of the instrument is the gap now, not coverage of the
    code. The natural next drill is named in §6.5c and needs no kill and no
    race, so it can assert rather than report inconclusive.
+
+   `escrow-restart` was re-run against the fixes on 2026-09-07 and holds
+   (`compare`: `refuted -> inconclusive`, duplicates `1 -> 0`, finding gone),
+   but read §6.5c before quoting it: that run had **zero** handlers reach the
+   commit the duplicate window needs, so its clean SIGKILL column measures
+   coverage rather than safety. The same run exposed a second gap in the
+   baseline convention — `harness compare` exits non-zero on the known,
+   agreed-harmless SIGTERM drain variance, so this drill fails its own
+   comparison on most runs.
 10. Honest settlement states (pending/confirmed) in API responses (§6.5) —
     **done** 2026-09-06. `Submitted` between `Verified` and `Paid`, resolved
     against the chain by the sweep, plus `bounty_confirmed`/`bounty_pending` on
@@ -1608,13 +1617,56 @@ the gap now, not coverage of the code.
 `harness drill escrow-restart` is the nearest instrument and is the wrong one
 here, which its own caveat says: it reproduces a one-step-wide race and reports
 *inconclusive* rather than clean when it finds nothing, so a green run is not a
-signature. It was **not** re-run for this work — the machine was at 96% disk
-with 500 MB free, well short of a release build plus a mining chain file, and
-the drill's own metrics (`deposits_funding_two_tasks`, `deposits_stranded`) are
-about the confirm path, which this work does not touch. That is a gap in the
-evidence and is recorded as one rather than papered over; the deterministic
-tests above are the signature instead, and they are a better one for this class
-because they do not sample.
+signature. The deterministic tests above are the signature instead, and they are
+a better one for this class because they do not sample.
+
+**Re-run anyway on 2026-09-07** at commit `f4e055b`, release build, once disk
+allowed it. What it establishes, and what it does not:
+
+| | SIGTERM | SIGKILL |
+|---|---|---|
+| Verdict | **CONFIRMED** | inconclusive |
+| `deposits_funding_two_tasks` | 0 | 0 |
+| `deposits_stranded` | 0 | 0 |
+| Handlers that committed a task at all | 11 of 12 | **0 of 12** |
+| `recovered_by_retry` | 1 | 12 |
+
+`harness compare` against `harness/baselines/escrow-restart.json` reports
+`verdict: refuted -> inconclusive`, `deposits_funding_two_tasks: 1 -> 0` and the
+finding `gone` — reproducing §6.5b's sign-off on this tree, which is what the
+run was for: confirmation that this work did not regress the confirm path it
+does not touch.
+
+**The SIGKILL column is uninformative and should not be read as reassurance.**
+Zero of twelve handlers got as far as committing a task, and committing the task
+is precisely what opens the window a duplicate needs — so `0 duplicates` this
+run is a statement about coverage, not about safety. §6.5b's A/B made the same
+point in the other direction: the column that matters is "handlers that
+committed a task at all", and pre-fix, duplicates equalled it in every single
+run. At zero coverage the drill cannot say anything.
+
+**What the run did add, and it is not what it was pointed at.** The hub restarted
+twice against stores a real `SIGKILL` had just produced — 12 tasks and 13 pending
+escrow deposits reloaded — and the new boot reconciliation reported no
+disagreements both times. That is the reconciliation and the durable-status
+reload path exercised against genuine crash-produced state rather than
+synthetic test fixtures, which no unit test can offer. The refund path itself
+was **not** exercised: an escrow refund needs a reservation past its hour-long
+TTL, and the drill does not run that long.
+
+**Two gaps in the baseline convention, now both visible.** §6.5b noted the first:
+because this drill's stored verdict stays `refuted`, a future regression would
+compare refuted-to-refuted and `harness compare` would exit 0. The second showed
+up here: the run reproduced the known `SIGTERM` drain variance — one confirmation
+dropped without an answer, which §6.5b already identified as pre-existing and
+not caused by any fix, and which `recovered_by_retry: 0 -> 1` shows recovering
+exactly as documented. `harness compare` reports it as a **NEW FINDING** and
+exits 1. So this drill now fails its own comparison on most runs for a reason
+everybody has already agreed is harmless, which defeats the "put it in front of
+a change and be told" property the harness README claims. Neither gap is a
+defect in these fixes and neither is fixed here; both belong to whoever revisits
+the baselines as a set. The baseline is deliberately not refreshed, following
+`node-crash`.
 
 What would be worth building, and is the natural next drill: a phase that
 snapshots every deposit's status, restarts the hub against its own store, and
