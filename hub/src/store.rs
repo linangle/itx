@@ -324,6 +324,47 @@ impl HubStore {
         })
     }
 
+    /// A settled escrow's `Refunded` status and the reputation credit
+    /// that settling it earned, committed together -- the
+    /// `settle_dispute_bond` counterpart of `save_task_and_deposit`,
+    /// and the same bug in the opposite direction.
+    ///
+    /// `Consumed` became durable when plan §6.5b added the pair-writers
+    /// above; `Refunded` never did, and lived only in memory. So a
+    /// forfeited dispute bond credited the winner's `total_earned`
+    /// durably beside a deposit that reloaded as `Consumed`,
+    /// `TaskBoard::tasks_with_unsettled_dispute_bonds` selected it again
+    /// at the next boot, and the credit was applied a second time. The
+    /// on-chain leg does not duplicate -- the retry finds a zero balance
+    /// and sends nothing -- which is precisely why this was invisible:
+    /// nothing about it is wrong except the ledger, and the ledger stays
+    /// wrong.
+    ///
+    /// Ordinary refunds have no companion record and use
+    /// `save_pending_deposit`, which is already one transaction by
+    /// itself. Only the forfeiture case needs a pair.
+    pub fn save_deposit_and_reputation(
+        &self,
+        deposit: &PendingDeposit,
+        pubkey: &PublicKey,
+        reputation: &Reputation,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(
+                txn,
+                PENDING_DEPOSITS_TABLE,
+                deposit.id.as_bytes().as_slice(),
+                deposit,
+            )?;
+            stage_record(
+                txn,
+                REPUTATION_TABLE,
+                pubkey.to_sec1_bytes().as_slice(),
+                reputation,
+            )
+        })
+    }
+
     /// Runs `f` inside a single redb write transaction and commits only
     /// if it returns `Ok`. An `Err` returns without committing, and redb
     /// discards the whole transaction when it drops -- so every record

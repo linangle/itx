@@ -4800,6 +4800,73 @@ mod tests {
         );
     }
 
+    /// The deterministic half of the escrow-durability story, and the
+    /// reason this test is written against the *store* rather than the
+    /// board: `mark_escrow_refunded` only ever changed memory, so a
+    /// refunded deposit came back `Reserved` on **every** restart -- not
+    /// as a race, but always. Three things followed, and all three are
+    /// what this pins: the sweep re-selected every deposit ever refunded
+    /// in the hub's history (`overdue_reserved_escrows` filters on
+    /// `Reserved`), so a long-lived deployment's boot sweep grew without
+    /// bound; a depositor whose refund had already gone out could confirm
+    /// the escrow again, with only the on-chain balance check standing in
+    /// the way; and a dispute bond re-credited its winner (see
+    /// `a_settled_dispute_bond_is_not_settled_again_after_a_restart`).
+    #[tokio::test]
+    async fn a_refunded_escrow_reloads_as_refunded() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent_key = PrivateKey::new_key();
+
+        let payload = handlers::EscrowTaskPayload {
+            description: "funded, then left to expire".to_string(),
+            bounty: 1_000,
+            expected_output_hash: hex::encode(Hash::hash_bytes(b"x").as_bytes()),
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow", hub.base_url))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
+        // Funded but never confirmed, so the sweep refunds it on chain
+        // rather than finding an empty address -- the case that actually
+        // moves money and therefore the one worth being durable about.
+        fake_node.fund(deposit_pubkey, reservation["required_amount"].as_u64().unwrap()).await;
+
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(61)).await;
+        assert_eq!(
+            hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status,
+            board::EscrowStatus::Refunded,
+            "in memory the refund happened, which was never the part in doubt"
+        );
+
+        // What a restart actually restores: a fresh board filled from the
+        // store, nothing carried over in memory.
+        let mut restored = TaskBoard::new();
+        for deposit in hub.state.store.load_all_pending_deposits().unwrap() {
+            restored.restore_pending_deposit(deposit);
+        }
+        assert_eq!(
+            restored.get_pending_deposit(escrow_id).unwrap().status,
+            board::EscrowStatus::Refunded,
+            "a deposit whose money has already gone back must not reload as Reserved"
+        );
+        assert!(
+            restored.overdue_reserved_escrows(Utc::now() + chrono::Duration::minutes(61)).is_empty(),
+            "and it must not be handed to the sweep again for the life of the deployment"
+        );
+    }
+
     #[tokio::test]
     async fn cancel_task_refunds_an_agent_funded_task_to_its_poster() {
         let operator_key = PrivateKey::new_key();
@@ -5240,6 +5307,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(challenger_rep["failed"], 1);
+    }
+
+    /// A fresh `TaskBoard` filled from `hub`'s own store and nothing
+    /// else -- what a restart actually restores, in the same order
+    /// `main` does it. Every "does this survive a restart" assertion
+    /// wants this rather than the live board, because the live board is
+    /// precisely the copy that is not in question.
+    fn board_as_a_restart_would_load_it(hub: &TestHub) -> TaskBoard {
+        let store = &hub.state.store;
+        let mut board = TaskBoard::new();
+        for task in store.load_all_tasks().unwrap() {
+            board.restore_task(task);
+        }
+        for (pubkey, reputation) in store.load_all_reputation().unwrap() {
+            board.restore_reputation(pubkey, reputation);
+        }
+        for deposit in store.load_all_pending_deposits().unwrap() {
+            board.restore_pending_deposit(deposit);
+        }
+        for (pubkey, account) in store.load_all_exchange_accounts().unwrap() {
+            board.restore_exchange_account(pubkey, account);
+        }
+        for attempt in store.load_all_payout_attempts().unwrap() {
+            board.restore_payout_attempt(attempt);
+        }
+        board
+    }
+
+    /// The money consequence of a non-durable `Refunded`, and the one
+    /// that does not self-heal: `settle_dispute_bond` credits the
+    /// winner's `total_earned` durably but marked the bond's deposit
+    /// `Refunded` only in memory, so a restart reloaded the bond as
+    /// `Consumed`, `tasks_with_unsettled_dispute_bonds` selected it
+    /// again, and the whole settlement re-ran. The on-chain leg does not
+    /// duplicate -- the retry finds a zero balance and sends nothing --
+    /// but the reputation credit does, and the ledger then stays wrong
+    /// forever. So this asserts against the *restored* board: what the
+    /// live one thinks was never the question.
+    #[tokio::test]
+    async fn a_settled_dispute_bond_is_not_settled_again_after_a_restart() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee_key = PrivateKey::new_key();
+        let challenger_key = PrivateKey::new_key();
+
+        let task_id =
+            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
+                .await;
+        file_dispute_via_http(&hub, &fake_node, task_id, &challenger_key, "actually correct").await;
+        hub.client
+            .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
+            .json(&envelope(
+                &hub.operator_key, &format!("/tasks/{task_id}/dispute/resolve"),
+                handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::AssigneeWins },
+            ))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        fake_node.wait_for_submitted_count(2).await;
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+
+        let earned_once = hub.state.board.read().await.reputation(&assignee_key.public_key()).total_earned;
+        assert_eq!(earned_once, 900 + 900, "bounty plus the forfeited bond, credited once");
+
+        let restored = board_as_a_restart_would_load_it(&hub);
+        assert_eq!(
+            restored.reputation(&assignee_key.public_key()).total_earned,
+            earned_once,
+            "the credit itself was always durable -- this is the control, not the finding"
+        );
+        assert!(
+            restored.tasks_with_unsettled_dispute_bonds().is_empty(),
+            "a bond already disbursed must not be selected for settlement a second time: \
+             the retry would credit total_earned again against a zero on-chain balance"
+        );
     }
 
     #[tokio::test]

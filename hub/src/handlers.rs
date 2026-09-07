@@ -1802,27 +1802,42 @@ async fn settle_escrow_funded_task(
     true
 }
 
-/// Refunds whatever balance remains at `deposit`'s address back to its
-/// `depositor`, then marks it `Refunded` -- shared by the sweep's
-/// overdue-unconfirmed-reservation path (nothing may have ever arrived)
-/// and by `refund_closed_task_escrow` (a materialized task that turned
-/// out to end without a winner: a Consensus tie, an understaffed
-/// cancellation, or an operator `cancel_task`), since both are "this
-/// escrow's money has nowhere left to go but back to whoever deposited
-/// it."
+/// What else, beyond the deposit's own `Refunded` status, a disbursement
+/// has to make durable -- and therefore what has to be committed in the
+/// *same* redb transaction as that status.
+///
+/// A parameter rather than a step each caller applies after the fact,
+/// because "after the fact" is exactly what the bug was: the reputation
+/// credit was durable and the status was not, so a restart reloaded the
+/// bond as still owing and the settlement ran a second time (plan
+/// §6.5c).
+enum EscrowCredit {
+    /// Nothing but the deposit itself. A plain refund back to the
+    /// depositor never earns anything -- getting your own money back
+    /// isn't "earning" -- and the exchange sweep moves the hub's own
+    /// money between the hub's own addresses.
+    None,
+    /// A forfeited dispute bond: the recipient's `total_earned` grows by
+    /// what actually reached them, which is the one case where receiving
+    /// an escrow's balance is earning it (see
+    /// `TaskBoard::credit_forfeited_bond`).
+    ForfeitedBond,
+}
+
 /// Sends `deposit`'s current on-chain balance to `recipient` -- who need
 /// not be `deposit.depositor`: a resolved dispute can send a bond forward
 /// to the winning party instead of back to whoever posted it (see
-/// `settle_dispute_bond`) -- then marks the deposit settled. Returns the
-/// *net* amount actually sent (after the network fee, `None` if nothing
-/// was sent or the attempt failed) -- callers crediting reputation off
-/// this must use that, not `deposit.required_amount`, which overstates
-/// it by the fee. Deliberately does *not* touch reputation itself -- a
-/// plain refund never should (getting your own money back isn't
-/// "earning"), and a forfeited-bond credit is a distinct, explicit step
-/// the caller applies separately (see `TaskBoard::credit_forfeited_bond`)
-/// only in the one case where it's warranted.
-async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: &PublicKey) -> Option<u64> {
+/// `settle_dispute_bond`) -- then marks the deposit `Refunded`, durably,
+/// together with whatever `credit` says that earned. Returns the *net*
+/// amount actually sent (after the network fee, `None` if nothing was
+/// sent or any step failed) -- a caller reporting the amount must use
+/// that, not `deposit.required_amount`, which overstates it by the fee.
+async fn disburse_escrow(
+    state: &AppState,
+    deposit: &PendingDeposit,
+    recipient: &PublicKey,
+    credit: EscrowCredit,
+) -> Option<u64> {
     let Some(_guard) = EscrowSettlementGuard::try_acquire(deposit.id) else {
         return None;
     };
@@ -1851,8 +1866,73 @@ async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: 
             return None;
         }
     }
-    if let Err(e) = state.board.write().await.mark_escrow_refunded(deposit.id) {
+
+    // `mark_escrow_refunded` used to be the whole of this, and it only
+    // ever touched memory: `save_pending_deposit`'s five call sites are
+    // all *creating* a reservation, so no path wrote a `Refunded` status
+    // to disk. A refunded deposit therefore reloaded as `Reserved` -- on
+    // every restart, not as a race -- and three things followed. The
+    // sweep re-selected every deposit ever refunded in the deployment's
+    // history, because `overdue_reserved_escrows` filters on `Reserved`.
+    // A depositor whose refund had already gone out could confirm the
+    // escrow again, with only the on-chain balance check in the way. And
+    // a forfeited dispute bond re-credited its winner, durably, because
+    // that credit *was* persisted (plan §6.5c).
+    //
+    // One write lock held across the store commit, and the board put
+    // back exactly as it was if that commit fails. That ordering matters
+    // here in a way it does not in the confirm handlers (§6.5b), which
+    // let the board move on and rely on the depositor's retry: nothing
+    // retries a sweep-driven disbursement except the sweep, and the
+    // sweep selects from *memory*. A board that had moved on while disk
+    // had not would simply never be revisited -- the same lost
+    // settlement, reached without a crash.
+    let mut board = state.board.write().await;
+    let Some(previous_deposit) = board.get_pending_deposit(deposit.id).cloned() else {
+        error!("escrow {} is no longer on the board and cannot be marked refunded", deposit.id);
+        return None;
+    };
+    let previous_reputation = match credit {
+        EscrowCredit::None => None,
+        EscrowCredit::ForfeitedBond => Some(board.reputation(recipient)),
+    };
+    if let Err(e) = board.mark_escrow_refunded(deposit.id) {
         error!("failed to mark escrow {} refunded: {e}", deposit.id);
+        return None;
+    }
+    // Read back under the same write lock that just settled it, so what
+    // is persisted below is this disbursement's own `Refunded` record
+    // rather than whatever a concurrent caller might have left between
+    // two separate acquisitions -- the same reasoning as
+    // `confirm_task_escrow`'s.
+    let settled = board
+        .get_pending_deposit(deposit.id)
+        .expect("just marked refunded above, and no path removes a deposit")
+        .clone();
+    let persisted = match credit {
+        // Already one transaction by itself; there is no companion
+        // record for a plain refund or a custody sweep to disagree with.
+        EscrowCredit::None => state.store.save_pending_deposit(&settled),
+        EscrowCredit::ForfeitedBond => {
+            // net_amount, not deposit.required_amount -- the latter is
+            // the gross funded amount including the network fee, which
+            // never reaches the recipient and so must not count as
+            // earned.
+            board.credit_forfeited_bond(recipient, net_amount);
+            let reputation = board.reputation(recipient);
+            state.store.save_deposit_and_reputation(&settled, recipient, &reputation)
+        }
+    };
+    if let Err(e) = persisted {
+        error!(
+            "failed to persist the settlement of escrow {} to {}: {e} -- rolling the board back \
+             so the sweep retries it rather than believing a settlement that is not on disk",
+            deposit.id, recipient
+        );
+        board.restore_pending_deposit(previous_deposit);
+        if let Some(previous) = previous_reputation {
+            board.restore_reputation(recipient.clone(), previous);
+        }
         return None;
     }
     Some(net_amount)
@@ -1866,7 +1946,7 @@ async fn disburse_escrow(state: &AppState, deposit: &PendingDeposit, recipient: 
 /// or an operator `cancel_task`), since both are "this escrow's money has
 /// nowhere left to go but back to whoever deposited it."
 pub async fn refund_escrow(state: &AppState, deposit: &PendingDeposit) {
-    disburse_escrow(state, deposit, &deposit.depositor).await;
+    disburse_escrow(state, deposit, &deposit.depositor, EscrowCredit::None).await;
 }
 
 /// If `task_id` was escrow-funded, refunds whatever remains at its
@@ -1925,20 +2005,16 @@ pub async fn settle_dispute_bond(state: &AppState, task_id: Uuid) -> bool {
     };
     let (bond_deposit, winner, is_forfeiture) = settlement;
 
-    let Some(net_amount) = disburse_escrow(state, &bond_deposit, &winner).await else {
-        return false;
-    };
-    if is_forfeiture {
-        // net_amount, not bond_deposit.required_amount -- the latter is
-        // the gross funded amount including the network fee, which never
-        // reaches the recipient and so must not count as earned.
-        state.board.write().await.credit_forfeited_bond(&winner, net_amount);
-        let reputation = state.board.read().await.reputation(&winner);
-        if let Err(e) = state.store.save_reputation(&winner, &reputation) {
-            error!("failed to persist forfeited-bond reputation credit for {winner}: {e}");
-        }
-    }
-    true
+    // The forfeiture credit is `disburse_escrow`'s to apply, not this
+    // function's, and that is the substance of the fix rather than a
+    // tidy-up: applied here it was a separate commit from the bond's
+    // `Refunded` status, so the credit survived a restart and the status
+    // did not. The bond then reloaded `Consumed`,
+    // `tasks_with_unsettled_dispute_bonds` selected it again, and this
+    // ran a second time -- crediting `total_earned` twice against an
+    // on-chain balance the retry correctly found empty (plan §6.5c).
+    let credit = if is_forfeiture { EscrowCredit::ForfeitedBond } else { EscrowCredit::None };
+    disburse_escrow(state, &bond_deposit, &winner, credit).await.is_some()
 }
 
 /// Pays `recipient` their `amount`-sized share of `task_id`'s bounty and
@@ -4223,7 +4299,17 @@ async fn pay_from_custody(state: &AppState, recipient: &PublicKey, amount: u64) 
 /// re-checks live balance before paying anything, so a crash between
 /// the sweep's on-chain payment and its `Refunded` write just costs one
 /// harmless retry that pays nothing (balance already 0) and finishes
-/// the status flip. Returns whether the sweep is now complete (no
+/// the status flip.
+///
+/// That idempotence claim was **false** until `Refunded` became durable:
+/// the status flip never reached disk at all, so every deposit ever
+/// swept came back `Consumed` and was re-swept at every boot for the
+/// life of the deployment -- one node round trip each, serialized inside
+/// the sweep pass ahead of payout resolution, growing with total history
+/// rather than with live state. Harmless per pass and unbounded in
+/// aggregate. Named here because a reader trusting the paragraph above
+/// would have built on a false premise (plan §6.5c). Returns whether the
+/// sweep is now complete (no
 /// balance left to move, whether that's because it just swept
 /// everything or because there was nothing to sweep in the first
 /// place) -- `false` only on an actual failure worth retrying later.
@@ -4237,7 +4323,9 @@ pub async fn sweep_exchange_deposit(state: &AppState, deposit_id: Uuid) -> bool 
             _ => return true,
         }
     };
-    disburse_escrow(state, &deposit, &state.exchange_custody_public_key).await.is_some()
+    disburse_escrow(state, &deposit, &state.exchange_custody_public_key, EscrowCredit::None)
+        .await
+        .is_some()
 }
 
 async fn persist_task_and_reputation(
