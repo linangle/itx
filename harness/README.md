@@ -35,8 +35,19 @@ working directory it wipes first and fills with chain data.
 CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out harness/results
 ```
 
-One at a time, by name: `node-crash`, `escrow-restart`, `replay-storm`,
-`rate-limit-tiers`, `quota-isolation`, `payout-ceiling`, `signed-write-cost`.
+One at a time, by name: `node-crash`, `escrow-restart`, `escrow-refund`,
+`replay-storm`, `rate-limit-tiers`, `quota-isolation`, `payout-ceiling`,
+`signed-write-cost`.
+
+**`escrow-refund` is the one drill here that can assert.** Every other drill
+samples something — a race, a window, a rate — and so a clean run is weak
+evidence; `escrow-restart` says as much in its own report, returning
+*inconclusive* rather than clean when it finds nothing. `escrow-refund` asks
+whether a refunded deposit's status survives a restart, which is not a race: it
+either persists or it does not, on every restart, so one run is a verdict.
+It exists because seven drills that all sampled missed the worst defect the hub
+has had (plan §6.5c). When adding a drill, prefer a question shaped like this
+one's.
 The process exits non-zero if any drill refuted the plan or found a bug, so it
 can be put in front of a change and be told rather than read.
 
