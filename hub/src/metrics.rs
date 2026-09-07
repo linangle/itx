@@ -194,6 +194,19 @@ pub struct Metrics {
     /// log count for the reason §8.3 gives: grepping the journal tells you
     /// a retry happened, not how many are outstanding right now.
     pub board_outstanding_payouts: AtomicU64,
+    /// Payout sends refused because the task asking for one was
+    /// `Submitted` with something still unsent -- a combination
+    /// unreachable through correct operation (see
+    /// `handlers::try_settle_verified_task`), so every increment means
+    /// the store lost a `PayoutAttempt` row.
+    ///
+    /// A counter and not a gauge even though it describes a standing
+    /// condition, because it fires once per affected task per sweep and
+    /// keeps firing until an operator resolves it: a rate that will not
+    /// return to zero is exactly the alert wanted here, where a gauge
+    /// sampled after the fix would read healthy while the money is still
+    /// unaccounted for.
+    pub payout_sends_refused: AtomicU64,
 
     // ---- store reconciliation -----------------------------------------
     /// Disagreements the boot reconciliation pass found in the store, by
@@ -414,6 +427,7 @@ impl Metrics {
 
         gauge(&mut out, "hub_board_open_tasks", "Non-terminal tasks on the board, as of the last sweep.", self.board_open_tasks.load(Ordering::Relaxed));
         gauge(&mut out, "hub_board_outstanding_payouts", "Payouts submitted but not yet confirmed, as of the last sweep.", self.board_outstanding_payouts.load(Ordering::Relaxed));
+        counter(&mut out, "hub_payout_sends_refused_total", "Payout sends refused because the task was Submitted with something unsent, which means a lost PayoutAttempt row.", self.payout_sends_refused.load(Ordering::Relaxed));
 
         // Emitted for every class, including the zeroes. A label that
         // only appears once something is wrong gives an operator no way

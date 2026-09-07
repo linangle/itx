@@ -1432,6 +1432,61 @@ Note what no test can cover, the same gap §6.5b recorded: nothing catches
 differ from one only in the existence of a window nothing can be scheduled
 inside on demand. The doc comments carry that, not the suite.
 
+#### Settling the `Submitted`-with-no-attempt state
+
+Making it unreachable is not the same as settling it, because a store written by
+an older binary can already hold one. Three questions, answered 2026-09-07.
+
+**Is it recoverable automatically? No, and not for want of trying.** The
+`PayoutAttempt` carried the recipient's output hash and the inputs spent. §6.5's
+three-way rule needs the first to call a payout confirmed and the second to call
+it lost, and both die with the record — so this state carries **strictly less
+evidence than §6.5's "ambiguous" row**, which that section already decided is
+left alone rather than collapsed into either neighbour. Value alone cannot
+substitute: `two_builds_of_the_same_payment_have_different_output_hashes` exists
+precisely because "a payment of this size to this key" does not identify an
+attempt. So the project's existing posture already covers this case, and
+re-litigating it would have been the mistake.
+
+**Was there a landmine? Yes, and it is gone.** `try_settle_verified_task`
+accepted `Submitted`, and its comment justified that as letting "a multi-winner
+task with one leg unsent still get that leg sent." **That comment was wrong.**
+The invariant, now pinned by `a_submitted_task_never_has_an_unsent_payout`:
+`record_payout_attempt` is the *only* path into `Submitted` (board.rs, one
+assignment site) and moves a task there only when `unsubmitted_payouts` is
+empty; nothing afterwards can grow that set, because the sole production caller
+of `clear_payout_attempt` pairs it with `mark_recipient_paid`, which drops that
+recipient out of `owed_payouts` in the same breath. A multi-winner task with a
+leg unsent is `Verified`, not `Submitted`.
+
+So the branch was **dead in every healthy hub and live only in the corrupt
+state** — where sending is the worst available action, since the attempt that
+was the double-spend guard is exactly the record that went missing. It now
+refuses, counts `hub_payout_sends_refused_total`, and logs the reconciliation
+class so an operator greps one string. That the whole suite passed unchanged
+after the refusal went in is the cheap corroboration that the branch was dead.
+
+**Where is it detected? At boot, and that is not a shortcut.** The state cannot
+*begin* mid-run any more: each of these records comes from a partial commit and
+every such write is now one transaction, so a hub holding one loaded it. Boot is
+therefore the only moment worth checking — and the orphaned-deposit check is
+quadratic in board size, which is affordable once at startup and not once a
+minute. `a_submitted_task_with_no_attempt_is_refused_rather_than_paid_again`
+pins the corollary that the sweep does not even try: its settlement pass reads
+`verified_unpaid_tasks`, which takes only `Verified`. If a future change makes
+mid-run onset possible again, the fix is to make that write atomic, not to poll
+for its aftermath.
+
+**And there is one sound recovery test, worth writing down even though the hub
+will not perform it.** An escrow deposit address is single-purpose — nobody but
+its depositor was ever told it exists — so if it still holds the bounty plus the
+fee, unmarked, then nothing has gone out and paying the winner by hand is safe.
+That is the same reasoning `disburse_escrow`'s balance re-check already relies
+on. It covers escrow-funded tasks only; an operator-funded task draws on the
+shared operator address, whose balance says nothing about one payout. The
+procedure, including what to do when the escrow *is* drained, is
+`docs/deployment.md` §10.3.
+
 #### Bug 3: task and reputation were always two commits
 
 `persist_task_and_reputation` and the `resolve_dispute` handler saved the task

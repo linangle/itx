@@ -3704,6 +3704,219 @@ mod tests {
         );
     }
 
+    /// The invariant `try_settle_verified_task`'s refusal rests on:
+    /// **a `Submitted` task never has anything unsent.**
+    ///
+    /// If this is ever false, refusing to send becomes a bug rather than
+    /// a safety measure -- so it is pinned rather than argued. The proof
+    /// in the code is that `record_payout_attempt` is the only path into
+    /// `Submitted` and requires the set to be empty, and nothing
+    /// afterwards can grow it; what this walks is the one case that
+    /// looks like a counterexample, a multi-winner task with one leg
+    /// confirmed and its attempt cleared while another is still in
+    /// flight.
+    #[tokio::test]
+    async fn a_submitted_task_never_has_an_unsent_payout() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee1 = PrivateKey::new_key();
+        let assignee2 = PrivateKey::new_key();
+
+        let payload = handlers::EscrowConsensusTaskPayload {
+            description: "two winners, confirmed one at a time".to_string(),
+            bounty: 900,
+            num_assignees: 2,
+            join_window_minutes: 60,
+            submission_window_minutes: 30,
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/consensus/escrow", hub.base_url))
+            .json(&envelope(&poster_key, "/tasks/consensus/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        fake_node
+            .fund(
+                parse_pubkey(reservation["deposit_address"].as_str().unwrap()),
+                reservation["required_amount"].as_u64().unwrap(),
+            )
+            .await;
+        let task: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let task_id: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+        for assignee in [&assignee1, &assignee2] {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+        for assignee in [&assignee1, &assignee2] {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "42".to_string() }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+
+        // Both legs are on the wire, so the task is Submitted and the
+        // set is empty -- the entry condition, which is the easy half.
+        let assert_invariant = |label: &'static str| {
+            let hub = &hub;
+            async move {
+                let board = hub.state.board.read().await;
+                if board.get_task(task_id).unwrap().status == TaskStatus::Submitted {
+                    assert!(
+                        board.unsubmitted_payouts(task_id).is_empty(),
+                        "{label}: a Submitted task with something unsent would make \
+                         try_settle_verified_task's refusal a bug"
+                    );
+                }
+            }
+        };
+        assert_eq!(
+            hub.state.board.read().await.get_task(task_id).unwrap().status,
+            TaskStatus::Submitted,
+            "both winners' transactions went out, so nothing is left unsent"
+        );
+        assert_invariant("both in flight").await;
+
+        // Now the interesting half: confirm exactly one winner, which
+        // marks them paid and clears *their* attempt while the other is
+        // still in flight. The task stays Submitted, and the set has to
+        // stay empty -- `owed_payouts` drops the paid recipient in the
+        // same breath as the attempt going away.
+        let one = hub.state.board.read().await.outstanding_payout_attempts()[0].clone();
+        for _ in 0..200 {
+            let landed = fake_node
+                .outputs_of(&one.recipient)
+                .await
+                .iter()
+                .any(|(output, _)| output.hash() == one.output_hash);
+            if landed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        handlers::resolve_payout_attempt(&hub.state, &one).await;
+
+        let board = hub.state.board.read().await;
+        assert_eq!(
+            board.get_task(task_id).unwrap().status,
+            TaskStatus::Submitted,
+            "one winner paid, one still in flight -- still mid-settlement"
+        );
+        assert_eq!(board.outstanding_payout_attempts().len(), 1, "and one attempt left");
+        drop(board);
+        assert_invariant("one confirmed, one in flight").await;
+    }
+
+    /// The double-pay that the refusal prevents, driven end to end.
+    ///
+    /// This is the state `a_submitted_task_with_no_attempt_is_recovered
+    /// _by_nothing` walks the selectors of; here the one path that *does*
+    /// accept such a task is actually called, the way an operator
+    /// resolving the task by hand would call it. Before the refusal it
+    /// re-sent the bounty -- against a transaction that may already be
+    /// on the chain, with the attempt that was the double-spend guard
+    /// being exactly the record that went missing.
+    #[tokio::test]
+    async fn a_submitted_task_with_no_attempt_is_refused_rather_than_paid_again() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let (task_id, claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        let sent_once = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(sent_once.len(), 1, "the bounty went out once, legitimately");
+
+        // Lose the attempt, in memory and on disk: the state the old
+        // `record_confirmed_payout`'s first commit left behind when its
+        // second never landed, and the state a rolled-back binary
+        // reloaded.
+        hub.state.board.write().await.clear_payout_attempt(task_id, &claimant);
+        hub.state.store.delete_payout_attempt(task_id, &claimant).unwrap();
+        {
+            let board = hub.state.board.read().await;
+            assert_eq!(board.get_task(task_id).unwrap().status, TaskStatus::Submitted);
+            assert_eq!(
+                board.unsubmitted_payouts(task_id).len(),
+                1,
+                "the payout reads as owed again, which is what used to make this sendable"
+            );
+        }
+
+        assert!(
+            !handlers::try_settle_verified_task(&hub.state, task_id).await,
+            "must refuse: the evidence that would say whether this landed died with the attempt"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            1,
+            "and above all it must not have put a second bounty on the wire"
+        );
+        assert_eq!(
+            hub.state.metrics.payout_sends_refused.load(Ordering::Relaxed),
+            1,
+            "the refusal has to be visible to an operator, not just silent"
+        );
+
+        // And the sweep does not reach this task at all -- not because
+        // it refuses, but because no pass selects it, which is what
+        // `a_submitted_task_with_no_attempt_is_recovered_by_nothing`
+        // establishes. Asserted here so the two tests cannot drift: it
+        // is why the refusal above is a guard on the *hand-run* path and
+        // why detection belongs to the boot reconciliation rather than
+        // to a new sweep pass. The state cannot begin mid-run any more
+        // (`save_confirmed_payout` is one transaction), so a hub that
+        // has one loaded it, and boot is exactly when that is checked.
+        let refusals_before = hub.state.metrics.payout_sends_refused.load(Ordering::Relaxed);
+        run_sweep_once(&hub.state, Utc::now()).await;
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            1,
+            "a sweep must not put a second bounty on the wire either"
+        );
+        assert_eq!(
+            hub.state.metrics.payout_sends_refused.load(Ordering::Relaxed),
+            refusals_before,
+            "and it must not even have tried: the sweep's settlement pass reads \
+             verified_unpaid_tasks, which takes only Verified"
+        );
+        assert_eq!(
+            reconcile::reconcile(&*hub.state.board.read().await)
+                .count(reconcile::Disagreement::SubmittedTaskWithNoPayoutAttempt),
+            1,
+            "so the reconciliation is the detector, and it does see it"
+        );
+    }
+
     #[tokio::test]
     async fn try_settle_verified_task_never_double_pays_concurrent_callers() {
         let operator_key = PrivateKey::new_key();

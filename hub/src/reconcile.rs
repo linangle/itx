@@ -26,6 +26,18 @@ use crate::board::{EscrowPurpose, EscrowStatus, OrderStatus, TaskBoard, TaskKind
 /// no node round trips, nothing on-chain. That keeps it on the critical
 /// boot path safely: a hub whose node is unreachable still starts, and
 /// still tells you what its store looks like.
+///
+/// **Boot only, and deliberately not on the sweep's cadence.** Two
+/// reasons, and the first is the real one: none of these states can
+/// *begin* mid-run any more. Each is produced by a partial commit, and
+/// every write that used to be partial is now one transaction, so a hub
+/// holding one of these records loaded it -- which makes boot the only
+/// moment worth checking. The second reason is cost: the orphaned-deposit
+/// check scans the tasks for each `Consumed` deposit, so it is quadratic
+/// in board size, which is affordable once at startup and not once a
+/// minute. If a future change makes mid-run onset possible again, the
+/// honest fix is to make that write atomic, not to poll for its
+/// aftermath.
 
 /// One kind of disagreement, named so a metric can count them by class
 /// and an operator can look the class up rather than parse prose.

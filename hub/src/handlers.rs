@@ -1666,23 +1666,65 @@ static PAYOUT_IN_FLIGHT: DashMap<(Uuid, String), ()> = DashMap::new();
 /// An escrow-funded task (see `Task::escrow_id`) is settled entirely
 /// differently from an operator-funded one -- see `settle_escrow_funded_task`.
 pub async fn try_settle_verified_task(state: &AppState, task_id: Uuid) -> bool {
-    let (payouts, escrow) = {
+    let (payouts, escrow, status) = {
         let board = state.board.read().await;
         match board.get_task(task_id) {
             Some(t) if matches!(t.status, TaskStatus::Verified | TaskStatus::Submitted) => {
                 let escrow = t.escrow_id.and_then(|id| board.get_pending_deposit(id).cloned());
                 // Not `pending_payouts`: a recipient whose transaction is
                 // already on the wire is still owed, but must not be sent
-                // a second one. `Submitted` is accepted above precisely so
-                // a multi-winner task with one leg unsent still gets that
-                // leg sent -- the subtraction here is what keeps the rest
-                // from being duplicated in the process.
-                (board.unsubmitted_payouts(task_id), escrow)
+                // a second one. The subtraction here is what keeps a
+                // multi-winner task's in-flight legs from being
+                // duplicated while an unsent one is sent.
+                (board.unsubmitted_payouts(task_id), escrow, t.status)
             }
             _ => return false,
         }
     };
     if payouts.is_empty() {
+        return false;
+    }
+
+    // A `Submitted` task with something still unsent cannot happen
+    // through correct operation, and this is the one place that would
+    // have acted on it as though it could.
+    //
+    // The invariant: `record_payout_attempt` (board.rs) is the *only*
+    // path into `Submitted` and it moves a task there only when
+    // `unsubmitted_payouts` is empty; nothing afterwards can grow that
+    // set, because the sole production caller of `clear_payout_attempt`
+    // pairs it with `mark_recipient_paid`, which drops that recipient
+    // out of `owed_payouts` in the same breath. So reaching here means
+    // the *store* lost a `PayoutAttempt` row -- the state plan §6.5c
+    // describes, produced by the old `record_confirmed_payout`'s first
+    // commit landing without its second, or by the rollback hole.
+    //
+    // The comment that used to sit above justified accepting `Submitted`
+    // as letting "a multi-winner task with one leg unsent still get that
+    // leg sent". That case is `Verified`, not `Submitted`, by
+    // construction of `record_payout_attempt` -- so the branch was dead
+    // in every healthy hub and live only here, where sending is the
+    // worst available action: the attempt that was the double-spend
+    // guard is precisely the record that went missing, so a send would
+    // re-pay a bounty whose transaction may already be on the chain.
+    //
+    // Refusing is not a guess. §6.5's three-way rule needs the output
+    // hash to call a payout confirmed and the spent inputs to call it
+    // lost, and both died with the attempt -- so this state carries
+    // strictly less evidence than the rule's "ambiguous" row, which §6.5
+    // already decided is left alone rather than collapsed into either
+    // neighbour. An operator resolves it; `docs/deployment.md` §10.3
+    // carries the procedure and the one sound test that does exist.
+    if status == TaskStatus::Submitted {
+        state.metrics.payout_sends_refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        error!(
+            "refusing to send {} payout(s) for task {task_id}: it reads Submitted with payouts \
+             still unsent, which means a PayoutAttempt row was lost \
+             [submitted_task_with_no_payout_attempt]. Sending now could pay a bounty twice -- \
+             the record that would have prevented it is the one that is missing. This needs an \
+             operator (docs/deployment.md §10.3).",
+            payouts.len()
+        );
         return false;
     }
 
