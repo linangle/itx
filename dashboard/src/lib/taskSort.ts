@@ -52,8 +52,10 @@ const STATUS_ORDER: Record<TaskStatus, number> = {
   AwaitingDispute: 2,
   Disputed: 3,
   Verified: 4,
-  Paid: 5,
-  Closed: 6,
+  Submitted: 5,
+  Paid: 6,
+  PayoutFailed: 7,
+  Closed: 8,
 };
 
 /** The first sector a task trades in, for ordering purposes. A task with

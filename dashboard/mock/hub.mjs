@@ -505,6 +505,14 @@ const STATUSES = [
   "Paid",
   "Paid",
   "Verified",
+  // A task between "the payout was sent" and "the chain says it landed".
+  // Seeded because the real hub serves it routinely and the fixture used
+  // to skip straight from Verified to Paid -- which is how the dashboard
+  // came to have no rendering for it at all.
+  "Submitted",
+  // Rare on a real board and worth one seed anyway: it is the only
+  // status that owes somebody money and needs a human.
+  "PayoutFailed",
   "Closed",
 ];
 
@@ -1047,18 +1055,30 @@ function advance(task) {
       return true;
 
     case "Verified":
-      task.status = "Paid";
+      // Not straight to Paid. The hub hands the payout to the node and
+      // waits to see it on chain, and those are different events -- see
+      // TaskStatus::Submitted in hub/src/board.rs. A fixture that skips
+      // the gap cannot show what the settlement work bought.
+      task.status = "Submitted";
+      return true;
+
+    case "Submitted":
+      // Most payouts confirm on the next sweep. A few are proven never to
+      // have landed, and the hub gives up owing the money.
+      task.status = random() < 0.08 ? "PayoutFailed" : "Paid";
       return true;
 
     default:
-      return false; // Paid and Closed are terminal.
+      return false; // Paid, PayoutFailed and Closed are terminal.
   }
 }
 
 function tick() {
   // Move a handful of in-flight tasks. Sampling at random rather than
   // walking in order keeps the tape from reading as a queue draining.
-  const movable = TASKS.filter((t) => t.status !== "Paid" && t.status !== "Closed");
+  const movable = TASKS.filter(
+    (t) => t.status !== "Paid" && t.status !== "PayoutFailed" && t.status !== "Closed",
+  );
   for (let i = 0; i < 3 && movable.length > 0; i++) {
     advance(movable[Math.floor(random() * movable.length)]);
   }
