@@ -77,6 +77,18 @@ const MAX_CAPABILITY_TAG_LENGTH: usize = 64;
 /// deposit can't be "confirmed" into a balance that's immediately
 /// unsweepable.
 const MIN_EXCHANGE_DEPOSIT: u64 = HUB_TRANSACTION_FEE + 1;
+/// The mirror of `MIN_EXCHANGE_DEPOSIT`, and it exists for the mirror
+/// reason. A withdrawal is paid out of pooled custody and custody pays
+/// the network fee, so a withdrawal at or below that fee costs the pool
+/// more than it moves -- the on-chain side shrinks while the sum of
+/// ledger balances does not, which is the solvency pair drifting apart
+/// one request at a time.
+///
+/// The deposit side has had this floor all along. The withdrawal side
+/// had none at all, so `{"amount": 0}` was a spendable custody output
+/// and a fee, burned, for nothing (`TaskBoard::debit_for_withdrawal`
+/// has the rest of that story).
+const MIN_EXCHANGE_WITHDRAWAL: u64 = HUB_TRANSACTION_FEE + 1;
 /// `GET /exchange/trades`'s page size when the caller doesn't specify
 /// `limit`, mirroring `DEFAULT_TASKS_PAGE_SIZE`.
 const DEFAULT_TRADES_PAGE_SIZE: usize = 50;
@@ -251,7 +263,9 @@ impl From<BoardError> for ApiError {
             | BoardError::PosterCannotClaimOwnTask
             | BoardError::AssigneeCannotDisputeOwnSubmission
             | BoardError::NotOrderOwner => ApiError::Forbidden(e.to_string()),
-            BoardError::InvalidOrder | BoardError::OrderNotionalOverflow => ApiError::BadRequest(e.to_string()),
+            BoardError::InvalidOrder
+            | BoardError::OrderNotionalOverflow
+            | BoardError::ZeroWithdrawal => ApiError::BadRequest(e.to_string()),
         }
     }
 }
@@ -2814,6 +2828,15 @@ pub async fn withdraw(
 ) -> Result<Json<ExchangeAccountDto>, ApiError> {
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
     let amount = envelope.payload.amount;
+    // Before the debit, and before anything touches custody: a
+    // withdrawal that cannot cover the fee custody pays to send it is a
+    // net drain on the pool backing everyone's balance.
+    if amount < MIN_EXCHANGE_WITHDRAWAL {
+        return Err(ApiError::BadRequest(format!(
+            "withdrawal must be at least {MIN_EXCHANGE_WITHDRAWAL}, which covers the \
+             {HUB_TRANSACTION_FEE} network fee custody pays to send it"
+        )));
+    }
     {
         state.board.write().await.debit_for_withdrawal(&pubkey, amount)?;
     }
@@ -4265,7 +4288,10 @@ the spendable amount for a new order or a withdrawal is always the
 balance minus its locked counterpart. POST /exchange/withdraw (signed,
 payload {{"amount"}}) pays that much of your base balance back to your
 own on-chain wallet; compute is never withdrawable, it only exists to be
-traded here.
+traded here. The amount must be at least {min_exchange_withdrawal}, the
+same floor a deposit has and for the same reason: the pool pays the
+{fee} network fee to send it, so anything smaller costs more to move
+than it moves.
 
 ## Getting paid, and knowing that you were
 
@@ -4327,6 +4353,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         max_capability_tag_length = MAX_CAPABILITY_TAG_LENGTH,
         max_text_field_length = MAX_TEXT_FIELD_LENGTH,
         min_exchange_deposit = MIN_EXCHANGE_DEPOSIT,
+        min_exchange_withdrawal = MIN_EXCHANGE_WITHDRAWAL,
         taker_fee_bps = crate::board::TAKER_FEE_BPS,
         default_trades_page_size = DEFAULT_TRADES_PAGE_SIZE,
         max_trades_page_size = MAX_TRADES_PAGE_SIZE,

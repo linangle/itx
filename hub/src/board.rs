@@ -67,6 +67,8 @@ pub enum BoardError {
     InvalidOrder,
     #[error("order notional (price times quantity) overflows")]
     OrderNotionalOverflow,
+    #[error("withdrawal amount must be non-zero")]
+    ZeroWithdrawal,
     #[error("insufficient balance: {available} available, {required} required")]
     InsufficientBalance { available: u64, required: u64 },
 }
@@ -2193,7 +2195,27 @@ impl TaskBoard {
     /// (mirrors `record_faucet_grant`'s atomic-reserve shape). Callers
     /// must call `credit_back_withdrawal` if the payout that was
     /// supposed to follow this debit then fails.
+    ///
+    /// **Zero is refused here rather than left to the caller**, for the
+    /// same reason `place_order` refuses a zero price or quantity twelve
+    /// lines down: a debit of nothing passes the balance check trivially
+    /// (`0 < 0` is false) and every step after it proceeds as if a real
+    /// withdrawal were happening. `pay_from_custody` then built and
+    /// submitted an actual transaction -- a custody output spent, a
+    /// network fee paid to a miner, a zero-value output created, and the
+    /// spent output's change invisible until the next block. Repeat it
+    /// and custody bleeds a fee per call that no ledger balance accounts
+    /// for, which walks the solvency pair apart and grinds
+    /// `custody_ready_outputs` down until real withdrawals start failing
+    /// for want of a spendable output.
+    ///
+    /// The floor above zero is the handler's (`MIN_EXCHANGE_WITHDRAWAL`),
+    /// because "large enough to be worth its fee" is policy and can be
+    /// tuned; "not nothing" is an invariant and belongs with the ledger.
     pub fn debit_for_withdrawal(&mut self, owner: &PublicKey, amount: u64) -> Result<(), BoardError> {
+        if amount == 0 {
+            return Err(BoardError::ZeroWithdrawal);
+        }
         let account = self.exchange_accounts.entry(owner.clone()).or_default();
         let available = account.base_balance.saturating_sub(account.locked_base);
         if available < amount {
@@ -4199,6 +4221,31 @@ mod tests {
 
         board.debit_for_withdrawal(&owner, 100).unwrap();
         assert_eq!(board.exchange_account(&owner).base_balance, 0);
+    }
+
+    /// A debit of nothing used to succeed -- `available < 0` is false
+    /// whatever the balance -- and everything downstream then behaved as
+    /// though a real withdrawal were under way: a custody output spent, a
+    /// network fee paid, a zero-value output created, all to move
+    /// nothing. Repeated, it drains the pool that backs every ledger
+    /// balance.
+    #[test]
+    fn debit_for_withdrawal_refuses_a_withdrawal_of_nothing() {
+        let mut board = TaskBoard::new();
+        let owner = pubkey();
+        board.restore_exchange_account(owner.clone(), ExchangeAccount { base_balance: 100, ..Default::default() });
+
+        assert!(matches!(board.debit_for_withdrawal(&owner, 0), Err(BoardError::ZeroWithdrawal)));
+        assert_eq!(board.exchange_account(&owner).base_balance, 100, "and it must not have touched the balance");
+    }
+
+    /// The empty-account case, which is the one an attacker actually
+    /// sends: no deposit, no balance, nothing locked, and the old check
+    /// still waved it through because zero is not less than zero.
+    #[test]
+    fn a_withdrawal_of_nothing_is_refused_even_on_an_account_that_has_never_existed() {
+        let mut board = TaskBoard::new();
+        assert!(matches!(board.debit_for_withdrawal(&pubkey(), 0), Err(BoardError::ZeroWithdrawal)));
     }
 
     #[test]

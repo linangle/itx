@@ -6714,22 +6714,62 @@ mod tests {
         );
     }
 
+    /// Amounts sit above `MIN_EXCHANGE_WITHDRAWAL` on purpose: what is
+    /// under test is the balance check, and a request small enough to
+    /// trip the minimum would never reach it.
     #[tokio::test]
     async fn withdraw_rejects_amount_exceeding_available_balance_via_http() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let owner_key = PrivateKey::new_key();
-        seed_exchange_account(&hub.state, &owner_key.public_key(), 100, 0).await;
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
 
         let resp = hub
             .client
             .post(format!("{}/exchange/withdraw", hub.base_url))
-            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 101 }))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 5_001 }))
             .send()
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+    }
+
+    /// A withdrawal of nothing used to reach custody: a real transaction
+    /// built and submitted, a spendable output consumed and a network fee
+    /// paid to move zero coins. It is refused before the ledger is
+    /// touched now, and -- the part that matters -- before custody is.
+    #[tokio::test]
+    async fn withdraw_of_nothing_never_reaches_custody() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        let submitted_before = fake_node.submitted_transactions().await.len();
+        for amount in [0, 1, 500] {
+            let resp = hub
+                .client
+                .post(format!("{}/exchange/withdraw", hub.base_url))
+                .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "a withdrawal of {amount} is below the fee custody pays to send it"
+            );
+        }
+
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            submitted_before,
+            "not one of them may have built or sent a transaction"
+        );
+        let account = hub.state.board.read().await.exchange_account(&owner_key.public_key());
+        assert_eq!(account.base_balance, 5_000, "and the ledger is untouched");
     }
 
     #[tokio::test]
