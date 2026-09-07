@@ -8,6 +8,7 @@ mod handlers;
 mod metrics;
 mod names;
 mod node_client;
+mod operator_wallet;
 mod rate_limit;
 mod reconcile;
 mod store;
@@ -71,6 +72,22 @@ pub struct AppState {
     /// and would go on to call `mark_recipient_paid`/`save_faucet_grant`
     /// anyway.
     pub payout_lock: Mutex<()>,
+    /// How many spendable outputs the operator's wallet is kept split
+    /// into (`--operator-wallet-outputs`). This number *is* the payout
+    /// ceiling -- see `operator_wallet` and plan §6.4b.
+    pub operator_wallet_outputs: usize,
+    /// The inputs the last fan-out spent, while one may still be
+    /// unconfirmed.
+    ///
+    /// A fan-out's new outputs do not exist for the node until the
+    /// transaction is mined, so the sweep a minute later would see the
+    /// same short wallet and split again -- this time taking an output
+    /// that was already doing its job. Remembering what was spent
+    /// answers the only question that matters, are those inputs still
+    /// in the UTXO set, with no timer to tune and nothing to get wrong
+    /// across a restart: a fresh process starts with this empty, and
+    /// empty means "check", which is the safe direction.
+    pub operator_fan_out_inflight: Mutex<Vec<btclib::sha256::Hash>>,
     /// The exchange's pooled custody address -- deliberately a *separate*
     /// key from `operator_private_key`, not a reuse of it, so exchange
     /// liabilities (money owed back to depositors) never comingle with
@@ -242,6 +259,15 @@ struct Args {
     /// `rate_limit::TrustedProxies` for why an un-proxied hub that
     /// honoured the header would have no working rate limit.
     trusted_proxies: String,
+    #[argh(option, default = "operator_wallet::DEFAULT_WALLET_OUTPUTS")]
+    /// how many spendable outputs to keep the operator's wallet split
+    /// into. This is the hub's payout ceiling: change from a payment is
+    /// unconfirmed until mined, so the operator can make about this
+    /// many payments per block and no more (plan §6.4b). Raise it for a
+    /// hub that pays out in bursts; every payment fetches the whole
+    /// UTXO set to select from, so it is not free. One disables the
+    /// fan-out entirely.
+    operator_wallet_outputs: usize,
 }
 
 fn load_or_create_key(path: &str) -> Result<PrivateKey> {
@@ -280,6 +306,22 @@ fn restrict_to_owner(path: &str) -> Result<()> {
         let _ = path;
     }
     Ok(())
+}
+
+/// The boot fan-out, wrapped only so the reason it is not fatal is
+/// written down somewhere a reader will find it.
+///
+/// A hub whose node is unreachable at boot must still come up: the node
+/// may be starting alongside it, and every route that does not touch
+/// the chain works regardless. `maintain_operator_outputs` already logs
+/// and counts its own failure, and the sweep tries again in a minute.
+async fn maintain_operator_outputs_at_boot(state: &Arc<AppState>) {
+    handlers::maintain_operator_outputs(state).await;
+    println!(
+        "operator wallet: {} spendable output(s), keeping {}",
+        state.metrics.operator_ready_outputs.load(Ordering::Relaxed),
+        state.operator_wallet_outputs,
+    );
 }
 
 /// Periodically reopens abandoned claims, retries paying out any task
@@ -518,6 +560,11 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
     state.replay_guard.cleanup(now);
     state.faucet_challenges.cleanup(now);
     rate_limit::cleanup(&state.rate_limits);
+    // After the retries above, not before. Every one of them may spend
+    // an operator output, so topping the wallet up first would measure
+    // a wallet the same pass is about to drain -- and the fan-out takes
+    // `payout_lock`, which those retries want too.
+    handlers::maintain_operator_outputs(state).await;
     sample_gauges(state).await;
 }
 
@@ -817,6 +864,8 @@ async fn main() -> Result<()> {
         operator_private_key,
         operator_public_key,
         payout_lock: Mutex::new(()),
+        operator_wallet_outputs: args.operator_wallet_outputs,
+        operator_fan_out_inflight: Mutex::new(Vec::new()),
         exchange_custody_private_key,
         exchange_custody_public_key,
         exchange_custody_payout_lock: Mutex::new(()),
@@ -830,6 +879,17 @@ async fn main() -> Result<()> {
         net_worths: RwLock::new(None),
         metrics,
     });
+
+    // Before the listener opens, and awaited rather than spawned. A
+    // freshly deployed hub holds one output, which is the single-output
+    // wallet plan §6.4b measured at one payout per block -- and the
+    // first fan-out costs a block of *no* payouts at all, because its
+    // pieces are unconfirmed until mined and it has just spent the only
+    // thing that was not. That block is much cheaper to spend here,
+    // before the hub is reachable, than under the first burst of
+    // arriving agents. Restarting a warm hub does nothing: its wallet
+    // is already at the floor and `plan_reshape` returns `None`.
+    maintain_operator_outputs_at_boot(&state).await;
 
     tokio::spawn(sweep_loop(state.clone()));
 
@@ -1091,6 +1151,17 @@ mod tests {
         /// connection while it sat idle, which is the case a pooled
         /// client has to notice and recover from.
         hang_up_after_one: Arc<std::sync::atomic::AtomicBool>,
+        /// When set, the next `FetchUTXOs` answers truthfully and *then*
+        /// empties the set, clearing itself.
+        ///
+        /// The only way to stage a wallet that drains between two reads,
+        /// which is what a burst does to the operator: a handler that
+        /// checks the balance and then builds a payment sees two
+        /// different wallets, and the second one is the one that fails.
+        /// Racing two real requests would be the alternative, and it
+        /// would be a test that passes for whichever reason it felt
+        /// like that run.
+        drain_after_next_fetch: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeNode {
@@ -1104,12 +1175,14 @@ mod tests {
             let submissions_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let drain_after_next_fetch = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let submitted_for_accept_loop = submitted.clone();
             let utxos_for_accept_loop = utxos.clone();
             let fate_for_accept_loop = fate.clone();
             let seen_for_accept_loop = submissions_seen.clone();
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
+            let drain_for_accept_loop = drain_after_next_fetch.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else {
@@ -1121,6 +1194,7 @@ mod tests {
                     let fate = fate_for_accept_loop.clone();
                     let submissions_seen = seen_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
+                    let drain = drain_for_accept_loop.clone();
                     tokio::spawn(async move {
                         if btclib::network::perform_handshake_acceptor(&mut socket)
                             .await
@@ -1142,6 +1216,13 @@ mod tests {
                                         .filter(|(output, _)| output.pubkey == pk)
                                         .cloned()
                                         .collect();
+                                    // Drained after the answer is
+                                    // composed, so this read is honest
+                                    // and the next one is not -- see
+                                    // `drain_after_next_fetch`.
+                                    if drain.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                                        utxos.lock().await.retain(|(output, _)| output.pubkey != pk);
+                                    }
                                     if Message::UTXOs(owned).send_async(&mut socket).await.is_err()
                                     {
                                         return;
@@ -1208,6 +1289,7 @@ mod tests {
                 submissions_seen,
                 connections,
                 hang_up_after_one,
+                drain_after_next_fetch,
             }
         }
 
@@ -1244,6 +1326,18 @@ mod tests {
             ));
         }
 
+        /// Adds one more unmarked output to `pubkey`, leaving whatever
+        /// it already holds. `fund` replaces, which is what almost every
+        /// test wants; a wallet's *shape* -- how many outputs and of
+        /// what sizes -- is the whole subject of the operator fan-out,
+        /// and cannot be staged by replacement.
+        async fn credit(&self, pubkey: PublicKey, value: u64) {
+            self.utxos.lock().await.push((
+                TransactionOutput { value, unique_id: Uuid::new_v4(), pubkey },
+                false,
+            ));
+        }
+
         /// Waits until this node has *handled* `expected` submissions,
         /// whatever it did with them. The thing to wait on before
         /// changing `fate`, or before asserting that a transaction was
@@ -1260,6 +1354,11 @@ mod tests {
                 "the node never saw {expected} submission(s); it saw {}",
                 self.submissions_seen.load(std::sync::atomic::Ordering::SeqCst)
             );
+        }
+
+        /// Arms the one-shot drain -- see `drain_after_next_fetch`.
+        fn drain_after_the_next_fetch(&self) {
+            self.drain_after_next_fetch.store(true, std::sync::atomic::Ordering::SeqCst);
         }
 
         /// What this node does with the next transaction it is handed --
@@ -1621,6 +1720,8 @@ mod tests {
             operator_private_key: operator_private_key.clone(),
             operator_public_key,
             payout_lock: Mutex::new(()),
+            operator_wallet_outputs: operator_wallet::DEFAULT_WALLET_OUTPUTS,
+            operator_fan_out_inflight: Mutex::new(Vec::new()),
             exchange_custody_private_key,
             exchange_custody_public_key,
             exchange_custody_payout_lock: Mutex::new(()),
@@ -1881,6 +1982,271 @@ mod tests {
             resp.status(),
             reqwest::StatusCode::CONFLICT,
             "a spent challenge must be refused as spent"
+        );
+    }
+
+    /// The whole point of the pre-flight. An agent that solves a puzzle
+    /// and finds the hub broke must not have to solve another one:
+    /// the same solution has to still be worth presenting.
+    #[tokio::test]
+    async fn a_grant_the_operator_cannot_fund_spends_no_work() {
+        let operator_key = PrivateKey::new_key();
+        // Under a grant plus its fee, which is the shortage that used to
+        // burn the challenge and answer with a 500.
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 1_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(reqwest::header::RETRY_AFTER).unwrap(),
+            &btclib::IDEAL_BLOCK_TIME.to_string(),
+            "an agent told to come back needs to be told when"
+        );
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["retry_after_seconds"], btclib::IDEAL_BLOCK_TIME);
+        assert!(
+            body.get("challenge").is_none(),
+            "replacing an unspent challenge would evict the one the agent already solved"
+        );
+
+        // Fund the operator and present the *same* solution again. It
+        // has to be accepted, or the pre-flight bought nothing.
+        fake_node.fund(operator_key.public_key(), 15_000_000_000).await;
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::OK,
+            "the solution was never spent, so it must still be good"
+        );
+    }
+
+    /// The pre-flight must not answer for the challenge. A spent
+    /// challenge is a 409 whatever the operator's wallet happens to
+    /// hold -- otherwise a busy hub tells a client to retry work that
+    /// will never be accepted, and the 503 it sends says in as many
+    /// words that nothing was spent, which would be a lie.
+    #[tokio::test]
+    async fn a_spent_challenge_is_refused_as_spent_even_when_the_hub_cannot_pay() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 1_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        // Spend it out from under the handler, so the only thing left
+        // to refuse it for is the redemption -- the wallet is short
+        // either way.
+        hub.state
+            .faucet_challenges
+            .redeem(
+                challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+                &agent.public_key(),
+                solve_faucet_challenge(&challenge),
+                Utc::now(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &challenge).await.status(),
+            reqwest::StatusCode::CONFLICT
+        );
+    }
+
+    /// The race the pre-flight cannot close: it said yes, and the
+    /// payment failed anyway. The challenge is spent and cannot be
+    /// unspent, so the hub owes a fresh one -- and it has to be a
+    /// challenge the agent can actually solve and redeem.
+    #[tokio::test]
+    async fn a_grant_that_fails_after_redemption_hands_back_a_fresh_challenge() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        // The pre-flight's read is answered honestly and the wallet is
+        // gone by the time the payment builds -- exactly the window a
+        // burst opens, staged rather than raced.
+        fake_node.drain_after_the_next_fetch();
+
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = resp.json().await.unwrap();
+        let replacement = body["challenge"].clone();
+        assert!(replacement.is_object(), "a spent challenge is owed a replacement");
+        assert_eq!(replacement["pubkey"], agent.public_key().to_string());
+
+        // The grant was rolled back too, so the replacement is usable.
+        fake_node.fund(operator_key.public_key(), 15_000_000_000).await;
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &replacement).await.status(),
+            reqwest::StatusCode::OK,
+            "the replacement has to be solvable and redeemable, not just present"
+        );
+    }
+
+    /// The fan-out, end to end against a node that mines what it is
+    /// given: one blob in, a wallet at the floor out.
+    #[tokio::test]
+    async fn the_fan_out_splits_one_operator_output_into_a_full_wallet() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            1,
+            "a freshly funded operator is the single-output wallet §6.4b measured"
+        );
+
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+
+        let outputs = fake_node.outputs_of(&operator_key.public_key()).await;
+        assert_eq!(outputs.len(), operator_wallet::DEFAULT_WALLET_OUTPUTS);
+        assert!(
+            outputs.iter().all(|(o, _)| o.value >= operator_wallet::MIN_USEFUL_OUTPUT),
+            "every piece has to be able to fund a payment, or it is not a slot"
+        );
+        assert_eq!(
+            outputs.iter().map(|(o, _)| o.value).sum::<u64>(),
+            15_000_000_000 - 1_000,
+            "the fan-out pays itself everything but the fee"
+        );
+
+        // Idempotent: a wallet already at the floor is left alone, which
+        // is what stops the sweep paying a fee a minute forever.
+        handlers::maintain_operator_outputs(&hub.state).await;
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            operator_wallet::DEFAULT_WALLET_OUTPUTS
+        );
+    }
+
+    /// A fan-out that is genuinely on the wire must not be repeated: its
+    /// outputs are invisible until mined, so the wallet still looks
+    /// short and a second pass would break an output that is doing its
+    /// job.
+    #[tokio::test]
+    async fn a_fan_out_still_in_the_mempool_is_not_repeated() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+
+        handlers::maintain_operator_outputs(&hub.state).await;
+        assert_eq!(
+            fake_node.submissions_seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the wallet is short only because the first split is unconfirmed"
+        );
+    }
+
+    /// And the state that looks the same and is not. A node restart
+    /// drops its mempool, so a submitted fan-out can simply cease to
+    /// exist -- inputs back in the set, unmarked, nothing pending. A
+    /// guard that waited on presence alone would wait for a confirmation
+    /// that is never coming, every sweep, for the life of the process.
+    #[tokio::test]
+    async fn a_fan_out_that_never_reached_the_node_is_sent_again() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            1,
+            "nothing happened, which is what a lost submission looks like"
+        );
+
+        fake_node.set_fate(SubmissionFate::Mined).await;
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(2).await;
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            operator_wallet::DEFAULT_WALLET_OUTPUTS,
+            "the wallet must not be stuck waiting on a transaction that does not exist"
+        );
+    }
+
+    /// The ceiling itself. Nothing is mined between these grants -- the
+    /// node holds every payout in its mempool, which is precisely the
+    /// state that used to leave the operator with zero spendable
+    /// balance after the first one.
+    #[tokio::test]
+    async fn a_fanned_out_wallet_pays_many_grants_between_blocks() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+
+        // From here on the node accepts payments and mines nothing, so
+        // every payout's change stays invisible and each grant has to
+        // find a *different* confirmed output to spend.
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+
+        let grants = 8;
+        for i in 0..grants {
+            let agent = PrivateKey::new_key();
+            let resp = claim_faucet(&hub, &agent).await;
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::OK,
+                "grant {i} of {grants} with no block in between: {}",
+                resp.text().await.unwrap()
+            );
+        }
+
+        let spendable = fake_node
+            .outputs_of(&operator_key.public_key())
+            .await
+            .iter()
+            .filter(|(_, marked)| !marked)
+            .count();
+        assert_eq!(
+            spendable,
+            operator_wallet::DEFAULT_WALLET_OUTPUTS - grants,
+            "one grant should consume exactly one slot"
+        );
+    }
+
+    /// A payment must not eat the output the wallet cannot afford to
+    /// lose. This is the selection half of the fix, asserted against a
+    /// real payout rather than against `ordered_for_payment` alone.
+    #[tokio::test]
+    async fn a_grant_spends_the_smallest_output_that_covers_it() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn_empty().await;
+        for value in [15_000_000_000u64, 200_000_000, 900_000_000] {
+            fake_node.credit(operator_key.public_key(), value).await;
+        }
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+
+        let agent = PrivateKey::new_key();
+        assert_eq!(claim_faucet(&hub, &agent).await.status(), reqwest::StatusCode::OK);
+
+        let marked: Vec<u64> = fake_node
+            .outputs_of(&operator_key.public_key())
+            .await
+            .iter()
+            .filter(|(_, marked)| *marked)
+            .map(|(o, _)| o.value)
+            .collect();
+        assert_eq!(
+            marked,
+            vec![200_000_000],
+            "the 150-coin output has to still be whole and spendable"
         );
     }
 

@@ -212,6 +212,34 @@ impl Challenge {
     }
 }
 
+/// The checks a redemption makes, in one place so `check` and `redeem`
+/// cannot drift apart.
+///
+/// Cheapest-first, which also happens to be most-informative-first:
+/// everything except the hash is a field comparison, so a client that
+/// got the easy things wrong is told so without the hub hashing
+/// anything on its behalf.
+fn validate(
+    challenge: &Challenge,
+    pubkey: &PublicKey,
+    solution: u64,
+    now: DateTime<Utc>,
+) -> std::result::Result<(), RedemptionError> {
+    if challenge.pubkey != pubkey.to_string() {
+        return Err(RedemptionError::WrongKey);
+    }
+    if challenge.is_redeemed() {
+        return Err(RedemptionError::AlreadyRedeemed);
+    }
+    if challenge.is_expired_at(now) {
+        return Err(RedemptionError::Expired);
+    }
+    if !challenge.is_solved_by(solution) {
+        return Err(RedemptionError::Unsolved);
+    }
+    Ok(())
+}
+
 /// Errors a redemption can fail with, each a distinct thing to tell a
 /// client. Kept apart rather than collapsed into one "bad challenge"
 /// because an agent debugging its solver needs to know whether it got
@@ -330,10 +358,7 @@ impl ChallengeBook {
     /// half is ordered before the payout while the grant record is
     /// ordered after it.
     ///
-    /// The checks run cheapest-first, which also happens to be
-    /// most-informative-first: everything except the hash is a field
-    /// comparison, so a client that got the easy things wrong is told so
-    /// without the hub hashing anything on its behalf.
+    /// The checks themselves are `validate`'s, shared with `check`.
     pub fn redeem(
         &self,
         id: Uuid,
@@ -342,18 +367,7 @@ impl ChallengeBook {
         now: DateTime<Utc>,
     ) -> std::result::Result<Challenge, RedemptionError> {
         let mut entry = self.by_id.get_mut(&id).ok_or(RedemptionError::Unknown)?;
-        if entry.pubkey != pubkey.to_string() {
-            return Err(RedemptionError::WrongKey);
-        }
-        if entry.is_redeemed() {
-            return Err(RedemptionError::AlreadyRedeemed);
-        }
-        if entry.is_expired_at(now) {
-            return Err(RedemptionError::Expired);
-        }
-        if !entry.is_solved_by(solution) {
-            return Err(RedemptionError::Unsolved);
-        }
+        validate(entry.value(), pubkey, solution, now)?;
 
         let mut redeemed = entry.clone();
         redeemed.redeemed_at = Some(now.timestamp());
@@ -366,6 +380,27 @@ impl ChallengeBook {
         drop(entry);
         self.outstanding.remove(&redeemed.pubkey);
         Ok(redeemed)
+    }
+
+    /// Everything `redeem` checks, spending nothing.
+    ///
+    /// The faucet asks this before it asks whether it can afford the
+    /// grant, so that a caller presenting a spent or unsolved challenge
+    /// is told *that*, rather than being told the hub is busy because
+    /// the two answers happened to be available in the wrong order.
+    ///
+    /// Advisory, and safe to be: `redeem` runs the same list again
+    /// under its own exclusive reference, so nothing here is trusted
+    /// twice. The cost of the second pass is one SHA-256.
+    pub fn check(
+        &self,
+        id: Uuid,
+        pubkey: &PublicKey,
+        solution: u64,
+        now: DateTime<Utc>,
+    ) -> std::result::Result<(), RedemptionError> {
+        let entry = self.by_id.get(&id).ok_or(RedemptionError::Unknown)?;
+        validate(entry.value(), pubkey, solution, now)
     }
 
     /// Drops what can no longer matter, from memory and from disk on one
@@ -417,6 +452,52 @@ mod tests {
         Challenge::issue(&key.public_key(), easy(), Utc::now())
     }
 
+    /// Asserts that `variant` is a genuinely different puzzle from
+    /// `original`: work done on one buys nothing on the other.
+    ///
+    /// Two assertions, because "does not carry" is not a deterministic
+    /// property at a test difficulty. At `easy()`'s one-in-sixty-four,
+    /// *any* number solves *any* challenge one time in sixty-four, so
+    /// the single-solution version of this failed on a perfectly
+    /// healthy scheme at that rate -- which is what made
+    /// `a_solution_does_not_carry_across_issuances`, with two such
+    /// assertions, fail about one module run in twenty-five (measured
+    /// over 25 runs). It was never the scheme; the test was sampling
+    /// its own difficulty.
+    ///
+    /// Tightening the target was the obvious fix and is wrong: solving
+    /// at one in a hundred thousand costs eleven seconds in a debug
+    /// build, and at one in a million, twenty-nine. Measured.
+    ///
+    /// So the mechanism is asserted deterministically -- the changed
+    /// field is inside the hash, so the preimages hash differently --
+    /// and the consequence is asserted over several independent
+    /// solutions. A scheme that left the field out of the preimage
+    /// carries every solution and fails both halves; a healthy one
+    /// fails the second with probability 64^-3, about four in a
+    /// million.
+    fn assert_distinct_puzzles(original: &Challenge, variant: &Challenge) {
+        let mut solutions = Vec::new();
+        let mut from = 0;
+        for _ in 0..3 {
+            let solution = original.solve_from(from);
+            from = solution + 1;
+            solutions.push(solution);
+        }
+
+        for solution in &solutions {
+            assert_ne!(
+                Hash::hash_bytes(variant.preimage(*solution).as_bytes()),
+                Hash::hash_bytes(original.preimage(*solution).as_bytes()),
+                "the changed field must be inside the hash, or it separates nothing"
+            );
+        }
+        assert!(
+            !solutions.iter().all(|solution| variant.is_solved_by(*solution)),
+            "work done on one puzzle must not carry wholesale to the other"
+        );
+    }
+
     #[test]
     fn a_solution_verifies_against_the_challenge_it_was_found_for() {
         let key = PrivateKey::new_key();
@@ -433,16 +514,12 @@ mod tests {
         let alice = PrivateKey::new_key();
         let bob = PrivateKey::new_key();
         let for_alice = challenge_for(&alice);
-        let solution = for_alice.solve_from(0);
 
         // Bob's challenge, made identical in every respect the hub
         // controls, so the pubkey is the only difference left.
         let mut for_bob = for_alice.clone();
         for_bob.pubkey = bob.public_key().to_string();
-        assert!(
-            !for_bob.is_solved_by(solution),
-            "a solution must not carry across keys"
-        );
+        assert_distinct_puzzles(&for_alice, &for_bob);
     }
 
     /// The domain separator earns its place: the same key, the same
@@ -451,26 +528,26 @@ mod tests {
     fn a_solution_does_not_carry_across_actions() {
         let key = PrivateKey::new_key();
         let faucet = challenge_for(&key);
-        let solution = faucet.solve_from(0);
 
         let mut other = faucet.clone();
         other.action = "some-later-action".to_string();
-        assert!(!other.is_solved_by(solution));
+        assert_distinct_puzzles(&faucet, &other);
     }
 
     #[test]
     fn a_solution_does_not_carry_across_issuances() {
         let key = PrivateKey::new_key();
         let first = challenge_for(&key);
-        let solution = first.solve_from(0);
 
+        // The nonce makes each issuance its own puzzle...
         let mut second = first.clone();
         second.server_nonce = hex::encode([7u8; 32]);
-        assert!(!second.is_solved_by(solution), "the nonce makes each issuance its own puzzle");
+        assert_distinct_puzzles(&first, &second);
 
+        // ...and so does the id.
         let mut third = first.clone();
         third.id = Uuid::new_v4();
-        assert!(!third.is_solved_by(solution), "so does the id");
+        assert_distinct_puzzles(&first, &third);
     }
 
     /// Difficulty has to move monotonically in the direction an operator

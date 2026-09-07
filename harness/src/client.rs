@@ -250,15 +250,95 @@ pub struct WithdrawPayload {
     pub amount: u64,
 }
 
-/// Claims a faucet grant for `key`.
+/// What `POST /faucet` carries now that the grant is priced in work.
+#[derive(Serialize)]
+pub struct FaucetClaimPayload {
+    pub challenge_id: String,
+    pub solution: u64,
+}
+
+/// Asks for a proof-of-work challenge. The first of the faucet's two
+/// legs, and an **ordinary-tier** write -- the redemption is the
+/// chain-tier one. A drill probing one tier and not the other has to
+/// call the legs separately for that reason; see
+/// `drills::rate_limit_tiers`.
+pub async fn faucet_challenge(client: &HubClient, key: &PrivateKey) -> Result<Reply> {
+    client.post_signed(key, "/faucet/challenge", ()).await
+}
+
+/// Finds a solution to `challenge`, rebuilding the preimage from the
+/// wire fields the way a third-party client has to.
 ///
-/// **This is the call that another workstream is rewriting.** The faucet
-/// is gaining a proof-of-work challenge (plan §5): the flow becomes fetch
-/// a challenge, solve it, then present the solution, and this
-/// payload-less POST stops being the whole story. Every caller in the
-/// harness goes through here precisely so that when it lands there is one
-/// function to change rather than a search across the drills. See the
-/// README's "what will need updating" note.
+/// Deliberately does not import the hub's own `Challenge` type. The
+/// harness runs against a hub binary built from another commit (see this
+/// module's header), and more to the point, reconstructing the preimage
+/// from `preimage_template` is the step an SDK gets wrong -- doing it
+/// here means the drills would notice.
+pub fn solve_faucet_challenge(challenge: &Value) -> Result<u64> {
+    let template = challenge["preimage_template"]
+        .as_str()
+        .context("the challenge carries no preimage_template")?;
+    let target = btclib::U256::from_str_radix(
+        challenge["target"].as_str().context("the challenge carries no target")?,
+        16,
+    )
+    .context("the challenge's target is not hex")?;
+    // Little-endian, which is what `Hash::hash_bytes` compares and the
+    // one convention a client can get backwards while still appearing to
+    // work.
+    Ok((0u64..)
+        .find(|n| {
+            btclib::sha256::Hash::hash_bytes(
+                template.replace("{solution}", &n.to_string()).as_bytes(),
+            )
+            .matches_target(target)
+        })
+        .expect("u64 is not exhaustible in practice"))
+}
+
+/// Presents a solved `challenge`. The chain-tier leg: this is the one
+/// that costs the operator a payment.
+pub async fn redeem_faucet(
+    client: &HubClient,
+    key: &PrivateKey,
+    challenge: &Value,
+) -> Result<Reply> {
+    let payload = FaucetClaimPayload {
+        challenge_id: challenge["challenge_id"]
+            .as_str()
+            .context("the challenge carries no challenge_id")?
+            .to_string(),
+        solution: solve_faucet_challenge(challenge)?,
+    };
+    client.post_signed(key, "/faucet", payload).await
+}
+
+/// The whole faucet flow for `key`: ask, solve, redeem.
+///
+/// **This used to be a payload-less `POST /faucet` and had been wrong
+/// since the proof of work landed (plan §5.2).** The hub answers an
+/// envelope whose payload does not deserialize with a 422 before any
+/// handler runs, so every drill that went through here was measuring a
+/// rejected body: `payout-ceiling` in particular would have counted zero
+/// grants, read that as a ceiling comfortably held, and reported
+/// `Confirmed` against a hub it never asked for a single payout.
+///
+/// The returned `latency` is the whole flow including the solve, because
+/// that is what an arriving agent actually waits through and what §7.1's
+/// time-to-first-payout is made of. A drill that wants one leg on its own
+/// should call `faucet_challenge` and `redeem_faucet` directly.
+///
+/// If the challenge leg fails, its reply is what comes back -- a 409 for
+/// an already-granted key, or a 429, is the answer to "did the faucet
+/// serve this agent" and must not be hidden behind a redemption that
+/// never happened.
 pub async fn claim_faucet(client: &HubClient, key: &PrivateKey) -> Result<Reply> {
-    client.post_signed(key, "/faucet", ()).await
+    let started = Instant::now();
+    let challenge = faucet_challenge(client, key).await?;
+    if !challenge.ok() {
+        return Ok(challenge);
+    }
+    let mut claim = redeem_faucet(client, key, &challenge.body).await?;
+    claim.latency = started.elapsed();
+    Ok(claim)
 }

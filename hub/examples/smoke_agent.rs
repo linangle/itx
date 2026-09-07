@@ -12,7 +12,13 @@
 //!   ./target/debug/node  --port 9000 --blockchain-file ./chain.redb
 //!   ./target/debug/miner --addresses 127.0.0.1:9000 --public-key-file ./operator.pub.pem
 //!   ./target/debug/hub   --port 9100 --node-addresses 127.0.0.1:9000 \
-//!       --operator-key-file ./operator.priv.cbor
+//!       --operator-key-file ./operator.priv.cbor \
+//!       --faucet-pow-expected-hashes 1000
+//!
+//! That last flag is for this example's sake, not the hub's: the faucet's
+//! real difficulty is calibrated to cost a Python client about fourteen
+//! seconds, and there is no reason for a smoke test to sit through it.
+//! Leave it off to exercise the real one.
 //!
 //! Wait for the operator to actually hold mined coin before running this
 //! (`GET /reputation/<operator pubkey>` reports a live `net_worth`);
@@ -36,6 +42,24 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::net::TcpStream;
+
+/// Solves a faucet challenge the way any client has to: rebuild the
+/// preimage from `preimage_template`, hash it, and read the digest as a
+/// **little-endian** 256-bit integer to compare against `target`, which
+/// is on the wire as an ordinary big-endian hex number. Getting that
+/// backwards produces a puzzle that is merely different rather than
+/// obviously broken, and you hash forever without a hit.
+fn solve_faucet_challenge(challenge: &Value) -> u64 {
+    let template = challenge["preimage_template"].as_str().expect("preimage_template");
+    let target =
+        btclib::U256::from_str_radix(challenge["target"].as_str().expect("target"), 16).unwrap();
+    (0u64..)
+        .find(|n| {
+            Hash::hash_bytes(template.replace("{solution}", &n.to_string()).as_bytes())
+                .matches_target(target)
+        })
+        .expect("u64 is not exhaustible in practice")
+}
 
 // Mirrors of `hub::handlers::{CreateTaskPayload, ClaimPayload,
 // SubmitPayload}` -- field name AND declaration order must match exactly.
@@ -64,6 +88,12 @@ struct CreateTaskPayload {
 #[derive(Serialize)]
 struct ClaimPayload {
     task_id: String,
+}
+
+#[derive(Serialize)]
+struct FaucetClaimPayload {
+    challenge_id: String,
+    solution: u64,
 }
 
 #[derive(Serialize)]
@@ -112,8 +142,28 @@ async fn main() -> Result<()> {
     println!("({} bytes)", llms.len());
     assert!(llms.contains("itx agent hub"));
 
+    println!("\n== POST /faucet/challenge (agent) ==");
+    let envelope = build_envelope(&agent_key, "POST", "/faucet/challenge", ());
+    let resp = client
+        .post(format!("{base_url}/faucet/challenge"))
+        .json(&envelope)
+        .send()
+        .await?;
+    let status = resp.status();
+    let challenge: Value = resp.json().await?;
+    println!("status={status} target={} expected_hashes={}", challenge["target"], challenge["expected_hashes"]);
+    assert!(status.is_success(), "challenge issuance should succeed");
+
+    println!("\n== solving ==");
+    let solution = solve_faucet_challenge(&challenge);
+    println!("solution={solution}");
+
     println!("\n== POST /faucet (agent) ==");
-    let envelope = build_envelope(&agent_key, "POST", "/faucet", ());
+    let payload = FaucetClaimPayload {
+        challenge_id: challenge["challenge_id"].as_str().unwrap().to_string(),
+        solution,
+    };
+    let envelope = build_envelope(&agent_key, "POST", "/faucet", &payload);
     let resp = client
         .post(format!("{base_url}/faucet"))
         .json(&envelope)
@@ -122,12 +172,21 @@ async fn main() -> Result<()> {
     let status = resp.status();
     let body: Value = resp.json().await?;
     println!("status={status} body={body}");
-    assert!(status.is_success(), "faucet claim should succeed");
+    // A 503 here is the hub saying it cannot fund a grant at this
+    // instant, not a smoke-test failure -- and it is worth telling apart,
+    // because the fix is to fund the operator rather than to debug the
+    // signing recipe. See plan §6.4b.
+    assert!(
+        status.is_success(),
+        "faucet claim should succeed (a 503 means the operator has no spendable output yet)"
+    );
 
     println!("\n== POST /faucet again (should be rejected, already claimed) ==");
-    let envelope = build_envelope(&agent_key, "POST", "/faucet", ());
+    // The challenge leg refuses first: an already-granted key is told so
+    // before it is asked to spend any CPU.
+    let envelope = build_envelope(&agent_key, "POST", "/faucet/challenge", ());
     let resp = client
-        .post(format!("{base_url}/faucet"))
+        .post(format!("{base_url}/faucet/challenge"))
         .json(&envelope)
         .send()
         .await?;

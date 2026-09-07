@@ -566,10 +566,23 @@ is the binding, not an audit of which routes currently collide.
 **Still open:** difficulty is a startup flag, not a live knob, so tightening it
 under an active attack still means a restart — the same gap §3.4 records for
 the rate limits, and worth fixing for both at once. Auto-retargeting from
-claims per hour remains deferred (§11). And the operator's one-payout-per-block
-ceiling (§6.4b) bounds the faucet at about four grants a minute however cheap
-the puzzle is, which §6.7 measured and which matters more than difficulty for
-onboarding a crowd.
+claims per hour remains deferred (§11).
+
+**No longer open, 2026-09-07.** The operator's one-payout-per-block ceiling
+(§6.4b) used to bound the faucet at about four grants a minute however cheap
+the puzzle was, and mattered more than difficulty for onboarding a crowd. The
+operator's wallet is now kept fanned out across many confirmed outputs and the
+same drill measures 301.4 grants a minute. The arithmetic that made the sunset
+(§5.1) urgent goes with it: a thousand agents is minutes, not the four and a
+half hours §6.4b computed at one grant per block.
+
+The faucet's own half of that work belongs here rather than in §6.4b. A grant
+the hub could not fund used to cost the agent its proof of work — the challenge
+is spent durably before the payment, correctly, and the payment then failed 95%
+of the time. The hub now checks it can pay before spending the challenge, and
+where it cannot, answers 503 with a `Retry-After` rather than 500 with "please
+retry". An agent's first fourteen seconds of CPU are no longer the hub's to
+waste.
 
 ### 5.1 Sunsetting the faucet
 
@@ -868,6 +881,128 @@ for any future action worth pricing.
    onboarding a thousand agents through a faucet at one grant per block is a
    serial queue of roughly four and a half hours at a sixteen-second target,
    whatever the hub's own latency is.
+
+   **Fixed 2026-09-07 (branch `payout-ceiling`).** The first of the three
+   mitigations, built: the hub keeps its wallet split across many confirmed
+   outputs. Re-measured on the same drill against the same pre-fix baseline,
+   754 payouts across 30 blocks — **25.13 per block, 301.4 grants a minute,
+   busiest block 26**, against 1193 offered. The baseline was 31 across 30,
+   never two at any height. `harness compare` reads it as confirmed →
+   refuted and exits 0. An earlier run on the same code less the last two
+   commits gave 26.83 per block and 321.8 a minute, so the spread between
+   runs is a few per cent and the result does not turn on either one.
+
+   **The baseline is now that healthy run**, following the convention §6.7
+   item 7 established: the comparison above was the sign-off, and a
+   baseline's job afterwards is to be the gate. Leaving the pre-fix one in
+   place would have made the gate useless in the one direction that
+   matters — a regression reports `confirmed` against a `confirmed`
+   baseline, so the verdict never changes and `compare` says nothing. The
+   pre-fix numbers are not lost; they are two paragraphs above, where
+   somebody reads them.
+
+   #### What was built
+
+   Two halves, both in `hub/src/operator_wallet.rs`, which is pure and
+   tested on its own.
+
+   **Choosing which output to spend, which turned out to be half the problem
+   and to cost nothing.** The node returns its UTXOs in `HashMap` order and
+   `build_multi_payment` walks them front to back, stopping as soon as it
+   has enough — so the *order* is the selection policy, and no change to
+   btclib was needed to change it. A payment now spends the smallest single
+   output that covers it, falling back to largest-first when no single
+   output does. Left alone, a 0.5-coin faucet grant would as often as not
+   spend a 150-coin output and turn the rest into invisible change: one
+   payment could undo a whole fan-out.
+
+   **Keeping the wallet in shape.** The sweep, and one pass at boot, split
+   the largest output into equal shares whenever the count of spendable ones
+   has fallen below `--operator-wallet-outputs` (24 by default, and that
+   number *is* the ceiling). Equal shares rather than a fixed denomination:
+   a fixed size leaves a remainder that is either dust or another blob, and
+   converges on a count set by the remainder rather than by the floor.
+
+   #### Three things the shape forced, and one the drill found
+
+   A fan-out's own outputs are unconfirmed until mined, so the next sweep
+   sees the same short wallet and would split again — this time taking an
+   output that was already doing its job. The hub remembers what the last
+   one spent and skips while those inputs are still in the UTXO set, which
+   needs no timer and nothing carried across a restart.
+
+   **A freshly deployed hub pays out nothing for one block**, and this is
+   the one cost the fix adds. It holds a single output; the first fan-out
+   spends it and the pieces are invisible until mined. Measured at exactly
+   one block. The boot pass runs before the listener opens, so that block is
+   spent while the hub is unreachable rather than under the first burst of
+   arriving agents. Restarting a warm hub does nothing.
+
+   **The wallet erodes, and only splitting cannot recover it.** Every
+   payment leaves change, so a slot comes back smaller each time it is
+   spent; eventually every output is under the useful size and a
+   splitter-only planner has nothing large enough to split. It would return
+   "nothing to do" forever against a wallet holding whole coins, while
+   payments ground on through ever-larger combinations of ever-smaller
+   inputs. So the planner consolidates before it splits: sweeping worn-out
+   change into one usable output costs a fee, takes nothing out of service,
+   and always raises the count.
+
+   That last one is worth its own note, because the first reading of the
+   evidence was wrong. The drill's payouts fell from 24 a block to nothing
+   after twelve blocks, which looked exactly like the erosion trap. It was
+   not — 299 grants at 50,001,000 against a 14,999,999,000 wallet leaves
+   49,700,000, just under one more grant. The operator had simply spent
+   everything. The trap is real, the drill never hit it, and its test had to
+   be written rather than observed.
+
+   #### The faucet's own half
+
+   Independent of the wallet work, and the reason this was ranked ahead of
+   work that touches more code. `faucet_claim` spends the proof-of-work
+   challenge durably before it pays, which is correct and must stay that
+   way. But the payment that followed failed 95% of the time under this
+   ceiling, and the answer was a 500 reading "please retry" — so an arriving
+   agent solved for fourteen seconds, was told to try again, and solved
+   again. The grant was recoverable; the challenge was not.
+
+   The hub now asks whether it can fund the grant *before* spending the
+   challenge, which turns the common case into one cheap refused request.
+   The challenge is validated first, so a spent or unsolved one is still
+   told so rather than told the hub is busy. Where the pre-flight passes and
+   the payment fails anyway — a slot taken in between — the challenge is
+   gone and cannot be ungone, so a fresh one is issued at no cost and
+   attached to the response. Not "hold the redemption open": the redemption
+   record is what stops a solution being spent twice, and a hub that reopens
+   it under any condition is a hub whose faucet can be replayed by arranging
+   that condition.
+
+   Both answers are a 503 with `Retry-After` set to the chain's own block
+   target, and the same number in the body where an agent parsing JSON will
+   see it. `/llms.txt` documents both shapes and how to tell them apart.
+   This is the first `Retry-After` the hub has ever sent; §3.4's note that
+   the rate limits document no budgets at all still stands for the 429s.
+
+   #### To watch, and what is still open
+
+   `hub_operator_ready_outputs` is the gauge: it is the ceiling, and a hub
+   sitting near zero is a hub refusing grants.
+   `hub_operator_fan_outs_total` should be near-flat on a healthy wallet,
+   which refills itself from its own change; a rate that keeps climbing
+   means the fan is eroding faster than a block restores it.
+
+   The other two mitigations are untouched and still worth what they were.
+   Batching several owed payments into one multi-recipient transaction helps
+   the sweep, not the faucet, since a grant arrives alone. Spending
+   confirmed and self-change outputs opportunistically is subsumed: the
+   selection change *is* that, done properly.
+
+   Two limits a reader should know. The floor is a count, so the wallet's
+   *rate* is two dozen payments a block and its *total* is still whatever
+   coin the operator holds — the fan changes how fast money can leave, not
+   how much there is to leave. And a payment larger than a slot is not
+   refused, it combines slots largest-first and costs the fan one per extra
+   input, which the next sweep restores.
 5. **Settlement honesty — fixed for task bounties 2026-09-06 (§6.5).**
    `submit_transaction` is fire-and-forget, so "paid" used to mean "sent."
 
@@ -1050,7 +1185,7 @@ for any future action worth pricing.
    | `replay-storm` | §3.3's guard survives a crash | Confirmed — 0 of 30 accepted |
    | `rate-limit-tiers` | §3.4's buckets are independent | Confirmed — 120 and 59 served exactly |
    | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |
-   | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height |
+   | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height. **Refuted** since 2026-09-07: 25.13 per block, busiest 26, see §6.4b |
    | `signed-write-cost` | Item 3: verify CPU is the write cost | **Refuted** — the fsync is 15–22x the verify |
 
    Both refutations are recorded where they belong: item 3 above, and item 5b,
@@ -1113,6 +1248,30 @@ for any future action worth pricing.
    say in their own text why they are accepted — an accepted finding without
    that reasoning is indistinguishable from one somebody silenced to get a
    green run.
+
+   **And a second way the instrument was worthless, found 2026-09-07 while
+   re-running `payout-ceiling` for §6.4b.** The harness's `claim_faucet` had
+   gone on posting a payload-less `POST /faucet` since the proof of work
+   landed on 2026-09-06. The hub answers an envelope whose payload does not
+   deserialize with a 422 before any handler runs, so every drill that touched
+   the faucet had been measuring a rejected body for a day.
+
+   `payout-ceiling` is where that was expensive, and the shape of the failure
+   is worth carrying. Zero grants reads, through the drill's own arithmetic,
+   as a ceiling comfortably held — so it would have reported `Confirmed`
+   against a hub it never asked for a single payout, and the sign-off for the
+   §6.4b work would have been a measurement of a 422. A drill whose *failure
+   mode looks like its healthy result* is worse than no drill, and this one
+   had that property by construction: "few payouts landed" is both the thing
+   it looks for and what a broken probe produces.
+
+   Two things would have caught it and neither existed. Nothing asserts a
+   drill's probe actually did what it claims — `payout-ceiling` never checked
+   that any grant succeeded, only how they were distributed. And nothing runs
+   the drills on a schedule; the harness README predicted this exact change,
+   named the one function it would need, and nothing read that note for a day
+   because nothing ran. The absent CI is already on the open list; this is a
+   second argument for it and a first for the assertion.
 
    **What the load half found**, at 1000 agents against a 200-task board on a
    10-core arm64 Mac, release build, 60 seconds:
