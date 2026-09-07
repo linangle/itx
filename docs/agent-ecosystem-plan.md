@@ -572,7 +572,7 @@ claims per hour remains deferred (§11).
 (§6.4b) used to bound the faucet at about four grants a minute however cheap
 the puzzle was, and mattered more than difficulty for onboarding a crowd. The
 operator's wallet is now kept fanned out across many confirmed outputs and the
-same drill measures 321.8 grants a minute. The arithmetic that made the sunset
+same drill measures 301.4 grants a minute. The arithmetic that made the sunset
 (§5.1) urgent goes with it: a thousand agents is minutes, not the four and a
 half hours §6.4b computed at one grant per block.
 
@@ -885,10 +885,21 @@ for any future action worth pricing.
    **Fixed 2026-09-07 (branch `payout-ceiling`).** The first of the three
    mitigations, built: the hub keeps its wallet split across many confirmed
    outputs. Re-measured on the same drill against the same pre-fix baseline,
-   805 payouts across 30 blocks — **26.83 per block, 321.8 grants a minute,
-   busiest block 32**, against 1220 offered. The baseline was 31 across 30,
+   754 payouts across 30 blocks — **25.13 per block, 301.4 grants a minute,
+   busiest block 26**, against 1193 offered. The baseline was 31 across 30,
    never two at any height. `harness compare` reads it as confirmed →
-   refuted and exits 0.
+   refuted and exits 0. An earlier run on the same code less the last two
+   commits gave 26.83 per block and 321.8 a minute, so the spread between
+   runs is a few per cent and the result does not turn on either one.
+
+   **The baseline is now that healthy run**, following the convention §6.7
+   item 7 established: the comparison above was the sign-off, and a
+   baseline's job afterwards is to be the gate. Leaving the pre-fix one in
+   place would have made the gate useless in the one direction that
+   matters — a regression reports `confirmed` against a `confirmed`
+   baseline, so the verdict never changes and `compare` says nothing. The
+   pre-fix numbers are not lost; they are two paragraphs above, where
+   somebody reads them.
 
    #### What was built
 
@@ -1174,7 +1185,7 @@ for any future action worth pricing.
    | `replay-storm` | §3.3's guard survives a crash | Confirmed — 0 of 30 accepted |
    | `rate-limit-tiers` | §3.4's buckets are independent | Confirmed — 120 and 59 served exactly |
    | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |
-   | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height. **Refuted** since 2026-09-07: 26.83 per block, busiest 32, see §6.4b |
+   | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height. **Refuted** since 2026-09-07: 25.13 per block, busiest 26, see §6.4b |
    | `signed-write-cost` | Item 3: verify CPU is the write cost | **Refuted** — the fsync is 15–22x the verify |
 
    Both refutations are recorded where they belong: item 3 above, and item 5b,
