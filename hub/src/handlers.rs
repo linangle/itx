@@ -2303,10 +2303,15 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
     // meant to prevent it (plan §6.5c).
     let dropped_keys: Vec<(Uuid, PublicKey)> =
         dropped.iter().map(|a| (a.task_id, a.recipient.clone())).collect();
-    let Some(failed_task) = board.get_task(attempt.task_id).cloned() else {
-        error!("task {} vanished from the board while being abandoned", attempt.task_id);
-        return;
-    };
+    // Read back under the same write lock that made it terminal, the
+    // way the confirm handlers do. `expect` rather than a graceful
+    // return: `mark_payout_failed` just succeeded on this task and no
+    // path removes one, and a graceful return here would be the one
+    // exit that leaves the board terminal with nothing on disk.
+    let failed_task = board
+        .get_task(attempt.task_id)
+        .expect("mark_payout_failed just succeeded on this task, and no path removes one")
+        .clone();
     if let Err(e) = state.store.save_task_and_drop_payout_attempts(&failed_task, &dropped_keys) {
         error!(
             "failed to record task {} as payout-failed: {e} -- rolling the board back, so the \
@@ -2321,6 +2326,8 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
         }
         return;
     }
+    // Released before the log line: nothing below touches the board,
+    // and this is the sweep's write lock.
     drop(board);
     error!(
         "giving up on the payout of {} for task {} to {}: {} submissions, every one of them \
@@ -2376,10 +2383,14 @@ async fn record_confirmed_payout(
     }
     board.clear_payout_attempt(task_id, recipient);
 
-    let Some(final_task) = board.get_task(task_id).cloned() else {
-        error!("task {task_id} vanished from the board while its payout was being recorded");
-        return false;
-    };
+    // Same reasoning as `abandon_payout`'s read-back: `expect`, because
+    // `mark_recipient_paid` just succeeded on this task and no path
+    // removes one, and a graceful return would be the single exit that
+    // leaves the board paid with nothing committed.
+    let final_task = board
+        .get_task(task_id)
+        .expect("mark_recipient_paid just succeeded on this task, and no path removes one")
+        .clone();
     // A task tagged "compute" pays its winner in the tradeable compute
     // asset, on top of (not instead of) the ordinary bounty payout --
     // placed strictly after mark_recipient_paid already succeeded, so it
