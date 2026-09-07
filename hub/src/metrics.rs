@@ -419,9 +419,8 @@ impl Metrics {
         // only appears once something is wrong gives an operator no way
         // to write an alert before the first incident, and no way to
         // tell "clean" from "not scraped".
-        out.push_str(
-            "# HELP hub_reconciliation_disagreements Store records found disagreeing at boot, by class.\n             # TYPE hub_reconciliation_disagreements gauge\n",
-        );
+        out.push_str("# HELP hub_reconciliation_disagreements Store records found disagreeing at boot, by class.\n");
+        out.push_str("# TYPE hub_reconciliation_disagreements gauge\n");
         for label in RECONCILIATION_CLASSES {
             let value = self.reconciliation_disagreements.get(label).map(|v| *v).unwrap_or(0);
             out.push_str(&format!(
@@ -524,6 +523,13 @@ mod tests {
     fn every_reconciliation_class_is_rendered_including_the_zeroes() {
         let metrics = Metrics::new();
         let rendered = metrics.render(0);
+        // Prometheus wants HELP and TYPE at the start of a line. Asserted
+        // because the first version of this block emitted an indented
+        // TYPE line and every other assertion here passed anyway --
+        // "contains the rows" says nothing about the header above them.
+        assert!(rendered.contains(
+            "\n# TYPE hub_reconciliation_disagreements gauge\nhub_reconciliation_disagreements{"
+        ));
         for class in RECONCILIATION_CLASSES {
             assert!(
                 rendered.contains(&format!("hub_reconciliation_disagreements{{class=\"{class}\"}} 0")),
