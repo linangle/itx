@@ -868,6 +868,7 @@ async fn main() -> Result<()> {
         metrics.reconciliation_disagreements.insert(class, count);
     }
 
+    let mut degraded_replay_guard = false;
     let replay_guard = match auth::ReplayGuard::restore(store.clone(), chrono::Utc::now()) {
         Ok((guard, restored)) => {
             println!("restored {restored} replay-guard signature(s) still inside the drift window");
@@ -875,15 +876,28 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             error!("could not restore the durable replay guard ({e}) -- falling back to refusing");
+            // The figure here used to be `MAX_REQUEST_DRIFT_SECONDS`
+            // while the code waited `REPLAY_MEMORY_SECONDS`, so the one
+            // message that tells an operator how long the hub will
+            // refuse writes told them half of it.
             println!(
                 "WARNING: replay log unreadable ({e}); authenticated writes are refused for the \n\
-                 next {}s while the post-restart replay window closes. Read routes are unaffected.",
-                btclib::envelope::MAX_REQUEST_DRIFT_SECONDS,
+                 next {}s while the post-restart replay window closes. Read routes are \n\
+                 unaffected, and signatures are still recorded durably -- what this process \n\
+                 lacks is the previous one's history. hub_replay_guard_degraded stays 1 until \n\
+                 it is restarted.",
+                auth::REPLAY_MEMORY_SECONDS,
             );
-            auth::ReplayGuard::booting(chrono::Utc::now())
+            degraded_replay_guard = true;
+            auth::ReplayGuard::booting(store.clone(), chrono::Utc::now())
         }
     }
     .with_metrics(metrics.clone());
+    // After `with_metrics`, which swaps the guard's own table for the
+    // shared one the router renders from.
+    metrics
+        .replay_guard_degraded
+        .store(u64::from(degraded_replay_guard), std::sync::atomic::Ordering::Relaxed);
 
     // Aborts startup if the table cannot be read, the same as the tasks
     // and faucet grants loaded above and for a sharper reason: a
@@ -3327,6 +3341,85 @@ mod tests {
         assert!(
             !after.iter().any(|(recorded, _)| *recorded == signature),
             "the rejected envelope must survive so the caller can retry it, not be spent"
+        );
+    }
+
+    /// A replay costs the replayer, not the agent whose envelope was
+    /// captured.
+    ///
+    /// The quota is charged to the key that *signed* the request, so
+    /// charging before the replay was detected made one captured envelope
+    /// into a lockout: resend it sixty times from a single address --
+    /// comfortably inside that address's own tier -- and the signer is
+    /// refused on every authenticated route until the window rolls over.
+    /// Reading a signed request off the wire is enough to do it, and
+    /// `--bind 0.0.0.0` is a supported deployment.
+    ///
+    /// The victim's budget is the observable. The replays themselves are
+    /// rejected either way, so a test that only watched their status
+    /// codes would pass against the bug.
+    #[tokio::test]
+    async fn replaying_a_captured_envelope_does_not_spend_its_signers_quota() {
+        let operator_key = PrivateKey::new_key();
+        let trusted = rate_limit::parse_trusted_proxies("127.0.0.1").unwrap();
+        let hub = spawn_hub_with_trusted_proxies(operator_key, dead_address().await, trusted).await;
+
+        let victim = PrivateKey::new_key();
+        let task_id = Uuid::new_v4();
+        let path = format!("/tasks/{task_id}/claim");
+
+        // One legitimate request, whose envelope the attacker captures.
+        let captured = envelope(&victim, &path, handlers::ClaimPayload { task_id });
+        let status = hub
+            .client
+            .post(format!("{}{path}", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.1")
+            .json(&captured)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "accepted, then the task is missing");
+
+        // Replayed far more times than the victim's whole budget. Every
+        // one of these is refused as a replay; the question is what they
+        // cost the victim.
+        let floods = rate_limit::MAX_SIGNED_REQUESTS_PER_PUBKEY_PER_WINDOW + 10;
+        for i in 0..floods {
+            let status = hub
+                .client
+                .post(format!("{}{path}", hub.base_url))
+                .header("x-forwarded-for", format!("198.51.100.{}", i % 256))
+                .json(&captured)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(
+                status,
+                reqwest::StatusCode::UNAUTHORIZED,
+                "a replay is refused as a replay, before and after the fix"
+            );
+        }
+
+        // The victim signs something fresh. It must still be served: its
+        // quota should have been touched exactly once, by the one request
+        // it actually made.
+        let fresh = envelope(&victim, &path, handlers::ClaimPayload { task_id });
+        let status = hub
+            .client
+            .post(format!("{}{path}", hub.base_url))
+            .header("x-forwarded-for", "203.0.113.2")
+            .json(&fresh)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            reqwest::StatusCode::NOT_FOUND,
+            "the victim must still have its budget -- a 429 here means someone else spent it by \
+             replaying an envelope they captured"
         );
     }
 

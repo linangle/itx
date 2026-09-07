@@ -300,20 +300,78 @@ pub fn parse_trusted_proxies(spec: &str) -> Result<TrustedProxies, AddrParseErro
 ///
 /// Falls back to the peer address whenever the header is absent,
 /// unparseable, or made up entirely of our own proxies.
+/// **An entry it cannot parse ends the walk rather than being skipped
+/// over**, and that direction is the whole of the 2026-09-07 fix -- see
+/// `parse_forwarded_entry`.
 fn client_ip(req: &Request<Body>, connect_addr: SocketAddr, trusted: &TrustedProxies) -> IpAddr {
     let peer = connect_addr.ip();
     if !trusted.contains(&peer) {
         return peer;
     }
-    req.headers()
+    let entries: Vec<&str> = req
+        .headers()
         .get_all("x-forwarded-for")
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .filter_map(|v| v.trim().parse::<IpAddr>().ok())
-        .filter(|forwarded| !trusted.contains(forwarded))
-        .next_back()
-        .unwrap_or(peer)
+        .collect();
+
+    // Right to left, stopping at the first entry that is not one of our
+    // own proxies. An unreadable entry stops the walk at the peer,
+    // because from there leftward nothing is trustworthy.
+    for entry in entries.iter().rev() {
+        let Some(address) = parse_forwarded_entry(entry) else {
+            return peer;
+        };
+        if !trusted.contains(&address) {
+            return address;
+        }
+    }
+    peer
+}
+
+/// One `X-Forwarded-For` entry, accepting the forms a real proxy emits:
+/// a bare address, `203.0.113.9:51234`, or `[2001:db8::1]:443`.
+///
+/// The last two because HAProxy and several common nginx and Azure
+/// configurations append the client's source port, and brackets are the
+/// only unambiguous way to write an IPv6 address with one.
+///
+/// **`None` has to stop the caller's walk rather than be skipped, and
+/// that is the bug this was extracted for.** The old code was
+/// `filter_map(|v| v.trim().parse().ok())`, which silently dropped
+/// anything it could not read and carried on leftward. A trusted proxy
+/// that appended a port therefore made its own entry vanish, and the
+/// rightmost survivor became whatever the client had pre-seeded the
+/// header with -- a client naming its own rate-limit bucket, and the
+/// traffic charged to an innocent address, behind a proxy configured
+/// exactly as documented.
+///
+/// Failing toward the direct peer is the conservative direction: it
+/// charges a proxy's whole traffic to one bucket, which is loud and
+/// already has an alert pointed at it (§3.2, and the 429-rate expression
+/// in `docs/deployment.md` §8.3), where the old behaviour was silent and
+/// favoured whoever sent the header.
+fn parse_forwarded_entry(entry: &str) -> Option<IpAddr> {
+    let entry = entry.trim();
+    if let Ok(address) = entry.parse::<IpAddr>() {
+        return Some(address);
+    }
+    // `[v6]:port`, and bare `[v6]`, which some proxies also emit.
+    if let Some(rest) = entry.strip_prefix('[') {
+        let (inside, _) = rest.split_once(']')?;
+        return inside.parse().ok();
+    }
+    // `v4:port`. Only with exactly one colon: more than one means a bare
+    // IPv6 address that already failed to parse above, and lopping off
+    // its last group would turn a malformed entry into a plausible wrong
+    // answer, which is the failure mode this whole function exists to
+    // avoid.
+    let (host, port) = entry.split_once(':')?;
+    if host.contains(':') || port.contains(':') {
+        return None;
+    }
+    host.parse().ok()
 }
 
 /// Registered via `middleware::from_fn_with_state` with the *same*
@@ -635,6 +693,70 @@ mod tests {
             ip("10.0.0.1"),
             "a header naming only our own proxies"
         );
+    }
+
+    /// A proxy that appends the client's port must still be understood.
+    ///
+    /// HAProxy and several stock nginx and Azure configurations write
+    /// `address:port`, and bracketed IPv6 is the only unambiguous way to
+    /// write one. Every earlier test here used bare addresses, which is
+    /// why nothing caught the parser dropping these.
+    #[test]
+    fn a_forwarded_entry_carrying_a_port_is_still_read() {
+        let trusted = parse_trusted_proxies("10.0.0.1").unwrap();
+        assert_eq!(
+            client_ip(&request_with_forwarded_for(Some("203.0.113.9:51234")), peer("10.0.0.1"), &trusted),
+            ip("203.0.113.9"),
+            "an IPv4 address with a source port"
+        );
+        assert_eq!(
+            client_ip(&request_with_forwarded_for(Some("[2001:db8::1]:443")), peer("10.0.0.1"), &trusted),
+            ip("2001:db8::1"),
+            "a bracketed IPv6 address with a port"
+        );
+        assert_eq!(
+            client_ip(&request_with_forwarded_for(Some("[2001:db8::1]")), peer("10.0.0.1"), &trusted),
+            ip("2001:db8::1"),
+            "brackets with no port, which some proxies also emit"
+        );
+        assert_eq!(
+            client_ip(&request_with_forwarded_for(Some("2001:db8::1")), peer("10.0.0.1"), &trusted),
+            ip("2001:db8::1"),
+            "and a bare IPv6 address is unaffected"
+        );
+    }
+
+    /// The bug, stated as the attack: an entry the parser cannot read
+    /// must not hand the bucket to whatever the client wrote.
+    ///
+    /// The old parser dropped unreadable entries and kept walking left,
+    /// so a trusted proxy appending a port made its own entry vanish and
+    /// the client's pre-seeded one became the rightmost survivor. The
+    /// client named its own rate-limit bucket, and the traffic was
+    /// charged to an address that had sent nothing -- behind a proxy
+    /// configured exactly as the deployment doc describes.
+    ///
+    /// Falling back to the peer is the conservative answer: it charges
+    /// the proxy's whole traffic to one bucket, which is loud and already
+    /// alerted on, rather than silently believing the attacker.
+    #[test]
+    fn an_unreadable_entry_falls_back_to_the_peer_rather_than_trusting_what_is_left_of_it() {
+        let trusted = parse_trusted_proxies("10.0.0.1").unwrap();
+
+        // The shape that matters: the client pre-seeds an address, and
+        // the proxy appends something this parser cannot read.
+        let req = request_with_forwarded_for(Some("203.0.113.9, garbage"));
+        assert_eq!(
+            client_ip(&req, peer("10.0.0.1"), &trusted),
+            ip("10.0.0.1"),
+            "the client's entry must not be promoted when the proxy's own is unreadable"
+        );
+
+        // A malformed IPv6 must not be salvaged by lopping off what
+        // looks like a port -- that would turn a bad entry into a
+        // plausible wrong answer.
+        let req = request_with_forwarded_for(Some("203.0.113.9, 2001:db8::zz:443"));
+        assert_eq!(client_ip(&req, peer("10.0.0.1"), &trusted), ip("10.0.0.1"));
     }
 
     #[test]

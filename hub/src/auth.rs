@@ -37,7 +37,33 @@ use std::time::Instant;
 /// long, in memory and in the durable table. Both are still bounded by a
 /// fixed window rather than by uptime, which is the property that
 /// matters.
-const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
+pub const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
+
+/// The instant before which a claimed signature can no longer be
+/// replayed, and may therefore be forgotten.
+///
+/// `REPLAY_MEMORY_SECONDS` back, **and one second further**. The extra
+/// second is not slack: `HubStore::record_seen_signature` stores
+/// `timestamp()`, which truncates to whole seconds, so a signature
+/// claimed at `A` is recorded as `floor(A)` while the envelope behind it
+/// stays verifiable until `A + REPLAY_MEMORY_SECONDS`. Comparing the
+/// truncated value against an untruncated cutoff therefore forgets it up
+/// to a second early, and with a sixty-second sweep a fraction of
+/// restored signatures got a sub-second window in which they verified
+/// twice.
+///
+/// Rounding the cutoff down rather than storing milliseconds keeps the
+/// stored format a second-resolution unix timestamp, which is what every
+/// existing row is. Changing the unit would make every row already on
+/// disk read as ancient and be dropped on the next boot -- reopening,
+/// once, exactly the window this closes.
+///
+/// The cost is that signatures are held one second longer than strictly
+/// needed. They are still bounded by a fixed window rather than by
+/// uptime, which is the property that matters.
+fn forget_before(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - Duration::seconds(REPLAY_MEMORY_SECONDS + 1)
+}
 
 /// The signed-envelope replay guard: the set of signatures this hub has
 /// already accepted, held in memory for the check and on disk so that
@@ -82,8 +108,10 @@ pub struct ReplayGuard {
     /// exists, and defaults to a private table so an unwired guard still
     /// functions. `with_metrics` joins it to the one `/metrics` renders.
     metrics: Arc<crate::metrics::Metrics>,
-    /// The durable twin of `seen`, or `None` for a guard that keeps no
-    /// record across restarts and falls back to `accepting_from`.
+    /// The durable twin of `seen`. `None` only for `open()`, the
+    /// test-only constructor: both real constructors carry a store, and
+    /// `booting` carrying one is the 2026-09-07 fix -- see its own doc
+    /// comment for what a storeless fallback silently cost.
     store: Option<Arc<HubStore>>,
     /// When this instance starts accepting authenticated requests, or
     /// `None` when there is no restart window left to wait out.
@@ -104,8 +132,7 @@ impl ReplayGuard {
         store: Arc<HubStore>,
         now: DateTime<Utc>,
     ) -> std::result::Result<(Self, usize), HubStoreError> {
-        let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
-        let recent = store.load_recent_signatures(cutoff.timestamp())?;
+        let recent = store.load_recent_signatures(forget_before(now).timestamp())?;
         let seen = DashMap::new();
         for (signature, seen_at_unix) in &recent {
             if let Some(seen_at) = DateTime::from_timestamp(*seen_at_unix, 0) {
@@ -119,9 +146,9 @@ impl ReplayGuard {
         ))
     }
 
-    /// A guard that keeps no durable record, for a hub that has just
-    /// started and therefore lost whatever the previous process had
-    /// seen: refuses authenticated requests until
+    /// A guard for a hub that has just started and could not read
+    /// whatever the previous process had seen: it records durably like
+    /// any other, but refuses authenticated requests until
     /// `started_at + REPLAY_MEMORY_SECONDS`. The fallback when `restore`
     /// fails -- a hub that cannot read its replay log should still come
     /// up, just not with a hole in it.
@@ -132,10 +159,43 @@ impl ReplayGuard {
     /// verifiable for another drift window beyond that. Waiting out only
     /// one would reopen the hole this exists to close, for exactly the
     /// envelopes that live longest.
-    pub fn booting(started_at: DateTime<Utc>) -> Self {
+    ///
+    /// **It keeps the store, and that is the whole of the 2026-09-07
+    /// fix.** This used to be built with `store: None`, and nothing ever
+    /// attached one afterwards -- `with_metrics` is the only other
+    /// mutator -- so a hub that fell back here refused writes for the
+    /// window as documented and then served the rest of its life
+    /// recording **nothing durably**.
+    ///
+    /// The failure was delayed and silent: a transient read error at
+    /// boot, a week of apparently healthy running, then an ordinary
+    /// restart whose `restore` now succeeds, finds only expired rows and
+    /// comes up empty -- and every envelope accepted in the final window
+    /// before that restart replays cleanly. That is precisely the hole
+    /// this module exists to close, reopened by the code written to
+    /// close it, with `replay_durable_write_ms_total` sitting at zero
+    /// throughout and the boot banner an operator is told to read
+    /// looking entirely normal.
+    ///
+    /// Keeping the store makes the degradation what it was always
+    /// described as: the loss of the previous process's *history*, which
+    /// is exactly what the window waits out, rather than the loss of
+    /// durability itself. If the store is broken for writes as well as
+    /// reads, every claim fails and `verify` answers `GuardUnavailable`
+    /// -- a 503 -- which is the honest outcome and a visible one.
+    ///
+    /// Refusing to start was the other candidate, and it is what
+    /// `ChallengeBook::restore` does two blocks further down `main` on a
+    /// similar argument. Rejected here because the two failures are not
+    /// equivalent: a redeemed challenge this hub cannot see is a solved
+    /// puzzle it will accept a second time, with no window that closes
+    /// it, while this one is closed by waiting. Turning a transient read
+    /// error into a refusal to boot trades a bounded and now-observable
+    /// degradation for an outage.
+    pub fn booting(store: Arc<HubStore>, started_at: DateTime<Utc>) -> Self {
         Self {
             seen: DashMap::new(),
-            store: None,
+            store: Some(store),
             accepting_from: Some(started_at + Duration::seconds(REPLAY_MEMORY_SECONDS)),
             metrics: crate::metrics::Metrics::new(),
         }
@@ -179,6 +239,19 @@ impl ReplayGuard {
     /// releasing the claim so the same envelope can be tried again --
     /// hands back exactly the replayable envelope this is here to
     /// prevent, at the moment the hub has proven it cannot record one.
+    /// Whether this signature has already been claimed, without claiming
+    /// it -- a read used to catch a replay *before* it is charged for.
+    ///
+    /// **Not the authoritative check, and must not be mistaken for one.**
+    /// Two identical envelopes arriving together can both pass this and
+    /// race; what actually decides between them is the atomic insert in
+    /// `claim`, which is why that stays exactly as it is. This only moves
+    /// the common case earlier so a detected replay costs the signer
+    /// neither quota nor an fsync (§3.4).
+    fn already_seen(&self, signature: &[u8]) -> bool {
+        self.seen.contains_key(signature)
+    }
+
     fn claim(&self, signature: Vec<u8>, now: DateTime<Utc>) -> Result<(), AuthError> {
         if self.seen.insert(signature.clone(), now).is_some() {
             self.metrics.replay_signatures_rejected.fetch_add(1, Ordering::Relaxed);
@@ -221,7 +294,7 @@ impl ReplayGuard {
     /// that constant for why the difference is a replay hole rather than
     /// a tuning choice.
     pub fn cleanup(&self, now: DateTime<Utc>) {
-        let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
+        let cutoff = forget_before(now);
         // Measured as a difference rather than counted inside the retain
         // closure: `DashMap::retain` gives no count back, and the
         // before/after length is exact here because `cleanup` is only
@@ -372,17 +445,40 @@ impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
 
         let pubkey = self.verify_signature(now, method, path)?;
 
+        // A replay is caught here rather than at the claim below, and the
+        // difference is who pays for it. The charge is against the key
+        // that *signed* the envelope, so charging first meant anyone
+        // holding one captured signed request could spend the signer's
+        // whole per-key budget by sending it sixty times -- from one
+        // address, comfortably inside that address's own tier -- and lock
+        // that agent out of every authenticated route for the window. The
+        // comment on the ordering claimed this was prevented; it prevents
+        // an attacker *forging* the key, which is a different thing from
+        // replaying one they captured. Reading the plaintext off the wire
+        // is enough, and `--bind 0.0.0.0` is a supported deployment.
+        //
+        // Cheap in the ordinary case too: a detected replay now costs
+        // neither the quota nor the fsync behind the claim.
+        //
+        // `claim` still decides. This read cannot settle a race between
+        // two identical envelopes in flight together, and is not trying
+        // to -- the atomic insert below is what does that, and removing
+        // it because this looks redundant would reintroduce the TOCTOU
+        // the guard exists to prevent.
+        let signature_bytes = hex::decode(&self.signature)
+            .expect("verify_signature already validated this hex string");
+        if guard.already_seen(&signature_bytes) {
+            guard.metrics.replay_signatures_rejected.fetch_add(1, Ordering::Relaxed);
+            return Err(AuthError::Replayed.into());
+        }
+
         charge(&pubkey)?;
 
         // Only claim the signature once it's confirmed genuine --
         // otherwise anyone could burn arbitrary signature slots (and,
         // now, arbitrary disk writes) with junk bytes. A real signature
         // is unforgeable, so this can only ever be claimed by whoever
-        // actually holds the private key. The hex decode below is already
-        // known to succeed -- verify_signature just decoded this exact
-        // same field.
-        let signature_bytes = hex::decode(&self.signature)
-            .expect("verify_signature already validated this hex string");
+        // actually holds the private key.
         guard.claim(signature_bytes, now)?;
 
         Ok(pubkey)
@@ -407,7 +503,8 @@ mod tests {
     #[test]
     fn a_booting_guard_refuses_until_the_last_pre_restart_envelope_has_expired() {
         let boot = Utc::now();
-        let guard = ReplayGuard::booting(boot);
+        let (store, path) = temp_store();
+        let guard = ReplayGuard::booting(store, boot);
 
         // The envelope that outlives all the others is one the previous
         // process accepted from a client whose clock ran fast: stamped a
@@ -423,6 +520,8 @@ mod tests {
         // protect and the hub can serve writes again.
         assert!(!guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS)));
         assert!(!guard.refuses_at(boot + Duration::seconds(REPLAY_MEMORY_SECONDS + 1)));
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -436,8 +535,10 @@ mod tests {
     fn the_window_is_reported_as_its_own_error_not_as_a_replay() {
         let key = PrivateKey::new_key();
         let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
-        let guard = ReplayGuard::booting(Utc::now());
+        let (store, path) = temp_store();
+        let guard = ReplayGuard::booting(store, Utc::now());
         assert!(matches!(envelope.verify_unmetered(&guard, "POST", "/faucet"), Err(AuthError::GuardWarmingUp)));
+        std::fs::remove_file(&path).ok();
 
         // ...and the same envelope sails through once the window closes,
         // proving the refusal was the window and nothing else.
@@ -476,6 +577,53 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// The 2026-09-07 fix, stated as the property it restores: a guard
+    /// that fell back to `booting` still writes to disk, so the process
+    /// *after* it inherits what this one accepted.
+    ///
+    /// Before the fix this failed, in the direction that matters.
+    /// `booting` built the guard with no store and nothing ever attached
+    /// one, so a degraded process recorded nothing for the whole of its
+    /// life -- and the hole did not appear until the *next* restart,
+    /// when a now-succeeding `restore` came up empty and every envelope
+    /// from the degraded process's last window replayed cleanly. Two
+    /// restarts away from the transient error that caused it, with
+    /// nothing in between saying so.
+    ///
+    /// The refusal window is not under test here; the test above covers
+    /// that. This is about what a degraded guard leaves behind.
+    #[test]
+    fn a_degraded_guard_still_records_durably_for_its_successor() {
+        let (store, path) = temp_store();
+        let key = PrivateKey::new_key();
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
+
+        // Booted far enough in the past that its window has closed, so
+        // it is actually serving -- the state the old code spent the
+        // rest of the process in.
+        let degraded = ReplayGuard::booting(
+            store.clone(),
+            Utc::now() - Duration::seconds(REPLAY_MEMORY_SECONDS + 1),
+        );
+        assert!(!degraded.refuses_at(Utc::now()), "the window has closed, so it is serving");
+        assert_eq!(envelope.verify_unmetered(&degraded, "POST", "/faucet").unwrap(), key.public_key());
+        drop(degraded);
+
+        let (successor, restored) = ReplayGuard::restore(store.clone(), Utc::now()).unwrap();
+        assert_eq!(
+            restored, 1,
+            "the degraded process's signature must be on disk -- with `store: None` it was not, \
+             and that is where the replay window silently reopened"
+        );
+        assert!(
+            matches!(envelope.verify_unmetered(&successor, "POST", "/faucet"), Err(AuthError::Replayed)),
+            "an envelope accepted by a degraded hub must not be accepted by its successor"
+        );
+
+        drop(successor);
+        std::fs::remove_file(&path).ok();
+    }
+
     /// Restoring must not resurrect signatures that can no longer be
     /// replayed anyway: they would be pure memory, and the fact that
     /// they are *not* loaded is what keeps a restored guard bounded by
@@ -504,6 +652,45 @@ mod tests {
         assert!(!guard.seen.contains_key(b"stale".as_slice()));
 
         drop(guard);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A signature must outlive the envelope behind it, including the
+    /// fraction of a second the stored timestamp throws away.
+    ///
+    /// `record_seen_signature` stores `timestamp()`, which truncates, so
+    /// a signature claimed at `A` is written as `floor(A)` while its
+    /// envelope stays verifiable until `A + REPLAY_MEMORY_SECONDS`.
+    /// Against an untruncated cutoff it was forgotten up to a second
+    /// early, and a restore landing inside that second brought back a
+    /// guard that would accept the envelope a second time.
+    ///
+    /// Constructed at the exact boundary rather than sampled, because a
+    /// fractional second is not something a test can wait for reliably:
+    /// a row stored at `floor(now) - REPLAY_MEMORY_SECONDS` is precisely
+    /// what the old cutoff dropped and the new one keeps.
+    #[test]
+    fn a_signature_recorded_a_full_window_ago_is_still_restored() {
+        let (store, path) = temp_store();
+        let now = Utc::now();
+
+        let boundary = now.timestamp() - REPLAY_MEMORY_SECONDS;
+        store.record_seen_signature(b"boundary", boundary).unwrap();
+
+        let (guard, _) = ReplayGuard::restore(store.clone(), now).unwrap();
+        assert!(
+            guard.seen.contains_key(b"boundary".as_slice()),
+            "a signature whose stored second is exactly one window old may still belong to a \
+             verifiable envelope -- truncation means the real claim was later than the row says"
+        );
+
+        // And genuinely forgotten once past it, so this is one extra
+        // second rather than an unbounded hold.
+        let (later, _) = ReplayGuard::restore(store.clone(), now + Duration::seconds(2)).unwrap();
+        assert!(!later.seen.contains_key(b"boundary".as_slice()));
+
+        drop(guard);
+        drop(later);
         std::fs::remove_file(&path).ok();
     }
 

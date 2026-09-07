@@ -271,6 +271,42 @@ and plaintext credentials turn a leak into a supply-chain event.
    The fallback mattered most: the envelope it waits out is exactly the
    longest-lived kind.
 
+   **A third hole, and it undid the other two — found by audit and fixed
+   2026-09-07 (branch `auth`).** The fallback is documented above as a window:
+   refuse authenticated writes for twice the drift span, then serve normally.
+   The refusal worked. The rest did not, because `booting` built the guard with
+   no store and nothing ever attached one, so a hub that fell back here served
+   the **rest of its life recording nothing durably**.
+
+   The damage sat two restarts from its cause. A transient read error at boot
+   puts the hub in the fallback; it refuses for four minutes and then runs for
+   a week looking healthy; someone restarts it; `restore` now succeeds, finds
+   only expired rows and comes up empty — and every envelope accepted in the
+   final window before that restart replays cleanly. Throughout,
+   `replay_durable_write_ms_total` sits at zero and the boot banner this
+   section tells operators to read looks entirely normal.
+
+   The guard now keeps its store, so the degradation is what it was always
+   described as — the loss of the *previous* process's history, which the
+   window exists to wait out — rather than the loss of durability itself. If
+   the store is broken for writes too, every claim fails and the request gets a
+   503, which is honest and visible. Refusing to boot was the other candidate
+   and is what `ChallengeBook::restore` does on a similar argument; rejected
+   here because the two failures differ, a redeemed challenge the hub cannot
+   see having no window that closes it. **`hub_replay_guard_degraded` is 1 for
+   the life of a process that came up this way**, which was the other half of
+   the defect: the state was previously unobservable.
+
+   **A fourth, smaller, same date.** The durable row stores `timestamp()`,
+   which truncates to whole seconds, so a signature claimed at `A` was recorded
+   as `floor(A)` while its envelope stayed verifiable to `A` plus the window.
+   Compared against an untruncated cutoff it was forgotten up to a second
+   early. The cutoff now rounds down by a second, in one `forget_before` both
+   the restore and the sweep call. Storing milliseconds was rejected: the
+   column is a second-resolution timestamp today, so changing the unit would
+   make every existing row read as ancient and be dropped on the next boot,
+   reopening the window once.
+
    **Still true:** two hub instances cannot share this. redb is a
    single-process embedded store, so the second instance cannot open the file
    at all. The restart hole is closed; the single-instance ceiling (§6, §11)
@@ -362,6 +398,33 @@ and plaintext credentials turn a leak into a supply-chain event.
    no unmetered path a handler can reach for. The broader lesson is worth
    keeping: an ordering invariant spread across eighteen call sites is not an
    invariant, and the nineteenth route would have got it wrong too.
+
+   **The ordering was still wrong by one step, found by audit 2026-09-07.**
+   The charge landed before a *replay* was detected, and the quota is charged
+   to the key that signed the envelope. So one captured signed request was a
+   lockout: resend it sixty times and the signer is refused on every
+   authenticated route until the window rolls over — from a single address,
+   inside that address's own tier, needing nothing but the ability to read a
+   request off the wire. The comment on the ordering claimed this was
+   prevented; it prevents an attacker *forging* the key, which is a different
+   thing from replaying one they captured, and the distinction had gone
+   unremarked because both are "a request the key did not authorize". A
+   read-only check against the seen set now runs between the verify and the
+   charge, so a detected replay costs the signer neither quota nor the fsync.
+   The atomic insert still decides — the new read cannot settle a race between
+   two identical envelopes in flight and does not try to.
+
+   **And the forwarded-header parser could be walked past.** It dropped
+   entries it could not parse and continued leftward, so a trusted proxy that
+   appended the client's source port — HAProxy and several stock nginx and
+   Azure configurations do — made its own entry vanish, and the rightmost
+   survivor became whatever the client had pre-seeded. A client naming its own
+   bucket, with the traffic charged to an address that sent nothing, behind a
+   proxy configured exactly as §3.2 describes. Every existing test used bare
+   addresses. The parser now accepts `address:port` and bracketed IPv6, and an
+   entry it cannot read stops the walk at the direct peer — the conservative
+   direction, since charging a whole proxy to one bucket is loud and already
+   alerted on, where the old behaviour was silent and favoured the sender.
 
    Still open here: the limits are compile-time constants, so tuning them under
    an active attack means a redeploy — they should become operator knobs
