@@ -39,6 +39,32 @@ use std::time::Instant;
 /// matters.
 pub const REPLAY_MEMORY_SECONDS: i64 = 2 * MAX_REQUEST_DRIFT_SECONDS;
 
+/// The instant before which a claimed signature can no longer be
+/// replayed, and may therefore be forgotten.
+///
+/// `REPLAY_MEMORY_SECONDS` back, **and one second further**. The extra
+/// second is not slack: `HubStore::record_seen_signature` stores
+/// `timestamp()`, which truncates to whole seconds, so a signature
+/// claimed at `A` is recorded as `floor(A)` while the envelope behind it
+/// stays verifiable until `A + REPLAY_MEMORY_SECONDS`. Comparing the
+/// truncated value against an untruncated cutoff therefore forgets it up
+/// to a second early, and with a sixty-second sweep a fraction of
+/// restored signatures got a sub-second window in which they verified
+/// twice.
+///
+/// Rounding the cutoff down rather than storing milliseconds keeps the
+/// stored format a second-resolution unix timestamp, which is what every
+/// existing row is. Changing the unit would make every row already on
+/// disk read as ancient and be dropped on the next boot -- reopening,
+/// once, exactly the window this closes.
+///
+/// The cost is that signatures are held one second longer than strictly
+/// needed. They are still bounded by a fixed window rather than by
+/// uptime, which is the property that matters.
+fn forget_before(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - Duration::seconds(REPLAY_MEMORY_SECONDS + 1)
+}
+
 /// The signed-envelope replay guard: the set of signatures this hub has
 /// already accepted, held in memory for the check and on disk so that
 /// the check survives the process.
@@ -106,8 +132,7 @@ impl ReplayGuard {
         store: Arc<HubStore>,
         now: DateTime<Utc>,
     ) -> std::result::Result<(Self, usize), HubStoreError> {
-        let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
-        let recent = store.load_recent_signatures(cutoff.timestamp())?;
+        let recent = store.load_recent_signatures(forget_before(now).timestamp())?;
         let seen = DashMap::new();
         for (signature, seen_at_unix) in &recent {
             if let Some(seen_at) = DateTime::from_timestamp(*seen_at_unix, 0) {
@@ -269,7 +294,7 @@ impl ReplayGuard {
     /// that constant for why the difference is a replay hole rather than
     /// a tuning choice.
     pub fn cleanup(&self, now: DateTime<Utc>) {
-        let cutoff = now - Duration::seconds(REPLAY_MEMORY_SECONDS);
+        let cutoff = forget_before(now);
         // Measured as a difference rather than counted inside the retain
         // closure: `DashMap::retain` gives no count back, and the
         // before/after length is exact here because `cleanup` is only
@@ -627,6 +652,45 @@ mod tests {
         assert!(!guard.seen.contains_key(b"stale".as_slice()));
 
         drop(guard);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A signature must outlive the envelope behind it, including the
+    /// fraction of a second the stored timestamp throws away.
+    ///
+    /// `record_seen_signature` stores `timestamp()`, which truncates, so
+    /// a signature claimed at `A` is written as `floor(A)` while its
+    /// envelope stays verifiable until `A + REPLAY_MEMORY_SECONDS`.
+    /// Against an untruncated cutoff it was forgotten up to a second
+    /// early, and a restore landing inside that second brought back a
+    /// guard that would accept the envelope a second time.
+    ///
+    /// Constructed at the exact boundary rather than sampled, because a
+    /// fractional second is not something a test can wait for reliably:
+    /// a row stored at `floor(now) - REPLAY_MEMORY_SECONDS` is precisely
+    /// what the old cutoff dropped and the new one keeps.
+    #[test]
+    fn a_signature_recorded_a_full_window_ago_is_still_restored() {
+        let (store, path) = temp_store();
+        let now = Utc::now();
+
+        let boundary = now.timestamp() - REPLAY_MEMORY_SECONDS;
+        store.record_seen_signature(b"boundary", boundary).unwrap();
+
+        let (guard, _) = ReplayGuard::restore(store.clone(), now).unwrap();
+        assert!(
+            guard.seen.contains_key(b"boundary".as_slice()),
+            "a signature whose stored second is exactly one window old may still belong to a \
+             verifiable envelope -- truncation means the real claim was later than the row says"
+        );
+
+        // And genuinely forgotten once past it, so this is one extra
+        // second rather than an unbounded hold.
+        let (later, _) = ReplayGuard::restore(store.clone(), now + Duration::seconds(2)).unwrap();
+        assert!(!later.seen.contains_key(b"boundary".as_slice()));
+
+        drop(guard);
+        drop(later);
         std::fs::remove_file(&path).ok();
     }
 
