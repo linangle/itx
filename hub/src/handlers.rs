@@ -5,7 +5,7 @@ use crate::board::{
     BoardError, CloseReason, ConsensusTaskIntent, Dispute, DisputableTaskIntent, DisputeResolution,
     EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus,
     PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Side, Task, TaskBoard, TaskIntent,
-    TaskKind, TaskStatus, Trade, MAX_PAYOUT_SUBMISSIONS,
+    TaskKind, TaskStatus, Trade, WithdrawalAttempt, MAX_PAYOUT_SUBMISSIONS,
 };
 use crate::rate_limit::QuotaExceeded;
 use crate::AppState;
@@ -2619,48 +2619,17 @@ pub async fn confirm_exchange_deposit(
     Ok(Json(ExchangeAccountDto::from(account)))
 }
 
-/// Persists everything one `TaskBoard::place_order` call may have
-/// touched: the placed order itself, every resting order it matched
-/// against (re-fetched live, since the board already mutated it in
-/// memory), every trade produced, and every distinct account balance
-/// moved by any of it (a match can move up to two accounts' worth of
-/// balance per fill).
-async fn persist_order_and_related(state: &AppState, order: &Order, trades: &[Trade]) {
-    if let Err(e) = state.store.save_order(order) {
-        error!("failed to persist order {}: {e}", order.id);
-    }
-    let mut touched_orders: BTreeSet<Uuid> = BTreeSet::new();
-    let mut touched_accounts: BTreeSet<PublicKey> = BTreeSet::new();
-    for trade in trades {
-        if let Err(e) = state.store.save_trade(trade) {
-            error!("failed to persist trade {}: {e}", trade.id);
-        }
-        touched_orders.insert(trade.buy_order_id);
-        touched_orders.insert(trade.sell_order_id);
-        touched_accounts.insert(trade.buyer.clone());
-        touched_accounts.insert(trade.seller.clone());
-    }
-    touched_orders.remove(&order.id); // already saved above
-
-    let board = state.board.read().await;
-    for order_id in touched_orders {
-        if let Some(resting) = board.get_order(order_id) {
-            if let Err(e) = state.store.save_order(resting) {
-                error!("failed to persist resting order {order_id}: {e}");
-            }
-        }
-    }
-    let accounts: Vec<(PublicKey, ExchangeAccount)> = touched_accounts
-        .into_iter()
-        .map(|pk| {
-            let account = board.exchange_account(&pk);
-            (pk, account)
-        })
-        .collect();
-    drop(board);
-    if let Err(e) = state.store.save_exchange_account_batch(&accounts) {
-        error!("failed to persist exchange account balances after a match: {e}");
-    }
+/// The taker fee owed on a batch of trades, split by the asset it was
+/// charged in: compute when the taker bought, base when it sold (see
+/// `board::TAKER_FEE_BPS`).
+///
+/// Pure, so the totals can be computed while the board's write lock is
+/// held without doing anything that might want the lock itself.
+fn taker_fee_totals(trades: &[Trade]) -> (u64, u64) {
+    trades.iter().fold((0u64, 0u64), |(compute, base), t| match t.taker_side {
+        Side::Buy => (compute + t.taker_fee, base),
+        Side::Sell => (compute, base + t.taker_fee),
+    })
 }
 
 /// Places a limit order against the caller's own exchange ledger
@@ -2676,47 +2645,88 @@ pub async fn place_order(
     Json(envelope): Json<SignedEnvelope<PlaceOrderPayload>>,
 ) -> Result<Json<OrderDto>, ApiError> {
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-    let (order, trades) = state.board.write().await.place_order(
-        pubkey,
-        envelope.payload.side,
-        envelope.payload.price,
-        envelope.payload.quantity,
-        Utc::now(),
-    )?;
-    persist_order_and_related(&state, &order, &trades).await;
-    credit_taker_fees_to_operator(&state, &trades).await;
-    Ok(Json(OrderDto::from(&order)))
-}
 
-/// Routes every trade's taker fee (see `TaskBoard::place_order`'s own
-/// doc comment, and `board::TAKER_FEE_BPS`) to the operator's own
-/// exchange account -- the hub's fee sink, the same role it already
-/// plays for the faucet and every operator-funded task. `TaskBoard`
-/// itself has no notion of "the operator", so this is deliberately a
-/// handler-level concern, not folded into `place_order`. A no-op call
-/// (nothing to credit) is harmless and cheap, so callers don't need to
-/// check `trades.is_empty()` themselves first.
-async fn credit_taker_fees_to_operator(state: &AppState, trades: &[Trade]) {
-    let (compute_fees, base_fees) = trades.iter().fold((0u64, 0u64), |(compute, base), t| match t.taker_side {
-        Side::Buy => (compute + t.taker_fee, base),
-        Side::Sell => (compute, base + t.taker_fee),
-    });
-    if compute_fees == 0 && base_fees == 0 {
-        return;
-    }
-    {
+    // One acquisition of the write lock covers the match, the fee, and
+    // reading back everything the two touched. The fee used to be
+    // credited under a *second* acquisition after the fill had already
+    // been persisted, which meant both the board and the store could be
+    // observed in a state where a trade existed and the fee it charged
+    // did not. Nothing else may run between a fill and its fee.
+    let (order, trades, orders, accounts) = {
         let mut board = state.board.write().await;
+        let (order, trades) = board.place_order(
+            pubkey,
+            envelope.payload.side,
+            envelope.payload.price,
+            envelope.payload.quantity,
+            Utc::now(),
+        )?;
+
+        // `TaskBoard` has no notion of an operator -- it credits whoever
+        // it is handed -- so routing the fee to the hub's own account
+        // stays a handler-level concern, as it always has. What changes
+        // is only where it happens.
+        let (compute_fees, base_fees) = taker_fee_totals(&trades);
         if compute_fees > 0 {
             board.credit_compute(&state.operator_public_key, compute_fees);
         }
         if base_fees > 0 {
             board.credit_base(&state.operator_public_key, base_fees);
         }
-    }
-    let operator_account = state.board.read().await.exchange_account(&state.operator_public_key);
-    if let Err(e) = state.store.save_exchange_account(&state.operator_public_key, &operator_account) {
-        error!("failed to persist operator fee revenue: {e}");
-    }
+
+        // Every record the call may have moved: the placed order, every
+        // resting order it matched against, every counterparty, and the
+        // fee sink when it earned anything. Read back under the same
+        // lock that produced them, so the set handed to the store is one
+        // internally consistent snapshot rather than several.
+        let mut touched_orders: BTreeSet<Uuid> = BTreeSet::new();
+        let mut touched_accounts: BTreeSet<PublicKey> = BTreeSet::new();
+        for trade in &trades {
+            touched_orders.insert(trade.buy_order_id);
+            touched_orders.insert(trade.sell_order_id);
+            touched_accounts.insert(trade.buyer.clone());
+            touched_accounts.insert(trade.seller.clone());
+        }
+        touched_orders.remove(&order.id);
+        // The placer's account, always, and not only when they appear in
+        // a trade. Placing an order *always* moves locked balance, so an
+        // order that crossed nothing still changes its owner's account --
+        // and the old code, which built this set from trades alone, wrote
+        // the order without it. The lock then existed in memory and
+        // nowhere else: a restart reloaded an open order with no locked
+        // funds behind it, free to fill against money its owner was
+        // meanwhile at liberty to spend or withdraw twice.
+        //
+        // It was invisible because the case is masked whenever the same
+        // account also trades in the same call, which is what every test
+        // and every hand-run example did. `exchange-restart`'s kill phase
+        // is what surfaced it.
+        touched_accounts.insert(order.owner.clone());
+        if compute_fees > 0 || base_fees > 0 {
+            touched_accounts.insert(state.operator_public_key.clone());
+        }
+
+        let mut orders = vec![order.clone()];
+        orders.extend(touched_orders.into_iter().filter_map(|id| board.get_order(id).cloned()));
+        let accounts: Vec<(PublicKey, ExchangeAccount)> = touched_accounts
+            .into_iter()
+            .map(|pk| {
+                let account = board.exchange_account(&pk);
+                (pk, account)
+            })
+            .collect();
+
+        (order, trades, orders, accounts)
+    };
+
+    // One commit for the whole fill, and a 500 rather than a 200 if it
+    // fails. See `HubStore::save_fill` for what the old seven commits
+    // could leave on disk.
+    state
+        .store
+        .save_fill(&orders, &trades, &accounts)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(OrderDto::from(&order)))
 }
 
 /// Cancels an open (or partially filled) order, releasing whatever
@@ -2737,14 +2747,28 @@ pub async fn cancel_order(
         ));
     }
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-    let order = state.board.write().await.cancel_order(order_id, &pubkey)?;
-    if let Err(e) = state.store.save_order(&order) {
-        error!("failed to persist cancelled order {order_id}: {e}");
-    }
-    let account = state.board.read().await.exchange_account(&pubkey);
-    if let Err(e) = state.store.save_exchange_account(&pubkey, &account) {
-        error!("failed to persist exchange account for {pubkey} after cancel: {e}");
-    }
+    // The cancelled order and the balance its cancellation released are
+    // read out under the same write lock that produced them, so the pair
+    // handed to the store is internally consistent: reacquiring the lock
+    // afterwards, as this handler used to, could persist whatever a
+    // concurrent caller had left behind in between. Same reasoning as the
+    // escrow confirm handlers (§6.5b).
+    let (order, account) = {
+        let mut board = state.board.write().await;
+        let order = board.cancel_order(order_id, &pubkey)?;
+        let account = board.exchange_account(&pubkey);
+        (order, account)
+    };
+    // Persisting is no longer best-effort. It was two commits with both
+    // errors logged behind a 200, which left the order and its lock able
+    // to disagree on disk -- see `HubStore::save_order_and_account` for
+    // what that bought an attacker. A store failure is now a 500 with
+    // nothing committed, matching what the task handlers have always
+    // done, and the client retries.
+    state
+        .store
+        .save_order_and_account(&order, &pubkey, &account)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(OrderDto::from(&order)))
 }
 
@@ -2770,9 +2794,16 @@ pub async fn get_exchange_account(
 /// their own on-chain address, paid out of the pooled custody address.
 /// The debit is durable *before* the payout is attempted (`debit_for_withdrawal`
 /// is a single atomic check-and-debit, the guard that stops two
-/// concurrent withdrawals from jointly overdrawing the same balance);
-/// any failure after that point credits it back, so a failed or
-/// unpersisted withdrawal never silently loses the caller's balance.
+/// concurrent withdrawals from jointly overdrawing the same balance).
+///
+/// **Whether a failure after that point credits the balance back depends
+/// on whether anything could have reached the node**, and getting that
+/// wrong in the generous direction pays a user twice. It used to credit
+/// back on any error at all: the send is fire-and-forget, so an error
+/// does not mean the node never got the bytes (§6.2 established exactly
+/// that, in the other direction), and a user whose transaction did land
+/// ended up holding the coin and the balance. See
+/// `CustodyPaymentFailure` for the split (§6.5d).
 pub async fn withdraw(
     State(state): State<Arc<AppState>>,
     // The request as it actually arrived: bound into the signature,
@@ -2792,13 +2823,57 @@ pub async fn withdraw(
         state.board.write().await.credit_back_withdrawal(&pubkey, amount);
         return Err(ApiError::Internal(format!("failed to persist withdrawal debit, aborted: {e}")));
     }
-    if let Err(e) = pay_from_custody(&state, &pubkey, amount).await {
-        state.board.write().await.credit_back_withdrawal(&pubkey, amount);
-        let reverted = state.board.read().await.exchange_account(&pubkey);
-        if let Err(e) = state.store.save_exchange_account(&pubkey, &reverted) {
-            error!("failed to persist reverted withdrawal balance for {pubkey}: {e}");
+    if let Err(failure) = pay_from_custody(&state, &pubkey, amount).await {
+        match failure {
+            // Nothing was built, so nothing was sent, and the caller's
+            // balance is unambiguously still owed to them. This is also
+            // the common case -- custody short of a spendable output is
+            // what fails here -- so the safe revert is the one that
+            // actually runs most of the time.
+            CustodyPaymentFailure::NotSent(e) => {
+                state.board.write().await.credit_back_withdrawal(&pubkey, amount);
+                let reverted = state.board.read().await.exchange_account(&pubkey);
+                if let Err(e) = state.store.save_exchange_account(&pubkey, &reverted) {
+                    error!("failed to persist reverted withdrawal balance for {pubkey}: {e}");
+                }
+                return Err(ApiError::Internal(format!(
+                    "withdrawal could not be built, nothing was sent, please retry: {e}"
+                )));
+            }
+            // A transaction was built and handed to the node, and the
+            // send reported an error -- which does not establish that the
+            // node never read it. Reverting here is what paid a user
+            // twice. The debit stands, and the attempt is recorded
+            // durably so an operator can settle it by hand until a
+            // resolver exists.
+            CustodyPaymentFailure::MaybeSent { error, attempt } => {
+                if let Err(e) = state.store.save_withdrawal_attempt(&attempt) {
+                    // The record is the only thing that makes this
+                    // recoverable, so failing to write it is worth a
+                    // louder line than the send failure itself.
+                    error!(
+                        "could not record unacknowledged withdrawal {} of {amount} to {pubkey}, \
+                         which now needs finding by hand: {e}",
+                        attempt.id
+                    );
+                } else {
+                    warn!(
+                        "withdrawal {} of {amount} to {pubkey} was submitted and not \
+                         acknowledged: the ledger stays debited and the attempt is recorded. \
+                         See docs/deployment.md 10.4. Send error: {error}",
+                        attempt.id
+                    );
+                }
+                state
+                    .metrics
+                    .unresolved_withdrawals
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Err(ApiError::Internal(format!(
+                    "withdrawal was submitted but not acknowledged and is being held for \
+                     review; do not retry, your balance is not lost: {error}"
+                )));
+            }
         }
-        return Err(ApiError::Internal(format!("withdrawal payout failed, please retry: {e}")));
     }
     let final_account = state.board.read().await.exchange_account(&pubkey);
     Ok(Json(ExchangeAccountDto::from(final_account)))
@@ -4814,16 +4889,83 @@ async fn submit_bounty_payout(
 /// which key/lock it uses: a *different* UTXO set than the operator's
 /// own, so this never contends with an unrelated operator payout (see
 /// `AppState::exchange_custody_payout_lock`'s own doc comment).
-async fn pay_from_custody(state: &AppState, recipient: &PublicKey, amount: u64) -> anyhow::Result<()> {
+/// Why a custody payment did not complete, and -- the only part that
+/// changes what a caller may safely do about it -- whether any bytes
+/// could have reached the node.
+///
+/// `pay_from` collapses both into one `anyhow::Error`, which is fine for
+/// its other callers: a lost faucet grant or escrow refund is retried by
+/// the sweep against live balances, so neither has to decide anything
+/// from the error alone. A withdrawal does, because the compensating
+/// action is crediting a user's balance back, and doing that after a
+/// transaction that actually landed pays them twice (§6.5d).
+enum CustodyPaymentFailure {
+    /// The transaction was never built -- custody had no spendable
+    /// output, or the node could not be asked. Nothing was sent, so a
+    /// caller may safely undo whatever it did in anticipation.
+    NotSent(anyhow::Error),
+    /// The transaction was built, signed and written to the node, and
+    /// the write reported an error. Writing to a socket whose peer has
+    /// gone does not fail, and a fire-and-forget send has no
+    /// acknowledgement to wait for, so this is precisely the state where
+    /// the hub cannot tell a payment that never left from one that
+    /// arrived. The attempt is carried out so the caller can record it.
+    MaybeSent {
+        error: anyhow::Error,
+        attempt: WithdrawalAttempt,
+    },
+}
+
+/// Pays `recipient` out of the pooled custody wallet, distinguishing a
+/// payment that was never built from one that may have gone out.
+///
+/// Builds and submits as two steps rather than calling `pay_from`, which
+/// is the same split `submit_task_payout` already makes and for a
+/// related reason: it needs the built transaction in hand to describe
+/// what it is about to send.
+async fn pay_from_custody(
+    state: &AppState,
+    recipient: &PublicKey,
+    amount: u64,
+) -> std::result::Result<(), CustodyPaymentFailure> {
     let _guard = state.exchange_custody_payout_lock.lock().await;
-    pay_from(
+    let recipients = [(recipient.clone(), amount)];
+    let tx = build_payment_from(
         state,
         &state.exchange_custody_private_key,
         &state.exchange_custody_public_key,
-        &[(recipient.clone(), amount)],
+        &recipients,
         &state.exchange_custody_public_key,
     )
     .await
+    .map_err(CustodyPaymentFailure::NotSent)?;
+
+    // Positional for the same reason `submit_task_payout` is:
+    // `build_multi_payment` emits one output per recipient in order and
+    // appends change last. The check is what makes that coupling safe --
+    // if the layout ever changes this fails here rather than recording a
+    // hash that makes every later resolution a lie.
+    let output = tx.outputs.first().filter(|o| o.pubkey == *recipient && o.value == amount);
+    let Some(output) = output else {
+        return Err(CustodyPaymentFailure::NotSent(anyhow::anyhow!(
+            "built withdrawal transaction does not pay {recipient} {amount} at output 0"
+        )));
+    };
+    let attempt = WithdrawalAttempt {
+        id: Uuid::new_v4(),
+        owner: recipient.clone(),
+        amount,
+        output_hash: output.hash(),
+        spent_inputs: tx.inputs.iter().map(|i| i.prev_transaction_output_hash).collect(),
+        source: state.exchange_custody_public_key.clone(),
+        submitted_at: Utc::now(),
+    };
+
+    state
+        .node
+        .submit_transaction(tx)
+        .await
+        .map_err(|error| CustodyPaymentFailure::MaybeSent { error, attempt })
 }
 
 /// Sweeps one confirmed `FundExchangeAccount` deposit into the pooled

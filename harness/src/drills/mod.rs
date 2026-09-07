@@ -20,6 +20,7 @@ use std::time::Duration;
 
 pub mod escrow_refund;
 pub mod escrow_restart;
+pub mod exchange_restart;
 pub mod node_crash;
 pub mod payout_ceiling;
 pub mod quota_isolation;
@@ -102,6 +103,7 @@ pub async fn wait_until_funded(chain: &ChainView, pubkey: &PublicKey, target: u6
 pub const ALL: &[&str] = &[
     "node-crash",
     "escrow-restart",
+    "exchange-restart",
     "escrow-refund",
     "replay-storm",
     "rate-limit-tiers",
@@ -121,6 +123,7 @@ pub async fn run(
     match name {
         "node-crash" => node_crash::run(repo, bin_dir, work_dir).await,
         "escrow-restart" => escrow_restart::run(repo, bin_dir, work_dir).await,
+        "exchange-restart" => exchange_restart::run(repo, bin_dir, work_dir).await,
         "escrow-refund" => escrow_refund::run(repo, bin_dir, work_dir).await,
         "replay-storm" => replay_storm::run(repo, bin_dir, work_dir).await,
         "rate-limit-tiers" => rate_limit_tiers::run(repo, bin_dir, work_dir).await,

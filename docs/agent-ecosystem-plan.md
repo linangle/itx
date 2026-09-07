@@ -167,7 +167,8 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
     every task. Covers task bounties only; faucet grants, escrow disbursement
     and exchange withdrawals still submit and assume, listed in §6.5 — whose
     escrow bullet was amended 2026-09-07 once it turned out the status flip it
-    described never reached disk at all (§6.5c).
+    described never reached disk at all (§6.5c), and whose withdrawal bullet
+    was half-closed the same day (§6.5d).
 11. Incident basics: monitoring/alerts, `security.txt`, runbook, encrypted backups
     with one restore drill done (§9). **Mostly done.** `security.txt`, the
     runbook and the backup/restore drill landed 2026-09-05
@@ -1018,9 +1019,11 @@ for any future action worth pricing.
    `Verified` nothing revisited it.
 
    A bounty now waits for chain evidence, and the case above self-heals with
-   no operator. **What is not fixed:** faucet grants, escrow disbursement and
-   exchange withdrawals still submit and assume, each being the same fix
-   against a different status field. And §6.5b below is the deposit-side twin,
+   no operator. **What is not fixed:** faucet grants and escrow disbursement
+   still submit and assume, each being the same fix against a different status
+   field; exchange withdrawals were half-closed 2026-09-07, keeping the debit
+   and recording an attempt rather than reverting on a signal that cannot
+   carry the claim (§6.5d). And §6.5b below is the deposit-side twin,
    which this work does not touch — it was fixed separately the same day, by a
    redb transaction rather than by chain evidence, because a deposit's problem
    is two local commits and a payout's is a write to another process. Detail in
@@ -1187,6 +1190,8 @@ for any future action worth pricing.
    | `quota-isolation` | §3.4's quota is per identity | Confirmed — 60 served, bystander untouched |
    | `payout-ceiling` | §6.4b is about one per block | Confirmed — exactly one, at every height. **Refuted** since 2026-09-07: 25.13 per block, busiest 26, see §6.4b |
    | `signed-write-cost` | Item 3: verify CPU is the write cost | **Refuted** — the fsync is 15–22x the verify |
+   | `exchange-restart` (clean) | §6.5d's ledger survives a restart | Confirmed — and it passes pre-fix too, so it is not evidence; see §6.5d |
+   | `exchange-restart` (SIGKILL) | §6.5d's fill is crash-safe | Pre-fix **Refuted** 3 of 3, fixed inconclusive 2 of 2 |
 
    Both refutations are recorded where they belong: item 3 above, and item 5b,
    which is a bug this list did not know about.
@@ -1501,8 +1506,14 @@ other payment paths still submit and assume:
   settlement re-ran. The status is durable as of §6.5c; what remains here is
   only the original point, that a successful `submit_transaction` is not
   evidence the money moved.
-- **Exchange withdrawals** (`pay_from_custody`). The ledger is debited and the
-  on-chain leg is fire-and-forget.
+- **Exchange withdrawals** (`pay_from_custody`). **Half-closed 2026-09-07
+  (§6.5d).** The ledger is still debited before an on-chain leg that is still
+  fire-and-forget, but the handler no longer *acts* on a failure it cannot
+  read: a payment that was never built reverts, and one that may have gone out
+  leaves the debit standing and records a durable `WithdrawalAttempt` instead
+  of crediting the balance back. What remains is the resolver — the three-way
+  rule already applies to these unchanged, so it is a sweep step rather than a
+  mechanism, and §6.5d records the three things to settle before writing it.
 
 Each is a smaller version of the same fix against a different status field.
 None of them is on the launch-blocking list, and doing them here would have
@@ -1980,6 +1991,150 @@ reintroduced bug turns confirmed into refuted, which `compare` exits non-zero
 on. The rule that falls out is worth carrying to the rest of the set: **baseline
 a drill on its pre-fix run when it samples, and on its post-fix run when it
 asserts.**
+
+### 6.5d The exchange, which nothing had ever drilled
+
+Found by the same audit as §6.5c on 2026-09-07, built the same day (branch
+`exchange`). The same disease again, in the surface v1 is launching on: a fill
+reached disk as up to seven independent commits, a cancellation as two, and a
+withdrawal acted on a failure signal that could not carry the claim it was being
+read for. Workspace went 421 → 432.
+
+**Why these survived §6.5b**, which found this exact pattern a day earlier and
+fixed it in the escrow handlers: **every one of the seven drills pointed at
+tasks, payouts, rate limits or the replay guard.** The exchange was outside the
+instrument. A fix arrived at by a drill lands where the drill was pointed, and
+the same shape elsewhere stays invisible until somebody goes looking.
+
+#### A fill was seven commits, and every failure returned 200
+
+`persist_order_and_related` wrote the taker order, one commit per trade, one per
+resting order it matched, and a batch of the two counterparties; then the fee was
+credited under a *second* acquisition of the board lock and written as a fifth
+kind of write. Every one logged its error and the handler returned the filled
+order with a 200.
+
+Two consequences. A disk error told the client its trade had executed while
+nothing was written at all. And a process that stopped partway left a resting
+order recorded `Filled` beside balances that never moved — the expensive one,
+because `cancel_order` refuses an order that is not `Open`, so the maker's locked
+funds could never be released again by any call.
+
+One `in_one_write_txn` now covers every order, trade and account, and the fee
+joins it. The fee also moved *inside* the same lock acquisition as the match, so
+nothing can observe a trade whose fee has not been charged. A store failure is a
+500 with nothing committed, matching what the task handlers have always done.
+Reordering the writes was rejected on §6.5b's argument: it only makes the failure
+a better failure, and leaves an interval whose safety rests on nobody ever adding
+a step between two writes.
+
+#### Cancelling split the order from its lock, and that one needed no crash
+
+`TaskBoard::cancel_order` flips the order and releases its locked balance under
+one lock, correctly; the handler then wrote them as two commits and swallowed
+both errors. If the account write landed and the order write did not, the order
+reloaded `Open` with its lock already released — the owner could withdraw the
+freed balance while the order stayed matchable, and the fill then debited a
+balance that was no longer there. The only one of the three reachable without a
+crash, which is why it was fixed first.
+
+#### A withdrawal reverted on a signal that could not carry the claim
+
+`withdraw` credited the caller's balance back on *any* error from the custody
+payment. The send is fire-and-forget, so an error does not establish the node
+never received the bytes — §6.2 established precisely that, in the other
+direction, and this is the direction that costs money. An agent whose transaction
+did land held the coin and the balance, and could withdraw the same money again.
+
+The two cases are now distinguished where the difference is actually known rather
+than guessed at afterwards. `pay_from_custody` builds and submits as two steps,
+as `submit_task_payout` already did, and returns `NotSent` or `MaybeSent`.
+`NotSent` — the transaction was never built, which is what custody short of a
+spendable output produces, and the common failure by a wide margin — reverts
+exactly as before. `MaybeSent` does not: the debit stands, a durable
+`WithdrawalAttempt` is written first, and the agent is told plainly not to retry
+and that its balance is not lost.
+
+**The resolver is deliberately not built, and the reason is a collision worth
+knowing.** A withdrawal's attempt is the same shape as a `PayoutAttempt` minus
+the task, so the three-way rule resolves it unchanged — the rule was lifted into
+`resolve_against` and both are now thin wrappers over it, with a test that they
+cannot disagree. What is missing is a sweep step, not a mechanism. Three things
+have to be settled first:
+
+- **The custody fan-out (§6.4b) can consume the evidence.** A resolver's most
+  useful verdict is "never landed", reached by finding the transaction's inputs
+  still unspent at custody. The fan-out reshapes that wallet every sweep and
+  draws its inputs from the same set, so it can legitimately spend the outputs a
+  lost withdrawal would be identified by — after which the withdrawal reads
+  ambiguous rather than lost, permanently. A resolver ignoring this could not
+  rescue the withdrawals it exists for.
+- **A resend draws on pooled custody**, not a dedicated escrow address the way a
+  task payout does, so it competes with every other withdrawal and can pay one
+  user out of another's money.
+- **There is no terminal state to give up into.** A task carries `PayoutFailed`;
+  a withdrawal has no object to carry anything, so abandoning one means either
+  crediting back — reintroducing the double payment — or leaving the debit
+  standing forever. That is a product promise, not an implementation detail.
+
+Until then the record makes the money findable: boot lists what it finds and sets
+`hub_unresolved_withdrawals_at_boot`, the handler counts them, and
+`docs/deployment.md` §10.4 is the manual procedure, written as the three rows so
+it reads as the resolver's spec.
+
+#### The drill, and the two ways it was wrong first
+
+`harness drill exchange-restart`. Two phases, because one of them cannot see the
+bug and saying so is worth more than deleting it.
+
+The **clean-restart phase asserts** — trade, restart gracefully, check that base
+and compute conserve, that no locked balance sits behind a non-open order, and
+that the book agrees with the locks. It was written on the reasoning §6.5c's
+drill earned: a ledger either balances after a restart or it does not. **That
+reasoning does not transfer, and the A/B caught it.** It reports CONFIRMED
+against a pre-fix binary, because a graceful restart never lands inside the
+window — seven commits that all succeed leave exactly the state one commit
+leaves. `escrow-refund` could assert because its bug wrote `Refunded` *nowhere*,
+so every restart showed it; this bug writes everything, just not atomically. The
+phase is kept as a standing check on the ordinary path and carries an
+`accepted_finding` saying it is not evidence the fill is crash-safe.
+
+The **sigkill phase samples**, and discriminates. A/B on the same machine in the
+same session: **pre-fix REFUTED three runs of three, fixed INCONCLUSIVE two of
+two.**
+
+Two corrections it needed, both the same lesson in different clothes.
+
+**The conservation arithmetic double-counted.** It summed `base_balance` and
+`locked_base`, but the hub computes what an account may spend as the difference
+of the two, so the balance already includes the locked portion. The totals rose
+and fell with the size of the open book, and the drill reported a fill's worth of
+compute destroyed on a hub that had destroyed nothing — on *both* builds, which
+is what gave it away. A discriminator that fires on the fixed build is as useless
+as one that stays quiet on the broken one, and only an A/B shows either.
+
+**And the first shape could not land the kill.** Eight bids each taking one ask
+left a window microseconds wide inside a handler lasting milliseconds, and it
+reported INCONCLUSIVE against the pre-fix binary three runs of three. The old
+code wrote one commit per trade and one per resting order filled, so a bid
+sweeping twenty-five asks writes about fifty commits where a bid taking one
+writes five. Widening the sweep widened the target by the same factor and costs
+the fixed build nothing, which writes one commit however many orders it crossed.
+**Widening the target is a lever a sampling drill has and mostly does not use.**
+
+#### The bug the drill found, which the fix had introduced
+
+The return on the whole exercise. The account set handed to the new
+single-transaction writer was built from the *trades*, so an order that crossed
+nothing had its order persisted and its owner's lock not. The lock lived in
+memory and nowhere else: a restart reloaded an open order with no locked funds
+behind it, free to fill against money its owner was meanwhile at liberty to spend
+or withdraw twice.
+
+It was invisible because the case is masked whenever the same account also trades
+in the same call — which is what every test and every hand-run example did. It is
+what the pre-fix runs now refute on, and the placer's account is always in the
+set.
 
 ## 7. Getting agents onto ITX
 

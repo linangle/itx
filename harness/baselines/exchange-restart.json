@@ -1,0 +1,69 @@
+{
+  "name": "drill: exchange-restart",
+  "started_at": "2026-09-07T18:59:49.494304Z",
+  "environment": {
+    "commit": "b8c1af395373f250bc22024e3906e09e9b8e9c1f",
+    "dirty": true,
+    "profile": "release",
+    "host": "Darwin arm64",
+    "cpus": 10,
+    "binaries": {
+      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/hub": "44a08e2fa8fbd78474971444767296b1fe5eb01b5eebb780909647ac3d108afc",
+      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
+      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+    }
+  },
+  "sections": [
+    {
+      "title": "Trade, restart the hub cleanly, and check the ledger balances",
+      "plan_item": "§6.5d",
+      "verdict": "confirmed",
+      "facts": {
+        "compute_issued_by_settlement": 10000,
+        "open_orders_after_restart": 1,
+        "open_orders_before_restart": 1,
+        "stranded_locks_after_restart": 0,
+        "total_base_after_restart": 9998000,
+        "total_base_before_restart": 9998000,
+        "total_compute_after_restart": 10000,
+        "total_compute_before_restart": 10000,
+        "trades_after_restart": 1,
+        "trades_before_restart": 1,
+        "unbacked_orders_after_restart": 0
+      },
+      "notes": [],
+      "findings": [],
+      "accepted": [
+        "this phase does not demonstrate the §6.5d fill bug and cannot: it passed against a pre-fix binary in the A/B. It is kept as a standing invariant check for the ordinary path -- a future change that breaks conservation without a crash shows up here."
+      ],
+      "healthy_verdict": "confirmed",
+      "latency": []
+    },
+    {
+      "title": "Kill the hub mid-fill, restart, and check the ledger survived",
+      "plan_item": "§6.5d",
+      "verdict": "inconclusive",
+      "facts": {
+        "asks_crossed_per_bid": 25,
+        "asks_rested": 60,
+        "bids_answered_ok": 0,
+        "bids_in_flight_at_the_kill": 24,
+        "bids_never_answered": 5,
+        "handler_micros": 5000,
+        "stranded_locks_after_restart": 0,
+        "total_base_after_restart": 9998000,
+        "total_base_before_kill": 9998000,
+        "total_compute_after_restart": 10000,
+        "total_compute_before_kill": 10000,
+        "unbacked_orders_after_restart": 0
+      },
+      "notes": [
+        "No divergence found. That is consistent with the fix and does not establish it: the window is between two commits and whether a kill lands inside one is chance. What signs this off is the shape of the fix -- one transaction has no interval -- plus the store-level test that a failure partway commits none of it, and an A/B against a pre-fix binary."
+      ],
+      "findings": [],
+      "accepted": [],
+      "healthy_verdict": "inconclusive",
+      "latency": []
+    }
+  ]
+}

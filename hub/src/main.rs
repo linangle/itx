@@ -775,6 +775,26 @@ async fn main() -> Result<()> {
         restored_payouts,
     );
 
+    // Withdrawals whose on-chain leg was submitted and never
+    // acknowledged. Nothing resolves these yet, so they are read only to
+    // be counted and said out loud: each one is a debited ledger balance
+    // whose coin an operator has to account for by hand, and a restart is
+    // exactly when somebody is looking (plan §6.5d,
+    // `docs/deployment.md` §10.4).
+    let unresolved_withdrawals = store.load_all_withdrawal_attempts()?;
+    if !unresolved_withdrawals.is_empty() {
+        warn!(
+            "{} withdrawal(s) submitted and never acknowledged are awaiting review; \
+             see docs/deployment.md 10.4",
+            unresolved_withdrawals.len()
+        );
+        for attempt in &unresolved_withdrawals {
+            warn!(
+                "  withdrawal {} of {} to {} submitted at {}",
+                attempt.id, attempt.amount, attempt.owner, attempt.submitted_at
+            );
+        }
+    }
     // Cross-check what just came off disk, before anything is served
     // from it. Every table above was loaded independently and every row
     // blind-inserted, so records that disagree simply arrive
@@ -828,6 +848,12 @@ async fn main() -> Result<()> {
     // hold their own handle to it and must report into the same table the
     // router will later render.
     let metrics = metrics::Metrics::new();
+    // Same reasoning as the reconciliation gauges below: published as
+    // soon as the table exists, so a scrape of a freshly started hub
+    // already says how many withdrawals it inherited unresolved.
+    metrics
+        .unresolved_withdrawals_at_boot
+        .store(unresolved_withdrawals.len() as u64, std::sync::atomic::Ordering::Relaxed);
     // Published as soon as the table exists, so the first scrape of a
     // freshly started hub already carries the verdict on the store it
     // started from. The reconciliation itself ran earlier -- before
@@ -6553,6 +6579,45 @@ mod tests {
         assert!(
             submitted[0].outputs.iter().any(|o| o.pubkey == owner_key.public_key() && o.value == 2_000),
             "must actually pay the withdrawing agent, out of pooled custody"
+        );
+    }
+
+    /// The safe half of the split in `CustodyPaymentFailure`: a payment
+    /// that could not be *built* never reached the node, so crediting the
+    /// balance back is correct and still happens.
+    ///
+    /// This is also the common failure by a wide margin -- custody short
+    /// of a spendable output is what fails here -- which is why the split
+    /// is worth having rather than refusing to revert at all. Nothing is
+    /// recorded for review, because there is nothing unresolved: the
+    /// money never moved and the caller has their balance.
+    #[tokio::test]
+    async fn a_withdrawal_that_was_never_built_credits_the_balance_back() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        // Custody is deliberately left unfunded, so building the payment
+        // fails before anything is signed or sent.
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        let resp = hub
+            .client
+            .post(format!("{}/exchange/withdraw", hub.base_url))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 2_000 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+
+        let account = hub.state.board.read().await.exchange_account(&owner_key.public_key());
+        assert_eq!(
+            account.base_balance, 5_000,
+            "nothing was sent, so the caller is still owed every unit of it"
+        );
+        assert!(
+            hub.state.store.load_all_withdrawal_attempts().unwrap().is_empty(),
+            "a payment that was never built leaves nothing for an operator to resolve"
         );
     }
 

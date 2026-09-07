@@ -1,6 +1,9 @@
 use tracing::*;
 
-use crate::board::{ExchangeAccount, Order, PayoutAttempt, PendingDeposit, Reputation, Task, Trade};
+use crate::board::{
+    ExchangeAccount, Order, PayoutAttempt, PendingDeposit, Reputation, Task, Trade,
+    WithdrawalAttempt,
+};
 use btclib::crypto::PublicKey;
 use redb::{ReadableTable, TableDefinition};
 use std::path::Path;
@@ -99,6 +102,8 @@ const REPLAY_GUARD_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("re
 // one row per unpaid payout, and every row leaves within
 // `MAX_PAYOUT_SUBMISSIONS` sweeps of resolving.
 const PAYOUT_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("payout_attempts");
+const WITHDRAWAL_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("withdrawal_attempts");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -131,7 +136,12 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// and it has to go up at open rather than at first write: from the
 /// moment a current binary has the store, it may put a row in a table
 /// the old one cannot see.
-const SCHEMA_VERSION: u32 = 2;
+///
+/// **3 on the exchange work**, which added `withdrawal_attempts`. The
+/// first bump under the new policy, and the case it was written for: a
+/// rolled-back binary that could not see that table would read a debited
+/// ledger with no record of the payment that debited it (§6.5d).
+const SCHEMA_VERSION: u32 = 3;
 
 /// The `PAYOUT_ATTEMPTS_TABLE` key for one payout: the task's uuid
 /// followed by the recipient's SEC1 bytes. Uuid bytes are fixed-width,
@@ -227,6 +237,7 @@ impl HubStore {
             write_txn.open_table(REPLAY_GUARD_TABLE)?;
             write_txn.open_table(FAUCET_CHALLENGES_TABLE)?;
             write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
+            write_txn.open_table(WITHDRAWAL_ATTEMPTS_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
             let stored_version = match meta.get(SCHEMA_VERSION_KEY)? {
@@ -540,6 +551,121 @@ impl HubStore {
                 REPUTATION_TABLE,
                 pubkey.to_sec1_bytes().as_slice(),
                 reputation,
+            )
+        })
+    }
+
+    /// A withdrawal that was handed to the node and not acknowledged.
+    ///
+    /// Written *before* the client is told the withdrawal failed, and
+    /// never removed by this build, because nothing resolves these yet.
+    /// That ordering is the whole point: the alternative the handler used
+    /// to take was to credit the balance back on any send error, which
+    /// pays a user twice whenever the transaction did in fact land. A
+    /// record an operator can find is worth more than a revert that is
+    /// right most of the time (§6.5d).
+    pub fn save_withdrawal_attempt(&self, attempt: &WithdrawalAttempt) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(
+                txn,
+                WITHDRAWAL_ATTEMPTS_TABLE,
+                attempt.id.as_bytes().as_slice(),
+                attempt,
+            )
+        })
+    }
+
+    /// Every unresolved withdrawal attempt. Read at boot for the gauge
+    /// that tells an operator how many there are, and the read a
+    /// resolver will start from.
+    pub fn load_all_withdrawal_attempts(&self) -> Result<Vec<WithdrawalAttempt>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(WITHDRAWAL_ATTEMPTS_TABLE)?;
+        let mut attempts = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let attempt: WithdrawalAttempt = ciborium::from_reader(value.value())
+                .map_err(|e| HubStoreError::Serialization(e.to_string()))?;
+            attempts.push(attempt);
+        }
+        Ok(attempts)
+    }
+
+    /// Everything one match touched, in one commit: the placed order,
+    /// every resting order it filled against, every trade, and every
+    /// account balance the fills and the taker fee moved.
+    ///
+    /// `place_order`'s handler used to write these as up to seven
+    /// independent transactions -- the taker order, one per trade, one
+    /// per resting order, a batch of the two counterparties, and the fee
+    /// sink under a separate lock afterwards -- and log every failure
+    /// while returning the filled order with a 200. Two things followed.
+    /// A disk error told the client its trade had executed when nothing
+    /// had been written at all. And a process that stopped partway left
+    /// a resting order recorded `Filled` beside balances that never
+    /// moved: because `cancel_order` refuses an order that is not
+    /// `Open`, the maker's locked funds could then never be released by
+    /// anyone, for the life of the deployment.
+    ///
+    /// A fill is one economic event and it takes one commit. Ordering
+    /// the writes more carefully was rejected for the reason §6.5b gives:
+    /// it only makes the failure a better failure, and leaves an interval
+    /// whose safety depends on nobody ever adding a step between two
+    /// writes. A single transaction has no interval (§6.5d).
+    pub fn save_fill(
+        &self,
+        orders: &[Order],
+        trades: &[Trade],
+        accounts: &[(PublicKey, ExchangeAccount)],
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            for order in orders {
+                stage_record(txn, ORDERS_TABLE, order.id.as_bytes().as_slice(), order)?;
+            }
+            for trade in trades {
+                stage_record(txn, TRADES_TABLE, trade.id.as_bytes().as_slice(), trade)?;
+            }
+            for (pubkey, account) in accounts {
+                stage_record(
+                    txn,
+                    EXCHANGE_ACCOUNTS_TABLE,
+                    pubkey.to_sec1_bytes().as_slice(),
+                    account,
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// An order and its owner's ledger balance, committed together --
+    /// `cancel_order`'s writer, and the one place in the exchange where
+    /// splitting the two was exploitable with no crash at all.
+    ///
+    /// `TaskBoard::cancel_order` flips the order to `Cancelled` and
+    /// releases its locked balance under one lock, which is right. The
+    /// handler then wrote them as two commits and swallowed both errors
+    /// behind a 200. If the account write landed and the order write did
+    /// not, the order reloaded `Open` with its lock already released: the
+    /// owner could withdraw the freed balance while the order stayed
+    /// matchable on the book, and the fill then debited a balance that
+    /// was no longer there. The reverse order stranded the lock forever,
+    /// because `cancel_order` refuses an order that is not `Open`.
+    ///
+    /// An order's status and the balance that status implies are one
+    /// fact, so they take one commit (§6.5d).
+    pub fn save_order_and_account(
+        &self,
+        order: &Order,
+        owner: &PublicKey,
+        account: &ExchangeAccount,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, ORDERS_TABLE, order.id.as_bytes().as_slice(), order)?;
+            stage_record(
+                txn,
+                EXCHANGE_ACCOUNTS_TABLE,
+                owner.to_sec1_bytes().as_slice(),
+                account,
             )
         })
     }
@@ -2124,5 +2250,350 @@ mod tests {
         assert_eq!(deposits[0].status, crate::board::EscrowStatus::Consumed);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// A withdrawal attempt survives the restart it exists for.
+    ///
+    /// The whole value of the record is that it outlives the process
+    /// that could not finish the payment, so round-tripping it is the
+    /// property rather than a formality.
+    #[test]
+    fn round_trips_a_withdrawal_attempt() {
+        let path = temp_db_path("withdrawal_attempt_roundtrip");
+        let store = HubStore::open_or_create(&path).unwrap();
+
+        let owner = PrivateKey::new_key().public_key();
+        let custody = PrivateKey::new_key().public_key();
+        let attempt = crate::board::WithdrawalAttempt {
+            id: Uuid::new_v4(),
+            owner: owner.clone(),
+            amount: 2_000,
+            output_hash: Hash::hash_bytes(b"the output paying the withdrawer"),
+            spent_inputs: vec![Hash::hash_bytes(b"a custody output")],
+            source: custody.clone(),
+            submitted_at: Utc::now(),
+        };
+        store.save_withdrawal_attempt(&attempt).unwrap();
+
+        let loaded = store.load_all_withdrawal_attempts().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], attempt);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A cancelled order and the balance its cancellation released, in
+    /// the exchange's version of the same claim.
+    ///
+    /// This is the pair whose split was exploitable without a crash:
+    /// a reader that saw the released lock but not the cancellation
+    /// would be reading an order still matchable on the book against an
+    /// account that has already had the money back.
+    #[test]
+    fn a_cancelled_order_and_its_released_lock_are_never_visible_apart() {
+        let path = temp_db_path("atomic_cancel");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (owner, order, account) = cancelled_order_pair();
+
+        let before = store.db.begin_read().unwrap();
+        store.save_order_and_account(&order, &owner, &account).unwrap();
+
+        let orders_then = before.open_table(ORDERS_TABLE).unwrap();
+        let accounts_then = before.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        assert!(orders_then.get(order.id.as_bytes().as_slice()).unwrap().is_none());
+        assert!(accounts_then.get(owner.to_sec1_bytes().as_slice()).unwrap().is_none());
+
+        let orders = store.load_all_orders().unwrap();
+        let accounts = store.load_all_exchange_accounts().unwrap();
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].status, crate::board::OrderStatus::Cancelled);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(
+            accounts[0].1.locked_base, 0,
+            "the lock is released in the same commit that cancels the order, or a restarted \
+             hub reads one without the other"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The exchange's twin of
+    /// `two_separate_commits_leave_a_window_where_the_task_exists_alone`,
+    /// and the reason this pair was ranked above the fill itself.
+    ///
+    /// It characterises the *old* handler: `save_exchange_account`
+    /// followed by `save_order`. Both still exist and are still correct
+    /// alone, so this passes before and after the fix. What it makes
+    /// executable is the profitable window -- a reader here sees an
+    /// account whose lock is gone beside an order still reading `Open`,
+    /// which is an order the book will still match using money its owner
+    /// is already free to withdraw.
+    #[test]
+    fn two_separate_commits_leave_a_window_where_the_lock_is_gone_but_the_order_is_open() {
+        let path = temp_db_path("cancel_two_commit_window");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (owner, cancelled, released) = cancelled_order_pair();
+
+        // The order as it still stands on disk from when it was placed:
+        // Open, with its balance locked.
+        let mut resting = cancelled.clone();
+        resting.status = crate::board::OrderStatus::Open;
+        let mut locked = released.clone();
+        locked.locked_base = 500;
+        store.save_order(&resting).unwrap();
+        store.save_exchange_account(&owner, &locked).unwrap();
+
+        // Now cancel it the way the handler used to: account first.
+        store.save_exchange_account(&owner, &released).unwrap();
+        let crashed_here = store.db.begin_read().unwrap();
+        store.save_order(&cancelled).unwrap();
+
+        let orders = crashed_here.open_table(ORDERS_TABLE).unwrap();
+        let accounts = crashed_here.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        let order_bytes = orders.get(cancelled.id.as_bytes().as_slice()).unwrap().unwrap();
+        let seen: Order = ciborium::from_reader(order_bytes.value()).unwrap();
+        let account_bytes = accounts.get(owner.to_sec1_bytes().as_slice()).unwrap().unwrap();
+        let seen_account: ExchangeAccount = ciborium::from_reader(account_bytes.value()).unwrap();
+
+        assert_eq!(
+            seen.status,
+            crate::board::OrderStatus::Open,
+            "a reader in the window still sees a matchable order"
+        );
+        assert_eq!(
+            seen_account.locked_base, 0,
+            "beside an account that has already had the locked money back -- the owner can \
+             withdraw it while the order remains on the book"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The property the whole of §6.5d rests on: a fill that fails
+    /// partway commits none of itself.
+    ///
+    /// The old handler could not make this claim at any strength,
+    /// because seven independent commits have six intervals between
+    /// them. Here the failure is injected after every record is staged,
+    /// so the interval is hit deterministically on every run rather than
+    /// sampled the way a chaos drill has to sample it.
+    #[test]
+    fn a_failure_partway_through_a_fill_commits_none_of_it() {
+        let path = temp_db_path("atomic_fill_rollback");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (orders, trades, accounts) = filled_match();
+
+        let result = store.in_one_write_txn(|txn| {
+            for order in &orders {
+                stage_record(txn, ORDERS_TABLE, order.id.as_bytes().as_slice(), order)?;
+            }
+            for trade in &trades {
+                stage_record(txn, TRADES_TABLE, trade.id.as_bytes().as_slice(), trade)?;
+            }
+            for (pubkey, account) in &accounts {
+                stage_record(
+                    txn,
+                    EXCHANGE_ACCOUNTS_TABLE,
+                    pubkey.to_sec1_bytes().as_slice(),
+                    account,
+                )?;
+            }
+            Err(HubStoreError::Serialization("injected mid-fill failure".into()))
+        });
+        assert!(result.is_err(), "the injected failure must surface to the caller");
+
+        assert!(
+            store.load_all_orders().unwrap().is_empty(),
+            "an order staged before the failure must not survive it -- a resting order recorded \
+             Filled beside balances that never moved is the state whose locked funds nothing can \
+             ever release"
+        );
+        assert!(store.load_all_trades().unwrap().is_empty());
+        assert!(store.load_all_exchange_accounts().unwrap().is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// And the success half: every record of a fill becomes visible at
+    /// the same instant, including the operator's fee.
+    #[test]
+    fn a_fill_and_every_balance_it_moved_are_never_visible_apart() {
+        let path = temp_db_path("atomic_fill");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (orders, trades, accounts) = filled_match();
+
+        let before = store.db.begin_read().unwrap();
+        store.save_fill(&orders, &trades, &accounts).unwrap();
+
+        let orders_then = before.open_table(ORDERS_TABLE).unwrap();
+        let trades_then = before.open_table(TRADES_TABLE).unwrap();
+        assert!(orders_then.get(orders[0].id.as_bytes().as_slice()).unwrap().is_none());
+        assert!(trades_then.get(trades[0].id.as_bytes().as_slice()).unwrap().is_none());
+
+        assert_eq!(store.load_all_orders().unwrap().len(), 2);
+        assert_eq!(store.load_all_trades().unwrap().len(), 1);
+        assert_eq!(
+            store.load_all_exchange_accounts().unwrap().len(),
+            3,
+            "both counterparties and the fee sink -- the fee used to be a seventh commit taken \
+             under a second lock, so a trade could exist on disk without the fee it charged"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The mechanism of the fill bug, made executable, the way
+    /// `two_separate_commits_leave_a_window_where_the_task_exists_alone`
+    /// does it for the deposit side.
+    ///
+    /// Characterises the old handler: the resting order committed before
+    /// the account batch. A reader in that window sees a maker's order
+    /// marked `Filled` beside the balance it was filled from, untouched
+    /// and still locked. That is the permanent strand -- `cancel_order`
+    /// refuses an order that is not `Open`, so no call can ever release
+    /// it again.
+    #[test]
+    fn two_separate_commits_leave_a_filled_order_beside_an_unmoved_balance() {
+        let path = temp_db_path("fill_two_commit_window");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (orders, _, accounts) = filled_match();
+        let maker = &orders[1];
+        let (maker_key, settled) = &accounts[1];
+
+        // What the maker's account looked like before the fill: the sold
+        // compute still there, still locked.
+        let locked = ExchangeAccount {
+            base_balance: 0,
+            locked_base: 0,
+            compute_balance: 50,
+            locked_compute: 50,
+        };
+        store.save_exchange_account(maker_key, &locked).unwrap();
+
+        store.save_order(maker).unwrap();
+        // Stands exactly where the process stopped: after the resting
+        // order's commit, before the account batch's.
+        let crashed_here = store.db.begin_read().unwrap();
+        store.save_exchange_account(maker_key, settled).unwrap();
+
+        let orders_now = crashed_here.open_table(ORDERS_TABLE).unwrap();
+        let accounts_now = crashed_here.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        let order_bytes = orders_now.get(maker.id.as_bytes().as_slice()).unwrap().unwrap();
+        let seen_order: Order = ciborium::from_reader(order_bytes.value()).unwrap();
+        let account_bytes = accounts_now.get(maker_key.to_sec1_bytes().as_slice()).unwrap().unwrap();
+        let seen_account: ExchangeAccount = ciborium::from_reader(account_bytes.value()).unwrap();
+
+        assert_eq!(
+            seen_order.status,
+            crate::board::OrderStatus::Filled,
+            "the resting order committed first, so a reader in the window sees it filled"
+        );
+        assert_eq!(
+            seen_account.locked_compute, 50,
+            "beside the compute it was filled from, still locked -- and because the order is no \
+             longer Open, cancelling can never release it"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// One taker fully filling one resting maker: two orders, one trade,
+    /// and the three accounts a match moves -- buyer, seller, and the
+    /// operator's fee sink. Fifty compute at ten, so the notional is 500
+    /// and the buy-side taker fee is 0 at these sizes, which is exactly
+    /// what `small_fills_round_the_taker_fee_down_to_zero` pins; the fee
+    /// account is present here regardless, because what this fixture is
+    /// for is the *set* of records one fill writes.
+    fn filled_match() -> (Vec<Order>, Vec<Trade>, Vec<(PublicKey, ExchangeAccount)>) {
+        let buyer = PrivateKey::new_key().public_key();
+        let seller = PrivateKey::new_key().public_key();
+        let operator = PrivateKey::new_key().public_key();
+        let taker = Order {
+            id: Uuid::new_v4(),
+            owner: buyer.clone(),
+            side: crate::board::Side::Buy,
+            price: 10,
+            quantity: 50,
+            filled: 50,
+            status: crate::board::OrderStatus::Filled,
+            created_at: Utc::now(),
+        };
+        let maker = Order {
+            id: Uuid::new_v4(),
+            owner: seller.clone(),
+            side: crate::board::Side::Sell,
+            price: 10,
+            quantity: 50,
+            filled: 50,
+            status: crate::board::OrderStatus::Filled,
+            created_at: Utc::now(),
+        };
+        let trade = Trade {
+            id: Uuid::new_v4(),
+            buy_order_id: taker.id,
+            sell_order_id: maker.id,
+            buyer: buyer.clone(),
+            seller: seller.clone(),
+            price: 10,
+            taker_side: crate::board::Side::Buy,
+            taker_fee: 0,
+            quantity: 50,
+            executed_at: Utc::now(),
+        };
+        let accounts = vec![
+            (
+                buyer,
+                ExchangeAccount {
+                    base_balance: 500,
+                    locked_base: 0,
+                    compute_balance: 50,
+                    locked_compute: 0,
+                },
+            ),
+            (
+                seller,
+                ExchangeAccount {
+                    base_balance: 500,
+                    locked_base: 0,
+                    compute_balance: 0,
+                    locked_compute: 0,
+                },
+            ),
+            (
+                operator,
+                ExchangeAccount {
+                    base_balance: 0,
+                    locked_base: 0,
+                    compute_balance: 1,
+                    locked_compute: 0,
+                },
+            ),
+        ];
+        (vec![taker, maker], vec![trade], accounts)
+    }
+
+    /// An order cancelled down to a released lock, and the account it
+    /// was released into. `locked_base` is 0 because the cancellation
+    /// has already given the money back; `base_balance` is what the
+    /// owner is now free to spend.
+    fn cancelled_order_pair() -> (PublicKey, Order, ExchangeAccount) {
+        let owner = PrivateKey::new_key().public_key();
+        let order = Order {
+            id: Uuid::new_v4(),
+            owner: owner.clone(),
+            side: crate::board::Side::Buy,
+            price: 10,
+            quantity: 50,
+            filled: 0,
+            status: crate::board::OrderStatus::Cancelled,
+            created_at: Utc::now(),
+        };
+        let account = ExchangeAccount {
+            base_balance: 1_000,
+            locked_base: 0,
+            compute_balance: 0,
+            locked_compute: 0,
+        };
+        (owner, order, account)
     }
 }
