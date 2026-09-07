@@ -4622,13 +4622,30 @@ pub async fn maintain_operator_outputs(state: &AppState) {
     // yet, so the wallet still *looks* short. Splitting again here
     // would take an output that is doing its job and hide it for a
     // block too -- the shape that turns one sweep's top-up into a
-    // wallet that is permanently one block behind itself.
+    // wallet permanently one block behind itself.
+    //
+    // "Still in flight" is an input that is both still in the UTXO set
+    // and *marked*. Present-and-unmarked is not the same state and must
+    // not be treated as one: it means the transaction is gone -- a node
+    // restart drops its mempool, which is memory-only (§6.5) -- and a
+    // guard that read presence alone would then wait for a confirmation
+    // that is never coming, on every sweep, for the life of the process.
+    // The wallet would sit at whatever shape it happened to be in.
+    //
+    // The cost of using the mempool as the signal is a window between
+    // `submit_transaction` returning and the node marking the inputs, in
+    // which this reads as lost. A second fan-out submitted there spends
+    // the same inputs and the mempool rejects it for the same flat fee
+    // (see `pay_from`), so it is wasted work rather than a double spend
+    // -- and the window is sub-millisecond against a sweep interval of
+    // sixty seconds.
     {
         let mut inflight = state.operator_fan_out_inflight.lock().await;
         if !inflight.is_empty() {
-            let still_unspent =
-                utxos.iter().any(|(_, output)| inflight.contains(&output.hash()));
-            if still_unspent {
+            let still_in_flight = utxos
+                .iter()
+                .any(|(marked, output)| *marked && inflight.contains(&output.hash()));
+            if still_in_flight {
                 debug!("operator fan-out still unconfirmed; leaving the wallet alone");
                 return;
             }

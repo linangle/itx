@@ -2125,6 +2125,58 @@ mod tests {
         );
     }
 
+    /// A fan-out that is genuinely on the wire must not be repeated: its
+    /// outputs are invisible until mined, so the wallet still looks
+    /// short and a second pass would break an output that is doing its
+    /// job.
+    #[tokio::test]
+    async fn a_fan_out_still_in_the_mempool_is_not_repeated() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+
+        handlers::maintain_operator_outputs(&hub.state).await;
+        assert_eq!(
+            fake_node.submissions_seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the wallet is short only because the first split is unconfirmed"
+        );
+    }
+
+    /// And the state that looks the same and is not. A node restart
+    /// drops its mempool, so a submitted fan-out can simply cease to
+    /// exist -- inputs back in the set, unmarked, nothing pending. A
+    /// guard that waited on presence alone would wait for a confirmation
+    /// that is never coming, every sweep, for the life of the process.
+    #[tokio::test]
+    async fn a_fan_out_that_never_reached_the_node_is_sent_again() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(1).await;
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            1,
+            "nothing happened, which is what a lost submission looks like"
+        );
+
+        fake_node.set_fate(SubmissionFate::Mined).await;
+        handlers::maintain_operator_outputs(&hub.state).await;
+        fake_node.wait_for_submissions_seen(2).await;
+        assert_eq!(
+            fake_node.outputs_of(&operator_key.public_key()).await.len(),
+            operator_wallet::DEFAULT_WALLET_OUTPUTS,
+            "the wallet must not be stuck waiting on a transaction that does not exist"
+        );
+    }
+
     /// The ceiling itself. Nothing is mined between these grants -- the
     /// node holds every payout in its mempool, which is precisely the
     /// state that used to leave the operator with zero spendable
