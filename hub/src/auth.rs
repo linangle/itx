@@ -214,6 +214,19 @@ impl ReplayGuard {
     /// releasing the claim so the same envelope can be tried again --
     /// hands back exactly the replayable envelope this is here to
     /// prevent, at the moment the hub has proven it cannot record one.
+    /// Whether this signature has already been claimed, without claiming
+    /// it -- a read used to catch a replay *before* it is charged for.
+    ///
+    /// **Not the authoritative check, and must not be mistaken for one.**
+    /// Two identical envelopes arriving together can both pass this and
+    /// race; what actually decides between them is the atomic insert in
+    /// `claim`, which is why that stays exactly as it is. This only moves
+    /// the common case earlier so a detected replay costs the signer
+    /// neither quota nor an fsync (§3.4).
+    fn already_seen(&self, signature: &[u8]) -> bool {
+        self.seen.contains_key(signature)
+    }
+
     fn claim(&self, signature: Vec<u8>, now: DateTime<Utc>) -> Result<(), AuthError> {
         if self.seen.insert(signature.clone(), now).is_some() {
             self.metrics.replay_signatures_rejected.fetch_add(1, Ordering::Relaxed);
@@ -407,17 +420,40 @@ impl<T: Serialize + DeserializeOwned> VerifyEnvelope for SignedEnvelope<T> {
 
         let pubkey = self.verify_signature(now, method, path)?;
 
+        // A replay is caught here rather than at the claim below, and the
+        // difference is who pays for it. The charge is against the key
+        // that *signed* the envelope, so charging first meant anyone
+        // holding one captured signed request could spend the signer's
+        // whole per-key budget by sending it sixty times -- from one
+        // address, comfortably inside that address's own tier -- and lock
+        // that agent out of every authenticated route for the window. The
+        // comment on the ordering claimed this was prevented; it prevents
+        // an attacker *forging* the key, which is a different thing from
+        // replaying one they captured. Reading the plaintext off the wire
+        // is enough, and `--bind 0.0.0.0` is a supported deployment.
+        //
+        // Cheap in the ordinary case too: a detected replay now costs
+        // neither the quota nor the fsync behind the claim.
+        //
+        // `claim` still decides. This read cannot settle a race between
+        // two identical envelopes in flight together, and is not trying
+        // to -- the atomic insert below is what does that, and removing
+        // it because this looks redundant would reintroduce the TOCTOU
+        // the guard exists to prevent.
+        let signature_bytes = hex::decode(&self.signature)
+            .expect("verify_signature already validated this hex string");
+        if guard.already_seen(&signature_bytes) {
+            guard.metrics.replay_signatures_rejected.fetch_add(1, Ordering::Relaxed);
+            return Err(AuthError::Replayed.into());
+        }
+
         charge(&pubkey)?;
 
         // Only claim the signature once it's confirmed genuine --
         // otherwise anyone could burn arbitrary signature slots (and,
         // now, arbitrary disk writes) with junk bytes. A real signature
         // is unforgeable, so this can only ever be claimed by whoever
-        // actually holds the private key. The hex decode below is already
-        // known to succeed -- verify_signature just decoded this exact
-        // same field.
-        let signature_bytes = hex::decode(&self.signature)
-            .expect("verify_signature already validated this hex string");
+        // actually holds the private key.
         guard.claim(signature_bytes, now)?;
 
         Ok(pubkey)
