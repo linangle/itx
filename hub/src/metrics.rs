@@ -174,6 +174,26 @@ pub struct Metrics {
     /// is not here yet.
     pub faucet_grants: AtomicU64,
 
+    // ---- operator wallet ---------------------------------------------
+    /// Confirmed, unspoken-for operator outputs large enough to fund a
+    /// payment on their own, as of the last sweep. This *is* the payout
+    /// ceiling (plan §6.4b): one payment consumes one output and returns
+    /// its change unconfirmed, so the hub can make about this many
+    /// payments between blocks. Watch it against
+    /// `--operator-wallet-outputs`; a hub sitting near zero is a hub
+    /// refusing faucet grants and operator-funded settlement.
+    pub operator_ready_outputs: AtomicU64,
+    /// Fan-out transactions submitted. Normally near-flat -- a healthy
+    /// wallet refills itself from its own change and needs one only
+    /// after a burst -- so a rate that keeps climbing means the fan is
+    /// eroding faster than a block restores it.
+    pub operator_fan_outs: AtomicU64,
+    /// Fan-outs that could not be read, built or sent. Counted apart
+    /// from the successes because the failure is silent otherwise: the
+    /// wallet simply stays short and every payout starts failing a
+    /// minute later for what looks like an unrelated reason.
+    pub operator_fan_out_failures: AtomicU64,
+
     // ---- exchange solvency ------------------------------------------
     /// Summed `base_balance + locked_base` across every exchange account:
     /// what the hub owes its depositors.
@@ -420,6 +440,10 @@ impl Metrics {
         counter(&mut out, "hub_replay_durable_write_ms_total", "Cumulative time inside the replay guard's durable write.", self.replay_durable_write_ms_total.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_faucet_grants", "Distinct keys granted by the faucet, as of the last sweep.", self.faucet_grants.load(Ordering::Relaxed));
+
+        gauge(&mut out, "hub_operator_ready_outputs", "Confirmed operator outputs large enough to fund a payment, as of the last sweep -- the payout ceiling (plan 6.4b).", self.operator_ready_outputs.load(Ordering::Relaxed));
+        counter(&mut out, "hub_operator_fan_outs_total", "Self-paying transactions submitted to split the operator's wallet.", self.operator_fan_outs.load(Ordering::Relaxed));
+        counter(&mut out, "hub_operator_fan_out_failures_total", "Fan-outs that could not be read, built or sent.", self.operator_fan_out_failures.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_exchange_liabilities", "Base units owed to exchange depositors, as of the last sweep.", self.exchange_liabilities.load(Ordering::Relaxed));
         gauge(&mut out, "hub_exchange_custody_balance", "On-chain balance of the custody address, as of the last sweep.", self.exchange_custody_balance.load(Ordering::Relaxed));

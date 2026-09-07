@@ -4242,8 +4242,24 @@ async fn build_payment_from(
     change_pubkey: &PublicKey,
 ) -> anyhow::Result<btclib::types::Transaction> {
     let utxos = state.node.fetch_utxos(source_pubkey).await?;
+    // Which output this spends is the whole of plan §6.4b. The node
+    // returns its UTXOs in `HashMap` order, and `build_multi_payment`
+    // walks them front to back and stops as soon as it has enough --
+    // so left alone, a 0.5-coin faucet grant would as often as not
+    // spend a 150-coin output and turn the rest into change nothing can
+    // see until the next block. Ordering the candidates *is* the
+    // selection policy; see `operator_wallet::ordered_for_payment`.
+    //
+    // Applied to every source, not just the operator's. An escrow
+    // address holds exactly one output so the ordering cannot change
+    // what it picks, and the exchange's pooled custody address has the
+    // same wallet shape as the operator's and the same reason to want
+    // its big outputs left whole.
+    let total_needed: u64 =
+        recipients.iter().map(|(_, amount)| amount).sum::<u64>() + HUB_TRANSACTION_FEE;
+    let ordered = crate::operator_wallet::ordered_for_payment(&utxos, total_needed);
     Ok(btclib::payment::build_multi_payment(
-        &utxos,
+        &ordered,
         signing_key,
         recipients,
         HUB_TRANSACTION_FEE,
@@ -4349,6 +4365,115 @@ async fn pay_bounty(state: &AppState, recipient: &PublicKey, amount: u64) -> any
         &state.operator_public_key,
     )
     .await
+}
+
+/// Keeps the operator's wallet split across enough spendable outputs to
+/// pay out more than once per block, by splitting its largest output
+/// when the count has fallen below `AppState::operator_wallet_outputs`.
+///
+/// Called from the sweep and once at boot. Everything about *what* to
+/// split is in `operator_wallet`, which is pure and tested; this is the
+/// half that talks to the node.
+///
+/// Held under `payout_lock` for exactly the reason every other operator
+/// payment is: this spends the operator's UTXOs, and a fan-out racing a
+/// payout would have both build against the same output and the node
+/// would silently drop the loser (see `pay_from`). It is also why the
+/// sweep, and not a task of its own, is the right place to run it --
+/// the lock makes a fan-out and a burst of grants take turns rather
+/// than fight.
+///
+/// Never propagates a failure. A hub that cannot reach its node still
+/// has a sweep to finish, and the next pass is sixty seconds away; the
+/// counters say it happened.
+pub async fn maintain_operator_outputs(state: &AppState) {
+    let _guard = state.payout_lock.lock().await;
+
+    let utxos = match state.node.fetch_utxos(&state.operator_public_key).await {
+        Ok(utxos) => utxos,
+        Err(e) => {
+            warn!("could not read the operator's wallet to fan it out: {e}");
+            state.metrics.operator_fan_out_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+    };
+    let ready = crate::operator_wallet::ready_outputs(&utxos);
+    state.metrics.operator_ready_outputs.store(ready as u64, std::sync::atomic::Ordering::Relaxed);
+
+    // A fan-out already on the wire has outputs the node cannot report
+    // yet, so the wallet still *looks* short. Splitting again here
+    // would take an output that is doing its job and hide it for a
+    // block too -- the shape that turns one sweep's top-up into a
+    // wallet that is permanently one block behind itself.
+    {
+        let mut inflight = state.operator_fan_out_inflight.lock().await;
+        if !inflight.is_empty() {
+            let still_unspent =
+                utxos.iter().any(|(_, output)| inflight.contains(&output.hash()));
+            if still_unspent {
+                debug!("operator fan-out still unconfirmed; leaving the wallet alone");
+                return;
+            }
+            inflight.clear();
+        }
+    }
+
+    let Some(plan) = crate::operator_wallet::plan_fan_out(
+        &utxos,
+        HUB_TRANSACTION_FEE,
+        state.operator_wallet_outputs,
+    ) else {
+        return;
+    };
+
+    let recipients: Vec<(PublicKey, u64)> = plan
+        .shares
+        .iter()
+        .map(|share| (state.operator_public_key.clone(), *share))
+        .collect();
+    // Built against `plan.source` alone rather than through
+    // `build_payment_from`, so the transaction spends the output the
+    // plan chose and no other. That exactness is what lets the inflight
+    // record below be a fact rather than a guess -- and the shares sum
+    // to the source minus the fee, so there is no change output to
+    // reason about either.
+    let tx = match btclib::payment::build_multi_payment(
+        &[(false, plan.source.clone())],
+        &state.operator_private_key,
+        &recipients,
+        HUB_TRANSACTION_FEE,
+        state.operator_public_key.clone(),
+    ) {
+        Ok(tx) => tx,
+        Err(e) => {
+            warn!("could not build the operator fan-out: {e}");
+            state.metrics.operator_fan_out_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+    };
+
+    // Recorded before the send, not after. `submit_transaction` is
+    // fire-and-forget, so a record written afterwards would be missing
+    // exactly when the send half-succeeded -- and the cost of believing
+    // a fan-out is in flight when it is not is one skipped sweep, while
+    // the cost of the reverse is splitting a live output every minute.
+    *state.operator_fan_out_inflight.lock().await =
+        tx.inputs.iter().map(|input| input.prev_transaction_output_hash).collect();
+
+    match state.node.submit_transaction(tx).await {
+        Ok(()) => {
+            state.metrics.operator_fan_outs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            info!(
+                "fanning the operator's wallet out: splitting {} into {} outputs ({ready} spendable before)",
+                plan.source.value,
+                plan.shares.len()
+            );
+        }
+        Err(e) => {
+            warn!("could not submit the operator fan-out: {e}");
+            state.metrics.operator_fan_out_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// `pay_bounty` for a *task* payout: identical funding source, key and
