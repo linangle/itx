@@ -1,38 +1,46 @@
-//! Fill the operator's wallet with a single large output, then drive
-//! payouts and count how many land per block.
+//! Collapse the operator's wallet to a single output, restart the hub
+//! into it, and count how many payouts land per block.
 //!
-//! Plan §6.4b predicts about one payment per block, and says why: every
+//! # What this used to measure, and what it measures now
+//!
+//! Plan §6.4b predicted about one payment per block and said why: every
 //! hub payment spends the operator's outputs and sends change back to
-//! itself, that change is unconfirmed until mined, and `build_multi_payment`
-//! skips outputs the mempool has already spoken for. So immediately after
-//! a payout the operator's *spendable* balance can be zero even though its
-//! total is untouched, and the next payment has nothing to select.
+//! itself, that change is unconfirmed until mined, and
+//! `build_multi_payment` skips outputs the mempool has already spoken
+//! for. So immediately after a payout the operator's *spendable* balance
+//! can be zero even though its total is untouched. This drill confirmed
+//! it exactly: 31 grants across 30 blocks, never two at any height,
+//! against 723 offered.
 //!
-//! # The condition has to be constructed, and that is the whole difficulty
+//! The hub now fans its wallet out (`hub/src/operator_wallet.rs`), so
+//! that prediction is one this drill is expected to **refute** --
+//! `healthy_when(Refuted)`, the same shape `node-crash` took once §6.5
+//! landed. The section keeps its title and its fact keys so the
+//! comparison against the pre-fix baseline is the sign-off.
 //!
-//! The plan also says this is "invisible on a wallet that happens to hold
-//! many coinbase outputs" -- and a local stack is exactly such a wallet,
-//! because the miner pays the operator a fresh 50-coin output every block.
-//! A drill that just fires payouts at a default stack measures a wallet
-//! shape no deployment has and reports no ceiling at all.
+//! # The condition still has to be constructed
 //!
-//! So this drill does two things first. It moves the miner off the
-//! operator onto a key nothing else uses, so no new coinbase outputs
-//! arrive; then it has the operator pay itself its entire confirmed
-//! balance minus the fee, which leaves exactly one output and no change.
-//! Only then does it start measuring.
+//! A local stack's miner pays the operator a fresh 50-coin output every
+//! block, which is precisely the many-output wallet the ceiling is
+//! invisible on. So the drill moves the miner onto a key nothing else
+//! uses, then has the operator pay itself its whole confirmed balance
+//! minus the fee, leaving exactly one output and no change.
 //!
-//! The faucet is used as the payout probe because one claim is exactly one
-//! operator payment with no task machinery in the way. That call is
-//! isolated in `client::claim_faucet` -- see the note there about the
-//! proof-of-work challenge that is being added to it.
+//! **The hub is stopped for that collapse, and this is not tidiness.**
+//! The hub now spends the operator's outputs on its own account, so a
+//! collapse racing a fan-out never reaches "exactly one output" and the
+//! drill's setup would time out for a reason that is the fix working.
+//! Stopping the hub also buys the more interesting measurement: the hub
+//! restarts into a genuinely single-output wallet, which is what a
+//! freshly deployed hub is, so `cold_start_blocks` is the real cost of
+//! that state rather than a simulation of it.
 
 use crate::chain::ChainView;
 use crate::client::claim_faucet;
 use crate::report::{Report, Section, Verdict};
 use crate::stats::{summarize, Sample};
 use anyhow::Result;
-use btclib::crypto::PrivateKey;
+use btclib::crypto::{PrivateKey, PublicKey};
 use btclib::payment::build_payment;
 use btclib::types::TransactionOutput;
 use serde_json::json;
@@ -49,16 +57,27 @@ const MEASURE_FOR: Duration = Duration::from_secs(150);
 ///
 /// What matters is not the absolute rate but how many payouts are offered
 /// per *block*, since that is the thing the ceiling is measured against.
-/// A run that offers barely more than one per block cannot tell a ceiling
-/// of one from a ceiling of three, so `attempts_per_block` is reported
-/// and the verdict is withheld when it comes out too low to have
-/// falsified anything. At 200ms against the block times this chain
-/// actually produces, it lands around twenty-five offered per block.
-const ATTEMPT_EVERY: Duration = Duration::from_millis(200);
+/// A run that offers barely more than the ceiling cannot tell one ceiling
+/// from another, so `attempts_per_block` is reported and the verdict is
+/// withheld when it comes out too low to have falsified anything.
+///
+/// Halved from the 200ms that measured the original ceiling: the hub now
+/// keeps two dozen spendable outputs, so a run has to offer several dozen
+/// payouts per block before it is asking a question the wallet could
+/// fail.
+const ATTEMPT_EVERY: Duration = Duration::from_millis(100);
+/// How long to wait for the hub to notice a one-output wallet and split
+/// it. Its sweep runs every sixty seconds and its boot pass runs
+/// immediately, so this is generous by design -- a drill that gave up at
+/// the sweep interval would be reporting its own impatience.
+const FAN_OUT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Collapses `key`'s confirmed outputs into exactly one, by having it pay
 /// itself everything minus the fee. Returns the amount now sitting in that
 /// single output.
+///
+/// Only correct while nothing else is spending `key`. See the module
+/// docs on why the hub is stopped around this.
 async fn collapse_to_one_output(chain: &ChainView, key: &PrivateKey) -> Result<u64> {
     let utxos = chain.utxos(&key.public_key()).await?;
     let available: Vec<(bool, TransactionOutput)> = utxos
@@ -107,6 +126,50 @@ async fn collapse_to_one_output(chain: &ChainView, key: &PrivateKey) -> Result<u
     }
 }
 
+/// What the hub did about the single-output wallet it was restarted into.
+struct FanOut {
+    /// Spendable outputs once it settled. One means it never happened.
+    outputs: usize,
+    /// Blocks between the hub coming up and the wallet being usable
+    /// again -- the cold-start cost, and the one price the fan-out
+    /// charges that the old behaviour did not.
+    blocks: u32,
+}
+
+/// Waits for the operator to hold more than one spendable output, and for
+/// that number to stop moving.
+///
+/// Settling for two consecutive polls rather than returning on the first
+/// change, because the count also moves when a *payout* confirms; the
+/// split itself lands whole, in one transaction in one block, so one
+/// steady reading is enough to have caught all of it.
+async fn wait_for_fan_out(
+    chain: &ChainView,
+    pubkey: &PublicKey,
+    started_at_height: u32,
+    timeout: Duration,
+) -> Result<FanOut> {
+    let deadline = Instant::now() + timeout;
+    let mut previous = 0usize;
+    loop {
+        let outputs = chain
+            .utxos(pubkey)
+            .await
+            .map(|utxos| utxos.iter().filter(|(_, marked)| !marked).count())
+            .unwrap_or(0);
+        let settled = outputs > 1 && outputs == previous;
+        if settled || Instant::now() >= deadline {
+            let height = chain.height().await.unwrap_or(started_at_height);
+            return Ok(FanOut {
+                outputs,
+                blocks: height.saturating_sub(started_at_height),
+            });
+        }
+        previous = outputs;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Report> {
     let mut harness = super::bring_up(repo, bin_dir, work_dir, true).await?;
     let chain = harness.stack.chain();
@@ -124,7 +187,17 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     harness.stack.kill_miner().await?;
     harness.stack.start_miner_paying("./miner.pub.pem").await?;
 
+    // SIGTERM rather than SIGKILL: the collapse wants the hub's hands off
+    // the wallet, not a crash to recover from. Crash recovery is
+    // `escrow-restart`'s subject, and mixing the two would make a failure
+    // here ambiguous between them.
+    harness.stack.stop_hub().await?;
     let single_output = collapse_to_one_output(&chain, &operator).await?;
+
+    let restarted_at = chain.height().await?;
+    harness.stack.start_hub().await?;
+    let fan_out =
+        wait_for_fan_out(&chain, &operator.public_key(), restarted_at, FAN_OUT_TIMEOUT).await?;
 
     let mut samples = Vec::new();
     let mut per_height: BTreeMap<u32, usize> = BTreeMap::new();
@@ -133,7 +206,8 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let mut refused_for_balance = 0usize;
     let start_height = chain.height().await?;
 
-    let deadline = Instant::now() + MEASURE_FOR;
+    let measuring_from = Instant::now();
+    let deadline = measuring_from + MEASURE_FOR;
     let mut index = 0usize;
     while Instant::now() < deadline {
         let key = PrivateKey::new_key();
@@ -152,40 +226,54 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
             granted += 1;
             let height = chain.height().await.unwrap_or(start_height);
             *per_height.entry(height).or_default() += 1;
-        } else if reply.error_text().contains("insufficient")
-            || reply.error_text().contains("balance")
-        {
+        } else if reply.status == 503 {
+            // The shape of this refusal changed with the fix. It used to
+            // be a 500 whose text carried "insufficient", which is what
+            // this counted; the hub now answers a grant it cannot fund
+            // with a 503 and a `Retry-After`, and matching the status is
+            // both narrower and stable against the wording.
             refused_for_balance += 1;
         }
         tokio::time::sleep(ATTEMPT_EVERY).await;
     }
+    let measured_for = measuring_from.elapsed();
 
     let end_height = chain.height().await?;
     let blocks = (end_height - start_height).max(1);
     let per_block = granted as f64 / blocks as f64;
     let offered_per_block = attempts as f64 / blocks as f64;
     let busiest_block = per_height.values().copied().max().unwrap_or(0);
+    let per_minute = granted as f64 * 60.0 / measured_for.as_secs_f64().max(1.0);
 
     harness.stack.shutdown().await;
 
-    // "About one per block" is the claim. Anything up to two is that claim
-    // holding -- a payout landing just either side of a block boundary is
-    // ordinary. Materially more than that is the claim failing.
+    // §6.4b's claim, unchanged: about one payment per block, and never
+    // two at a height. Anything up to two is that claim holding -- a
+    // payout landing just either side of a block boundary is ordinary.
     let ceiling_holds = per_block <= 2.0 && busiest_block <= 2;
-    // A run that offered barely more than one payout per block cannot
-    // distinguish a ceiling of one from a ceiling of three. Say so rather
-    // than confirming the plan on evidence that could not have refuted it.
+    // A run that offered barely more than the ceiling cannot distinguish
+    // one ceiling from another. Say so rather than reporting a number on
+    // evidence that could not have falsified anything.
     let offered_enough = offered_per_block >= 3.0;
 
     let mut section = Section::new("Payout ceiling with a single operator output")
         .plan_item("§6.4b")
+        // The plan predicted a limitation and the hub now lifts it, so
+        // the healthy answer here is `Refuted` -- see
+        // `report::Section::healthy_verdict`. Against the pre-fix
+        // baseline this reads as confirmed -> refuted, which `compare`
+        // scores as the fix landing rather than as a regression.
+        .healthy_when(Verdict::Refuted)
         .fact("single_output_value", single_output)
+        .fact("cold_start_blocks", fan_out.blocks)
+        .fact("spendable_outputs_after_fan_out", fan_out.outputs)
         .fact("attempts", attempts)
         .fact("payouts_granted", granted)
         .fact("refused_for_balance", refused_for_balance)
         .fact("blocks_elapsed", blocks)
         .fact("attempts_per_block", (offered_per_block * 100.0).round() / 100.0)
         .fact("payouts_per_block", (per_block * 100.0).round() / 100.0)
+        .fact("grants_per_minute", (per_minute * 10.0).round() / 10.0)
         .fact("busiest_single_block", busiest_block)
         .fact(
             "payouts_by_height",
@@ -198,28 +286,58 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .note(format!(
             "The miner was moved off the operator and the operator's wallet collapsed to a \
              single {single_output}-unit output before measuring, because a wallet holding one \
-             coinbase output per block does not have this ceiling at all."
+             coinbase output per block does not have this ceiling at all. The hub was stopped \
+             for the collapse and restarted into that wallet, which is what a freshly deployed \
+             hub holds."
+        ))
+        .note(format!(
+            "The hub took {} block(s) after restart to reach {} spendable output(s). That is \
+             the fan-out's own cost and the one thing it makes worse: a wallet with a single \
+             output has nothing to pay from while the split is unconfirmed, so a cold hub \
+             cannot pay at all for one block. It is spent before the listener opens.",
+            fan_out.blocks, fan_out.outputs
+        ))
+        .note(
+            "The `POST /faucet` latency here covers the whole flow -- challenge, solve, \
+             redeem -- and the stack runs the puzzle at 64 expected hashes. The pre-fix \
+             baseline timed a single payload-less POST against a hub that had no proof of work \
+             yet, so the two latency figures are not comparable and neither is evidence about \
+             the other.",
+        );
+
+    if fan_out.outputs <= 1 {
+        section = section.finding(format!(
+            "The hub never split its wallet: {} block(s) after restarting into a single output \
+             it still held {}. The fan-out is what lifts this ceiling, so every number below is \
+             a measurement of a hub that is not running it -- check \
+             `hub_operator_fan_out_failures_total` and whether the node was reachable at boot.",
+            fan_out.blocks, fan_out.outputs
         ));
+    }
 
     section = if !offered_enough {
         section.verdict(Verdict::Inconclusive).note(format!(
-            "The run offered only {offered_per_block:.2} payouts per block, which cannot tell a \
-             ceiling of one from a ceiling of three -- both would produce roughly this result. \
-             Blocks on a young test chain arrive far faster than the sixteen-second target. \
-             Shorten ATTEMPT_EVERY or lengthen the run and re-run before believing the number."
+            "The run offered only {offered_per_block:.2} payouts per block, which cannot tell \
+             one ceiling from another -- any of them would produce roughly this result. Blocks \
+             on a young test chain arrive far faster than the sixteen-second target. Shorten \
+             ATTEMPT_EVERY or lengthen the run and re-run before believing the number."
         ))
     } else if ceiling_holds {
-        section.verdict(Verdict::Confirmed).note(format!(
+        section.verdict(Verdict::Confirmed).finding(format!(
             "{granted} payouts landed across {blocks} blocks ({per_block:.2} per block, busiest \
-             block {busiest_block}) against {attempts} offered. The operator's change is \
-             unconfirmed until mined, so the wallet has nothing to select from until the next \
-             block arrives."
+             block {busiest_block}) against {attempts} offered. That is the ceiling §6.4b \
+             measured, still in place: either the operator's wallet is not being kept fanned \
+             out, or payments are selecting outputs that leave nothing behind. This is a \
+             regression, not a confirmation."
         ))
     } else {
         section.verdict(Verdict::Refuted).note(format!(
-            "{granted} payouts landed across {blocks} blocks ({per_block:.2} per block, busiest \
-             block {busiest_block}). That is materially more than the one per block §6.4b \
-             predicts, so the ceiling as written is wrong and the section needs correcting."
+            "{granted} payouts landed across {blocks} blocks ({per_block:.2} per block, \
+             {per_minute:.1} a minute, busiest block {busiest_block}) against {attempts} \
+             offered, with {refused_for_balance} refused for want of a funded output. §6.4b's \
+             one-per-block is refuted, which is the point: the operator's wallet is kept split \
+             across many confirmed outputs, so a payment always has one to spend and its change \
+             does not block the next."
         ))
     };
 

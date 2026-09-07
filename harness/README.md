@@ -31,6 +31,13 @@ CARGO_TARGET_DIR=~/itx/target cargo build --release -p node -p miner -p hub -p h
 Each drill brings up its own node, miner and hub on ports 9040/9140, in a
 working directory it wipes first and fills with chain data.
 
+Set `ITX_DRILL_NODE_PORT` / `ITX_DRILL_HUB_PORT` to move them. Several
+workstreams run drills on this box at once and each is handed its own pair;
+without the override that assignment is a source edit to the same two lines in
+every worktree, which is a merge conflict by construction. A more specific bind
+silently shadows a wildcard one, so a shared port does not produce an error —
+it produces a measurement of somebody else's hub.
+
 ```bash
 CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out harness/results
 ```
@@ -227,7 +234,7 @@ failure, refuting it is the good news, and the "healthy" column says so.
 | `replay-storm` | §3.3 | The replay guard's durable half closes the post-restart window; nothing verifies twice | confirmed |
 | `rate-limit-tiers` | §3.4 | Saturating one tier leaves health, reads, writes and chain writes independently available | confirmed |
 | `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another | confirmed |
-| `payout-ceiling` | §6.4b | With a single operator output, payouts are bounded at about one per block | confirmed |
+| `payout-ceiling` | §6.4b | With a single operator output, payouts are bounded at about one per block | **refuted** (the hub fans its wallet out; §6.4b) |
 | `escrow-refund` | §6.5c | A refunded escrow deposit's status survives a restart, so the sweep does not re-select it | confirmed |
 | `signed-write-cost` | §6.3 | Signature-verify CPU is what the write path's time goes on | **refuted** (a settled measurement, §6.3) |
 
@@ -250,6 +257,14 @@ else uses, then has the operator pay itself its whole confirmed balance minus
 the fee, leaving exactly one output and no change. Only then does it measure. A
 drill that skipped this would report no ceiling and be measuring a wallet shape
 no deployment has.
+
+It also **stops the hub for that collapse and restarts it into the
+single-output wallet**. That is not tidiness: the hub now spends the operator's
+outputs on its own account to keep them split, so a collapse racing a fan-out
+never reaches "exactly one output" and the setup would time out for a reason
+that is the fix working. The restart buys the more interesting number too —
+`cold_start_blocks`, the blocks a freshly deployed hub cannot pay for at all
+while its first split is unconfirmed, which is the one cost the fan-out adds.
 
 **`signed-write-cost` sends the same envelope twice.** The hub's own
 authentication ordering is the experiment: `verify_charging` runs the drift
@@ -299,16 +314,27 @@ nothing to do with the binaries under test.
 
 ## What will need updating
 
-**The faucet is being rewritten to require a proof-of-work challenge** (plan
-§5). The flow becomes fetch a challenge, solve it, present the solution, and
-the payload-less `POST /faucet` this harness uses stops being the whole story.
-Every faucet call in the harness goes through `client::claim_faucet` precisely
-so that is one function to change rather than a search across the drills.
-`payout-ceiling` uses the faucet as its payout probe and `rate-limit-tiers`
-uses it as its chain-tier probe, so both depend on that one function. The load
-profile does not — it samples the faucet three times in setup and never in the
-loop — so a proof-of-work challenge changes the two drills and leaves the load
-numbers comparable.
+**The faucet's proof of work landed, and this harness did not follow it for a
+day** (plan §5, 2026-09-06). `client::claim_faucet` went on posting a
+payload-less `POST /faucet`, which the hub rejects with a 422 before any
+handler runs — so every drill that used the faucet was measuring a rejected
+body. `payout-ceiling` was the expensive one: zero grants reads as a ceiling
+comfortably held, so it would have reported `Confirmed` against a hub it never
+asked for a single payout. Fixed 2026-09-07 along with the ceiling itself.
+
+Two things that fix had to get right, and both are worth knowing before adding
+a faucet call anywhere:
+
+- **The stack runs the puzzle at 64 expected hashes** (`--faucet-pow-expected-hashes`,
+  `stack::DRILL_FAUCET_EXPECTED_HASHES`). At the hub's real difficulty a Rust
+  client spends seconds per grant, so `payout-ceiling` would measure about one
+  payout per block for reasons that have nothing to do with the operator's
+  wallet — it would confirm the ceiling against its own solver.
+- **The two legs sit in different rate-limit tiers.** `/faucet/challenge` is an
+  ordinary write and `/faucet` is the chain write, so `rate-limit-tiers` fetches
+  its challenge *before* it floods and redeems it during the probe. Running the
+  whole flow after a write flood would report the chain tier as broken, which
+  is a true statement about the flow and a false one about the buckets.
 
 **The settlement confirmation work (§6.5) changes what `node-crash` should
 find.** Its baseline is the "before"; the whole point is that re-running it
