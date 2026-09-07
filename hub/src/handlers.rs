@@ -33,6 +33,14 @@ const HUB_TRANSACTION_FEE: u64 = 1_000;
 /// Size of a faucet grant, in the same base units as block rewards
 /// (INITIAL_REWARD is denominated in whole coins * 10^8).
 const FAUCET_GRANT_AMOUNT: u64 = 50_000_000;
+/// What to tell an agent whose grant could not be funded right now.
+///
+/// One block, because that is what the condition is: a payment's change
+/// is unconfirmed until mined, and a block is when the operator's
+/// wallet gets its slot back (`operator_wallet`). Sending the chain's
+/// own target rather than a rounder number means this stays honest if
+/// the target ever moves.
+const FAUCET_RETRY_AFTER_SECONDS: u64 = btclib::IDEAL_BLOCK_TIME;
 /// Upper bound on `join_window_minutes`/`submission_window_minutes`: not
 /// just a sanity limit, but the difference between a clean 400 and an
 /// actual panic -- `chrono::Duration::minutes` panics on overflow, and an
@@ -104,10 +112,44 @@ pub enum ApiError {
     /// because it is neither an error on our side nor a permanent one:
     /// the honest thing to tell a caller is "come back", which is a 503.
     ServiceUnavailable(String),
+    /// A `ServiceUnavailable` that says *when* to come back, and can
+    /// hand the caller what it needs in order to.
+    ///
+    /// A separate variant rather than an option on the one above,
+    /// because most of the hub's 503s have no honest number to give --
+    /// `AuthError::GuardWarmingUp` resolves when it resolves -- and a
+    /// `Retry-After` a caller cannot rely on is worse than none at all.
+    Unavailable {
+        message: String,
+        /// Seconds. Sent twice on purpose: as the `Retry-After` header,
+        /// which a generic HTTP client already honours, and in the
+        /// body, which is what an agent parsing JSON will actually
+        /// read.
+        retry_after: u64,
+        /// Extra top-level fields merged into the error body. The
+        /// faucet uses it to hand back a fresh challenge -- see
+        /// `faucet_claim`.
+        extra: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // Handled before the others because it is the one error with a
+        // header and a body of its own; everything else is a status and
+        // a string.
+        if let ApiError::Unavailable { message, retry_after, extra } = self {
+            let mut body = serde_json::Map::new();
+            body.insert("error".into(), serde_json::Value::String(message));
+            body.insert("retry_after_seconds".into(), serde_json::Value::from(retry_after));
+            body.extend(extra);
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, retry_after.to_string())],
+                Json(serde_json::Value::Object(body)),
+            )
+                .into_response();
+        }
         let (status, message) = match self {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
@@ -117,6 +159,7 @@ impl IntoResponse for ApiError {
             ApiError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
             ApiError::ServiceUnavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
+            ApiError::Unavailable { .. } => unreachable!("returned above"),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
@@ -2800,7 +2843,20 @@ pub async fn faucet_challenge(
     }
 
     let challenge = state.faucet_challenges.issue(&pubkey, Utc::now())?;
-    Ok(Json(FaucetChallengeDto {
+    Ok(Json(faucet_challenge_dto(&state, &challenge)))
+}
+
+/// Renders a challenge for the wire. Shared with `faucet_claim`, which
+/// attaches one to the 503 it sends when the grant cannot be funded --
+/// two places building this by hand is two chances for the replacement
+/// challenge to differ in some field from the one `/faucet/challenge`
+/// serves, which a client would experience as the faucet occasionally
+/// handing out an unsolvable puzzle.
+fn faucet_challenge_dto(
+    state: &AppState,
+    challenge: &crate::faucet_pow::Challenge,
+) -> FaucetChallengeDto {
+    FaucetChallengeDto {
         challenge_id: challenge.id,
         server_nonce: challenge.server_nonce.clone(),
         pubkey: challenge.pubkey.clone(),
@@ -2810,7 +2866,7 @@ pub async fn faucet_challenge(
         expires_at: DateTime::from_timestamp(challenge.expires_at, 0).unwrap_or_else(Utc::now),
         expected_hashes: state.faucet_expected_hashes,
         preimage_template: challenge.preimage_template(),
-    }))
+    }
 }
 
 pub async fn faucet_claim(
@@ -2822,6 +2878,41 @@ pub async fn faucet_claim(
     Json(envelope): Json<SignedEnvelope<FaucetClaimPayload>>,
 ) -> Result<Json<FaucetResultDto>, ApiError> {
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
+
+    // Validate the challenge before asking whether the grant can be
+    // funded, so a caller presenting a spent or unsolved one is told
+    // that rather than told the hub is busy. Spends nothing: `redeem`
+    // below runs the same checks again for real.
+    state.faucet_challenges.check(
+        envelope.payload.challenge_id,
+        &pubkey,
+        envelope.payload.solution,
+        Utc::now(),
+    )?;
+
+    // Ask whether the grant can be funded *before* spending the
+    // challenge. This is the difference between "we cannot pay you
+    // right now" costing the agent one cheap request and costing it the
+    // fourteen seconds of proof-of-work it has just finished -- and
+    // under the ceiling §6.4b measured, this path was the one taken 95%
+    // of the time.
+    //
+    // Deliberately a read outside `payout_lock`, so it is advisory
+    // rather than a reservation. Being wrong in the optimistic
+    // direction costs nothing that is not already handled below; being
+    // wrong in the pessimistic direction costs a retry and no work. A
+    // reservation would mean holding the operator's payout lock across
+    // an agent's whole redemption, which is the one thing the wallet
+    // fan-out exists to stop being a queue.
+    //
+    // Total spendable, not `balance - allocated_bounty()`: a faucet
+    // grant has never been netted against posted bounties, and starting
+    // here would refuse grants that succeed today for a reason nothing
+    // on the wire explains. Whether the operator's own posts should
+    // outrank the faucet is §3.4's question, not this one's.
+    if !operator_can_fund_a_grant(&state).await {
+        return Err(grant_unfunded(&state, &pubkey, GrantUnfunded::BeforeRedemption).await);
+    }
 
     // Spend the challenge first, and durably. Everything after this
     // point can fail and be retried; this cannot, because a solution the
@@ -2864,12 +2955,125 @@ pub async fn faucet_claim(
             }))
         }
         Err(e) => {
-            let mut board = state.board.write().await;
-            board.revoke_faucet_grant(&pubkey);
+            {
+                let mut board = state.board.write().await;
+                board.revoke_faucet_grant(&pubkey);
+            }
+            // The pre-flight above said yes and the payment still could
+            // not be funded -- a slot was taken between the two, which
+            // is exactly what a burst looks like. The challenge is
+            // spent and cannot be unspent (see the redemption's own
+            // comment), so the only thing left worth giving back is a
+            // fresh one, issued at no cost. Deliberately not "hold the
+            // redemption open": the redemption record is what stops a
+            // solution being spent twice, and a hub that reopens it
+            // under any condition is a hub whose faucet can be replayed
+            // by arranging that condition.
+            if is_insufficient_funds(&e) {
+                return Err(grant_unfunded(
+                    &state,
+                    &pubkey,
+                    GrantUnfunded::AfterRedemption(e.to_string()),
+                )
+                .await);
+            }
             Err(ApiError::Internal(format!(
                 "faucet payout failed, please retry: {e}"
             )))
         }
+    }
+}
+
+/// Whether the operator can fund one faucet grant out of what is
+/// confirmed and unspoken-for right now. See `faucet_claim` for why this
+/// is advisory.
+async fn operator_can_fund_a_grant(state: &AppState) -> bool {
+    match state.node.balance(&state.operator_public_key).await {
+        Ok(balance) => balance >= FAUCET_GRANT_AMOUNT + HUB_TRANSACTION_FEE,
+        // A node we cannot reach is not a wallet we know to be empty.
+        // Let the claim proceed and fail on the real attempt, which
+        // reports the actual error rather than inventing a shortage.
+        Err(e) => {
+            warn!("could not check the operator's balance before a faucet grant: {e}");
+            true
+        }
+    }
+}
+
+/// Whether a payment failed because the source had nothing to spend, as
+/// opposed to any of the other ways it can fail.
+///
+/// A string match, because `pay_from` returns `anyhow::Error` and the
+/// one thing that distinguishes this case -- `PaymentError::
+/// InsufficientFunds` -- is several `?`s down inside it. Narrow enough
+/// to be safe: the alternative is a 500 that says the same words, so a
+/// miss costs the old behaviour rather than a wrong one.
+fn is_insufficient_funds(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<btclib::payment::PaymentError>()
+        .is_some_and(|e| matches!(e, btclib::payment::PaymentError::InsufficientFunds { .. }))
+}
+
+/// Which side of the redemption the shortage was found on. The two need
+/// different answers, and getting that backwards is what would make the
+/// hub either waste an agent's work or hand out a replacement challenge
+/// while the original is still perfectly good.
+enum GrantUnfunded {
+    /// Caught by the pre-flight, so nothing was spent. The agent's
+    /// challenge is untouched and its solution is still worth
+    /// presenting, so it must *not* be replaced: `ChallengeBook::issue`
+    /// evicts whatever that key had outstanding, which would throw away
+    /// the very work this branch exists to protect.
+    BeforeRedemption,
+    /// The pre-flight passed and the payment failed anyway -- a slot
+    /// taken in between, which is what a burst looks like. The
+    /// challenge is spent and cannot be unspent, so a fresh one is the
+    /// only thing left to give back.
+    AfterRedemption(String),
+}
+
+/// The answer to "the faucet cannot pay you at this instant": a 503 with
+/// a time to come back, and where the work is gone, something to start
+/// again from.
+///
+/// A 503 and not the 500 this used to send. The request was correct, the
+/// caller is not at fault, and the condition is temporary by
+/// construction -- the operator's change confirms in a block, which is
+/// what `FAUCET_RETRY_AFTER_SECONDS` says. A 500 reading "please retry"
+/// told an agent none of that and nothing about how long, which is the
+/// same gap §3.4 records for the rate limits.
+///
+/// The replacement challenge is a courtesy, not a refund: the work is
+/// gone either way. It saves a round trip to `/faucet/challenge` and
+/// says plainly that the hub expects the agent back. If issuing it
+/// fails, the 503 goes out without it.
+async fn grant_unfunded(
+    state: &AppState,
+    pubkey: &PublicKey,
+    when: GrantUnfunded,
+) -> ApiError {
+    let mut extra = serde_json::Map::new();
+    let message = match when {
+        GrantUnfunded::BeforeRedemption =>
+            "the faucet cannot fund a grant at this instant; nothing was spent, so present the same solution again after the retry interval".to_string(),
+        GrantUnfunded::AfterRedemption(cause) => {
+            match state.faucet_challenges.issue(pubkey, Utc::now()) {
+                Ok(challenge) => {
+                    extra.insert(
+                        "challenge".into(),
+                        serde_json::to_value(faucet_challenge_dto(state, &challenge))
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                Err(e) => warn!("could not issue a replacement faucet challenge for {pubkey}: {e}"),
+            }
+            format!("the faucet could not fund a grant ({cause}); your challenge was spent, so a fresh one is attached at no further cost")
+        }
+    };
+    ApiError::Unavailable {
+        message,
+        retry_after: FAUCET_RETRY_AFTER_SECONDS,
+        extra,
     }
 }
 
@@ -3793,6 +3997,20 @@ worthless to another: the pubkey is inside the hash.
 
 If you have already been granted, step 1 answers 409 rather than letting
 you spend a minute of CPU before saying no.
+
+Step 3 can answer **503**, meaning the hub is solvent but cannot fund a
+grant at this instant -- its own wallet's change is unconfirmed until the
+next block. This is temporary and you are not at fault. The response
+carries `Retry-After` (seconds) and the same number as
+`retry_after_seconds` in the body:
+
+- If there is **no** `challenge` field, nothing was spent. Sign the same
+  `{{"challenge_id": ..., "solution": N}}` again after the interval --
+  your work is still good. (Sign it again, not resend it: an identical
+  envelope is refused as a replay.)
+- If there **is** a `challenge` field, your solution was spent before the
+  payment failed. It holds a fresh challenge in the shape step 1 returns,
+  issued at no extra cost -- solve that one instead of asking for another.
 
 ## Finding work
 

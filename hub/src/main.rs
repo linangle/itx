@@ -1151,6 +1151,17 @@ mod tests {
         /// connection while it sat idle, which is the case a pooled
         /// client has to notice and recover from.
         hang_up_after_one: Arc<std::sync::atomic::AtomicBool>,
+        /// When set, the next `FetchUTXOs` answers truthfully and *then*
+        /// empties the set, clearing itself.
+        ///
+        /// The only way to stage a wallet that drains between two reads,
+        /// which is what a burst does to the operator: a handler that
+        /// checks the balance and then builds a payment sees two
+        /// different wallets, and the second one is the one that fails.
+        /// Racing two real requests would be the alternative, and it
+        /// would be a test that passes for whichever reason it felt
+        /// like that run.
+        drain_after_next_fetch: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeNode {
@@ -1164,12 +1175,14 @@ mod tests {
             let submissions_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let drain_after_next_fetch = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let submitted_for_accept_loop = submitted.clone();
             let utxos_for_accept_loop = utxos.clone();
             let fate_for_accept_loop = fate.clone();
             let seen_for_accept_loop = submissions_seen.clone();
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
+            let drain_for_accept_loop = drain_after_next_fetch.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else {
@@ -1181,6 +1194,7 @@ mod tests {
                     let fate = fate_for_accept_loop.clone();
                     let submissions_seen = seen_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
+                    let drain = drain_for_accept_loop.clone();
                     tokio::spawn(async move {
                         if btclib::network::perform_handshake_acceptor(&mut socket)
                             .await
@@ -1202,6 +1216,13 @@ mod tests {
                                         .filter(|(output, _)| output.pubkey == pk)
                                         .cloned()
                                         .collect();
+                                    // Drained after the answer is
+                                    // composed, so this read is honest
+                                    // and the next one is not -- see
+                                    // `drain_after_next_fetch`.
+                                    if drain.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                                        utxos.lock().await.retain(|(output, _)| output.pubkey != pk);
+                                    }
                                     if Message::UTXOs(owned).send_async(&mut socket).await.is_err()
                                     {
                                         return;
@@ -1268,6 +1289,7 @@ mod tests {
                 submissions_seen,
                 connections,
                 hang_up_after_one,
+                drain_after_next_fetch,
             }
         }
 
@@ -1332,6 +1354,11 @@ mod tests {
                 "the node never saw {expected} submission(s); it saw {}",
                 self.submissions_seen.load(std::sync::atomic::Ordering::SeqCst)
             );
+        }
+
+        /// Arms the one-shot drain -- see `drain_after_next_fetch`.
+        fn drain_after_the_next_fetch(&self) {
+            self.drain_after_next_fetch.store(true, std::sync::atomic::Ordering::SeqCst);
         }
 
         /// What this node does with the next transaction it is handed --
@@ -1955,6 +1982,109 @@ mod tests {
             resp.status(),
             reqwest::StatusCode::CONFLICT,
             "a spent challenge must be refused as spent"
+        );
+    }
+
+    /// The whole point of the pre-flight. An agent that solves a puzzle
+    /// and finds the hub broke must not have to solve another one:
+    /// the same solution has to still be worth presenting.
+    #[tokio::test]
+    async fn a_grant_the_operator_cannot_fund_spends_no_work() {
+        let operator_key = PrivateKey::new_key();
+        // Under a grant plus its fee, which is the shortage that used to
+        // burn the challenge and answer with a 500.
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 1_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(reqwest::header::RETRY_AFTER).unwrap(),
+            &btclib::IDEAL_BLOCK_TIME.to_string(),
+            "an agent told to come back needs to be told when"
+        );
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["retry_after_seconds"], btclib::IDEAL_BLOCK_TIME);
+        assert!(
+            body.get("challenge").is_none(),
+            "replacing an unspent challenge would evict the one the agent already solved"
+        );
+
+        // Fund the operator and present the *same* solution again. It
+        // has to be accepted, or the pre-flight bought nothing.
+        fake_node.fund(operator_key.public_key(), 15_000_000_000).await;
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::OK,
+            "the solution was never spent, so it must still be good"
+        );
+    }
+
+    /// The pre-flight must not answer for the challenge. A spent
+    /// challenge is a 409 whatever the operator's wallet happens to
+    /// hold -- otherwise a busy hub tells a client to retry work that
+    /// will never be accepted, and the 503 it sends says in as many
+    /// words that nothing was spent, which would be a lie.
+    #[tokio::test]
+    async fn a_spent_challenge_is_refused_as_spent_even_when_the_hub_cannot_pay() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 1_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        // Spend it out from under the handler, so the only thing left
+        // to refuse it for is the redemption -- the wallet is short
+        // either way.
+        hub.state
+            .faucet_challenges
+            .redeem(
+                challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+                &agent.public_key(),
+                solve_faucet_challenge(&challenge),
+                Utc::now(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &challenge).await.status(),
+            reqwest::StatusCode::CONFLICT
+        );
+    }
+
+    /// The race the pre-flight cannot close: it said yes, and the
+    /// payment failed anyway. The challenge is spent and cannot be
+    /// unspent, so the hub owes a fresh one -- and it has to be a
+    /// challenge the agent can actually solve and redeem.
+    #[tokio::test]
+    async fn a_grant_that_fails_after_redemption_hands_back_a_fresh_challenge() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        // The pre-flight's read is answered honestly and the wallet is
+        // gone by the time the payment builds -- exactly the window a
+        // burst opens, staged rather than raced.
+        fake_node.drain_after_the_next_fetch();
+
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = resp.json().await.unwrap();
+        let replacement = body["challenge"].clone();
+        assert!(replacement.is_object(), "a spent challenge is owed a replacement");
+        assert_eq!(replacement["pubkey"], agent.public_key().to_string());
+
+        // The grant was rolled back too, so the replacement is usable.
+        fake_node.fund(operator_key.public_key(), 15_000_000_000).await;
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &agent, &replacement).await.status(),
+            reqwest::StatusCode::OK,
+            "the replacement has to be solvable and redeemable, not just present"
         );
     }
 
