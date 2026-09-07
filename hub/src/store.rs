@@ -544,6 +544,52 @@ impl HubStore {
         })
     }
 
+    /// Everything one match touched, in one commit: the placed order,
+    /// every resting order it filled against, every trade, and every
+    /// account balance the fills and the taker fee moved.
+    ///
+    /// `place_order`'s handler used to write these as up to seven
+    /// independent transactions -- the taker order, one per trade, one
+    /// per resting order, a batch of the two counterparties, and the fee
+    /// sink under a separate lock afterwards -- and log every failure
+    /// while returning the filled order with a 200. Two things followed.
+    /// A disk error told the client its trade had executed when nothing
+    /// had been written at all. And a process that stopped partway left
+    /// a resting order recorded `Filled` beside balances that never
+    /// moved: because `cancel_order` refuses an order that is not
+    /// `Open`, the maker's locked funds could then never be released by
+    /// anyone, for the life of the deployment.
+    ///
+    /// A fill is one economic event and it takes one commit. Ordering
+    /// the writes more carefully was rejected for the reason §6.5b gives:
+    /// it only makes the failure a better failure, and leaves an interval
+    /// whose safety depends on nobody ever adding a step between two
+    /// writes. A single transaction has no interval (§6.5d).
+    pub fn save_fill(
+        &self,
+        orders: &[Order],
+        trades: &[Trade],
+        accounts: &[(PublicKey, ExchangeAccount)],
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            for order in orders {
+                stage_record(txn, ORDERS_TABLE, order.id.as_bytes().as_slice(), order)?;
+            }
+            for trade in trades {
+                stage_record(txn, TRADES_TABLE, trade.id.as_bytes().as_slice(), trade)?;
+            }
+            for (pubkey, account) in accounts {
+                stage_record(
+                    txn,
+                    EXCHANGE_ACCOUNTS_TABLE,
+                    pubkey.to_sec1_bytes().as_slice(),
+                    account,
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     /// An order and its owner's ledger balance, committed together --
     /// `cancel_order`'s writer, and the one place in the exchange where
     /// splitting the two was exploitable with no crash at all.
@@ -2244,6 +2290,209 @@ mod tests {
         );
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// The property the whole of §6.5d rests on: a fill that fails
+    /// partway commits none of itself.
+    ///
+    /// The old handler could not make this claim at any strength,
+    /// because seven independent commits have six intervals between
+    /// them. Here the failure is injected after every record is staged,
+    /// so the interval is hit deterministically on every run rather than
+    /// sampled the way a chaos drill has to sample it.
+    #[test]
+    fn a_failure_partway_through_a_fill_commits_none_of_it() {
+        let path = temp_db_path("atomic_fill_rollback");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (orders, trades, accounts) = filled_match();
+
+        let result = store.in_one_write_txn(|txn| {
+            for order in &orders {
+                stage_record(txn, ORDERS_TABLE, order.id.as_bytes().as_slice(), order)?;
+            }
+            for trade in &trades {
+                stage_record(txn, TRADES_TABLE, trade.id.as_bytes().as_slice(), trade)?;
+            }
+            for (pubkey, account) in &accounts {
+                stage_record(
+                    txn,
+                    EXCHANGE_ACCOUNTS_TABLE,
+                    pubkey.to_sec1_bytes().as_slice(),
+                    account,
+                )?;
+            }
+            Err(HubStoreError::Serialization("injected mid-fill failure".into()))
+        });
+        assert!(result.is_err(), "the injected failure must surface to the caller");
+
+        assert!(
+            store.load_all_orders().unwrap().is_empty(),
+            "an order staged before the failure must not survive it -- a resting order recorded \
+             Filled beside balances that never moved is the state whose locked funds nothing can \
+             ever release"
+        );
+        assert!(store.load_all_trades().unwrap().is_empty());
+        assert!(store.load_all_exchange_accounts().unwrap().is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// And the success half: every record of a fill becomes visible at
+    /// the same instant, including the operator's fee.
+    #[test]
+    fn a_fill_and_every_balance_it_moved_are_never_visible_apart() {
+        let path = temp_db_path("atomic_fill");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (orders, trades, accounts) = filled_match();
+
+        let before = store.db.begin_read().unwrap();
+        store.save_fill(&orders, &trades, &accounts).unwrap();
+
+        let orders_then = before.open_table(ORDERS_TABLE).unwrap();
+        let trades_then = before.open_table(TRADES_TABLE).unwrap();
+        assert!(orders_then.get(orders[0].id.as_bytes().as_slice()).unwrap().is_none());
+        assert!(trades_then.get(trades[0].id.as_bytes().as_slice()).unwrap().is_none());
+
+        assert_eq!(store.load_all_orders().unwrap().len(), 2);
+        assert_eq!(store.load_all_trades().unwrap().len(), 1);
+        assert_eq!(
+            store.load_all_exchange_accounts().unwrap().len(),
+            3,
+            "both counterparties and the fee sink -- the fee used to be a seventh commit taken \
+             under a second lock, so a trade could exist on disk without the fee it charged"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The mechanism of the fill bug, made executable, the way
+    /// `two_separate_commits_leave_a_window_where_the_task_exists_alone`
+    /// does it for the deposit side.
+    ///
+    /// Characterises the old handler: the resting order committed before
+    /// the account batch. A reader in that window sees a maker's order
+    /// marked `Filled` beside the balance it was filled from, untouched
+    /// and still locked. That is the permanent strand -- `cancel_order`
+    /// refuses an order that is not `Open`, so no call can ever release
+    /// it again.
+    #[test]
+    fn two_separate_commits_leave_a_filled_order_beside_an_unmoved_balance() {
+        let path = temp_db_path("fill_two_commit_window");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (orders, _, accounts) = filled_match();
+        let maker = &orders[1];
+        let (maker_key, settled) = &accounts[1];
+
+        // What the maker's account looked like before the fill: the sold
+        // compute still there, still locked.
+        let locked = ExchangeAccount {
+            base_balance: 0,
+            locked_base: 0,
+            compute_balance: 50,
+            locked_compute: 50,
+        };
+        store.save_exchange_account(maker_key, &locked).unwrap();
+
+        store.save_order(maker).unwrap();
+        // Stands exactly where the process stopped: after the resting
+        // order's commit, before the account batch's.
+        let crashed_here = store.db.begin_read().unwrap();
+        store.save_exchange_account(maker_key, settled).unwrap();
+
+        let orders_now = crashed_here.open_table(ORDERS_TABLE).unwrap();
+        let accounts_now = crashed_here.open_table(EXCHANGE_ACCOUNTS_TABLE).unwrap();
+        let order_bytes = orders_now.get(maker.id.as_bytes().as_slice()).unwrap().unwrap();
+        let seen_order: Order = ciborium::from_reader(order_bytes.value()).unwrap();
+        let account_bytes = accounts_now.get(maker_key.to_sec1_bytes().as_slice()).unwrap().unwrap();
+        let seen_account: ExchangeAccount = ciborium::from_reader(account_bytes.value()).unwrap();
+
+        assert_eq!(
+            seen_order.status,
+            crate::board::OrderStatus::Filled,
+            "the resting order committed first, so a reader in the window sees it filled"
+        );
+        assert_eq!(
+            seen_account.locked_compute, 50,
+            "beside the compute it was filled from, still locked -- and because the order is no \
+             longer Open, cancelling can never release it"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// One taker fully filling one resting maker: two orders, one trade,
+    /// and the three accounts a match moves -- buyer, seller, and the
+    /// operator's fee sink. Fifty compute at ten, so the notional is 500
+    /// and the buy-side taker fee is 0 at these sizes, which is exactly
+    /// what `small_fills_round_the_taker_fee_down_to_zero` pins; the fee
+    /// account is present here regardless, because what this fixture is
+    /// for is the *set* of records one fill writes.
+    fn filled_match() -> (Vec<Order>, Vec<Trade>, Vec<(PublicKey, ExchangeAccount)>) {
+        let buyer = PrivateKey::new_key().public_key();
+        let seller = PrivateKey::new_key().public_key();
+        let operator = PrivateKey::new_key().public_key();
+        let taker = Order {
+            id: Uuid::new_v4(),
+            owner: buyer.clone(),
+            side: crate::board::Side::Buy,
+            price: 10,
+            quantity: 50,
+            filled: 50,
+            status: crate::board::OrderStatus::Filled,
+            created_at: Utc::now(),
+        };
+        let maker = Order {
+            id: Uuid::new_v4(),
+            owner: seller.clone(),
+            side: crate::board::Side::Sell,
+            price: 10,
+            quantity: 50,
+            filled: 50,
+            status: crate::board::OrderStatus::Filled,
+            created_at: Utc::now(),
+        };
+        let trade = Trade {
+            id: Uuid::new_v4(),
+            buy_order_id: taker.id,
+            sell_order_id: maker.id,
+            buyer: buyer.clone(),
+            seller: seller.clone(),
+            price: 10,
+            taker_side: crate::board::Side::Buy,
+            taker_fee: 0,
+            quantity: 50,
+            executed_at: Utc::now(),
+        };
+        let accounts = vec![
+            (
+                buyer,
+                ExchangeAccount {
+                    base_balance: 500,
+                    locked_base: 0,
+                    compute_balance: 50,
+                    locked_compute: 0,
+                },
+            ),
+            (
+                seller,
+                ExchangeAccount {
+                    base_balance: 500,
+                    locked_base: 0,
+                    compute_balance: 0,
+                    locked_compute: 0,
+                },
+            ),
+            (
+                operator,
+                ExchangeAccount {
+                    base_balance: 0,
+                    locked_base: 0,
+                    compute_balance: 1,
+                    locked_compute: 0,
+                },
+            ),
+        ];
+        (vec![taker, maker], vec![trade], accounts)
     }
 
     /// An order cancelled down to a released lock, and the account it

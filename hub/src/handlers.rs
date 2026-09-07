@@ -2619,48 +2619,17 @@ pub async fn confirm_exchange_deposit(
     Ok(Json(ExchangeAccountDto::from(account)))
 }
 
-/// Persists everything one `TaskBoard::place_order` call may have
-/// touched: the placed order itself, every resting order it matched
-/// against (re-fetched live, since the board already mutated it in
-/// memory), every trade produced, and every distinct account balance
-/// moved by any of it (a match can move up to two accounts' worth of
-/// balance per fill).
-async fn persist_order_and_related(state: &AppState, order: &Order, trades: &[Trade]) {
-    if let Err(e) = state.store.save_order(order) {
-        error!("failed to persist order {}: {e}", order.id);
-    }
-    let mut touched_orders: BTreeSet<Uuid> = BTreeSet::new();
-    let mut touched_accounts: BTreeSet<PublicKey> = BTreeSet::new();
-    for trade in trades {
-        if let Err(e) = state.store.save_trade(trade) {
-            error!("failed to persist trade {}: {e}", trade.id);
-        }
-        touched_orders.insert(trade.buy_order_id);
-        touched_orders.insert(trade.sell_order_id);
-        touched_accounts.insert(trade.buyer.clone());
-        touched_accounts.insert(trade.seller.clone());
-    }
-    touched_orders.remove(&order.id); // already saved above
-
-    let board = state.board.read().await;
-    for order_id in touched_orders {
-        if let Some(resting) = board.get_order(order_id) {
-            if let Err(e) = state.store.save_order(resting) {
-                error!("failed to persist resting order {order_id}: {e}");
-            }
-        }
-    }
-    let accounts: Vec<(PublicKey, ExchangeAccount)> = touched_accounts
-        .into_iter()
-        .map(|pk| {
-            let account = board.exchange_account(&pk);
-            (pk, account)
-        })
-        .collect();
-    drop(board);
-    if let Err(e) = state.store.save_exchange_account_batch(&accounts) {
-        error!("failed to persist exchange account balances after a match: {e}");
-    }
+/// The taker fee owed on a batch of trades, split by the asset it was
+/// charged in: compute when the taker bought, base when it sold (see
+/// `board::TAKER_FEE_BPS`).
+///
+/// Pure, so the totals can be computed while the board's write lock is
+/// held without doing anything that might want the lock itself.
+fn taker_fee_totals(trades: &[Trade]) -> (u64, u64) {
+    trades.iter().fold((0u64, 0u64), |(compute, base), t| match t.taker_side {
+        Side::Buy => (compute + t.taker_fee, base),
+        Side::Sell => (compute, base + t.taker_fee),
+    })
 }
 
 /// Places a limit order against the caller's own exchange ledger
@@ -2676,47 +2645,74 @@ pub async fn place_order(
     Json(envelope): Json<SignedEnvelope<PlaceOrderPayload>>,
 ) -> Result<Json<OrderDto>, ApiError> {
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-    let (order, trades) = state.board.write().await.place_order(
-        pubkey,
-        envelope.payload.side,
-        envelope.payload.price,
-        envelope.payload.quantity,
-        Utc::now(),
-    )?;
-    persist_order_and_related(&state, &order, &trades).await;
-    credit_taker_fees_to_operator(&state, &trades).await;
-    Ok(Json(OrderDto::from(&order)))
-}
 
-/// Routes every trade's taker fee (see `TaskBoard::place_order`'s own
-/// doc comment, and `board::TAKER_FEE_BPS`) to the operator's own
-/// exchange account -- the hub's fee sink, the same role it already
-/// plays for the faucet and every operator-funded task. `TaskBoard`
-/// itself has no notion of "the operator", so this is deliberately a
-/// handler-level concern, not folded into `place_order`. A no-op call
-/// (nothing to credit) is harmless and cheap, so callers don't need to
-/// check `trades.is_empty()` themselves first.
-async fn credit_taker_fees_to_operator(state: &AppState, trades: &[Trade]) {
-    let (compute_fees, base_fees) = trades.iter().fold((0u64, 0u64), |(compute, base), t| match t.taker_side {
-        Side::Buy => (compute + t.taker_fee, base),
-        Side::Sell => (compute, base + t.taker_fee),
-    });
-    if compute_fees == 0 && base_fees == 0 {
-        return;
-    }
-    {
+    // One acquisition of the write lock covers the match, the fee, and
+    // reading back everything the two touched. The fee used to be
+    // credited under a *second* acquisition after the fill had already
+    // been persisted, which meant both the board and the store could be
+    // observed in a state where a trade existed and the fee it charged
+    // did not. Nothing else may run between a fill and its fee.
+    let (order, trades, orders, accounts) = {
         let mut board = state.board.write().await;
+        let (order, trades) = board.place_order(
+            pubkey,
+            envelope.payload.side,
+            envelope.payload.price,
+            envelope.payload.quantity,
+            Utc::now(),
+        )?;
+
+        // `TaskBoard` has no notion of an operator -- it credits whoever
+        // it is handed -- so routing the fee to the hub's own account
+        // stays a handler-level concern, as it always has. What changes
+        // is only where it happens.
+        let (compute_fees, base_fees) = taker_fee_totals(&trades);
         if compute_fees > 0 {
             board.credit_compute(&state.operator_public_key, compute_fees);
         }
         if base_fees > 0 {
             board.credit_base(&state.operator_public_key, base_fees);
         }
-    }
-    let operator_account = state.board.read().await.exchange_account(&state.operator_public_key);
-    if let Err(e) = state.store.save_exchange_account(&state.operator_public_key, &operator_account) {
-        error!("failed to persist operator fee revenue: {e}");
-    }
+
+        // Every record the call may have moved: the placed order, every
+        // resting order it matched against, every counterparty, and the
+        // fee sink when it earned anything. Read back under the same
+        // lock that produced them, so the set handed to the store is one
+        // internally consistent snapshot rather than several.
+        let mut touched_orders: BTreeSet<Uuid> = BTreeSet::new();
+        let mut touched_accounts: BTreeSet<PublicKey> = BTreeSet::new();
+        for trade in &trades {
+            touched_orders.insert(trade.buy_order_id);
+            touched_orders.insert(trade.sell_order_id);
+            touched_accounts.insert(trade.buyer.clone());
+            touched_accounts.insert(trade.seller.clone());
+        }
+        touched_orders.remove(&order.id);
+        if compute_fees > 0 || base_fees > 0 {
+            touched_accounts.insert(state.operator_public_key.clone());
+        }
+
+        let mut orders = vec![order.clone()];
+        orders.extend(touched_orders.into_iter().filter_map(|id| board.get_order(id).cloned()));
+        let accounts: Vec<(PublicKey, ExchangeAccount)> = touched_accounts
+            .into_iter()
+            .map(|pk| {
+                let account = board.exchange_account(&pk);
+                (pk, account)
+            })
+            .collect();
+
+        (order, trades, orders, accounts)
+    };
+
+    // One commit for the whole fill, and a 500 rather than a 200 if it
+    // fails. See `HubStore::save_fill` for what the old seven commits
+    // could leave on disk.
+    state
+        .store
+        .save_fill(&orders, &trades, &accounts)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(OrderDto::from(&order)))
 }
 
 /// Cancels an open (or partially filled) order, releasing whatever
