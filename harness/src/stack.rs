@@ -7,11 +7,14 @@
 //!
 //! # Two things this is careful about, both learned by other sessions
 //!
-//! **Ports.** Node 9040, hub 9140, and the hub binds `127.0.0.1`
-//! explicitly. Three other workstreams may be running stacks on this
-//! machine; a more specific bind silently shadows a wildcard one, so a
-//! shared port does not produce an error, it produces a measurement of
-//! somebody else's hub.
+//! **Ports.** Node 9040, hub 9140 by default, overridable with
+//! `ITX_DRILL_NODE_PORT` / `ITX_DRILL_HUB_PORT`, and the hub binds
+//! `127.0.0.1` explicitly. Three other workstreams may be running stacks
+//! on this machine; a more specific bind silently shadows a wildcard
+//! one, so a shared port does not produce an error, it produces a
+//! measurement of somebody else's hub. The override exists so that the
+//! port a workstream is assigned is not a source edit every other
+//! workstream also makes to the same two lines.
 //!
 //! **Binaries.** `target/release/hub` is one path for every worktree on
 //! this box, and three of the four concurrent workstreams are actively
@@ -30,11 +33,49 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 
-/// The ports this workstream owns. Named rather than defaulted at each
-/// call site so that changing them is one edit and so the numbers appear
-/// in exactly one place in the source.
+/// The ports the drill stack uses unless told otherwise.
 pub const NODE_PORT: u16 = 9040;
 pub const HUB_PORT: u16 = 9140;
+
+/// The same, after `ITX_DRILL_NODE_PORT` / `ITX_DRILL_HUB_PORT` have had
+/// their say.
+///
+/// Several workstreams run drills on this box at once and each is handed
+/// its own pair of ports. Without an override that assignment is a
+/// source edit -- to the same two lines, in every worktree -- which is a
+/// merge conflict by construction and, worse, one whose resolution is a
+/// port number somebody has to remember was deliberate. An unparseable
+/// or absent value falls back to the constant rather than failing: a
+/// drill refusing to start because of a typo in an environment variable
+/// is a worse outcome than a drill on the default port, which the module
+/// header's shadowed-bind warning already covers.
+pub fn node_port() -> u16 {
+    port_from_env("ITX_DRILL_NODE_PORT", NODE_PORT)
+}
+
+pub fn hub_port() -> u16 {
+    port_from_env("ITX_DRILL_HUB_PORT", HUB_PORT)
+}
+
+fn port_from_env(name: &str, fallback: u16) -> u16 {
+    match std::env::var(name).ok().and_then(|v| v.parse().ok()) {
+        Some(port) => port,
+        None => fallback,
+    }
+}
+
+/// How much work a faucet grant costs on a drill's stack
+/// (`--faucet-pow-expected-hashes`).
+///
+/// Sixty-four, not the hub's own twenty million, and this is load-bearing
+/// rather than a convenience. `payout-ceiling` offers hundreds of grants
+/// per run; at the real difficulty a Rust client spends seconds on each
+/// puzzle, so the drill would measure about one payout per block for
+/// reasons that have nothing to do with the operator's wallet -- it would
+/// confirm the ceiling against its own solver. Low enough to be free,
+/// high enough that the first nonce tried is usually not a hit, so the
+/// solving path is still genuinely exercised.
+pub const DRILL_FAUCET_EXPECTED_HASHES: u64 = 64;
 
 /// How long to wait for a process to answer before giving up on it.
 /// Generous: a debug-build hub replaying a store on a loaded machine is
@@ -51,6 +92,9 @@ pub struct StackConfig {
     pub work_dir: PathBuf,
     pub node_port: u16,
     pub hub_port: u16,
+    /// Passed to the hub as `--faucet-pow-expected-hashes`. See
+    /// `DRILL_FAUCET_EXPECTED_HASHES`.
+    pub faucet_expected_hashes: u64,
     /// Passed to the hub as `--trusted-proxies`. Setting this to
     /// `127.0.0.1` makes the hub believe an `X-Forwarded-For` header from
     /// the harness, which is the only way to look like a thousand source
@@ -63,8 +107,9 @@ impl StackConfig {
         Self {
             bin_dir: bin_dir.into(),
             work_dir: work_dir.into(),
-            node_port: NODE_PORT,
-            hub_port: HUB_PORT,
+            node_port: node_port(),
+            hub_port: hub_port(),
+            faucet_expected_hashes: DRILL_FAUCET_EXPECTED_HASHES,
             trusted_proxies: None,
         }
     }
@@ -263,6 +308,8 @@ impl Stack {
             "./hub.redb".into(),
             "--operator-key-file".into(),
             "./operator.priv.cbor".into(),
+            "--faucet-pow-expected-hashes".into(),
+            self.config.faucet_expected_hashes.to_string(),
         ];
         if let Some(proxies) = &self.config.trusted_proxies {
             args.push("--trusted-proxies".into());

@@ -11,7 +11,7 @@
 //! across source addresses. The buckets are per address, so looking like
 //! many clients would defeat the entire experiment.
 
-use crate::client::{claim_faucet, HubClient};
+use crate::client::{faucet_challenge, redeem_faucet, HubClient};
 use crate::report::{Report, Section, Verdict};
 use crate::stats::{summarize, Sample};
 use anyhow::Result;
@@ -57,12 +57,41 @@ async fn flood_writes(hub: &HubClient, count: usize, samples: &mut Vec<Sample>) 
     Ok((served, refused))
 }
 
+/// One agent's faucet challenge, fetched before any flood and held for
+/// the probe to redeem.
+///
+/// The faucet became two calls when the proof of work landed (plan §5),
+/// and the two sit in *different* tiers: `/faucet/challenge` is an
+/// ordinary write, `/faucet` is the chain write. So a probe that ran the
+/// whole flow after a write flood would be refused at the challenge and
+/// report the chain tier as broken -- which would be a true statement
+/// about the flow and a false one about the buckets, and this drill is
+/// about the buckets. Fetching the challenge first isolates the leg
+/// being asked about.
+struct ChainProbe {
+    key: PrivateKey,
+    challenge: serde_json::Value,
+}
+
+async fn prepare_chain_probe(hub: &HubClient) -> Result<ChainProbe> {
+    let key = PrivateKey::new_key();
+    let reply = faucet_challenge(hub, &key).await?;
+    anyhow::ensure!(
+        reply.ok(),
+        "could not fetch a faucet challenge to probe the chain tier with: {} {}",
+        reply.status,
+        reply.error_text()
+    );
+    Ok(ChainProbe { key, challenge: reply.body })
+}
+
 /// Probes the three tiers the flood is not aimed at. Returns whether each
 /// still answered something other than 429.
 async fn probe_others(
     hub: &HubClient,
     skip_read: bool,
     skip_write: bool,
+    chain_probe: ChainProbe,
     samples: &mut Vec<Sample>,
 ) -> Result<(bool, bool, bool, bool)> {
     let health = hub.get("/health").await?;
@@ -87,11 +116,11 @@ async fn probe_others(
         samples.push(Sample::new("probe write", reply.status, reply.latency));
     }
 
-    // A chain-tier write. The faucet is the cheapest one to reach that
-    // needs no prior state; it may legitimately fail for want of operator
-    // coin, and that is still not a 429, which is what is being asked.
-    let key = PrivateKey::new_key();
-    let chain = claim_faucet(hub, &key).await?;
+    // A chain-tier write, redeemed from a challenge fetched before the
+    // flood -- see `ChainProbe`. It may legitimately fail for want of
+    // operator coin, and that is still not a 429, which is what is being
+    // asked.
+    let chain = redeem_faucet(hub, &chain_probe.key, &chain_probe.challenge).await?;
     samples.push(Sample::new("probe chain", chain.status, chain.latency));
 
     Ok((
@@ -117,11 +146,19 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .wait_for_utxo_count(&operator, 2, std::time::Duration::from_secs(300))
         .await?;
 
+    // Both probes' challenges are fetched now, while nothing is
+    // saturated. A challenge lasts ten minutes and this drill takes
+    // seconds, so holding one across a flood costs nothing.
+    let first_probe = prepare_chain_probe(&hub).await?;
+    let second_probe = prepare_chain_probe(&hub).await?;
+
     let (reads_served, reads_refused) = flood_reads(&hub, READ_FLOOD, &mut samples).await?;
-    let (health_ok, _, write_ok, chain_ok) = probe_others(&hub, true, false, &mut samples).await?;
+    let (health_ok, _, write_ok, chain_ok) =
+        probe_others(&hub, true, false, first_probe, &mut samples).await?;
 
     let (writes_served, writes_refused) = flood_writes(&hub, WRITE_FLOOD, &mut samples).await?;
-    let (health_ok_2, _, _, chain_ok_2) = probe_others(&hub, true, true, &mut samples).await?;
+    let (health_ok_2, _, _, chain_ok_2) =
+        probe_others(&hub, true, true, second_probe, &mut samples).await?;
 
     harness.stack.shutdown().await;
 
