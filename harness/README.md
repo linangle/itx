@@ -52,8 +52,8 @@ CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out 
 ```
 
 One at a time, by name: `node-crash`, `escrow-restart`, `escrow-refund`,
-`replay-storm`, `rate-limit-tiers`, `quota-isolation`, `payout-ceiling`,
-`signed-write-cost`.
+`exchange-restart`, `replay-storm`, `rate-limit-tiers`, `quota-isolation`,
+`payout-ceiling`, `signed-write-cost`.
 
 **`escrow-refund` is the one drill here that can assert.** Every other drill
 samples something — a race, a window, a rate — and so a clean run is weak
@@ -64,6 +64,28 @@ either persists or it does not, on every restart, so one run is a verdict.
 It exists because seven drills that all sampled missed the worst defect the hub
 has had (plan §6.5c). When adding a drill, prefer a question shaped like this
 one's.
+
+**But check that the shape actually fits your bug, which is the mistake
+`exchange-restart` made.** It has an asserting phase built on the same
+reasoning — a ledger either balances after a restart or it does not — and that
+phase reports CONFIRMED against a *pre-fix* binary, so it proves nothing about
+the bug it was written for. The difference is what the bug does to the disk:
+`escrow-refund`'s wrote a status **nowhere**, so every restart showed it, while
+the fill bug wrote everything and merely not atomically, so only an interrupted
+commit tells the builds apart. That drill therefore carries both a sampling
+phase, which discriminates, and the asserting one, which is kept as a standing
+invariant check and says in its own report that it is not evidence. Ask which
+kind you have before choosing a shape (plan §6.5d).
+
+**A sampling drill can widen its own target, and mostly does not.**
+`exchange-restart` first fired eight fills that each took one resting order and
+reported INCONCLUSIVE against the buggy hub three runs of three: the vulnerable
+interval was microseconds inside a handler lasting milliseconds. The buggy code
+wrote one commit per trade and one per resting order filled, so making one bid
+sweep twenty-five asks widened the window by roughly that factor — and cost the
+fixed build nothing, since it writes one commit however many orders it crossed.
+Pre-fix then refuted three of three. If a kill is not landing, look for a knob
+that makes the vulnerable stretch longer before adding more runs.
 
 ## Run a new drill against the buggy binary before you believe it
 
@@ -245,6 +267,8 @@ failure, refuting it is the good news, and the "healthy" column says so.
 | `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another | confirmed |
 | `payout-ceiling` | §6.4b | With a single operator output, payouts are bounded at about one per block | **refuted** (the hub fans its wallet out; §6.4b) |
 | `escrow-refund` | §6.5c | A refunded escrow deposit's status survives a restart, so the sweep does not re-select it | confirmed |
+| `exchange-restart` (clean) | §6.5d | A traded ledger conserves across a graceful restart, with no stranded or unbacked locks | confirmed — but see below, it passes pre-fix too |
+| `exchange-restart` (sigkill) | §6.5d | A fill interrupted by a crash leaves the ledger consistent | inconclusive when clean; pre-fix refuted 3 of 3 |
 | `signed-write-cost` | §6.3 | Signature-verify CPU is what the write path's time goes on | **refuted** (a settled measurement, §6.3) |
 
 Three of them need explaining, because the way they are set up is the
