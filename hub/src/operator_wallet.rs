@@ -33,8 +33,9 @@
 //! happened to iterate in, which routinely turned a 150-coin output
 //! into a 0.5-coin payment and 149.5 coins of invisible change.
 //!
-//! **Refilling.** `plan_fan_out` decides when to split. A fan-out that
-//! runs once is a fan-out that expires, so this runs on the sweep's
+//! **Refilling.** `plan_reshape` decides when to split a big output into
+//! slots, and when to sweep worn-out change back into one. A fan-out
+//! that runs once is a fan-out that expires, so this runs on the sweep's
 //! sixty-second cadence and at boot, and its input is only ever the
 //! wallet as the node currently reports it -- there is no state to keep
 //! in sync and nothing to reconcile after a restart.
@@ -138,71 +139,107 @@ pub fn ready_outputs(utxos: &[(bool, TransactionOutput)]) -> usize {
         .count()
 }
 
-/// One self-paying transaction: spend `source` and pay the operator
-/// back in `shares` pieces.
+/// One self-paying transaction: spend `inputs` and pay the operator back
+/// in `shares` pieces.
 #[derive(Debug, Clone)]
-pub struct FanOut {
-    /// The output being split. Always the largest unmarked one, which
-    /// is normally the change blob a previous payment left behind.
-    pub source: TransactionOutput,
-    /// What to pay the operator, one entry per new output. Sums to
-    /// `source.value - fee` exactly, so the transaction has no change
-    /// output: a change output here would be a piece the plan did not
-    /// choose the size of, and on a small wallet it would be dust.
+pub struct Reshape {
+    /// The outputs being consumed.
+    pub inputs: Vec<TransactionOutput>,
+    /// What to pay the operator, one entry per new output. Sums to the
+    /// inputs' total minus the fee exactly, so the transaction has no
+    /// change output: a change output here would be a piece the plan did
+    /// not choose the size of, and on a small wallet it would be dust --
+    /// which is the very thing this is trying to clear up.
     pub shares: Vec<u64>,
 }
 
-/// Decides whether the operator's wallet needs splitting, and how.
+/// Decides whether the operator's wallet needs reshaping, and how.
 ///
-/// `None` means leave it alone -- either the floor is met, or nothing
-/// on hand can be usefully split. Both are ordinary; this runs every
+/// `None` means leave it alone -- either the floor is met, or nothing on
+/// hand can be usefully reshaped. Both are ordinary; this runs every
 /// sweep and does nothing on nearly all of them.
 ///
-/// Only ever splits *one* output per call, and always the largest.
-/// Splitting several would spend outputs that are already doing their
-/// job, and on the pass after a fan-out the new pieces are not visible
-/// yet (they are unconfirmed), so a plan that kept going would fan out
-/// against a wallet it had already fanned out -- see
+/// # Two moves, and the order matters
+///
+/// **Consolidate first.** Every payment leaves change, and change that
+/// has fallen below `MIN_USEFUL_OUTPUT` is not a slot in the fan -- it
+/// is material. Sweeping that material into one usable output costs one
+/// fee and strictly *raises* the count, so it is always the better move
+/// when it is available.
+///
+/// Without this the wallet has a trap in it. A wallet whose outputs have
+/// all eroded below the line has plenty of balance and no output big
+/// enough to split, so a splitter-only planner returns `None` forever
+/// while payments grind on through ever-smaller combinations of ever-
+/// more inputs. Nothing recovers it; the shape only ever gets worse.
+///
+/// **Split second**, and only the largest output, sweeping any leftover
+/// dust in with it. Splitting several would spend outputs that are
+/// already doing their job, and on the pass after a reshape the new
+/// pieces are not visible yet (they are unconfirmed), so a plan that
+/// kept going would reshape a wallet it had already reshaped -- see
 /// `AppState::operator_fan_out_inflight` for the other half of that
 /// guard.
-pub fn plan_fan_out(
+pub fn plan_reshape(
     utxos: &[(bool, TransactionOutput)],
     fee: u64,
     floor: usize,
-) -> Option<FanOut> {
+) -> Option<Reshape> {
     let ready = ready_outputs(utxos);
     if ready >= floor {
         return None;
     }
-    let source = utxos
-        .iter()
-        .filter(|(marked, _)| !*marked)
-        .max_by_key(|(_, output)| (output.value, output.unique_id))
-        .map(|(_, output)| output.clone())?;
-    let spendable = source.value.checked_sub(fee)?;
+    let wanted = floor - ready;
 
-    // Every piece has to clear `MIN_USEFUL_OUTPUT` or it is not a slot,
-    // and `+ 1` because `source` is itself one of the ready outputs
-    // being consumed: splitting it into as many pieces as are missing
-    // would land one short.
-    let affordable = (spendable / MIN_USEFUL_OUTPUT) as usize;
-    let wanted = floor - ready + 1;
-    let pieces = wanted.min(affordable);
-    if pieces < 2 {
-        // One piece is not a split. It would pay a fee to make the
-        // wallet strictly worse for a block, which is how a wallet too
-        // small to fan out would otherwise bleed a fee every sweep
-        // forever.
-        return None;
+    let spendable = |outputs: &[TransactionOutput]| -> u64 {
+        outputs.iter().map(|output| output.value).sum::<u64>().saturating_sub(fee)
+    };
+    let cut = |inputs: Vec<TransactionOutput>, pieces: usize| -> Reshape {
+        let total = spendable(&inputs);
+        let share = total / pieces as u64;
+        let mut shares = vec![share; pieces];
+        // The last piece absorbs the division's remainder rather than
+        // letting it become a change output. At most `pieces - 1` units,
+        // so it cannot unbalance the fan.
+        shares[pieces - 1] = total - share * (pieces as u64 - 1);
+        Reshape { inputs, shares }
+    };
+
+    // Everything unmarked and too small to be a slot. Consumed by
+    // whichever move runs, so neither leaves it behind to accumulate.
+    let dust: Vec<TransactionOutput> = utxos
+        .iter()
+        .filter(|(marked, output)| !*marked && output.value < MIN_USEFUL_OUTPUT)
+        .map(|(_, output)| output.clone())
+        .collect();
+
+    // Consolidation. One piece is enough here, unlike a split: it turns
+    // material that could fund nothing on its own into an output that
+    // can, so the ready count goes up even at one.
+    let from_dust = (spendable(&dust) / MIN_USEFUL_OUTPUT) as usize;
+    if from_dust >= 1 {
+        return Some(cut(dust, wanted.min(from_dust)));
     }
 
-    let share = spendable / pieces as u64;
-    let mut shares = vec![share; pieces];
-    // The last piece absorbs the division's remainder rather than
-    // letting it become a change output. At most `pieces - 1` units, so
-    // it cannot unbalance the fan.
-    shares[pieces - 1] = spendable - share * (pieces as u64 - 1);
-    Some(FanOut { source, shares })
+    // Splitting. `+ 1` because the source is itself one of the ready
+    // outputs being consumed: cutting it into as many pieces as are
+    // missing would land one short.
+    let largest = utxos
+        .iter()
+        .filter(|(marked, output)| !*marked && output.value >= MIN_USEFUL_OUTPUT)
+        .max_by_key(|(_, output)| (output.value, output.unique_id))
+        .map(|(_, output)| output.clone())?;
+    let mut inputs = vec![largest];
+    inputs.extend(dust);
+    let pieces = (wanted + 1).min((spendable(&inputs) / MIN_USEFUL_OUTPUT) as usize);
+    if pieces < 2 {
+        // One piece is not a split. It would pay a fee to leave the
+        // wallet no better and hidden for a block, which is how a wallet
+        // too small to reach the floor would otherwise bleed a fee every
+        // sweep forever.
+        return None;
+    }
+    Some(cut(inputs, pieces))
 }
 
 #[cfg(test)]
@@ -286,16 +323,38 @@ mod tests {
         );
     }
 
+    /// Applies a plan the way a mined transaction would, so a test can
+    /// re-plan against the wallet it produced.
+    fn apply(utxos: &mut Vec<(bool, TransactionOutput)>, plan: &Reshape) {
+        let spent: Vec<Uuid> = plan.inputs.iter().map(|o| o.unique_id).collect();
+        utxos.retain(|(_, o)| !spent.contains(&o.unique_id));
+        utxos.extend(plan.shares.iter().map(|v| (false, output(*v))));
+    }
+
+    /// Runs the planner to a fixed point, asserting it reaches one.
+    /// This is the property that matters most: it runs every sweep for
+    /// the life of the process, and a plan that never says `None` is a
+    /// fee paid every sixty seconds forever.
+    fn settle(utxos: &mut Vec<(bool, TransactionOutput)>, floor: usize) -> usize {
+        let mut passes = 0;
+        while let Some(plan) = plan_reshape(utxos, FEE, floor) {
+            passes += 1;
+            assert!(passes < 10, "the wallet plan is not converging");
+            apply(utxos, &plan);
+        }
+        passes
+    }
+
     #[test]
     fn a_wallet_at_the_floor_is_left_alone() {
         let utxos = wallet(&vec![MIN_USEFUL_OUTPUT; 4]);
-        assert!(plan_fan_out(&utxos, FEE, 4).is_none());
+        assert!(plan_reshape(&utxos, FEE, 4).is_none());
     }
 
     #[test]
     fn one_big_output_reaches_the_floor_in_a_single_split() {
         let utxos = wallet(&[15_000_000_000]);
-        let plan = plan_fan_out(&utxos, FEE, 24).expect("a single blob is exactly what to split");
+        let plan = plan_reshape(&utxos, FEE, 24).expect("a single blob is exactly what to split");
         assert_eq!(plan.shares.len(), 24, "one ready output plus 23 missing");
         assert_eq!(
             plan.shares.iter().sum::<u64>(),
@@ -305,20 +364,10 @@ mod tests {
         assert!(plan.shares.iter().all(|s| *s >= MIN_USEFUL_OUTPUT));
     }
 
-    /// The convergence property. Applying the plan and re-planning must
-    /// reach a fixed point rather than splitting forever, because this
-    /// runs on every sweep for the life of the process.
     #[test]
     fn splitting_converges_and_then_stops() {
         let mut utxos = wallet(&[15_000_000_000]);
-        let mut splits = 0;
-        while let Some(plan) = plan_fan_out(&utxos, FEE, 24) {
-            splits += 1;
-            assert!(splits < 10, "fan-out is not converging");
-            utxos.retain(|(_, o)| o.unique_id != plan.source.unique_id);
-            utxos.extend(plan.shares.iter().map(|v| (false, output(*v))));
-        }
-        assert_eq!(splits, 1);
+        assert_eq!(settle(&mut utxos, 24), 1);
         assert_eq!(ready_outputs(&utxos), 24);
     }
 
@@ -327,21 +376,66 @@ mod tests {
     #[test]
     fn a_wallet_too_small_for_the_floor_stops_short_of_it() {
         let mut utxos = wallet(&[250_000_000]);
-        let mut splits = 0;
-        while let Some(plan) = plan_fan_out(&utxos, FEE, 24) {
-            splits += 1;
-            assert!(splits < 10, "fan-out is not converging");
-            utxos.retain(|(_, o)| o.unique_id != plan.source.unique_id);
-            utxos.extend(plan.shares.iter().map(|v| (false, output(*v))));
-        }
+        settle(&mut utxos, 24);
         assert_eq!(ready_outputs(&utxos), 2, "250_000_000 buys two usable slots");
+    }
+
+    /// The trap a splitter-only planner falls into, and the reason
+    /// consolidation exists. Every payment leaves change, so a busy
+    /// wallet erodes: sooner or later every output is below the line,
+    /// and at that point there is nothing large enough to split. A
+    /// planner that could only split would return `None` here forever,
+    /// against a wallet holding six whole coins.
+    #[test]
+    fn a_wallet_eroded_entirely_into_dust_is_recovered() {
+        let mut utxos = wallet(&vec![MIN_USEFUL_OUTPUT / 4; 24]);
+        assert_eq!(ready_outputs(&utxos), 0, "every output is below the line");
+
+        settle(&mut utxos, 24);
+        assert_eq!(
+            ready_outputs(&utxos),
+            5,
+            "six coins of dust, less the fee, is five whole slots -- and it must find all five"
+        );
+    }
+
+    /// Consolidation runs before splitting, because it is strictly the
+    /// better move: it costs one fee and takes nothing out of service,
+    /// where a split hides a working output for a block.
+    #[test]
+    fn dust_is_swept_up_before_a_working_output_is_broken() {
+        let mut utxos = wallet(&[15_000_000_000]);
+        utxos.extend(wallet(&vec![MIN_USEFUL_OUTPUT / 2; 4]));
+
+        let plan = plan_reshape(&utxos, FEE, 24).expect("the wallet is under the floor");
+        assert!(
+            plan.inputs.iter().all(|o| o.value < MIN_USEFUL_OUTPUT),
+            "the 150-coin output must still be whole"
+        );
+        assert_eq!(
+            plan.shares.len(),
+            1,
+            "two coins of dust, less the fee, will not divide into two whole slots"
+        );
+
+        // ...and the split still happens on the pass after.
+        apply(&mut utxos, &plan);
+        let plan = plan_reshape(&utxos, FEE, 24).expect("still under the floor");
+        assert!(plan.inputs.iter().any(|o| o.value == 15_000_000_000));
     }
 
     #[test]
     fn nothing_spendable_means_no_plan() {
         let utxos = vec![(true, output(15_000_000_000))];
-        assert!(plan_fan_out(&utxos, FEE, 24).is_none());
-        assert!(plan_fan_out(&[], FEE, 24).is_none());
+        assert!(plan_reshape(&utxos, FEE, 24).is_none());
+        assert!(plan_reshape(&[], FEE, 24).is_none());
+    }
+
+    /// Dust too small to make even one slot is not worth a fee.
+    #[test]
+    fn dust_that_cannot_make_one_usable_output_is_left_where_it_is() {
+        let utxos = wallet(&vec![MIN_USEFUL_OUTPUT / 4; 2]);
+        assert!(plan_reshape(&utxos, FEE, 24).is_none());
     }
 
     /// Change too small to be a slot is what erodes the fan, so it has

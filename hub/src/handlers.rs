@@ -4636,7 +4636,7 @@ pub async fn maintain_operator_outputs(state: &AppState) {
         }
     }
 
-    let Some(plan) = crate::operator_wallet::plan_fan_out(
+    let Some(plan) = crate::operator_wallet::plan_reshape(
         &utxos,
         HUB_TRANSACTION_FEE,
         state.operator_wallet_outputs,
@@ -4649,14 +4649,16 @@ pub async fn maintain_operator_outputs(state: &AppState) {
         .iter()
         .map(|share| (state.operator_public_key.clone(), *share))
         .collect();
-    // Built against `plan.source` alone rather than through
-    // `build_payment_from`, so the transaction spends the output the
-    // plan chose and no other. That exactness is what lets the inflight
-    // record below be a fact rather than a guess -- and the shares sum
-    // to the source minus the fee, so there is no change output to
-    // reason about either.
+    // Built against the plan's own inputs rather than through
+    // `build_payment_from`, so the transaction spends exactly the
+    // outputs the plan chose and no others. That exactness is what lets
+    // the inflight record below be a fact rather than a guess -- and
+    // the shares sum to those inputs minus the fee, so there is no
+    // change output to reason about either.
+    let inputs: Vec<(bool, btclib::types::TransactionOutput)> =
+        plan.inputs.iter().map(|output| (false, output.clone())).collect();
     let tx = match btclib::payment::build_multi_payment(
-        &[(false, plan.source.clone())],
+        &inputs,
         &state.operator_private_key,
         &recipients,
         HUB_TRANSACTION_FEE,
@@ -4682,8 +4684,9 @@ pub async fn maintain_operator_outputs(state: &AppState) {
         Ok(()) => {
             state.metrics.operator_fan_outs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             info!(
-                "fanning the operator's wallet out: splitting {} into {} outputs ({ready} spendable before)",
-                plan.source.value,
+                "reshaping the operator's wallet: {} input(s) worth {} into {} output(s) ({ready} spendable before)",
+                plan.inputs.len(),
+                plan.inputs.iter().map(|o| o.value).sum::<u64>(),
                 plan.shares.len()
             );
         }

@@ -888,7 +888,7 @@ async fn main() -> Result<()> {
     // thing that was not. That block is much cheaper to spend here,
     // before the hub is reachable, than under the first burst of
     // arriving agents. Restarting a warm hub does nothing: its wallet
-    // is already at the floor and `plan_fan_out` returns `None`.
+    // is already at the floor and `plan_reshape` returns `None`.
     maintain_operator_outputs_at_boot(&state).await;
 
     tokio::spawn(sweep_loop(state.clone()));
