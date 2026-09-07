@@ -140,11 +140,24 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    sweep, resend, grace, sweep — and stopping at 75 seconds reported two of
    six million lost against a hub that went on to recover all of it. The wait
    is 260 seconds and the derivation is in the drill.
+
+   **What "seven drills, no bug found" does not mean — 2026-09-07.** An audit
+   that read for the *pattern* §6.5b turned out to be, rather than for what a
+   drill can reach, found five more instances of it, one of them worse than
+   anything the drills caught: a refunded escrow's status was written to disk
+   nowhere at all (§6.5c). Every drill targets tasks, payouts, rate limits or
+   the replay guard, and **none of them checks that a status transition
+   survives a restart** — so this class was outside the instrument, not merely
+   missed by it. Coverage of the instrument is the gap now, not coverage of the
+   code. The natural next drill is named in §6.5c and needs no kill and no
+   race, so it can assert rather than report inconclusive.
 10. Honest settlement states (pending/confirmed) in API responses (§6.5) —
     **done** 2026-09-06. `Submitted` between `Verified` and `Paid`, resolved
     against the chain by the sweep, plus `bounty_confirmed`/`bounty_pending` on
     every task. Covers task bounties only; faucet grants, escrow disbursement
-    and exchange withdrawals still submit and assume, listed in §6.5.
+    and exchange withdrawals still submit and assume, listed in §6.5 — whose
+    escrow bullet was amended 2026-09-07 once it turned out the status flip it
+    described never reached disk at all (§6.5c).
 11. Incident basics: monitoring/alerts, `security.txt`, runbook, encrypted backups
     with one restore drill done (§9). **Mostly done.** `security.txt`, the
     runbook and the backup/restore drill landed 2026-09-05
@@ -1127,7 +1140,10 @@ evidence lives in a `PayoutAttempt` record — the recipient's output hash, the
 inputs spent, which address they were spent from, the submit time, and how many
 times this payout has been submitted — in its own `payout_attempts` table in
 `hub.redb`, added purely additively with no `SCHEMA_VERSION` bump, exactly as
-the replay guard's table was.
+the replay guard's table was. **That last clause is superseded by §6.5c**,
+which bumped the version to 2 and reversed the no-bump policy: this table in
+particular is why. A rolled-back binary passed the version check and could not
+see it, so every payout in flight became invisible.
 
 **One record per (task, recipient), not per task.** The spec said "recording
 the recipient's output hash" as if a task had one. A `Consensus` task has
@@ -1247,6 +1263,17 @@ other payment paths still submit and assume:
   selects deposits in a particular status, so a *retry* is harmless. But the
   status flips to `Refunded` on a successful send, so a lost one is never
   retried — the same shape of hole, one level down.
+
+  **Amended 2026-09-07 (§6.5c).** Chain evidence is still not there, so this
+  bullet stands. But the mechanism described was wrong, and wrong in a way that
+  made the hole worse than the sentence claims: the flip to `Refunded` reached
+  *memory only*. Nothing in the hub ever wrote that status to disk. So both
+  "a lost one is never retried" and its apparent opposite were true at once, at
+  different layers — the live board dropped the deposit out of every selector,
+  while the store handed it back as `Reserved` at the next boot and the whole
+  settlement re-ran. The status is durable as of §6.5c; what remains here is
+  only the original point, that a successful `submit_transaction` is not
+  evidence the money moved.
 - **Exchange withdrawals** (`pay_from_custody`). The ledger is debited and the
   on-chain leg is fire-and-forget.
 
@@ -1288,6 +1315,257 @@ drill after the confirmation work lands and compare against the baseline: the
 `Submitted` state should make each of those six resolvable by the second row
 of the table above — output absent, spent inputs still present and unmarked,
 resubmit.
+
+### 6.5c Durable status, and not trusting the board on boot
+
+Found by audit on 2026-09-07, built the same day (branch `escrow-status`). Five
+defects, all one disease: **a state change that lives in memory and reaches disk
+as two or more independent writes, or not at all.** §6.5b was the first case
+found, by a drill; this is what reading for the pattern turned up. Suite went
+310 → 327 on the hub target, workspace green.
+
+The section exists because §6.5b fixed the pattern in one place and nowhere
+else. That is worth stating on its own: a fix arrived at by a drill lands where
+the drill was pointed, and the same shape elsewhere stays invisible until
+somebody goes looking. Four of the five below had never been drilled and could
+not have been — see "what the drills could not have caught" at the end.
+
+#### The worst of them: `Refunded` was written nowhere
+
+`save_pending_deposit` has five call sites and **every one of them is creating a
+reservation**. `mark_escrow_refunded` had one caller, inside `disburse_escrow`,
+and no store write followed it. So `Consumed` became durable when §6.5b added
+the pair-writers and `Refunded` never did: the status change lived only in
+memory and died at the next restart.
+
+Not a race. A refunded deposit reloaded as `Reserved` on **every** restart, and
+had since escrow was written. Three consequences, worst first.
+
+**A dispute bond could credit its winner twice, durably.**
+`settle_dispute_bond` disbursed the bond, credited the winner with
+`credit_forfeited_bond`, and saved the reputation — and *that* write was
+durable. The deposit's `Refunded` was not. On restart the deposit reloaded
+`Consumed`, `tasks_with_unsettled_dispute_bonds` selected it again, and the
+whole settlement re-ran. The on-chain payment does not duplicate:
+`NodeClient::balance` filters mempool-marked outputs and `build_multi_payment`
+skips them, so the retry finds a zero balance and sends nothing. Which is
+exactly why this was invisible for as long as it existed — nothing about it
+looks wrong except the reputation ledger, and the ledger stays wrong.
+
+**The sweep grew without bound for the life of the deployment.**
+`overdue_reserved_escrows` selects every expired deposit still `Reserved`.
+Nothing durably left `Reserved`, so every escrow ever refunded in the hub's
+history came back on every boot and was re-swept, one node round trip each,
+serialized inside the sweep pass ahead of payout resolution. Monotonic in total
+history rather than in live state: a hub that has run for months took longer to
+sweep every time it restarted. The same applied to exchange deposits, which
+reloaded `Consumed` and were re-swept at every boot — flatly contradicting the
+idempotence claim in `sweep_exchange_deposit`'s own doc comment, which was
+false for as long as the write it depended on did not exist.
+
+**A refunded deposit was confirmable again after a restart.** It reloaded
+`Reserved`, so a depositor whose refund had already gone out could call confirm
+and get a task funded by money they had back. The only thing stopping it was
+the on-chain balance check returning `EscrowUnderfunded` — evidence-based, and
+it does hold, but it is the last line of defence standing in for the intended
+one, which is the shape §6.5b was fixed for.
+
+#### What was built
+
+**`disburse_escrow` takes what the disbursement earned as a parameter.** An
+`EscrowCredit` — `None` for a plain refund or the custody sweep, `ForfeitedBond`
+for a won dispute — rather than leaving each caller to apply its credit
+afterwards, because "afterwards" *was* the bug. The `Refunded` status is
+committed together with that credit through a new
+`HubStore::save_deposit_and_reputation`; the no-credit paths use
+`save_pending_deposit`, which is already one transaction by itself.
+
+**The board's write lock is held across the commit, and the board is put back
+if the commit fails.** This differs from §6.5b's confirm handlers on purpose,
+and the difference is worth naming because the two look like the same
+situation. Those handlers let the board move on and rely on the depositor's
+retry: the durable state is authoritative, so a restart reverts and the retry
+is a clean recovery. Nothing retries a sweep-driven disbursement except the
+sweep, and **the sweep selects from memory.** A board that had moved on while
+disk had not would simply never be revisited — the same lost settlement,
+reached without a crash. So here memory must not move unless disk did.
+
+**How it was proved: a deterministic test, which this bug admits and the races
+do not.** A refunded deposit reloading as `Reserved` happens on every restart,
+so `a_refunded_escrow_reloads_as_refunded` funds a deposit, lets the sweep
+refund it, rebuilds a board from the store alone, and reads it back. It failed
+before the fix and passes after — no sampling, no A/B, no inconclusive verdict.
+`a_settled_dispute_bond_is_not_settled_again_after_a_restart` does the same for
+the money consequence: it drives a full assignee-wins dispute, then asserts the
+restored board's `tasks_with_unsettled_dispute_bonds` is empty, since that
+selector is the whole gate on the second credit.
+
+#### Bug 2: `record_confirmed_payout` could lose a payout permanently
+
+Up to four separate commits, the attempt deleted **first**, every failure
+logged, and `true` returned regardless. A crash or a store error between the
+deletion and the task save left a task reading `Submitted` on disk with no
+attempt tracking it — the precise failure mode §6.5 exists to eliminate,
+reintroduced in the function that closes §6.5's own loop.
+
+Walking the selectors says something sharper than "the payout is forgotten",
+and the test records it rather than the prose. Neither sweep pass will touch
+such a task: the resolution pass reads `outstanding_payout_attempts`, now
+empty, and the settlement pass takes only `Verified`. But `unsubmitted_payouts`
+still names the payout as owed and `try_settle_verified_task` does accept a
+`Submitted` task. **So the recovery path exists, is never called, and would
+re-send a payout that already confirmed on chain if an operator called it by
+hand** — because the attempt that was the double-spend guard is exactly the
+record that got deleted. A dead end that looks like a way out.
+
+Fixed with `HubStore::save_confirmed_payout`: the task, the reputation, the
+compute credit for a "compute" task, and the attempt's deletion in one
+transaction, and `false` on any store error so the sweep resolves it again.
+Returning `true` on an unchecked write is what made the loss silent, and is the
+same habit §6.5 was written to remove. `abandon_payout` had the identical shape
+— N deletions, then the task — and a crash between them produced the state its
+own comment says it exists to prevent; it now uses
+`save_task_and_drop_payout_attempts`.
+
+Note what no test can cover, the same gap §6.5b recorded: nothing catches
+`save_confirmed_payout` being rewritten back into separate commits. Two commits
+differ from one only in the existence of a window nothing can be scheduled
+inside on demand. The doc comments carry that, not the suite.
+
+#### Bug 3: task and reputation were always two commits
+
+`persist_task_and_reputation` and the `resolve_dispute` handler saved the task
+and the reputation separately, and `resolve_dispute` swallowed the reputation
+error behind a 200 — so a caller could be told the dispute was resolved while
+the ding that resolution consisted of never reached disk.
+
+Not merely bookkeeping. **Reputation is the input to a task's `min_reputation`
+term**, so a lost failure record lets a penalized agent keep claiming work a
+poster meant to exclude them from.
+
+The consensus path was the worst of the three: the submitter's reputation in one
+commit, the task in another, and every other assignee's through a
+`save_reputation_batch` whose error was logged and dropped, so a lost batch
+silently forgave everyone who lost that round while the task recording the
+round stayed on disk. Now `persist_consensus_submission` writes the task and
+every reputation the submission touched in one transaction, and the caller
+hears about a failure. The sweep's deadline-triggered resolution had the same
+split and the same dropped error, and got the same treatment.
+
+One consequence worth recording: `save_reputation` and `save_reputation_batch`
+now have **no production caller**, and that is the point rather than an
+oversight. Every reputation change the hub makes is caused by something else it
+is also writing — a task, a settled escrow — and belongs in that record's
+transaction. Their doc comment says so, so the next caller asks the right
+question. `MAX_CONSENSUS_ASSIGNEES` correspondingly stopped capping a count of
+transactions and started capping the size of one; its comment had been wrong
+since `save_reputation_batch` was introduced.
+
+#### Bug 4: there was no boot reconciliation at all
+
+`main` loaded each table independently and blind-inserted every row —
+`restore_task`, `restore_order`, `restore_exchange_account`,
+`restore_payout_attempt` are each a bare map insert. Nothing cross-checked a
+task against its deposit, an order against its account's locked balances, or a
+task mid-settlement against the attempt tracking it. Records that disagreed
+came back disagreeing, and no log line said so. Given bugs 1 to 3, there is
+already a known population of stores that can hold such records.
+
+New `hub/src/reconcile.rs` runs before anything can be served and checks three
+things: a `Consumed` deposit nothing on the board refers to, an account holding
+a lock with no open order behind it, and a `Submitted` task with no payout
+attempt. Read-only and board-only, no node round trips — so a hub whose node is
+unreachable still starts and still says what its store looks like.
+
+**It reports and does not repair.** Repair needs a policy per inconsistency and
+most of those are decisions nobody should make silently: an orphaned `Consumed`
+deposit could be refunded, swept, or left for a human, and which is right
+depends on facts only the chain and the operator have.
+
+**The decision this section owes, argued rather than felt: a disagreement does
+not block startup.** Refusing to boot converts each of these into an outage,
+and every one of them is money already moved or already locked — none of which
+a stopped hub improves, while a stopped hub *does* stop the sweep, which is the
+only automatic recovery the hub has. So it starts, loudly, logging each finding
+at `error`. Per-class fatality can be added later on the back of the metric,
+which is the cheap half of the decision and the half that has to exist first.
+
+`hub_reconciliation_disagreements` carries the counts by class and emits a row
+for every class **including the zeroes**: a label that appears only once
+something is wrong gives nobody a way to write the alert before the first
+incident, or to tell a clean store from an unscraped one. Two tests pin the
+class list against the enum from both sides, since `metrics` deliberately does
+not depend on `reconcile`.
+
+The order-lock check is deliberately the weak form, and this is the interesting
+choice in the module. The strong form — each account's lock equals the sum of
+what its open orders lock — needs the expected lock per order, and a fill
+executes at the *resting* order's price rather than the taker's own, with
+`place_order` reconciling the difference. That is fill accounting, not
+arithmetic, and getting it wrong produces a report full of findings that are not
+defects, which is worse than no report because an operator learns to ignore it.
+"Locked, with nothing open" needs none of that accounting and admits no correct
+explanation.
+
+#### Bug 5: rolling back to an older binary silently reopened closed holes
+
+`SCHEMA_VERSION` was 1 and had deliberately never moved. Every table added
+since the first schema — pending deposits, exchange accounts, orders, trades,
+names, the replay guard, faucet challenges, payout attempts — went in
+additively, each with a test pinning that an older store still opens. The
+version check uses `!=`, so a store marked 2 is refused by a version-1 binary,
+which is right and was never the gap.
+
+The gap was the other direction. Because additive tables never bumped the stamp,
+a store written by a current build still read as version 1, so an **older**
+binary opened it and silently ignored every table it did not know. Roll a
+deploy back and in-flight `payout_attempts` become invisible, so payouts are
+re-sent or forgotten, and redeemed `faucet_challenges` become replayable —
+which is precisely the hole that table was added to close.
+
+**Taking the first of the handoff's two options: bump the version, and reverse
+the policy.** The forward compatibility the old policy bought is worth less than
+this costs. `SCHEMA_VERSION` is 2, and adding a table bumps it from here on.
+
+An older store is still accepted — refusing one would make every upgrade a
+manual migration for no benefit, and the tables it lacks are created on open and
+arrive empty, which is what the additive-compat tests already check. But opening
+it now **restamps it**, so the build that wrote it refuses it from then on. The
+restamp happens at open rather than at first write: from the moment a current
+binary holds the store it may put a row somewhere the old one cannot see.
+
+Two smaller things fell out. The three additive-compat tests stamped
+`SCHEMA_VERSION`, so they would have quietly stopped being about an older build
+the moment it was bumped; they now stamp a literal 1, which is what those builds
+wrote. And four table comments claimed no bump was needed — the one on
+`PAYOUT_ATTEMPTS_TABLE` went further and offered "a build that does not know
+about it never looks" as *reassurance*. That sentence was the bug, and is now
+recorded as such next to the constant that fences it off.
+
+#### What the drills could not have caught
+
+Seven drills found three money bugs and missed these five, and the pattern in
+what they missed is legible. Every drill targets tasks, payouts, rate limits or
+the replay guard. **Nothing has ever checked that a status transition survives a
+restart**, and that is where the blocker lived. Coverage of the *instrument* is
+the gap now, not coverage of the code.
+
+`harness drill escrow-restart` is the nearest instrument and is the wrong one
+here, which its own caveat says: it reproduces a one-step-wide race and reports
+*inconclusive* rather than clean when it finds nothing, so a green run is not a
+signature. It was **not** re-run for this work — the machine was at 96% disk
+with 500 MB free, well short of a release build plus a mining chain file, and
+the drill's own metrics (`deposits_funding_two_tasks`, `deposits_stranded`) are
+about the confirm path, which this work does not touch. That is a gap in the
+evidence and is recorded as one rather than papered over; the deterministic
+tests above are the signature instead, and they are a better one for this class
+because they do not sample.
+
+What would be worth building, and is the natural next drill: a phase that
+snapshots every deposit's status, restarts the hub against its own store, and
+diffs. It needs no kill and no race, so it can assert rather than report
+inconclusive — and it would have caught bug 1 on the first run of the first day
+escrow existed.
 
 ## 7. Getting agents onto ITX
 
