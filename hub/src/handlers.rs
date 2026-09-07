@@ -5517,4 +5517,79 @@ mod summary_tests {
         assert!(summary.capabilities.is_empty());
         assert_eq!(summary.totals.open_bounty, 300);
     }
+
+    /// The field order of every signed payload is a cross-language wire
+    /// contract, and this is the only place it is pinned on the Rust
+    /// side.
+    ///
+    /// The signature covers `{pubkey}:{timestamp}:{METHOD} {path}:{compact json}`,
+    /// and serde emits struct fields in declaration order while Python
+    /// emits dict keys in insertion order. So reordering any struct below
+    /// silently breaks every Python client at runtime, on that route
+    /// only, with a 401 and no explanation -- and until 2026-09-07
+    /// nothing would have failed first. The cross-language fixtures in
+    /// `sdk/examples/gen_fixtures.rs` use synthetic structs whose shapes
+    /// have already drifted from these (its stand-in for a task omits
+    /// `expected_output_hash` entirely), so they pin the *recipe* and not
+    /// the payloads.
+    ///
+    /// Written as whole literal strings rather than field-name lists
+    /// because the literal is what is actually signed: separators,
+    /// numeric formatting and the absence of spaces are all part of the
+    /// contract too. A failure here is not necessarily a bug -- it means
+    /// the wire format changed, and the Python SDK and its own order
+    /// tests have to change with it, in the same release.
+    #[test]
+    fn signed_payloads_serialize_in_the_order_the_python_sdk_builds_them() {
+        // `serde_json::to_string` on the typed value, which is exactly
+        // what `SignedEnvelope::signing_string` does. Going through
+        // `serde_json::Value` first would prove nothing: its map is a
+        // BTreeMap, so every key comes back alphabetical and the
+        // declaration order this test exists to pin is erased on the way.
+        assert_eq!(
+            serde_json::to_string(&CreateTaskPayload {
+                description: "d".into(),
+                bounty: 1,
+                expected_output_hash: "ab".into(),
+                min_reputation: 2,
+                capabilities: Default::default(),
+            }).unwrap(),
+            r#"{"description":"d","bounty":1,"expected_output_hash":"ab","min_reputation":2,"capabilities":[]}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&ClaimPayload { task_id: uuid::Uuid::nil() }).unwrap(),
+            r#"{"task_id":"00000000-0000-0000-0000-000000000000"}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&SubmitPayload {
+                task_id: uuid::Uuid::nil(),
+                output: "o".into(),
+            }).unwrap(),
+            r#"{"task_id":"00000000-0000-0000-0000-000000000000","output":"o"}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&PlaceOrderPayload {
+                side: crate::board::Side::Buy,
+                price: 10,
+                quantity: 5,
+            }).unwrap(),
+            r#"{"side":"buy","price":10,"quantity":5}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&WithdrawPayload { amount: 7 }).unwrap(),
+            r#"{"amount":7}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&FaucetClaimPayload {
+                challenge_id: uuid::Uuid::nil(),
+                solution: 42,
+            }).unwrap(),
+            r#"{"challenge_id":"00000000-0000-0000-0000-000000000000","solution":42}"#
+        );
+    }
 }

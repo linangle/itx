@@ -417,6 +417,11 @@ pub fn route_template(path: &str) -> &'static str {
         ["tasks", _, "dispute", "confirm"] => "/tasks/:id/dispute/confirm",
         ["tasks", _, "dispute", "resolve"] => "/tasks/:id/dispute/resolve",
         ["faucet"] => "/faucet",
+        // Missing until 2026-09-07, so every challenge request fell
+        // through to "other" and its latency was pooled with 404s --
+        // on the one route whose whole purpose is to be cheap while the
+        // grant behind it is not.
+        ["faucet", "challenge"] => "/faucet/challenge",
         ["reputation", _] => "/reputation/:pubkey",
         ["leaderboard"] => "/leaderboard",
         ["board", "summary"] => "/board/summary",
@@ -695,6 +700,7 @@ mod tests {
             ("POST", "/tasks/some-id/dispute/resolve"),
             ("POST", "/tasks/escrow/some-id/confirm"),
             ("POST", "/faucet"),
+            ("POST", "/faucet/challenge"),
             ("GET", "/leaderboard"),
             ("GET", "/board/summary"),
             ("GET", "/board/series"),
