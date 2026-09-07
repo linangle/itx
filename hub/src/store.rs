@@ -19,8 +19,11 @@ const FAUCET_GRANTS_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("f
 // is: a restart must not hand back a grant, and here it must not hand
 // back a *solved challenge* either. An attacker who watched the hub go
 // down would otherwise replay a solution it had already spent. Additive
-// in the same way REPLAY_GUARD_TABLE was, so no SCHEMA_VERSION bump and
-// an older store gains it empty.
+// in the same way REPLAY_GUARD_TABLE was, so an older store gains it
+// empty. It arrived under the no-bump policy `SCHEMA_VERSION` has since
+// reversed -- and this table is the sharpest illustration of why, since
+// a build that predates it opens the store and treats every redeemed
+// challenge as unspent.
 //
 // Like the replay guard and unlike everything else here, part of this is
 // garbage: an unredeemed challenge past its expiry can never be used
@@ -33,14 +36,16 @@ const FAUCET_CHALLENGES_TABLE: TableDefinition<&[u8], &[u8]> =
 // ever handed out). Additive relative to the schema this hub shipped
 // with: an old store simply gains this table empty the first time it's
 // opened by build that knows about it, same as any other missing table
-// `open_or_create` creates on demand -- no version bump needed for a
-// purely-additive table.
+// `open_or_create` creates on demand. It arrived under the no-bump
+// policy `SCHEMA_VERSION` has since reversed; adding a table bumps the
+// version now.
 const PENDING_DEPOSITS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("pending_deposits");
 // pubkey sec1 bytes -> serialized ExchangeAccount, same shape as
 // REPUTATION_TABLE. uuid bytes -> serialized Order/Trade, same shape as
 // TASKS_TABLE/PENDING_DEPOSITS_TABLE. Purely additive, like
-// PENDING_DEPOSITS_TABLE was -- no SCHEMA_VERSION bump, that's only for
-// breaking changes to an *existing* table's shape.
+// PENDING_DEPOSITS_TABLE was. These arrived under the no-bump policy
+// `SCHEMA_VERSION` has since reversed -- a bump is no longer reserved
+// for breaking changes to an existing table's shape.
 const EXCHANGE_ACCOUNTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("exchange_accounts");
 const ORDERS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("orders");
 const TRADES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("trades");
@@ -60,7 +65,8 @@ const AGENT_NAMES_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("ag
 // "durable set of bytes with a timestamp" shape FAUCET_GRANTS_TABLE
 // already is, and additive in the same way PENDING_DEPOSITS_TABLE was --
 // an old store gains it empty on the first open by a build that knows
-// about it, so no SCHEMA_VERSION bump.
+// about it. It arrived under the no-bump policy `SCHEMA_VERSION` has
+// since reversed.
 //
 // Unlike every other table here this one is *garbage*, not records: an
 // entry is meaningless once its signature can no longer pass the drift
@@ -76,11 +82,15 @@ const REPLAY_GUARD_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("re
 // is the order anything reading a whole task's payouts wants.
 //
 // Additive in exactly the way PENDING_DEPOSITS_TABLE and
-// REPLAY_GUARD_TABLE were, and no SCHEMA_VERSION bump for the same
-// reason: a store written before this table existed gains it empty on
-// the first open by a build that knows about it, and a build that does
-// not know about it never looks. Pinned by
+// REPLAY_GUARD_TABLE were: a store written before this table existed
+// gains it empty on the first open by a build that knows about it.
+// Pinned by
 // `a_store_from_a_build_without_the_payout_attempts_table_still_opens`.
+//
+// The sentence that used to end that paragraph -- "and a build that does
+// not know about it never looks" -- was offered as reassurance and was
+// the bug. A build that never looks re-sends or forgets every payout in
+// flight. `SCHEMA_VERSION` now fences that off; see its comment.
 //
 // Unlike a task or a deposit, a record here is a claim about the *chain*
 // and not about the hub's own bookkeeping: it exists only while the hub
@@ -92,11 +102,36 @@ const PAYOUT_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::ne
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
-// No migrations exist yet since this is the hub's first schema, but the
-// version is still stamped from day one -- retrofitting that detection
-// after the fact (rather than before the first real store exists) is
-// exactly the mistake this project already made once with BlockStore.
-const SCHEMA_VERSION: u32 = 1;
+/// Stamped from day one -- retrofitting version detection after the
+/// first real store exists is exactly the mistake this project already
+/// made once with BlockStore.
+///
+/// **Bumped to 2 on the escrow-status work, and the policy that kept it
+/// at 1 is reversed: adding a table bumps this.** Every table added
+/// since the first schema -- pending deposits, exchange accounts,
+/// orders, trades, names, the replay guard, faucet challenges, payout
+/// attempts -- went in additively, each with a test pinning that an
+/// older store still opens, and the version deliberately never moved.
+///
+/// That bought forward compatibility and paid for it with a silent
+/// rollback hole. `open_or_create` refuses a *newer* stamp, which is
+/// right; but because additive tables never bumped the stamp, an
+/// **older binary opening a store written by a current one passed the
+/// check and silently ignored every table it did not know**. Roll a
+/// deploy back and in-flight `payout_attempts` become invisible, so
+/// payouts are re-sent or forgotten, and redeemed `faucet_challenges`
+/// become replayable -- which is precisely the hole that table was
+/// added to close (plan §6.5c).
+///
+/// The compatibility the old policy bought is worth less than that
+/// costs. An older store is still accepted -- the tables it lacks are
+/// created above and arrive empty, which is what the additive-compat
+/// tests check -- but opening it **restamps it to this version**, so
+/// the binary that wrote it can no longer open it. That is the fence,
+/// and it has to go up at open rather than at first write: from the
+/// moment a current binary has the store, it may put a row in a table
+/// the old one cannot see.
+const SCHEMA_VERSION: u32 = 2;
 
 /// The `PAYOUT_ATTEMPTS_TABLE` key for one payout: the task's uuid
 /// followed by the recipient's SEC1 bytes. Uuid bytes are fixed-width,
@@ -205,11 +240,29 @@ impl HubStore {
                 None => None,
             };
             match stored_version {
-                Some(found) if found != SCHEMA_VERSION => {
+                // Newer than this build understands: refuse. The tables
+                // are already created by the block above, but nothing
+                // here has committed, so the store is untouched.
+                Some(found) if found > SCHEMA_VERSION => {
                     return Err(HubStoreError::UnsupportedSchemaVersion {
                         found,
                         expected: SCHEMA_VERSION,
                     });
+                }
+                // Older: usable as-is, since every table this build
+                // knows about was just created and the ones it does not
+                // recognise do not exist. Restamped so the build that
+                // wrote it will refuse it from here on -- see
+                // `SCHEMA_VERSION` for why that one-way door is the
+                // point rather than a side effect.
+                Some(found) if found < SCHEMA_VERSION => {
+                    warn!(
+                        "store was written by schema version {found}; upgrading the stamp to \
+                         {SCHEMA_VERSION}. This is one-way: a build expecting version {found} \
+                         will refuse this store from now on, deliberately, because it cannot \
+                         see the tables this one writes."
+                    );
+                    meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice())?;
                 }
                 Some(_) => {}
                 None => {
@@ -1328,7 +1381,11 @@ mod tests {
                 write_txn.open_table(TASKS_TABLE).unwrap();
                 write_txn.open_table(REPUTATION_TABLE).unwrap();
                 let mut meta = write_txn.open_table(META_TABLE).unwrap();
-                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice()).unwrap();
+                // Version 1, as a literal: that is what those builds
+                // stamped, and `SCHEMA_VERSION` has since moved. Using
+                // the constant would make this test quietly stop being
+                // about an older build every time it is bumped.
+                meta.insert(SCHEMA_VERSION_KEY, 1u32.to_be_bytes().as_slice()).unwrap();
                 let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
                 grants.insert(granted.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
             }
@@ -1405,8 +1462,7 @@ mod tests {
         let agent = PrivateKey::new_key().public_key();
         {
             // Exactly what an older build's `open_or_create` did: the
-            // tables it knew about, stamped with the same schema version
-            // it stamps today.
+            // tables it knew about, and its own schema stamp.
             let db = redb::Database::create(&path).unwrap();
             let write_txn = db.begin_write().unwrap();
             {
@@ -1414,7 +1470,11 @@ mod tests {
                 write_txn.open_table(REPUTATION_TABLE).unwrap();
                 write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
                 let mut meta = write_txn.open_table(META_TABLE).unwrap();
-                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice()).unwrap();
+                // Version 1, as a literal: that is what those builds
+                // stamped, and `SCHEMA_VERSION` has since moved. Using
+                // the constant would make this test quietly stop being
+                // about an older build every time it is bumped.
+                meta.insert(SCHEMA_VERSION_KEY, 1u32.to_be_bytes().as_slice()).unwrap();
                 let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
                 grants.insert(agent.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
             }
@@ -1451,8 +1511,7 @@ mod tests {
         let agent = PrivateKey::new_key().public_key();
         {
             // Exactly what a build from before this change did: the
-            // tables it knew about, stamped with the same schema version
-            // it stamps today.
+            // tables it knew about, and its own schema stamp.
             let db = redb::Database::create(&path).unwrap();
             let write_txn = db.begin_write().unwrap();
             {
@@ -1461,7 +1520,11 @@ mod tests {
                 write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
                 write_txn.open_table(REPLAY_GUARD_TABLE).unwrap();
                 let mut meta = write_txn.open_table(META_TABLE).unwrap();
-                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION.to_be_bytes().as_slice()).unwrap();
+                // Version 1, as a literal: that is what those builds
+                // stamped, and `SCHEMA_VERSION` has since moved. Using
+                // the constant would make this test quietly stop being
+                // about an older build every time it is bumped.
+                meta.insert(SCHEMA_VERSION_KEY, 1u32.to_be_bytes().as_slice()).unwrap();
                 let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
                 grants.insert(agent.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
             }
@@ -1534,6 +1597,89 @@ mod tests {
             result,
             Err(HubStoreError::UnsupportedSchemaVersion { .. })
         ));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Reads the stamp the way a hub of any version would, so a test can
+    /// say what a *different* build would decide about this store.
+    fn stored_schema_version(path: &std::path::Path) -> u32 {
+        let db = redb::Database::create(path).unwrap();
+        let read_txn = db.begin_read().unwrap();
+        let meta = read_txn.open_table(META_TABLE).unwrap();
+        let bytes: [u8; 4] = meta
+            .get(SCHEMA_VERSION_KEY)
+            .unwrap()
+            .expect("every store this build has opened carries a stamp")
+            .value()
+            .try_into()
+            .unwrap();
+        u32::from_be_bytes(bytes)
+    }
+
+    /// The rollback hole, closed and stated.
+    ///
+    /// Additive tables never bumped `SCHEMA_VERSION`, so a store written
+    /// by a current build still read as version 1 and an **older**
+    /// binary opened it happily and ignored every table it did not know:
+    /// in-flight `payout_attempts` invisible, so payouts re-sent or
+    /// forgotten, and redeemed `faucet_challenges` replayable -- the
+    /// exact hole that table was added to close (plan §6.5c).
+    ///
+    /// The fix has two halves and this checks both. An older store is
+    /// still accepted, because refusing one would make every upgrade a
+    /// manual migration for no benefit. And opening it restamps it, so
+    /// the build that wrote it refuses it from then on. The restamp has
+    /// to happen at open and not at first write: from the moment a
+    /// current binary holds the store it may put a row somewhere the old
+    /// one cannot see.
+    #[test]
+    fn opening_an_older_store_upgrades_its_stamp_so_the_old_build_refuses_it() {
+        let path = temp_db_path("rollback_fence");
+        let redeemed = PrivateKey::new_key().public_key();
+        {
+            // A version-1 store, as every build before this one wrote.
+            let db = redb::Database::create(&path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                write_txn.open_table(TASKS_TABLE).unwrap();
+                write_txn.open_table(REPUTATION_TABLE).unwrap();
+                let mut meta = write_txn.open_table(META_TABLE).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, 1u32.to_be_bytes().as_slice()).unwrap();
+                let mut grants = write_txn.open_table(FAUCET_GRANTS_TABLE).unwrap();
+                grants.insert(redeemed.to_sec1_bytes().as_slice(), 1_700_000_000i64).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+        assert_eq!(stored_schema_version(&path), 1);
+
+        let store = HubStore::open_or_create(&path).unwrap();
+        assert_eq!(
+            store.load_all_faucet_grants().unwrap(),
+            vec![redeemed],
+            "an upgrade must not cost the store its contents"
+        );
+        drop(store);
+
+        assert_eq!(
+            stored_schema_version(&path),
+            SCHEMA_VERSION,
+            "opening it must have raised the fence, not merely tolerated the old stamp"
+        );
+        // What the old binary's own check does with that, exactly:
+        // `found != expected` where expected is the 1 it was built with.
+        assert_ne!(
+            stored_schema_version(&path),
+            1,
+            "so a rolled-back build refuses this store instead of silently ignoring the tables \
+             it cannot see"
+        );
+
+        // And the new build reopens its own store as a no-op, rather
+        // than treating every start as an upgrade.
+        let store = HubStore::open_or_create(&path).unwrap();
+        drop(store);
+        assert_eq!(stored_schema_version(&path), SCHEMA_VERSION);
 
         std::fs::remove_file(&path).ok();
     }
