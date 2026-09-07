@@ -7,7 +7,7 @@ use btclib::types::{Transaction, TransactionOutput};
 use crate::metrics::Metrics;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -27,6 +27,76 @@ use tokio::sync::{Mutex, Semaphore};
 /// against itself); every other path could open as many connections as it
 /// had concurrent requests.
 const MAX_POOLED_CONNECTIONS: usize = 8;
+
+/// How long a dial and its handshake may take before the address is
+/// treated as unreachable.
+///
+/// Separate from `NODE_REQUEST_TIMEOUT` because it bounds a different
+/// thing: with a failover list configured, `connect` walks the addresses
+/// in order, so this is the cost of stepping past one dead node rather
+/// than the cost of one operation. A generous request budget spent
+/// waiting on the first of three addresses would make failover useless.
+///
+/// Five seconds is far longer than a dial to a node on the same box or
+/// the same network needs, and far shorter than the kernel's own connect
+/// timeout, which is what this replaces -- on macOS that is around
+/// seventy-five seconds, and a *hung* peer (one that completes the TCP
+/// handshake and then never speaks the protocol) has no kernel timeout
+/// at all.
+const NODE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one message exchange -- the write, and the reply for the
+/// operations that read one -- may take.
+///
+/// The number is derived from the sweep, not guessed. `request` may pay
+/// this twice in the worst case (a pooled connection that times out,
+/// then a fresh one) plus a dial per configured address, so with the
+/// values here a single node operation is bounded at roughly forty-five
+/// seconds against one address and fifty against two. Both sit under
+/// `main::SWEEP_INTERVAL_SECONDS`, which is the constraint that matters:
+/// a sweep pass that could outlast its own interval overlaps itself.
+///
+/// Twenty seconds is otherwise enormous for what these calls do -- the
+/// node answers a UTXO lookup out of its own store -- so a request that
+/// reaches this has not encountered a slow node, it has encountered a
+/// stopped one.
+const NODE_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Fails `operation` with a descriptive error if `future` has not
+/// finished within `limit`.
+///
+/// Every network call in this file goes through here. Without it there
+/// is no upper bound on any of them: a peer that accepts a connection
+/// and then stops reading or writing leaves `receive_async` (or a write
+/// into a full send window) parked forever, and nothing below the
+/// application layer ever times that out.
+///
+/// The cancellation this performs is safe *because* of how the pool
+/// already handles failure. A timed-out future is dropped mid-await,
+/// which can leave a socket carrying half a message; every caller here
+/// drops such a connection instead of returning it to the pool, for
+/// exactly the reason the pool documents -- a half-read reply handed to
+/// the next caller is worse than a closed socket.
+async fn within<T>(
+    metrics: &Metrics,
+    limit: Duration,
+    operation: &str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match tokio::time::timeout(limit, future).await {
+        Ok(result) => result,
+        Err(_) => {
+            // Counted here rather than at the call sites so no future
+            // network call can be added without its timeouts being
+            // visible. A hung node and a stopped one are different
+            // incidents with different fixes, and until this existed
+            // they were the same silence.
+            metrics.node_timeouts.fetch_add(1, Ordering::Relaxed);
+            warn!("{operation} timed out after {}s", limit.as_secs());
+            anyhow::bail!("{operation} timed out after {}s", limit.as_secs())
+        }
+    }
+}
 
 /// A client for talking to a running blockchain node, over a small pool of
 /// persistent connections.
@@ -119,6 +189,19 @@ pub struct NodeClient {
     /// works and simply reports into the void -- `with_metrics` is what
     /// joins it to the one `/metrics` renders.
     metrics: Arc<Metrics>,
+    /// This client's two time limits, defaulting to the constants above.
+    ///
+    /// Fields rather than direct uses of the constants for the same
+    /// reason `with_pool_size` exists: a test that has to wait out a
+    /// twenty-second budget to prove the budget works is a test nobody
+    /// will keep. Pausing tokio's clock instead does not work here --
+    /// these tests drive a real socket, and the runtime advances a
+    /// paused clock whenever nothing is runnable, which a handshake
+    /// waiting on IO routinely is. The clock then jumps past the
+    /// connect budget and the dial fails for a reason the test was not
+    /// about.
+    connect_timeout: Duration,
+    request_timeout: Duration,
 }
 
 /// The idle connections, and the permit that bounds how many exist.
@@ -203,7 +286,19 @@ impl NodeClient {
             addresses,
             pool: Arc::new(Pool::new(size.max(1))),
             metrics: Metrics::new(),
+            connect_timeout: NODE_CONNECT_TIMEOUT,
+            request_timeout: NODE_REQUEST_TIMEOUT,
         }
+    }
+
+    /// A client with the two time limits pinned, for the tests that
+    /// assert they are enforced. See the fields' own doc comment for why
+    /// this exists rather than the tests pausing the clock.
+    #[cfg(test)]
+    fn with_timeouts(mut self, connect: Duration, request: Duration) -> Self {
+        self.connect_timeout = connect;
+        self.request_timeout = request;
+        self
     }
 
     /// Points this client's counters at `metrics`, which is how the pool
@@ -221,7 +316,7 @@ impl NodeClient {
     async fn connect(&self) -> Result<(String, TcpStream)> {
         let mut last_err = None;
         for address in &self.addresses {
-            match Self::connect_one(address).await {
+            match self.connect_one(address).await {
                 Ok(stream) => {
                     self.metrics.node_connections_opened.fetch_add(1, Ordering::Relaxed);
                     self.pool.adopt(address).await;
@@ -241,14 +336,27 @@ impl NodeClient {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no node addresses configured")))
     }
 
-    async fn connect_one(address: &str) -> Result<TcpStream> {
-        let mut stream = TcpStream::connect(address)
-            .await
-            .with_context(|| format!("failed to connect to node at {address}"))?;
-        btclib::network::perform_handshake_initiator(&mut stream)
-            .await
-            .map_err(|e| anyhow::anyhow!("handshake with node at {address} failed: {e}"))?;
-        Ok(stream)
+    /// Dials one address and completes the handshake, bounded as a whole
+    /// by `NODE_CONNECT_TIMEOUT`.
+    ///
+    /// The two steps share one budget rather than getting one each,
+    /// because from `connect`'s point of view they are a single question
+    /// -- is there a node here -- and a peer that answers the TCP
+    /// handshake but not the protocol one is exactly as unusable as a
+    /// peer that answers neither. Sharing the budget also keeps the
+    /// failover arithmetic in the constant's own doc comment honest:
+    /// stepping past a dead address costs at most this, once.
+    async fn connect_one(&self, address: &str) -> Result<TcpStream> {
+        within(&self.metrics, self.connect_timeout, &format!("connecting to node at {address}"), async {
+            let mut stream = TcpStream::connect(address)
+                .await
+                .with_context(|| format!("failed to connect to node at {address}"))?;
+            btclib::network::perform_handshake_initiator(&mut stream)
+                .await
+                .map_err(|e| anyhow::anyhow!("handshake with node at {address} failed: {e}"))?;
+            Ok(stream)
+        })
+        .await
     }
 
     /// Sends `message` and waits for the node's reply, on a pooled
@@ -289,7 +397,7 @@ impl NodeClient {
         let _permit = self.acquire_permit().await;
 
         if let Some((address, mut stream)) = self.pool.take().await {
-            match Self::exchange(&mut stream, message).await {
+            match self.exchange(&mut stream, message).await {
                 Ok(reply) => {
                     self.metrics.node_connections_reused.fetch_add(1, Ordering::Relaxed);
                     self.pool.put(&address, stream).await;
@@ -307,7 +415,7 @@ impl NodeClient {
         }
 
         let (address, mut stream) = self.connect().await?;
-        let reply = Self::exchange(&mut stream, message).await?;
+        let reply = self.exchange(&mut stream, message).await?;
         self.pool.put(&address, stream).await;
         Ok(reply)
     }
@@ -343,14 +451,36 @@ impl NodeClient {
         let _permit = self.acquire_permit().await;
 
         let (address, mut stream) = self.connect().await?;
-        message.send_async(&mut stream).await?;
+        // Bounded like a read's write half is. A send has no reply to
+        // wait on, but it can still park indefinitely: if the node
+        // stops reading, the kernel's send window fills and the write
+        // blocks with nowhere to drain to. A transaction large enough
+        // to exceed that window is the case, and a stalled node is when
+        // it happens.
+        within(&self.metrics, self.request_timeout, "node submission", async {
+            message.send_async(&mut stream).await?;
+            Ok(())
+        })
+        .await?;
         self.pool.put(&address, stream).await;
         Ok(())
     }
 
-    async fn exchange(stream: &mut TcpStream, message: &Message) -> Result<Message> {
-        message.send_async(stream).await?;
-        Ok(Message::receive_async(stream).await?)
+    /// Writes `message` and reads the reply, bounded as a whole by
+    /// `NODE_REQUEST_TIMEOUT`.
+    ///
+    /// One budget across both halves rather than one each, because the
+    /// caller is waiting on the answer and does not care which half is
+    /// slow. The read is the half that could hang forever on a live
+    /// socket -- a node that accepted the request and then stopped
+    /// replying never closes it, so there is nothing for the socket
+    /// layer to report.
+    async fn exchange(&self, stream: &mut TcpStream, message: &Message) -> Result<Message> {
+        within(&self.metrics, self.request_timeout, "node request", async {
+            message.send_async(stream).await?;
+            Ok(Message::receive_async(stream).await?)
+        })
+        .await
     }
 
     /// Current chain height, from whichever configured node answers first
@@ -409,6 +539,92 @@ impl NodeClient {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    /// A listener that accepts connections and then does nothing with
+    /// them -- the wedged node these timeouts exist for. It is not
+    /// refusing, so nothing below the application layer will ever report
+    /// it; the socket stays open and healthy and silent.
+    ///
+    /// `handshake` chooses how far it plays along: `false` stops before
+    /// the protocol handshake (so the caller hangs in `connect_one`),
+    /// `true` completes it and then stops (so the caller hangs waiting
+    /// for a reply in `exchange`). The two exercise the two different
+    /// timeout constants.
+    async fn wedged_node(handshake: bool) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    if handshake {
+                        let _ = btclib::network::perform_handshake_acceptor(&mut stream).await;
+                    }
+                    // Hold the connection open forever, saying nothing.
+                    // Dropping it instead would close the socket, which
+                    // is the *other* failure -- the one that always
+                    // reported itself.
+                    std::future::pending::<()>().await
+                });
+            }
+        });
+        address
+    }
+
+    /// The regression this whole change is about: before the timeouts,
+    /// this call never returned. Boot awaits a node read before the
+    /// listener opens and the sweep holds `payout_lock` across two, so
+    /// "never returns" meant a hub that never started and a hub that
+    /// never paid anyone again.
+    ///
+    /// The budgets are pinned small rather than waited out; the fields'
+    /// doc comment says why that beats a paused clock here.
+    #[tokio::test]
+    async fn a_node_that_accepts_and_never_speaks_fails_instead_of_hanging() {
+        let address = wedged_node(false).await;
+        let client = NodeClient::new(vec![address])
+            .with_timeouts(Duration::from_millis(80), Duration::from_millis(80));
+
+        let result = client.chain_tip().await;
+
+        assert!(result.is_err(), "a wedged node must fail the call, not park it forever");
+        assert_eq!(
+            client.metrics.node_timeouts.load(Ordering::Relaxed),
+            1,
+            "and it must be countable as a timeout, not as an ordinary dial failure"
+        );
+        assert_eq!(
+            client.metrics.node_connect_failures.load(Ordering::Relaxed),
+            1,
+            "the dial did also fail on every address, which is the existing counter's meaning"
+        );
+    }
+
+    /// The other half: a node that shakes hands and then stops. Nothing
+    /// about the connection looks wrong -- it is open, it is healthy,
+    /// and the reply is simply never coming.
+    #[tokio::test]
+    async fn a_node_that_answers_the_handshake_and_then_stops_fails_the_request() {
+        let address = wedged_node(true).await;
+        // A generous dial budget and a tight request one, so a slow
+        // handshake on a loaded machine cannot make this test fail for
+        // the other timeout's reason.
+        let client = NodeClient::new(vec![address])
+            .with_timeouts(Duration::from_secs(5), Duration::from_millis(80));
+
+        let result = client.chain_tip().await;
+
+        assert!(result.is_err(), "a request with no reply must not park forever");
+        assert!(
+            client.metrics.node_timeouts.load(Ordering::Relaxed) >= 1,
+            "the request budget must be what stopped it"
+        );
+        assert_eq!(
+            client.metrics.node_connect_failures.load(Ordering::Relaxed),
+            0,
+            "the dial succeeded -- counting this as a dial failure would point an operator at the wrong thing"
+        );
+    }
 
     /// A connected `TcpStream` with nothing meaningful on the other end.
     /// These tests are about the pool's bookkeeping -- which connections
@@ -513,9 +729,14 @@ mod benchmark {
 
     /// Exactly what `NodeClient` did before pooling: dial, handshake,
     /// one exchange, drop the connection.
-    async fn connect_per_call(address: &str, pubkey: &PublicKey) -> Result<()> {
-        let mut stream = NodeClient::connect_one(address).await?;
-        NodeClient::exchange(&mut stream, &Message::FetchUTXOs(pubkey.clone())).await?;
+    ///
+    /// Takes a client only to reach its metrics handle -- the two calls
+    /// became methods when the timeouts needed somewhere to count. It
+    /// still opens its own connection per call, which is the shape being
+    /// measured.
+    async fn connect_per_call(client: &NodeClient, address: &str, pubkey: &PublicKey) -> Result<()> {
+        let mut stream = client.connect_one(address).await?;
+        client.exchange(&mut stream, &Message::FetchUTXOs(pubkey.clone())).await?;
         Ok(())
     }
 
@@ -548,7 +769,8 @@ mod benchmark {
                 let mut lookups = tokio::task::JoinSet::new();
                 for pubkey in field {
                     let address = address.clone();
-                    lookups.spawn(async move { connect_per_call(&address, &pubkey).await });
+                    let client = NodeClient::new(vec![address.clone()]);
+                    lookups.spawn(async move { connect_per_call(&client, &address, &pubkey).await });
                 }
                 while let Some(result) = lookups.join_next().await {
                     result.unwrap().unwrap();

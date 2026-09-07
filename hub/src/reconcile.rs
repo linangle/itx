@@ -95,10 +95,22 @@ pub struct Report {
 }
 
 impl Report {
+    /// Both of these are read only by this module's own tests -- the
+    /// boot path calls `log` and then counts findings by label for the
+    /// metric, never through either.
+    ///
+    /// `cfg(test)` rather than `allow(dead_code)`, because the two say
+    /// different things and only one of them is true here. Silencing
+    /// the warning would leave code in the shipped binary that nothing
+    /// calls and invite the next reader to wire it up; scoping it to
+    /// tests says what it is, and turns "unused" back into a signal
+    /// worth reading the day something really is.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.findings.is_empty()
     }
 
+    #[cfg(test)]
     pub fn count(&self, kind: Disagreement) -> usize {
         self.findings.iter().filter(|f| f.kind == kind).count()
     }

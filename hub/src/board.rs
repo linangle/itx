@@ -1,5 +1,3 @@
-use tracing::*;
-
 use crate::escrow_key::EscrowSecret;
 use btclib::crypto::{PrivateKey, PublicKey};
 use btclib::sha256::Hash;
