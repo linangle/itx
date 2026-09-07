@@ -149,8 +149,9 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
    the replay guard, and **none of them checks that a status transition
    survives a restart** — so this class was outside the instrument, not merely
    missed by it. Coverage of the instrument is the gap now, not coverage of the
-   code. The natural next drill is named in §6.5c and needs no kill and no
-   race, so it can assert rather than report inconclusive.
+   code. **That drill now exists** — `harness drill escrow-refund`, built
+   2026-09-07, which asserts rather than samples and is REFUTED against a
+   pre-fix binary and CONFIRMED against the fix (§6.5c).
 
    `escrow-restart` was re-run against the fixes on 2026-09-07 and holds
    (`compare`: `refuted -> inconclusive`, duplicates `1 -> 0`, finding gone),
@@ -1350,16 +1351,40 @@ memory and died at the next restart.
 Not a race. A refunded deposit reloaded as `Reserved` on **every** restart, and
 had since escrow was written. Three consequences, worst first.
 
-**A dispute bond could credit its winner twice, durably.**
-`settle_dispute_bond` disbursed the bond, credited the winner with
-`credit_forfeited_bond`, and saved the reputation — and *that* write was
-durable. The deposit's `Refunded` was not. On restart the deposit reloaded
-`Consumed`, `tasks_with_unsettled_dispute_bonds` selected it again, and the
-whole settlement re-ran. The on-chain payment does not duplicate:
+**A settled dispute bond was settled again at every boot — and this is the one
+claim in the handoff that measurement did not support.** `settle_dispute_bond`
+disbursed the bond, credited the winner with `credit_forfeited_bond`, and saved
+the reputation durably; the deposit's `Refunded` was not saved at all. On
+restart the deposit reloaded `Consumed`,
+`tasks_with_unsettled_dispute_bonds` selected it again, and the whole
+settlement re-ran. The on-chain payment does not duplicate:
 `NodeClient::balance` filters mempool-marked outputs and `build_multi_payment`
-skips them, so the retry finds a zero balance and sends nothing. Which is
-exactly why this was invisible for as long as it existed — nothing about it
-looks wrong except the reputation ledger, and the ledger stays wrong.
+skips them, so the retry finds a zero balance and sends nothing.
+
+The handoff, and the first draft of this section, went on to say the winner's
+`total_earned` was credited a second time and the reputation ledger stayed
+permanently wrong. **It does not.** `credit_forfeited_bond` is applied with the
+*net amount the retry computed*, and the retry reads the same drained address
+that made the payment a no-op — so it credits **zero**. Measured 2026-09-07
+against a pre-fix binary (`harness drill escrow-refund`, whose module doc
+carries the detail): the bond was re-selected once after a restart, no coin
+moved, and the winner's ledger ended at exactly the correct bounty-plus-bond
+figure.
+
+The first attempt to measure it reported a double credit that had not happened,
+and the reason is worth keeping: a task's bounty and its bond are both `bounty`
+in size, and the restart landed before the bounty payout had confirmed, so the
+bounty arriving on time looked like a bond arriving twice. The drill now waits
+for `Paid` before restarting.
+
+So the defect here is **repeated work without bound, not a corrupted ledger**:
+every boot hands the bond back to the sweep's dispute-bond pass, each pass
+costing a node round trip inside the sweep and ahead of payout resolution, for
+the life of the deployment. The fix is unchanged — but the reason is the one
+below, not a reputation number. And it is worth noticing *why* the ledger
+survives: because the credit happens to be derived from a live balance rather
+than from the recorded bond amount. That is one more accidental last line of
+defence standing in for an intended one, which is the theme of this section.
 
 **The sweep grew without bound for the life of the deployment.**
 `overdue_reserved_escrows` selects every expired deposit still `Reserved`.
@@ -1668,11 +1693,76 @@ defect in these fixes and neither is fixed here; both belong to whoever revisits
 the baselines as a set. The baseline is deliberately not refreshed, following
 `node-crash`.
 
-What would be worth building, and is the natural next drill: a phase that
-snapshots every deposit's status, restarts the hub against its own store, and
-diffs. It needs no kill and no race, so it can assert rather than report
-inconclusive — and it would have caught bug 1 on the first run of the first day
-escrow existed.
+#### So the drill was built — `harness drill escrow-refund`, 2026-09-07
+
+It settles a dispute bond, waits for the task to reach `Paid`, restarts the hub,
+and counts how many times the sweep's dispute-bond pass hands the settled bond
+back. No kill and no race, so **it asserts rather than reporting inconclusive**:
+a status either persists or it does not, on every restart, and one run settles
+it. That is why it is a separate drill rather than a third phase of
+`escrow-restart` — a drill that can assert should not share a report with one
+that cannot.
+
+**A/B on the same machine, same session, everything but the hub binary
+identical.** The pre-fix hub is `main`'s release build, identified by the
+absence of strings the fix added rather than by trusting a path.
+
+| | Pre-fix hub | With the fix |
+|---|---|---|
+| Verdict | **REFUTED** | **CONFIRMED** |
+| Bond re-selected after restart | 1 | 0 |
+| `total_earned` re-credited | **0** | 0 |
+| Task status before restart | `Paid` | `Paid` |
+
+**A clean run has to earn its verdict, so the drill will not give one without a
+sweep.** "The sweep did not re-select the bond" is worth nothing if the sweep
+never ran, and on a loaded machine the observation window could expire before
+the first 60-second tick. So the drill reads `hub_sweep_passes_total` and
+reports **inconclusive**, with a finding, when no pass completed — rather than
+counting the silence as a pass. That counter is incremented after
+`run_sweep_once` returns, so a non-zero value means a whole pass has been and
+gone and anything it would have logged is already logged. This is the third
+false-pass shape this one drill went through, which is itself the argument for
+A/B-ing a drill before believing it.
+
+**Two wrong observables were tried first, and the record is more useful with
+them in it than without.**
+
+The first version cancelled a task and inferred the deposit's status from which
+check refused a retried confirmation — `confirm_escrow` tests status before
+funded amount, so `Refunded` should be refused by the first and `Reserved` by
+the second. **It reported CONFIRMED against the buggy hub.** A cancelled task's
+deposit is already `Consumed`, so with `Refunded` unpersisted it reloads as
+`Consumed`, not `Reserved`, and the hub rejects every non-`Reserved` status with
+the *same* error. The discriminator was blind to the transition it was aimed at.
+Only an A/B could have caught that; a clean run never would.
+
+The second version measured the winner's `total_earned`, following this
+section's own original claim that the bond re-credits it. **That claim is wrong
+and is corrected above.** The measurement first appeared to confirm it —
+1,000,000 to 2,000,000 across the restart — and the number was a coincidence: a
+task's bounty and its bond are both `bounty` in size, and the restart landed
+before the bounty payout had confirmed, so the bounty arriving on time looked
+exactly like a bond arriving twice. Waiting for `Paid` before restarting removes
+the confound, and then the pre-fix ledger sits at the correct figure and does
+not move.
+
+The lesson generalises and belongs beside the older one about re-reading a drill
+when its bug is fixed: **a drill that reports CONFIRMED has told you nothing
+until you have watched it report REFUTED.** `harness/README.md` now says so, and
+says how to keep a pre-fix binary to hand.
+
+**Its baseline deliberately breaks the convention, and this is the argument.**
+Every other drill checks in its *pre-fix* run, because for a sampling drill a
+clean run is a failure to reproduce rather than evidence — but that leaves the
+gap §6.5b named, where a future regression compares refuted-to-refuted and
+`harness compare` exits 0. `escrow-refund` checks in its **post-fix CONFIRMED**
+run instead. Because this drill asserts, a clean run is a verdict, so it is a
+legitimate baseline — and it makes the comparison work as a regression gate: a
+reintroduced bug turns confirmed into refuted, which `compare` exits non-zero
+on. The rule that falls out is worth carrying to the rest of the set: **baseline
+a drill on its pre-fix run when it samples, and on its post-fix run when it
+asserts.**
 
 ## 7. Getting agents onto ITX
 

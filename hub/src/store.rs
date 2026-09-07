@@ -401,13 +401,19 @@ impl HubStore {
     /// `Consumed` became durable when plan §6.5b added the pair-writers
     /// above; `Refunded` never did, and lived only in memory. So a
     /// forfeited dispute bond credited the winner's `total_earned`
-    /// durably beside a deposit that reloaded as `Consumed`,
+    /// durably beside a deposit that reloaded as `Consumed`, and
     /// `TaskBoard::tasks_with_unsettled_dispute_bonds` selected it again
-    /// at the next boot, and the credit was applied a second time. The
-    /// on-chain leg does not duplicate -- the retry finds a zero balance
-    /// and sends nothing -- which is precisely why this was invisible:
-    /// nothing about it is wrong except the ledger, and the ledger stays
-    /// wrong.
+    /// at every boot for the life of the deployment -- each pass a node
+    /// round trip inside the sweep, ahead of payout resolution.
+    ///
+    /// Not a second credit, though the handoff and §6.5c's first draft
+    /// both said so: the re-settlement credits the *net amount the retry
+    /// computed*, and the retry reads the drained address that already
+    /// made its payment a no-op, so it adds zero. Measured, not reasoned
+    /// -- see §6.5c. Worth knowing which way that cuts: the ledger
+    /// survives only because the credit happens to be derived from a
+    /// live balance instead of the recorded bond amount, which is one
+    /// more accidental defence standing in for an intended one.
     ///
     /// Ordinary refunds have no companion record and use
     /// `save_pending_deposit`, which is already one transaction by

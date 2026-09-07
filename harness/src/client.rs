@@ -198,6 +198,37 @@ pub struct CancelPayload {
 }
 
 #[derive(Serialize)]
+pub struct EscrowDisputableTaskPayload {
+    pub description: String,
+    pub bounty: u64,
+    pub dispute_window_minutes: i64,
+    pub min_reputation: u64,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct DisputeEscrowPayload {
+    pub task_id: String,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
+pub struct ConfirmDisputeEscrowPayload {
+    pub task_id: String,
+    pub escrow_id: String,
+}
+
+/// `outcome` is the hub's `DisputeResolution`, which serializes
+/// snake_case -- `"assignee_wins"` / `"challenger_wins"`. Kept a plain
+/// string rather than mirroring the enum, so the harness has one less
+/// type to drift out of sync with the hub.
+#[derive(Serialize)]
+pub struct ResolveDisputePayload {
+    pub task_id: String,
+    pub outcome: String,
+}
+
+#[derive(Serialize)]
 pub struct ConfirmEscrowPayload {
     pub escrow_id: String,
 }

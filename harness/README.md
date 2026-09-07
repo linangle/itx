@@ -48,8 +48,47 @@ either persists or it does not, on every restart, so one run is a verdict.
 It exists because seven drills that all sampled missed the worst defect the hub
 has had (plan §6.5c). When adding a drill, prefer a question shaped like this
 one's.
+
+## Run a new drill against the buggy binary before you believe it
+
+A drill that reports CONFIRMED has told you nothing until you have watched it
+report REFUTED. The first version of `escrow-refund` passed — and passed against
+a hub built from the commit before the fix, which is what exposed it. It
+cancelled a task and inferred the deposit's status from which check refused a
+retried confirmation, and that inference was simply blind: a cancelled task's
+deposit is already `Consumed`, and the hub rejects every non-`Reserved` status
+with the same error, so the buggy and fixed hubs answered identically. The drill
+was rewritten around a consequence that does differ.
+
+This is the companion to the older lesson below about re-reading a drill when its
+bug is fixed. Both are the same failure — a drill whose arithmetic no longer
+matches the thing it names — and neither is visible from a green run. Keep a
+pre-fix binary to hand: `strings target/release/hub | grep '<a string the fix
+added>'` tells you which one you have, and `--build-dir` points a drill at it
+without touching your tree.
 The process exits non-zero if any drill refuted the plan or found a bug, so it
 can be put in front of a change and be told rather than read.
+
+## Baselines: which run to check in
+
+`harness compare --baseline harness/baselines/<drill>.json --against <a run>`
+exits non-zero if a verdict got worse or a finding appeared. Which run belongs
+in `baselines/` is not the same answer for every drill, and getting it wrong
+makes the comparison useless rather than wrong-looking:
+
+- **A drill that samples** — `escrow-restart`, `node-crash` — checks in its
+  **pre-fix** run. A clean run from one of these is a failure to reproduce
+  rather than evidence, so it is not a baseline worth having. The known cost:
+  once the bug is fixed, a future regression compares refuted-to-refuted and
+  `compare` exits 0. That gap is real and unfixed.
+- **A drill that asserts** — `escrow-refund` — checks in its **post-fix** run.
+  A clean run there *is* a verdict, so it is a legitimate baseline, and it
+  makes the comparison work as a gate: a reintroduced bug turns confirmed into
+  refuted, which `compare` catches. Verified by pointing it at a pre-fix run.
+
+Keep facts out of a report if they change every run for no reason — a uuid, a
+timestamp — or every comparison carries a diff line and stops being read. Put
+them in a `note`, which `compare` does not diff.
 
 `--build-dir` chooses where `node`, `miner` and `hub` are taken from
 (`target/release` by default). They are **copied** into the run's own directory

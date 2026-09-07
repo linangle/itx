@@ -5662,16 +5662,27 @@ mod tests {
         board
     }
 
-    /// The money consequence of a non-durable `Refunded`, and the one
-    /// that does not self-heal: `settle_dispute_bond` credits the
-    /// winner's `total_earned` durably but marked the bond's deposit
-    /// `Refunded` only in memory, so a restart reloaded the bond as
-    /// `Consumed`, `tasks_with_unsettled_dispute_bonds` selected it
-    /// again, and the whole settlement re-ran. The on-chain leg does not
-    /// duplicate -- the retry finds a zero balance and sends nothing --
-    /// but the reputation credit does, and the ledger then stays wrong
-    /// forever. So this asserts against the *restored* board: what the
-    /// live one thinks was never the question.
+    /// The consequence of a non-durable `Refunded` that does not
+    /// self-heal: `settle_dispute_bond` credits the winner's
+    /// `total_earned` durably but marked the bond's deposit `Refunded`
+    /// only in memory, so a restart reloaded the bond as `Consumed`,
+    /// `tasks_with_unsettled_dispute_bonds` selected it again, and the
+    /// whole settlement re-ran -- at every boot, for the life of the
+    /// deployment.
+    ///
+    /// What that costs is narrower than it first appears, and the
+    /// correction is worth carrying here because this test's earlier
+    /// wording had it wrong: the on-chain leg does not duplicate, and
+    /// neither does the reputation credit. `credit_forfeited_bond` is
+    /// applied with the net amount the *retry* computed, and the retry
+    /// reads the drained address, so it adds zero (measured against a
+    /// pre-fix binary -- plan §6.5c). The defect is unbounded repeated
+    /// work, not a wrong ledger. It is still worth a durable status: the
+    /// ledger survives only because the credit happens to derive from a
+    /// live balance rather than the recorded bond amount.
+    ///
+    /// Asserted against the *restored* board, since what the live one
+    /// thinks was never the question.
     #[tokio::test]
     async fn a_settled_dispute_bond_is_not_settled_again_after_a_restart() {
         let operator_key = PrivateKey::new_key();
@@ -5710,8 +5721,9 @@ mod tests {
         );
         assert!(
             restored.tasks_with_unsettled_dispute_bonds().is_empty(),
-            "a bond already disbursed must not be selected for settlement a second time: \
-             the retry would credit total_earned again against a zero on-chain balance"
+            "a bond already disbursed must not be selected for settlement again: pre-fix it \
+             was, at every boot for the life of the deployment, each pass a node round trip \
+             inside the sweep"
         );
     }
 

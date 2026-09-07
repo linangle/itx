@@ -1929,8 +1929,12 @@ async fn disburse_escrow(
     // history, because `overdue_reserved_escrows` filters on `Reserved`.
     // A depositor whose refund had already gone out could confirm the
     // escrow again, with only the on-chain balance check in the way. And
-    // a forfeited dispute bond re-credited its winner, durably, because
-    // that credit *was* persisted (plan §6.5c).
+    // a settled dispute bond was handed back to the sweep at every boot,
+    // because its credit *was* persisted and its status was not (plan
+    // §6.5c, which also records what that re-settlement does and does
+    // not cost: it credits zero, since the retry reads a drained
+    // address, so the damage is unbounded repeated work rather than a
+    // wrong ledger).
     //
     // One write lock held across the store commit, and the board put
     // back exactly as it was if that commit fails. That ordering matters
@@ -2064,8 +2068,11 @@ pub async fn settle_dispute_bond(state: &AppState, task_id: Uuid) -> bool {
     // `Refunded` status, so the credit survived a restart and the status
     // did not. The bond then reloaded `Consumed`,
     // `tasks_with_unsettled_dispute_bonds` selected it again, and this
-    // ran a second time -- crediting `total_earned` twice against an
-    // on-chain balance the retry correctly found empty (plan §6.5c).
+    // ran again at every boot for the life of the deployment. It
+    // credited nothing on those re-runs -- the retry reads a drained
+    // address -- so what it cost was a node round trip per pass rather
+    // than a wrong ledger (plan §6.5c has the measurement, and why
+    // relying on that is not a defence).
     let credit = if is_forfeiture { EscrowCredit::ForfeitedBond } else { EscrowCredit::None };
     disburse_escrow(state, &bond_deposit, &winner, credit).await.is_some()
 }
