@@ -3590,6 +3590,76 @@ mod tests {
         assert_eq!(restored.reputation(&claimant).completed, 0);
     }
 
+    /// Why `save_confirmed_payout` has to be one transaction, stated as
+    /// the state its absence produced rather than as prose: a
+    /// `Submitted` task on disk with no attempt tracking it, which is
+    /// what a crash between the old code's first commit (the attempt
+    /// deletion) and its second (the task) left behind.
+    ///
+    /// Walking the selectors turns out to say something sharper than
+    /// "the payout is forgotten", and the assertions below are written
+    /// to record it. Neither sweep pass will touch such a task -- the
+    /// resolution pass reads `outstanding_payout_attempts`, which is
+    /// empty, and the settlement pass reads `verified_unpaid_tasks`,
+    /// which takes only `Verified`. But `unsubmitted_payouts` still
+    /// names the payout as owed, and `try_settle_verified_task` does
+    /// accept a `Submitted` task. So the recovery path exists and is
+    /// never called; and if an operator called it by hand it would
+    /// **re-send a payout that already confirmed on chain**, because the
+    /// attempt that was the double-spend guard is exactly what got
+    /// deleted. Not a state any ordering fixes -- the reverse order
+    /// strands a resolved payout that is re-resolved every sweep forever
+    /// -- which is why the fix is a transaction.
+    ///
+    /// Mirrors
+    /// `store::tests::two_separate_commits_leave_a_window_where_the_task_exists_alone`:
+    /// the suite states the mechanism of the bug, not just its cure.
+    #[tokio::test]
+    async fn a_submitted_task_with_no_attempt_is_recovered_by_nothing() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        let (task_id, claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        fake_node.wait_for_submissions_seen(1).await;
+
+        // The first of the old two commits, and nothing after it. In the
+        // real failure the transaction had already confirmed on chain --
+        // that is what `record_confirmed_payout` is called about -- so
+        // what is reconstructed here is the store's state, not the
+        // chain's.
+        hub.state.store.delete_payout_attempt(task_id, &claimant).unwrap();
+
+        let restored = board_as_a_restart_would_load_it(&hub);
+        assert_eq!(
+            restored.get_task(task_id).unwrap().status,
+            TaskStatus::Submitted,
+            "the task is mid-settlement on disk, which is the whole problem"
+        );
+        assert!(
+            restored.outstanding_payout_attempts().is_empty(),
+            "the resolution pass reads this, and there is nothing in it"
+        );
+        assert!(
+            restored.verified_unpaid_tasks().is_empty(),
+            "and the settlement pass will not take a Submitted task -- by design, since \
+             Submitted means nothing is left unsent"
+        );
+        // So no sweep pass will ever look at this task again. The
+        // payout is still listed as owed, which sounds like a way back
+        // and is worse than none: nothing consults the list, and the
+        // attempt that would have stopped a second send is the record
+        // that was deleted.
+        assert_eq!(
+            restored.unsubmitted_payouts(task_id).len(),
+            1,
+            "the payout still reads as owed, so a hand-run settlement would send it again -- \
+             against a transaction that already confirmed, with its double-spend guard gone"
+        );
+    }
+
     #[tokio::test]
     async fn try_settle_verified_task_never_double_pays_concurrent_callers() {
         let operator_key = PrivateKey::new_key();

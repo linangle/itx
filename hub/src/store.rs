@@ -127,6 +127,22 @@ fn stage_record<T: serde::Serialize>(
     Ok(())
 }
 
+/// `stage_record`'s counterpart: removes `key` from `table` inside a
+/// write transaction the caller owns, so a deletion can share a commit
+/// with the records that make it correct. Removing an absent key is not
+/// an error in redb and is not one here either -- what a caller wants is
+/// "this row is gone when the transaction commits", which is equally
+/// true if it was already gone.
+fn stage_delete(
+    txn: &redb::WriteTransaction,
+    table: TableDefinition<'static, &'static [u8], &'static [u8]>,
+    key: &[u8],
+) -> Result<()> {
+    let mut table = txn.open_table(table)?;
+    table.remove(key)?;
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum HubStoreError {
     #[error("database error: {0}")]
@@ -362,6 +378,140 @@ impl HubStore {
                 pubkey.to_sec1_bytes().as_slice(),
                 reputation,
             )
+        })
+    }
+
+    /// Everything the confirmation of one payout changes, in one redb
+    /// transaction: the task (now `Paid`, or still waiting on a sibling
+    /// leg), the recipient's reputation, the attempt the sweep was
+    /// tracking it by (deleted), and -- for a task tagged "compute" --
+    /// the exchange account that leg credits.
+    ///
+    /// `record_confirmed_payout` used to write these as up to four
+    /// separate commits, and deleted the attempt *first*. A crash or a
+    /// store error in between left a task reading `Submitted` on disk
+    /// with nothing tracking it: `outstanding_payout_attempts` had
+    /// nothing to resolve and `verified_unpaid_tasks` will not take a
+    /// `Submitted` task either, so the money had moved on chain and the
+    /// hub had permanently forgotten it. That is the precise failure
+    /// mode plan §6.5 exists to eliminate, reintroduced in the function
+    /// that closes §6.5's own loop (§6.5c).
+    ///
+    /// The deletion is what makes this a transaction rather than a
+    /// batch. Committing the task without it re-resolves a finished
+    /// payout once per sweep forever; committing it without the task is
+    /// the lost payout above. Neither is a state any ordering of
+    /// separate commits can rule out.
+    pub fn save_confirmed_payout(
+        &self,
+        task: &Task,
+        recipient: &PublicKey,
+        reputation: &Reputation,
+        compute_account: Option<&ExchangeAccount>,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), task)?;
+            stage_record(
+                txn,
+                REPUTATION_TABLE,
+                recipient.to_sec1_bytes().as_slice(),
+                reputation,
+            )?;
+            if let Some(account) = compute_account {
+                stage_record(
+                    txn,
+                    EXCHANGE_ACCOUNTS_TABLE,
+                    recipient.to_sec1_bytes().as_slice(),
+                    account,
+                )?;
+            }
+            stage_delete(
+                txn,
+                PAYOUT_ATTEMPTS_TABLE,
+                payout_attempt_key(task.id, recipient).as_slice(),
+            )
+        })
+    }
+
+    /// A task moving to `PayoutFailed` and the dropping of every payout
+    /// attempt that went with it, in one transaction -- `abandon_payout`'s
+    /// counterpart to `save_confirmed_payout`, and the same shape of bug.
+    ///
+    /// It deleted N attempts and *then* saved the task, so a crash
+    /// between them produced the state its own comment says it exists to
+    /// prevent: a task that is not terminal on disk beside attempts that
+    /// are gone, which no sweep will ever resolve or retry. Terminal
+    /// state and the removal of what tracked it are one fact.
+    pub fn save_task_and_drop_payout_attempts(
+        &self,
+        task: &Task,
+        dropped: &[(uuid::Uuid, PublicKey)],
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), task)?;
+            for (task_id, recipient) in dropped {
+                stage_delete(
+                    txn,
+                    PAYOUT_ATTEMPTS_TABLE,
+                    payout_attempt_key(*task_id, recipient).as_slice(),
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// A task and one agent's reputation, committed together --
+    /// `persist_task_and_reputation`'s and `resolve_dispute`'s writer.
+    ///
+    /// Both wrote the two separately, and `resolve_dispute` swallowed the
+    /// reputation error behind a 200. That is not only bookkeeping:
+    /// reputation is the input to a task's `min_reputation` term, so a
+    /// lost failure record lets a penalized agent keep claiming work a
+    /// poster meant to exclude them from (§6.5c).
+    pub fn save_task_and_reputation(
+        &self,
+        task: &Task,
+        pubkey: &PublicKey,
+        reputation: &Reputation,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), task)?;
+            stage_record(
+                txn,
+                REPUTATION_TABLE,
+                pubkey.to_sec1_bytes().as_slice(),
+                reputation,
+            )
+        })
+    }
+
+    /// `save_task_and_reputation` for a resolution that touched several
+    /// agents at once: a `Consensus` task and every assignee's
+    /// reputation in one commit.
+    ///
+    /// The consensus path was the worst of the split writes. The calling
+    /// assignee's reputation went through one commit and everyone else's
+    /// through a `save_reputation_batch` whose error was logged and
+    /// dropped, so a lost batch silently forgave every agent who lost
+    /// that round while the task recording the round stayed on disk.
+    /// An empty `entries` is accepted and writes just the task, so a
+    /// caller need not special-case a resolution that penalized nobody.
+    pub fn save_task_and_reputation_batch(
+        &self,
+        task: &Task,
+        entries: &[(PublicKey, Reputation)],
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, task.id.as_bytes().as_slice(), task)?;
+            for (pubkey, reputation) in entries {
+                stage_record(
+                    txn,
+                    REPUTATION_TABLE,
+                    pubkey.to_sec1_bytes().as_slice(),
+                    reputation,
+                )?;
+            }
+            Ok(())
         })
     }
 
@@ -1425,6 +1575,165 @@ mod tests {
             capabilities: Default::default(),
         };
         (task, deposit)
+    }
+
+    /// A `Submitted` task and the attempt tracking its payout, as the
+    /// store holds them the instant before a confirmation is recorded.
+    fn submitted_payout_pair() -> (Task, PayoutAttempt) {
+        let (task, _) = confirmed_escrow_pair();
+        let recipient = PrivateKey::new_key().public_key();
+        let task = Task {
+            status: TaskStatus::Submitted,
+            claimant: Some(recipient.clone()),
+            ..task
+        };
+        let attempt = PayoutAttempt {
+            task_id: task.id,
+            recipient,
+            amount: 1_000_000,
+            output_hash: Hash::hash_bytes(b"payout output"),
+            spent_inputs: vec![Hash::hash_bytes(b"escrow input")],
+            source: PrivateKey::new_key().public_key(),
+            submitted_at: Utc::now(),
+            submissions: 1,
+        };
+        (task, attempt)
+    }
+
+    /// `a_failure_after_staging_both_records_commits_neither` for the
+    /// payout side: the confirmation of a payout stages a task, a
+    /// reputation record and the deletion of the attempt, and a failure
+    /// after all three must leave the store exactly as it was.
+    ///
+    /// The deletion is the one that matters and the reason this is a
+    /// transaction and not a batch. Committed alone -- which is what the
+    /// old code did *first* -- it leaves a `Submitted` task with nothing
+    /// tracking it, and nothing selects such a task ever again: the
+    /// resolution pass reads `outstanding_payout_attempts` and the
+    /// settlement pass will not take a `Submitted` task. The money has
+    /// moved on chain and the hub has forgotten it.
+    #[test]
+    fn a_failure_partway_through_a_confirmed_payout_commits_nothing() {
+        let path = temp_db_path("confirmed_payout_rollback");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, attempt) = submitted_payout_pair();
+        let recipient = attempt.recipient.clone();
+        store.save_task(&task).unwrap();
+        store.save_payout_attempt(&attempt).unwrap();
+
+        let paid = Task { status: TaskStatus::Paid, ..task.clone() };
+        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount };
+        let result = store.in_one_write_txn(|txn| {
+            stage_record(txn, TASKS_TABLE, paid.id.as_bytes().as_slice(), &paid)?;
+            stage_record(
+                txn,
+                REPUTATION_TABLE,
+                recipient.to_sec1_bytes().as_slice(),
+                &reputation,
+            )?;
+            stage_delete(
+                txn,
+                PAYOUT_ATTEMPTS_TABLE,
+                payout_attempt_key(paid.id, &recipient).as_slice(),
+            )?;
+            // Stands in for the process dying here, after every write is
+            // staged and before any of it is committed.
+            Err(HubStoreError::Serialization("injected mid-transaction failure".into()))
+        });
+        assert!(result.is_err(), "the injected failure must surface to the caller");
+
+        assert_eq!(
+            store.load_all_payout_attempts().unwrap(),
+            vec![attempt],
+            "the attempt must still be there: a deletion that outlives the task save is a payout \
+             the hub has stopped waiting for and will never look at again"
+        );
+        assert_eq!(
+            store.load_all_tasks().unwrap()[0].status,
+            TaskStatus::Submitted,
+            "and the task must still read Submitted, agreeing with that attempt"
+        );
+        assert!(
+            store.load_all_reputation().unwrap().is_empty(),
+            "no record may survive a transaction that did not commit"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The other half, on success: no reader ever sees the task move
+    /// without the attempt going with it.
+    ///
+    /// Proved against a read snapshot opened before the write, the same
+    /// way `a_task_and_its_deposit_are_never_visible_apart` does it --
+    /// redb's read transactions are point-in-time, so a snapshot holding
+    /// one and not the other is a restarting hub observing the pair
+    /// apart.
+    #[test]
+    fn a_paid_task_and_its_resolved_attempt_are_never_visible_apart() {
+        let path = temp_db_path("confirmed_payout_commit");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, attempt) = submitted_payout_pair();
+        let recipient = attempt.recipient.clone();
+        store.save_task(&task).unwrap();
+        store.save_payout_attempt(&attempt).unwrap();
+
+        let before = store.db.begin_read().unwrap();
+        let paid = Task { status: TaskStatus::Paid, ..task.clone() };
+        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount };
+        store.save_confirmed_payout(&paid, &recipient, &reputation, None).unwrap();
+
+        // The pre-write snapshot must see the old pair intact, never the
+        // deletion on its own.
+        let tasks_then = before.open_table(TASKS_TABLE).unwrap();
+        let attempts_then = before.open_table(PAYOUT_ATTEMPTS_TABLE).unwrap();
+        let stored: Task =
+            ciborium::from_reader(tasks_then.get(task.id.as_bytes().as_slice()).unwrap().unwrap().value()).unwrap();
+        assert_eq!(stored.status, TaskStatus::Submitted);
+        assert!(attempts_then
+            .get(payout_attempt_key(task.id, &recipient).as_slice())
+            .unwrap()
+            .is_some());
+
+        // And a snapshot taken after must see the whole change.
+        assert_eq!(store.load_all_tasks().unwrap()[0].status, TaskStatus::Paid);
+        assert!(store.load_all_payout_attempts().unwrap().is_empty());
+        let stored_reputation = store.load_all_reputation().unwrap();
+        assert_eq!(stored_reputation.len(), 1);
+        assert_eq!(stored_reputation[0].0, recipient);
+        assert_eq!(stored_reputation[0].1.completed, 1);
+        assert_eq!(stored_reputation[0].1.total_earned, attempt.amount);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A "compute" task credits an exchange account too, and that credit
+    /// is spendable and tradeable the moment it lands -- so it belongs
+    /// in the same commit as the rest, not in a fifth one whose error
+    /// was logged and dropped.
+    #[test]
+    fn a_compute_payout_commits_its_exchange_credit_with_everything_else() {
+        let path = temp_db_path("confirmed_compute_payout");
+        let store = HubStore::open_or_create(&path).unwrap();
+        let (task, attempt) = submitted_payout_pair();
+        let recipient = attempt.recipient.clone();
+        store.save_payout_attempt(&attempt).unwrap();
+
+        let paid = Task { status: TaskStatus::Paid, ..task };
+        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount };
+        let account = ExchangeAccount { compute_balance: attempt.amount, ..Default::default() };
+        store
+            .save_confirmed_payout(&paid, &recipient, &reputation, Some(&account))
+            .unwrap();
+
+        let accounts = store.load_all_exchange_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].0, recipient);
+        assert_eq!(
+            accounts[0].1.compute_balance, attempt.amount,
+            "the compute credit must be on disk, not only in the account the handler built"
+        );
+        assert!(store.load_all_payout_attempts().unwrap().is_empty());
     }
 
     /// The bug in plan §6.5b, reduced to the store: staging both records

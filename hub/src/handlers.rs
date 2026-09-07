@@ -2271,7 +2271,9 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
     // polled -- which is right: whatever is wrong with the funding
     // source is not one recipient's problem, and the whole task is now
     // an operator's to settle.
-    let dropped = match state.board.write().await.mark_payout_failed(attempt.task_id) {
+    let mut board = state.board.write().await;
+    let previous_task = board.get_task(attempt.task_id).cloned();
+    let dropped = match board.mark_payout_failed(attempt.task_id) {
         Ok(dropped) => dropped,
         Err(e) => {
             error!("failed to mark task {} payout-failed: {e}", attempt.task_id);
@@ -2282,19 +2284,33 @@ async fn abandon_payout(state: &AppState, attempt: &PayoutAttempt) {
     // left in the store comes back at the next restart attached to a
     // task that is now terminal, and is then re-resolved and re-logged
     // every sweep with no way to ever clear it.
-    for dropped in &dropped {
-        if let Err(e) = state.store.delete_payout_attempt(dropped.task_id, &dropped.recipient) {
-            error!(
-                "failed to drop the abandoned payout attempt for task {} to {}: {e}",
-                dropped.task_id, dropped.recipient
-            );
+    //
+    // One transaction with the task, not N deletions and then a save.
+    // Split, a crash between them left the task non-terminal on disk
+    // beside attempts that were already gone -- the exact state the
+    // paragraph above says this exists to prevent, produced by the code
+    // meant to prevent it (plan §6.5c).
+    let dropped_keys: Vec<(Uuid, PublicKey)> =
+        dropped.iter().map(|a| (a.task_id, a.recipient.clone())).collect();
+    let Some(failed_task) = board.get_task(attempt.task_id).cloned() else {
+        error!("task {} vanished from the board while being abandoned", attempt.task_id);
+        return;
+    };
+    if let Err(e) = state.store.save_task_and_drop_payout_attempts(&failed_task, &dropped_keys) {
+        error!(
+            "failed to record task {} as payout-failed: {e} -- rolling the board back, so the \
+             sweep keeps polling rather than abandoning a payout only in memory",
+            attempt.task_id
+        );
+        if let Some(previous) = previous_task {
+            board.restore_task(previous);
         }
-    }
-    if let Some(task) = state.board.read().await.get_task(attempt.task_id) {
-        if let Err(e) = state.store.save_task(task) {
-            error!("failed to persist payout-failed task {}: {e}", attempt.task_id);
+        for previous in dropped {
+            board.restore_payout_attempt(previous);
         }
+        return;
     }
+    drop(board);
     error!(
         "giving up on the payout of {} for task {} to {}: {} submissions, every one of them \
          proven never to have reached the chain. The money is still owed and the escrow is \
@@ -2319,50 +2335,74 @@ async fn record_confirmed_payout(
     recipient: &PublicKey,
     amount: u64,
 ) -> bool {
-    if let Err(e) = state.board.write().await.mark_recipient_paid(task_id, recipient, amount) {
+    // One write lock across every board change and the single commit
+    // that makes them durable, and the board put back if that commit
+    // fails -- the same posture as `disburse_escrow`, for the same
+    // reason.
+    //
+    // This function used to write up to four separate commits and
+    // deleted the attempt *first*, logging every failure and returning
+    // `true` regardless. A crash or a store error between the deletion
+    // and the task save left a task reading `Submitted` on disk with no
+    // attempt tracking it: `outstanding_payout_attempts` had nothing to
+    // resolve and `verified_unpaid_tasks` will not take a `Submitted`
+    // task either, so the money had moved on chain and the hub had
+    // permanently forgotten it (plan §6.5c). Returning `true` on a
+    // failed write is what made that silent -- the caller reported the
+    // payout finished on the strength of writes it never checked, which
+    // is the very habit §6.5 was written to remove.
+    let mut board = state.board.write().await;
+    let previous_task = board.get_task(task_id).cloned();
+    let previous_reputation = board.reputation(recipient);
+    let previous_attempt = board.payout_attempt(task_id, recipient).cloned();
+    let previous_account = board.exchange_account(recipient);
+
+    if let Err(e) = board.mark_recipient_paid(task_id, recipient, amount) {
         error!(
             "payout for task {task_id} to {recipient} confirmed on-chain but mark_recipient_paid failed: {e}"
         );
         return false;
     }
-    // Only once the board agrees the money landed: an attempt left
-    // behind costs one redundant resolution next sweep, whereas one
-    // dropped early would stop the hub tracking a payout it has not
-    // finished recording.
-    state.board.write().await.clear_payout_attempt(task_id, recipient);
-    if let Err(e) = state.store.delete_payout_attempt(task_id, recipient) {
-        error!("failed to drop the resolved payout attempt for task {task_id}/{recipient}: {e}");
-    }
+    board.clear_payout_attempt(task_id, recipient);
 
-    // One combined read for both, rather than two separate lock
-    // acquisitions -- nothing mutates the board between them.
-    let (final_task, reputation) = {
-        let board = state.board.read().await;
-        (board.get_task(task_id).cloned(), board.reputation(recipient))
+    let Some(final_task) = board.get_task(task_id).cloned() else {
+        error!("task {task_id} vanished from the board while its payout was being recorded");
+        return false;
     };
-    if let Some(final_task) = &final_task {
-        if let Err(e) = state.store.save_task(final_task) {
-            error!("failed to persist task {task_id}: {e}");
+    // A task tagged "compute" pays its winner in the tradeable compute
+    // asset, on top of (not instead of) the ordinary bounty payout --
+    // placed strictly after mark_recipient_paid already succeeded, so it
+    // inherits that call's own dedup/retry safety (PAYOUT_IN_FLIGHT,
+    // re-checked live state) for free rather than needing a guard of its
+    // own.
+    let compute_account = if final_task.capabilities.contains("compute") {
+        board.credit_compute(recipient, amount);
+        Some(board.exchange_account(recipient))
+    } else {
+        None
+    };
+    let reputation = board.reputation(recipient);
+
+    if let Err(e) = state.store.save_confirmed_payout(
+        &final_task,
+        recipient,
+        &reputation,
+        compute_account.as_ref(),
+    ) {
+        error!(
+            "failed to record the confirmed payout for task {task_id} to {recipient}: {e} -- \
+             rolling the board back so the sweep resolves it again rather than reporting a \
+             payout the store never accepted"
+        );
+        if let Some(previous) = previous_task {
+            board.restore_task(previous);
         }
-        // A task tagged "compute" pays its winner in the tradeable
-        // compute asset, on top of (not instead of) the ordinary bounty
-        // payout above -- placed strictly after mark_recipient_paid
-        // already succeeded, so it inherits that call's own dedup/retry
-        // safety (PAYOUT_IN_FLIGHT, re-checked live state) for free
-        // rather than needing a guard of its own.
-        if final_task.capabilities.contains("compute") {
-            let account = {
-                let mut board = state.board.write().await;
-                board.credit_compute(recipient, amount);
-                board.exchange_account(recipient)
-            };
-            if let Err(e) = state.store.save_exchange_account(recipient, &account) {
-                error!("failed to persist compute credit for {recipient}: {e}");
-            }
+        board.restore_reputation(recipient.clone(), previous_reputation);
+        board.restore_exchange_account(recipient.clone(), previous_account);
+        if let Some(previous) = previous_attempt {
+            board.restore_payout_attempt(previous);
         }
-    }
-    if let Err(e) = state.store.save_reputation(recipient, &reputation) {
-        error!("failed to persist reputation for {recipient}: {e}");
+        return false;
     }
     true
 }
