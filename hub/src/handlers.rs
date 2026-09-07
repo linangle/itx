@@ -1064,7 +1064,7 @@ pub async fn create_task_escrow(
     validate_text_field(&envelope.payload.description, "description")?;
     let expected_output_hash = parse_hex_hash(&envelope.payload.expected_output_hash)?;
     let bounty = envelope.payload.bounty;
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let intent = TaskIntent {
@@ -1110,7 +1110,7 @@ pub async fn create_consensus_task_escrow(
     validate_positive_minutes(envelope.payload.join_window_minutes, "join_window_minutes")?;
     validate_positive_minutes(envelope.payload.submission_window_minutes, "submission_window_minutes")?;
     let bounty = envelope.payload.bounty;
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let intent = ConsensusTaskIntent {
@@ -1150,7 +1150,7 @@ pub async fn create_disputable_task_escrow(
     validate_text_field(&envelope.payload.description, "description")?;
     validate_positive_minutes(envelope.payload.dispute_window_minutes, "dispute_window_minutes")?;
     let bounty = envelope.payload.bounty;
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let intent = DisputableTaskIntent {
@@ -1283,7 +1283,7 @@ pub async fn create_dispute_escrow(
         }
         task.bounty
     };
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
         &state.escrow_secret,
@@ -4461,6 +4461,39 @@ fn validate_positive_minutes(value: i64, field: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// What a bounty's escrow address has to hold before the task it funds
+/// exists: the bounty itself, plus the fee the eventual payout will pay.
+///
+/// A checked add, and the check is the whole point. `bounty` arrives on a
+/// signed payload with no ceiling above it, and the release profile this
+/// ships under has `overflow-checks = false` -- so `bounty +
+/// HUB_TRANSACTION_FEE` wrapped, and a bounty of `u64::MAX - 999` asked
+/// for a `required_amount` of **zero**. `TaskBoard::confirm_escrow` then
+/// compares `observed_amount < required_amount`, which `0 < 0` does not
+/// satisfy, so the deposit confirmed against an address holding nothing
+/// and minted a task with an unfundable bounty that no one had paid for.
+/// That breaks the one invariant escrow exists to hold -- a task's bounty
+/// is backed by a confirmed deposit -- and every `open_bounty` sum on the
+/// public board endpoints overflowed on the second such task.
+///
+/// Rejecting rather than saturating: a saturated `u64::MAX` reservation
+/// is an address that can never be funded, so the caller would sit on a
+/// pending escrow until it expired with no idea why. A 400 says so.
+///
+/// No ceiling on `bounty` beyond this. One is not needed and would be a
+/// guess: an unwrappable `required_amount` is one nobody can ever pay
+/// into, so the reservation simply expires, which is the same outcome as
+/// any other underfunded escrow and needs no new rule.
+fn escrow_amount_for(bounty: u64) -> Result<u64, ApiError> {
+    bounty.checked_add(HUB_TRANSACTION_FEE).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "bounty must be at most {}, leaving room for the {HUB_TRANSACTION_FEE} network fee \
+             the payout pays",
+            u64::MAX - HUB_TRANSACTION_FEE
+        ))
+    })
+}
+
 async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u64) -> Result<(), ApiError> {
     let balance = state
         .node
@@ -5591,5 +5624,50 @@ mod summary_tests {
             }).unwrap(),
             r#"{"challenge_id":"00000000-0000-0000-0000-000000000000","solution":42}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod escrow_amount_tests {
+    use super::*;
+
+    /// `ApiError` deliberately carries no `Debug`, so the results are
+    /// unwrapped through `ok()` rather than by adding a derive to a
+    /// production type for the benefit of three assertions.
+    fn amount(bounty: u64) -> Option<u64> {
+        escrow_amount_for(bounty).ok()
+    }
+
+    #[test]
+    fn an_ordinary_bounty_reserves_itself_plus_the_fee() {
+        assert_eq!(amount(1_000_000), Some(1_000_000 + HUB_TRANSACTION_FEE));
+        assert_eq!(amount(0), Some(HUB_TRANSACTION_FEE));
+    }
+
+    /// The exploit this closes, stated as its arithmetic. Under the
+    /// release profile -- no overflow checks -- `bounty +
+    /// HUB_TRANSACTION_FEE` wrapped to zero here, and a zero
+    /// `required_amount` is one that `TaskBoard::confirm_escrow` accepts
+    /// against a deposit address holding nothing: a free task carrying a
+    /// bounty nobody funded.
+    #[test]
+    fn a_bounty_whose_fee_would_wrap_is_refused_rather_than_reserved() {
+        let bounty = u64::MAX - HUB_TRANSACTION_FEE + 1;
+        assert_eq!(
+            bounty.wrapping_add(HUB_TRANSACTION_FEE),
+            0,
+            "this is the input that used to reserve zero, so pin it"
+        );
+        assert_eq!(amount(bounty), None);
+        assert_eq!(amount(u64::MAX), None);
+    }
+
+    /// The boundary, both sides. The largest bounty that still leaves
+    /// room for the fee is allowed, and reserves exactly `u64::MAX`.
+    #[test]
+    fn the_largest_bounty_that_leaves_room_for_the_fee_is_allowed() {
+        let largest = u64::MAX - HUB_TRANSACTION_FEE;
+        assert_eq!(amount(largest), Some(u64::MAX));
+        assert_eq!(amount(largest + 1), None);
     }
 }
