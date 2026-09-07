@@ -216,6 +216,22 @@ pub struct Metrics {
     pub unresolved_withdrawals: AtomicU64,
     pub unresolved_withdrawals_at_boot: AtomicU64,
 
+    /// Withdrawals whose payout was never built, whose ledger credit-back
+    /// therefore *should* have stood, and whose durable write of it
+    /// failed -- so the balance in memory and the balance on disk now
+    /// disagree by the withdrawn amount, and a restart resolves that
+    /// disagreement against the user.
+    ///
+    /// Its own series rather than folded into
+    /// `unresolved_withdrawals`, because the two need opposite actions.
+    /// There the coin may have moved and an operator has to find out;
+    /// here nothing moved at all and the store is what is broken -- the
+    /// hub is very likely about to fail every authenticated write anyway,
+    /// since the replay guard fsyncs on the same store. Alert on the
+    /// first of either, and read this one as "the store is failing and it
+    /// has already cost a specific user a specific amount".
+    pub withdrawal_reverts_not_persisted: AtomicU64,
+
     // ---- operator wallet ---------------------------------------------
     /// Confirmed, unspoken-for operator outputs large enough to fund a
     /// payment on their own, as of the last sweep. This *is* the payout
@@ -506,6 +522,7 @@ impl Metrics {
 
         counter(&mut out, "hub_unresolved_withdrawals_total", "Exchange withdrawals submitted to the node and never acknowledged, whose ledger debit stands pending review (plan 6.5d).", self.unresolved_withdrawals.load(Ordering::Relaxed));
         gauge(&mut out, "hub_unresolved_withdrawals_at_boot", "Unresolved withdrawal attempts found in the store at startup.", self.unresolved_withdrawals_at_boot.load(Ordering::Relaxed));
+        counter(&mut out, "hub_withdrawal_reverts_not_persisted_total", "Withdrawals whose payout was never built and whose credit-back could not be written, so the in-memory balance and the stored one disagree until an operator intervenes.", self.withdrawal_reverts_not_persisted.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_operator_ready_outputs", "Confirmed operator outputs large enough to fund a payment, as of the last sweep -- the payout ceiling (plan 6.4b).", self.operator_ready_outputs.load(Ordering::Relaxed));
         counter(&mut out, "hub_operator_fan_outs_total", "Self-paying transactions submitted to split the operator's wallet.", self.operator_fan_outs.load(Ordering::Relaxed));

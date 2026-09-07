@@ -2857,7 +2857,35 @@ pub async fn withdraw(
                 state.board.write().await.credit_back_withdrawal(&pubkey, amount);
                 let reverted = state.board.read().await.exchange_account(&pubkey);
                 if let Err(e) = state.store.save_exchange_account(&pubkey, &reverted) {
-                    error!("failed to persist reverted withdrawal balance for {pubkey}: {e}");
+                    // The credit-back is in memory and not on disk, so
+                    // the two now disagree by `amount` and a restart
+                    // settles that against the user: they are owed money
+                    // the stored ledger says they already took.
+                    //
+                    // Left in memory rather than rolled back to match the
+                    // store, because the memory copy is the true one --
+                    // nothing was sent, so the balance really is still
+                    // theirs, and this process will keep honouring it. It
+                    // is the restart that loses, which is why this needs
+                    // to be visible before one happens rather than
+                    // discovered after.
+                    //
+                    // Counted as well as logged. A lone `error!` in a
+                    // journal is not something anyone alerts on, and this
+                    // is a specific user out a specific amount -- see
+                    // `Metrics::withdrawal_reverts_not_persisted` for why
+                    // it is not folded into the unresolved-withdrawal
+                    // series it superficially resembles.
+                    state
+                        .metrics
+                        .withdrawal_reverts_not_persisted
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    error!(
+                        "credited {amount} back to {pubkey} after a withdrawal that was never \
+                         built, but could not write it: the in-memory balance and the stored one \
+                         now differ by {amount} and a restart will resolve it against them. The \
+                         store is failing -- see docs/deployment.md 9.5. Write error: {e}"
+                    );
                 }
                 return Err(ApiError::Internal(format!(
                     "withdrawal could not be built, nothing was sent, please retry: {e}"
