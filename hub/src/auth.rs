@@ -227,18 +227,6 @@ impl ReplayGuard {
         self.accepting_from.is_some_and(|from| now < from)
     }
 
-    /// Claims `signature` for the first time, or reports that it has
-    /// already been used. The durable write happens here, before the
-    /// caller has done anything with the request -- see
-    /// `HubStore::record_seen_signature` for why that ordering is the
-    /// whole point.
-    ///
-    /// A failed durable write leaves the in-memory claim in place and
-    /// fails the request. That burns the envelope, which is the safe
-    /// direction to fail: the request never ran, and the alternative --
-    /// releasing the claim so the same envelope can be tried again --
-    /// hands back exactly the replayable envelope this is here to
-    /// prevent, at the moment the hub has proven it cannot record one.
     /// Whether this signature has already been claimed, without claiming
     /// it -- a read used to catch a replay *before* it is charged for.
     ///
@@ -252,6 +240,23 @@ impl ReplayGuard {
         self.seen.contains_key(signature)
     }
 
+    /// Claims `signature` for the first time, or reports that it has
+    /// already been used. The durable write happens here, before the
+    /// caller has done anything with the request -- see
+    /// `HubStore::record_seen_signature` for why that ordering is the
+    /// whole point.
+    ///
+    /// **This is the authoritative check**, and the only one. The insert
+    /// is atomic, so it is what decides between two identical envelopes
+    /// arriving together; `already_seen` above is a cheap early read that
+    /// cannot settle that race and is not trying to.
+    ///
+    /// A failed durable write leaves the in-memory claim in place and
+    /// fails the request. That burns the envelope, which is the safe
+    /// direction to fail: the request never ran, and the alternative --
+    /// releasing the claim so the same envelope can be tried again --
+    /// hands back exactly the replayable envelope this is here to
+    /// prevent, at the moment the hub has proven it cannot record one.
     fn claim(&self, signature: Vec<u8>, now: DateTime<Utc>) -> Result<(), AuthError> {
         if self.seen.insert(signature.clone(), now).is_some() {
             self.metrics.replay_signatures_rejected.fetch_add(1, Ordering::Relaxed);
