@@ -894,9 +894,19 @@ function boardSeries({ capability, windowMs, buckets }) {
     if (at === null) continue;
     // One leg for a hash-match or disputable task, one per winner for a
     // consensus task -- and one chain fee each.
+    //
+    // A consensus task's assignees are not modelled on the task itself,
+    // so its winners are drawn deterministically from the real agent
+    // pool by task index. Minting a fresh key per task instead would be
+    // easier and would make `active agents` grow with the number of
+    // tasks rather than with the population, which is exactly the
+    // inflated headline this fixture exists to avoid showing.
     const winners =
       t.kind === "consensus"
-        ? Array.from({ length: t.num_assignees ?? 1 }, (_, i) => `${t.id}:winner:${i}`)
+        ? Array.from(
+            { length: t.num_assignees ?? 1 },
+            (_, i) => AGENTS[(Number(t.id.slice(-12)) * 7 + i) % AGENTS.length],
+          )
         : t.claimant
           ? [t.claimant]
           : [];
