@@ -79,6 +79,27 @@ pub struct AppState {
     /// into (`--operator-wallet-outputs`). This number *is* the payout
     /// ceiling -- see `operator_wallet` and plan §6.4b.
     pub operator_wallet_outputs: usize,
+    /// Whether the order-book routes are mounted at all
+    /// (`--enable-exchange`). Off by default, and that default is the
+    /// shape of this version.
+    ///
+    /// The book traded itx against `compute`, and `compute` was minted
+    /// only by settling a task tagged `compute` -- a free-form tag
+    /// anyone could put on a task they posted, claimed from a second key
+    /// and answered themselves. With that mint removed (see
+    /// `handlers::record_confirmed_payout`) no compute can ever be
+    /// issued, so no sell order can ever be funded and no order can ever
+    /// fill. Leaving the routes up would be worse than turning them off:
+    /// deposits and buy orders would still be accepted, so an agent
+    /// could lock funds behind a resting bid that nothing on the board
+    /// is able to cross.
+    ///
+    /// A switch rather than a deletion because the accounting underneath
+    /// it -- single-transaction fills, cancels and withdrawals, the
+    /// custody solvency pair -- is correct and drilled, and throwing it
+    /// away to bring it back later would cost more than it saves. The
+    /// day there is a scarce second asset, this is one flag.
+    pub exchange_enabled: bool,
     /// The inputs the last fan-out spent, while one may still be
     /// unconfirmed.
     ///
@@ -277,6 +298,23 @@ struct Args {
     /// quicker. Applies to challenges issued from now on -- work already
     /// under way is judged against the target it was issued with.
     faucet_pow_expected_hashes: u64,
+    #[argh(switch)]
+    /// mount the order-book routes (`/exchange/*`). Off by default.
+    ///
+    /// itx is a marketplace for work: agents post tasks with a bounty,
+    /// other agents do them, and the chain pays. The book traded itx
+    /// against a second asset, `compute`, which settlement minted and
+    /// nothing else did -- and since the tag that triggered it was one
+    /// anyone could put on their own task, it was issuable at will. That
+    /// mint is gone, so no sell order can be funded and no order can
+    /// fill.
+    ///
+    /// Turning the routes off rather than leaving them up is the safer
+    /// half of that: a running book with no possible seller still
+    /// accepts deposits and buy orders, so an agent could lock funds
+    /// behind a bid nothing can ever cross. Pass this only to exercise
+    /// the accounting, which is still correct and still tested.
+    enable_exchange: bool,
     #[argh(option, default = "200")]
     /// how many faucet grants may be made in any rolling 24 hours,
     /// across every key and every address.
@@ -1117,6 +1155,7 @@ async fn main() -> Result<()> {
         operator_public_key,
         payout_lock: Mutex::new(()),
         operator_wallet_outputs: args.operator_wallet_outputs,
+        exchange_enabled: args.enable_exchange,
         operator_fan_out_inflight: Mutex::new(Vec::new()),
         custody_fan_out_inflight: Mutex::new(Vec::new()),
         exchange_custody_private_key,
@@ -1264,7 +1303,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .allow_methods([Method::GET])
         .expose_headers([HeaderName::from_static("x-total-count")]);
 
-    Router::new()
+    let router = Router::new()
         .route("/health", get(handlers::health))
         .route("/admin/overview", post(handlers::admin_overview))
         .route("/payments", get(handlers::list_payments))
@@ -1306,14 +1345,27 @@ fn build_router(state: Arc<AppState>) -> Router {
         // rather than one per row. Read-only and never mints a name --
         // see `handlers::names`.
         .route("/names", get(handlers::names))
-        .route("/llms.txt", get(handlers::llms_txt))
-        .route("/exchange/deposit", post(handlers::create_exchange_deposit))
-        .route("/exchange/deposit/:id/confirm", post(handlers::confirm_exchange_deposit))
-        .route("/exchange/orders", get(handlers::get_order_book).post(handlers::place_order))
-        .route("/exchange/orders/:id/cancel", post(handlers::cancel_order))
-        .route("/exchange/account/:pubkey", get(handlers::get_exchange_account))
-        .route("/exchange/withdraw", post(handlers::withdraw))
-        .route("/exchange/trades", get(handlers::list_trades))
+        .route("/llms.txt", get(handlers::llms_txt));
+
+    // Mounted only when asked for -- see `AppState::exchange_enabled`.
+    // Not mounted at all, rather than mounted and answering 503: an
+    // agent reading `/llms.txt` is told what exists, and a route that
+    // exists-but-refuses is a thing to write retry logic against. A 404
+    // says the same thing the manual says.
+    let router = if state.exchange_enabled {
+        router
+            .route("/exchange/deposit", post(handlers::create_exchange_deposit))
+            .route("/exchange/deposit/:id/confirm", post(handlers::confirm_exchange_deposit))
+            .route("/exchange/orders", get(handlers::get_order_book).post(handlers::place_order))
+            .route("/exchange/orders/:id/cancel", post(handlers::cancel_order))
+            .route("/exchange/account/:pubkey", get(handlers::get_exchange_account))
+            .route("/exchange/withdraw", post(handlers::withdraw))
+            .route("/exchange/trades", get(handlers::list_trades))
+    } else {
+        router
+    };
+
+    router
         .layer(cors)
         .layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit::middleware))
         // Gzip for any client that asks (every browser does). The task
@@ -2158,7 +2210,7 @@ mod tests {
         node_address: String,
         floor: usize,
     ) -> TestHub {
-        spawn_hub_inner_with_floor(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, u64::MAX, u64::MAX, Default::default(), floor).await
+        spawn_hub_inner_with_floor(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, u64::MAX, u64::MAX, Default::default(), floor, true).await
     }
 
     async fn spawn_hub_with_prefix_cap(
@@ -2198,7 +2250,30 @@ mod tests {
         faucet_grants_per_prefix: u64,
         admin_keys: std::collections::BTreeSet<String>,
     ) -> TestHub {
-        spawn_hub_inner_with_floor(operator_private_key, node_address, trusted_proxies, faucet_daily_grants, consensus_max_exposure, faucet_grants_per_prefix, admin_keys, operator_wallet::DEFAULT_WALLET_OUTPUTS).await
+        spawn_hub_inner_with_floor(operator_private_key, node_address, trusted_proxies, faucet_daily_grants, consensus_max_exposure, faucet_grants_per_prefix, admin_keys, operator_wallet::DEFAULT_WALLET_OUTPUTS, true).await
+    }
+
+    /// The production default: no order book. Every other spawner in
+    /// this suite turns it on, because the exchange's crash-safety work
+    /// is what those tests protect and a flag that quietly stopped
+    /// exercising it would rot the code it exists to preserve. This one
+    /// is for asserting what a launched hub actually serves.
+    async fn spawn_hub_without_exchange(
+        operator_private_key: PrivateKey,
+        node_address: String,
+    ) -> TestHub {
+        spawn_hub_inner_with_floor(
+            operator_private_key,
+            node_address,
+            rate_limit::TrustedProxies::new(),
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            Default::default(),
+            operator_wallet::DEFAULT_WALLET_OUTPUTS,
+            false,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2211,6 +2286,7 @@ mod tests {
         faucet_grants_per_prefix: u64,
         admin_keys: std::collections::BTreeSet<String>,
         wallet_floor: usize,
+        exchange_enabled: bool,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
@@ -2250,8 +2326,9 @@ mod tests {
             operator_public_key,
             payout_lock: Mutex::new(()),
             operator_wallet_outputs: wallet_floor,
+            exchange_enabled,
             operator_fan_out_inflight: Mutex::new(Vec::new()),
-        custody_fan_out_inflight: Mutex::new(Vec::new()),
+            custody_fan_out_inflight: Mutex::new(Vec::new()),
             exchange_custody_private_key,
             exchange_custody_public_key,
             exchange_custody_payout_lock: Mutex::new(()),
@@ -3622,6 +3699,54 @@ mod tests {
             "basis-point",
         ] {
             assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
+        }
+    }
+
+    /// The default a launched hub actually runs under, and the pair of
+    /// claims that make turning the book off mean something.
+    ///
+    /// Not mounted rather than mounted-and-refusing: a 503 is a thing an
+    /// agent writes retry logic against, and an endpoint that exists but
+    /// always fails is a worse answer than one that is not there. The
+    /// manual has to agree, because `/llms.txt` is what an arriving
+    /// agent plans from -- describing a route that 404s is the specific
+    /// failure this test exists to prevent.
+    #[tokio::test]
+    async fn without_the_flag_the_book_is_neither_served_nor_advertised() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_without_exchange(operator_key, fake_node.addr.clone()).await;
+
+        let llms = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(!llms.contains("/exchange/"), "the manual still advertises the book");
+        assert!(
+            !llms.contains("Trading on the exchange"),
+            "the manual still has the trading section"
+        );
+        // The rest of the manual is untouched: this removes a section,
+        // it does not truncate the document.
+        assert!(llms.contains("## Getting paid, and knowing that you were"));
+        assert!(llms.contains("/tasks"));
+
+        for route in [
+            "/exchange/orders".to_string(),
+            "/exchange/trades".to_string(),
+            format!("/exchange/account/{}", hub.operator_key.public_key()),
+        ] {
+            let resp = hub.client.get(format!("{}{route}", hub.base_url)).send().await.unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{route} answered something other than 404"
+            );
         }
     }
 
