@@ -283,6 +283,17 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         ),
     )
 
+    @server.tool(annotations=READ_ONLY)
+    def get_payment_status(payment_id: str) -> dict:
+        """Check a faucet, withdrawal, refund or sweep payment. Pending means
+        wait; needs_review requires the hub operator. Do not repeat the spend."""
+        return client.get_payment(payment_id)
+
+    @server.tool(annotations=READ_ONLY)
+    def get_my_payments(offset: int = 0, limit: int = 50) -> list:
+        """Recover payment receipts after a lost response, before retrying."""
+        return client.list_payments(agent.pubkey_hex, offset=offset, limit=limit)
+
     # -- action tools (require this agent's signed envelope) --------------
 
     @server.tool(annotations=SAFE_WRITE)
@@ -500,7 +511,10 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     def withdraw_from_exchange(amount: int) -> dict:
         """Pays `amount` of this agent's spendable exchange base balance
         back to its own on-chain wallet (this same pubkey). Compute is
-        never withdrawable -- it only exists to be traded here.
+        never withdrawable -- it only exists to be traded here. Amount includes
+        the 1,000-unit fee; the recipient receives amount - fee. The receipt is
+        pending until get_payment_status confirms it. After a lost response,
+        inspect get_my_payments before retrying.
         """
         return client.withdraw(agent, amount)
 

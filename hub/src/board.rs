@@ -663,10 +663,8 @@ impl Task {
     }
 }
 
-/// The answer with strictly the most submissions, or `None` if there are
-/// no answers yet or the top spot is tied between two or more answers --
-/// a tie is deliberately treated as "no consensus" rather than picking
-/// arbitrarily among them.
+/// An answer supported by strictly more than half of all assigned voters.
+/// Missing submissions count against quorum; a plurality is not consensus.
 fn majority_answer(assignees: &BTreeMap<PublicKey, ConsensusAssignment>) -> Option<String> {
     let mut counts: BTreeMap<&String, usize> = BTreeMap::new();
     for assignment in assignees.values() {
@@ -677,7 +675,7 @@ fn majority_answer(assignees: &BTreeMap<PublicKey, ConsensusAssignment>) -> Opti
     let max_count = *counts.values().max()?;
     let mut top: Vec<&&String> = counts.iter().filter(|(_, &c)| c == max_count).map(|(k, _)| k).collect();
     match top.pop() {
-        Some(answer) if top.is_empty() => Some((*answer).clone()),
+        Some(answer) if top.is_empty() && max_count > assignees.len() / 2 => Some((*answer).clone()),
         _ => None, // either no answers at all, or a tie for first place
     }
 }
@@ -697,6 +695,8 @@ pub struct Reputation {
 /// actually there has been sent back to `depositor`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EscrowStatus {
+    /// A durable outgoing payment exists; confirmation is still pending.
+    Disbursing,
     Reserved,
     Consumed,
     Refunded,
@@ -907,6 +907,7 @@ pub struct Trade {
 /// back in here only to record the outcome.
 #[derive(Debug, Clone, Default)]
 pub struct TaskBoard {
+    pub(crate) payments: BTreeMap<Uuid, crate::payments::Payment>,
     tasks: BTreeMap<Uuid, Task>,
     reputation: BTreeMap<PublicKey, Reputation>,
     faucet_grants: BTreeSet<PublicKey>,
@@ -927,6 +928,13 @@ pub struct TaskBoard {
 impl TaskBoard {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn exchange_liabilities(&self) -> u64 {
+        self.exchange_accounts.values().map(|a| a.base_balance)
+            .chain(self.payments.values().filter(|p| p.status != crate::payments::Status::Confirmed
+                && matches!(p.purpose, crate::payments::Purpose::Withdrawal { .. })).map(|p| p.amount))
+            .fold(0, u64::saturating_add)
     }
 
     /// Total bounty already promised to tasks that haven't been paid out
@@ -1088,7 +1096,7 @@ impl TaskBoard {
     /// have) money moving for it.
     pub fn cancel_task(&mut self, id: Uuid) -> Result<(), BoardError> {
         let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
-        if matches!(task.status, TaskStatus::Verified | TaskStatus::Paid | TaskStatus::Closed) {
+        if matches!(task.status, TaskStatus::Verified | TaskStatus::Submitted | TaskStatus::PayoutFailed | TaskStatus::Paid | TaskStatus::Closed) {
             return Err(BoardError::AlreadyTerminal);
         }
         // A Disputed task has a bond actively contested between two named
@@ -2261,6 +2269,22 @@ impl TaskBoard {
             Side::Sell => candidates.sort_by(|a, b| b.price.cmp(&a.price).then(a.created_at.cmp(&b.created_at))),
         }
         candidates.first().map(|o| o.id)
+    }
+
+    /// A bounded working copy of only the orders/accounts this placement can
+    /// touch. The handler keeps the live write lock until the staged records
+    /// commit, then publishes them. History is not cloned on every write.
+    pub fn stage_order(&self, owner: &PublicKey, side: Side, price: u64, fee_sink: &PublicKey) -> Self {
+        let mut staged = Self::new();
+        staged.restore_exchange_account(owner.clone(), self.exchange_account(owner));
+        staged.restore_exchange_account(fee_sink.clone(), self.exchange_account(fee_sink));
+        for order in self.orders.values().filter(|o| o.status == OrderStatus::Open
+            && o.owner != *owner && o.side != side
+            && match side { Side::Buy => o.price <= price, Side::Sell => o.price >= price }) {
+            staged.restore_exchange_account(order.owner.clone(), self.exchange_account(&order.owner));
+            staged.restore_order(order.clone());
+        }
+        staged
     }
 
     /// Places a limit order, locking the full notional up front (a buy
@@ -4520,5 +4544,41 @@ mod tests {
         let done = board.get_task(task_id).unwrap();
         assert_eq!(done.confirmed_payout_total(), 900);
         assert_eq!(done.unconfirmed_payout_total(), 0);
+    }
+    #[test]
+    fn a_plurality_of_two_of_five_is_not_consensus() {
+        let mut board = TaskBoard::new();
+        let (id, keys) = create_and_fill_consensus_task(&mut board, 5, Utc::now() + chrono::Duration::minutes(30));
+        for (key, answer) in keys.iter().zip(["collusion", "collusion", "a", "b", "c"]) {
+            board.submit_consensus_answer(id, key.clone(), answer.to_string()).unwrap();
+        }
+        let task = board.get_task(id).unwrap();
+        assert_eq!(task.status, TaskStatus::Closed);
+        assert!(task.pending_payouts().is_empty());
+    }
+    #[test]
+    fn one_of_five_cannot_win_after_timeout() {
+        let mut board = TaskBoard::new();
+        let (id, keys) = create_and_fill_consensus_task(&mut board, 5, Utc::now() + chrono::Duration::minutes(30));
+        board.submit_consensus_answer(id, keys[0].clone(), "alone".to_string()).unwrap();
+        board.resolve_expired_consensus_tasks(Utc::now() + chrono::Duration::hours(2));
+        let task = board.get_task(id).unwrap();
+        assert_eq!(task.status, TaskStatus::Closed);
+        assert!(task.pending_payouts().is_empty());
+        assert_eq!(task.unconfirmed_payout_total(), 0);
+    }
+
+    #[test]
+    fn cancellation_preserves_failed_payout_obligation() {
+        let mut board = TaskBoard::new();
+        let (poster, worker) = (pubkey(), pubkey());
+        let task = board.create_task(poster, "owed".into(), 100, Hash::hash_bytes(b"ok"));
+        board.claim_task(task.id, worker.clone(), Utc::now() + chrono::Duration::minutes(10)).unwrap();
+        board.submit(task.id, worker, Hash::hash_bytes(b"ok")).unwrap();
+        board.mark_payout_failed(task.id).unwrap();
+        assert_eq!(board.allocated_bounty(), 100);
+        assert!(board.cancel_task(task.id).is_err());
+        assert_eq!(board.get_task(task.id).unwrap().status, TaskStatus::PayoutFailed);
+        assert_eq!(board.allocated_bounty(), 100);
     }
 }

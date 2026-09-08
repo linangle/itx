@@ -104,6 +104,7 @@ const REPLAY_GUARD_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("re
 const PAYOUT_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("payout_attempts");
 const WITHDRAWAL_ATTEMPTS_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("withdrawal_attempts");
+const PAYMENTS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("payments");
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -141,7 +142,7 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// first bump under the new policy, and the case it was written for: a
 /// rolled-back binary that could not see that table would read a debited
 /// ledger with no record of the payment that debited it (§6.5d).
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// The `PAYOUT_ATTEMPTS_TABLE` key for one payout: the task's uuid
 /// followed by the recipient's SEC1 bytes. Uuid bytes are fixed-width,
@@ -218,6 +219,8 @@ pub type Result<T> = std::result::Result<T, HubStoreError>;
 /// is stored individually rather than as one big serialized blob that has
 /// to be rewritten in full on every change.
 pub struct HubStore {
+    #[cfg(test)]
+    fail_next_commit: std::sync::atomic::AtomicBool,
     db: redb::Database,
 }
 
@@ -238,6 +241,7 @@ impl HubStore {
             write_txn.open_table(FAUCET_CHALLENGES_TABLE)?;
             write_txn.open_table(PAYOUT_ATTEMPTS_TABLE)?;
             write_txn.open_table(WITHDRAWAL_ATTEMPTS_TABLE)?;
+            write_txn.open_table(PAYMENTS_TABLE)?;
             let mut meta = write_txn.open_table(META_TABLE)?;
 
             let stored_version = match meta.get(SCHEMA_VERSION_KEY)? {
@@ -282,7 +286,7 @@ impl HubStore {
             }
         }
         write_txn.commit()?;
-        Ok(HubStore { db })
+        Ok(HubStore { db, #[cfg(test)] fail_next_commit: std::sync::atomic::AtomicBool::new(false) })
     }
 
     pub fn save_task(&self, task: &Task) -> Result<()> {
@@ -612,6 +616,35 @@ impl HubStore {
     /// it only makes the failure a better failure, and leaves an interval
     /// whose safety depends on nobody ever adding a step between two
     /// writes. A single transaction has no interval (§6.5d).
+    pub fn save_payment_effects(
+        &self, payment: &crate::payments::Payment,
+        account: Option<(&PublicKey, &ExchangeAccount)>,
+        deposit: Option<&PendingDeposit>, reputation: Option<(&PublicKey, &Reputation)>,
+        faucet: bool,
+    ) -> Result<()> {
+        self.in_one_write_txn(|txn| {
+            stage_record(txn, PAYMENTS_TABLE, payment.id.as_bytes(), payment)?;
+            if let Some((pk, a)) = account { stage_record(txn, EXCHANGE_ACCOUNTS_TABLE, &pk.to_sec1_bytes(), a)?; }
+            if let Some(d) = deposit { stage_record(txn, PENDING_DEPOSITS_TABLE, d.id.as_bytes(), d)?; }
+            if let Some((pk, r)) = reputation { stage_record(txn, REPUTATION_TABLE, &pk.to_sec1_bytes(), r)?; }
+            if faucet {
+                txn.open_table(FAUCET_GRANTS_TABLE)?.insert(payment.recipient.to_sec1_bytes().as_slice(), payment.created_at.timestamp())?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn load_all_payments(&self) -> Result<Vec<crate::payments::Payment>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(PAYMENTS_TABLE)?;
+        let mut payments = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            payments.push(ciborium::from_reader(value.value()).map_err(|e| HubStoreError::Serialization(e.to_string()))?);
+        }
+        Ok(payments)
+    }
+
     pub fn save_fill(
         &self,
         orders: &[Order],
@@ -717,8 +750,17 @@ impl HubStore {
     {
         let write_txn = self.db.begin_write()?;
         f(&write_txn)?;
+        #[cfg(test)]
+        if self.fail_next_commit.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(HubStoreError::Serialization("injected commit failure".into()));
+        }
         write_txn.commit()?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_transaction(&self) {
+        self.fail_next_commit.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn save_reputation(&self, pubkey: &PublicKey, reputation: &Reputation) -> Result<()> {

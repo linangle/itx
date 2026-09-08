@@ -6,6 +6,7 @@ mod board;
 mod escrow_key;
 mod handlers;
 mod metrics;
+mod payments;
 mod names;
 mod node_client;
 mod operator_wallet;
@@ -420,6 +421,7 @@ async fn board_write_timed(state: &AppState) -> tokio::sync::RwLockWriteGuard<'_
 const PAYOUT_RESOLUTION_GRACE_SECONDS: i64 = 30;
 
 async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc>) {
+    payments::resolve_all(state, now).await;
     let reopened = {
         let mut board = board_write_timed(state).await;
         board.expire_claims(now)
@@ -608,17 +610,12 @@ async fn sample_gauges(state: &Arc<AppState>) {
     // measure -- and against the node, that await is unbounded.
     let (grants, open_tasks, outstanding_payouts, liabilities) = {
         let board = state.board.read().await;
-        let liabilities: u64 = board
-            .all_exchange_accounts()
-            // `locked_base` is included because a balance locked behind a
-            // resting order is still money owed to the depositor: they can
-            // cancel the order and withdraw it. Counting only the free
-            // half would report a hub as solvent precisely when its order
-            // book is busiest, which is when it least deserves the
-            // benefit of the doubt. Saturating, because a solvency figure
-            // that wraps on overflow is worse than one that saturates.
-            .map(|(_, account)| account.base_balance.saturating_add(account.locked_base))
-            .fold(0u64, |total, owed| total.saturating_add(owed));
+        let liabilities = board.exchange_liabilities();
+        state.metrics.payments_pending.store(board.payments.values().filter(|p| p.status == payments::Status::Pending).count() as u64, Ordering::Relaxed);
+        state.metrics.payments_needs_review.store(board.payments.values().filter(|p| p.status == payments::Status::NeedsReview).count() as u64, Ordering::Relaxed);
+        let oldest = board.payments.values().filter(|p| p.status != payments::Status::Confirmed)
+            .map(|p| (chrono::Utc::now() - p.created_at).num_seconds().max(0) as u64).max().unwrap_or(0);
+        state.metrics.payments_oldest_pending_seconds.store(oldest, Ordering::Relaxed);
         (
             board.all_faucet_grants().count() as u64,
             board
@@ -728,6 +725,7 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(HubStore::open_or_create(&args.store_file)?);
     let mut board = TaskBoard::new();
+    for payment in store.load_all_payments()? { board.payments.insert(payment.id, payment); }
     for task in store.load_all_tasks()? {
         board.restore_task(task);
     }
@@ -782,6 +780,22 @@ async fn main() -> Result<()> {
     // exactly when somebody is looking (plan §6.5d,
     // `docs/deployment.md` §10.4).
     let unresolved_withdrawals = store.load_all_withdrawal_attempts()?;
+    // Legacy v3 attempts lack signed transaction bytes. Preserve their input
+    // reservations and expose them for review; never invent a debit or resend.
+    for old in &unresolved_withdrawals {
+        if !board.payments.contains_key(&old.id) {
+            let payment = payments::Payment {
+                id: old.id, purpose: payments::Purpose::Withdrawal { debited: old.amount },
+                source: old.source.clone(), recipient: old.owner.clone(), amount: old.amount,
+                fee: 1_000, transaction: None, output_hash: Some(old.output_hash),
+                spent_inputs: old.spent_inputs.clone(), created_at: old.submitted_at,
+                submitted_at: old.submitted_at, submissions: 1, status: payments::Status::NeedsReview,
+            };
+            store.save_payment_effects(&payment, None, None, None, false)?;
+            board.payments.insert(payment.id, payment);
+        }
+    }
+
     if !unresolved_withdrawals.is_empty() {
         warn!(
             "{} withdrawal(s) submitted and never acknowledged are awaiting review; \
@@ -1058,6 +1072,8 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/payments", get(handlers::list_payments))
+        .route("/payments/:id", get(handlers::get_payment))
         // Lives here rather than in `handlers` on purpose: every other
         // route in that module reaches the board, the store or the node,
         // and this one must reach none of them (see `metrics`). Keeping
@@ -1497,6 +1513,17 @@ mod tests {
             }
             handlers::resolve_payout_attempt(state, &attempt).await;
         }
+        let payments: Vec<_> = state.board.read().await.payments.values().cloned().collect();
+        for payment in payments {
+            if let Some(hash) = payment.output_hash {
+                for _ in 0..200 {
+                    if node.outputs_of(&payment.recipient).await.iter().any(|(o, _)| o.hash() == hash) { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+        payments::resolve_all(state, Utc::now() + chrono::Duration::seconds(31)).await;
+
     }
 
     /// An address guaranteed to have nothing listening on it right now --
@@ -5728,6 +5755,8 @@ mod tests {
         fake_node.fund(deposit_pubkey, reservation["required_amount"].as_u64().unwrap()).await;
 
         run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(61)).await;
+        assert_eq!(hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status, board::EscrowStatus::Disbursing);
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
         assert_eq!(
             hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status,
             board::EscrowStatus::Refunded,
@@ -5808,6 +5837,7 @@ mod tests {
             refund.outputs.iter().any(|o| o.pubkey == poster_key.public_key() && o.value == required_amount - 1_000),
             "the refund must pay back to the original poster, minus the network fee"
         );
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
         assert_eq!(
             hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status,
             board::EscrowStatus::Refunded
@@ -6201,6 +6231,10 @@ mod tests {
     fn board_as_a_restart_would_load_it(hub: &TestHub) -> TaskBoard {
         let store = &hub.state.store;
         let mut board = TaskBoard::new();
+        for p in store.load_all_payments().unwrap() { board.payments.insert(p.id, p); }
+        for pk in store.load_all_faucet_grants().unwrap() { board.restore_faucet_grant(pk); }
+        for order in store.load_all_orders().unwrap() { board.restore_order(order); }
+        for trade in store.load_all_trades().unwrap() { board.restore_trade(trade); }
         for task in store.load_all_tasks().unwrap() {
             board.restore_task(task);
         }
@@ -6670,7 +6704,7 @@ mod tests {
         let submitted = fake_node.wait_for_submitted_count(1).await;
         assert_eq!(submitted.len(), 1);
         assert!(
-            submitted[0].outputs.iter().any(|o| o.pubkey == owner_key.public_key() && o.value == 2_000),
+            submitted[0].outputs.iter().any(|o| o.pubkey == owner_key.public_key() && o.value == 1_000),
             "must actually pay the withdrawing agent, out of pooled custody"
         );
     }
