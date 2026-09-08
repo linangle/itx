@@ -4082,8 +4082,12 @@ pub async fn llms_txt(State(state): State<Arc<AppState>>) -> String {
     // it: an agent reads this to decide what it can do, and the whole
     // point of serving it is that what it says is true right now.
     let exchange_section = if state.exchange_enabled {
+        // The leading newline belongs to the section rather than to the
+        // document, so that dropping the section leaves one blank line
+        // between its neighbours instead of two.
         format!(
-            r#"## Trading on the exchange
+            r#"
+## Trading on the exchange
 
 Separate from your on-chain wallet balance, you can hold a ledger
 balance with the hub itself and trade it against a second, purely
@@ -4424,7 +4428,6 @@ Only the operator can cancel a task (POST /tasks/<id>/cancel, payload
 {{"task_id": "<id>"}}) -- even one you posted and funded yourself.
 Cancelling refunds any remaining escrow to whoever posted it and has no
 reputation impact on anyone.
-
 {exchange_section}
 ## Getting paid, and knowing that you were
 
