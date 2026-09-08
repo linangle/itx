@@ -142,6 +142,9 @@ pub struct AppState {
     /// Grants allowed in any rolling 24 hours, across every key. See
     /// `Args::faucet_daily_grants`.
     pub faucet_daily_grants: u64,
+    /// Ceiling on unsettled consensus bounty. See
+    /// `Args::consensus_max_exposure`.
+    pub consensus_max_exposure: u64,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -274,6 +277,21 @@ struct Args {
     /// not schedule a stampede for 00:00. Set to 0 to close the faucet
     /// entirely, which is also how 5.1 retires it.
     faucet_daily_grants: u64,
+    #[argh(option, default = "500_000_000_000")]
+    /// the most unsettled bounty, in units, that may ride on consensus
+    /// tasks at any one time.
+    ///
+    /// Consensus pays whatever answer a majority agrees on, and joining
+    /// costs nothing -- no balance, no bond, no reputation. So one party
+    /// can be that majority, and the dispute mechanism is no help: it
+    /// covers Disputable tasks, not consensus results. Until an
+    /// incorrect result can be identified and penalised, consensus
+    /// verifies agreement rather than correctness, and the only control
+    /// actually available is a ceiling on what can be lost at once.
+    ///
+    /// Aggregate rather than per-task, because an attacker capped to a
+    /// minority of one task's slots simply posts more tasks.
+    consensus_max_exposure: u64,
     #[argh(option, default = "String::new()")]
     /// comma-separated addresses of the reverse proxies in front of this
     /// hub, whose `X-Forwarded-For` header the rate limiter should
@@ -979,6 +997,7 @@ async fn main() -> Result<()> {
         faucet_challenges,
         faucet_expected_hashes: args.faucet_pow_expected_hashes,
         faucet_daily_grants: args.faucet_daily_grants,
+        consensus_max_exposure: args.consensus_max_exposure,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
         metrics,
@@ -1855,7 +1874,15 @@ mod tests {
         node_address: String,
         faucet_daily_grants: u64,
     ) -> TestHub {
-        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), faucet_daily_grants).await
+        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), faucet_daily_grants, u64::MAX).await
+    }
+
+    async fn spawn_hub_with_consensus_cap(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        consensus_max_exposure: u64,
+    ) -> TestHub {
+        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, consensus_max_exposure).await
     }
 
     async fn spawn_hub_with_trusted_proxies(
@@ -1863,7 +1890,7 @@ mod tests {
         node_address: String,
         trusted_proxies: rate_limit::TrustedProxies,
     ) -> TestHub {
-        spawn_hub_inner(operator_private_key, node_address, trusted_proxies, u64::MAX).await
+        spawn_hub_inner(operator_private_key, node_address, trusted_proxies, u64::MAX, u64::MAX).await
     }
 
     async fn spawn_hub_inner(
@@ -1871,6 +1898,7 @@ mod tests {
         node_address: String,
         trusted_proxies: rate_limit::TrustedProxies,
         faucet_daily_grants: u64,
+        consensus_max_exposure: u64,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
@@ -1900,6 +1928,7 @@ mod tests {
         let state = Arc::new(AppState {
             board: RwLock::new(TaskBoard::new()),
             faucet_daily_grants,
+            consensus_max_exposure,
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
@@ -6864,6 +6893,51 @@ mod tests {
             hub.state.store.load_all_withdrawal_attempts().unwrap().is_empty(),
             "a payment that was never built leaves nothing for an operator to resolve"
         );
+    }
+
+    /// Consensus exposure is capped in aggregate, and the manual says so.
+    ///
+    /// Aggregate rather than per-task is the whole point: a cap that held
+    /// one cluster to a minority of a single task's slots is bypassed by
+    /// posting more tasks, so what has to be bounded is the total riding
+    /// on consensus at once.
+    #[tokio::test]
+    async fn consensus_bounty_is_capped_in_aggregate_not_per_task() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_with_consensus_cap(operator_key.clone(), fake_node.addr.clone(), 1_500).await;
+
+        let post = |bounty: u64| {
+            let payload = handlers::CreateConsensusTaskPayload {
+                description: "summarize".into(),
+                bounty,
+                num_assignees: 3,
+                join_window_minutes: 60,
+                submission_window_minutes: 30,
+                min_reputation: 0,
+                capabilities: Default::default(),
+            };
+            hub.client
+                .post(format!("{}/tasks/consensus", hub.base_url))
+                .json(&envelope(&operator_key, "/tasks/consensus", payload))
+                .send()
+        };
+
+        assert_eq!(post(1_000).await.unwrap().status(), reqwest::StatusCode::OK);
+        // Under the cap on its own, over it in aggregate -- which a
+        // per-task limit would wave through.
+        let resp = post(1_000).await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("experimental"),
+            "the refusal has to say why consensus is limited, not just that it is: {body}"
+        );
+
+        let llms = hub.client.get(format!("{}/llms.txt", hub.base_url))
+            .send().await.unwrap().text().await.unwrap();
+        assert!(llms.contains("1500 units"), "the manual must carry the live cap");
+        assert!(llms.contains("strict\n**majority") || llms.contains("strict majority"));
     }
 
     /// The global budget, which is the only quantity a fully-open faucet

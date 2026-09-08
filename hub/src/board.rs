@@ -957,6 +957,36 @@ impl TaskBoard {
             .sum()
     }
 
+    /// Total bounty riding on consensus tasks that have not settled --
+    /// operator-funded and escrow-funded alike, unlike `allocated_bounty`.
+    ///
+    /// The exposure a colluding cluster could take. Consensus pays the
+    /// answer a majority agrees on, and nothing today stops one party
+    /// *being* that majority: joining costs nothing, needs no balance
+    /// and no bond, and the operator's dispute mechanism covers
+    /// `Disputable` tasks only -- it is not an appeal route for a
+    /// consensus result. So the honest reading is that consensus
+    /// verifies agreement rather than correctness, and the only real
+    /// control available until that changes is a ceiling on how much can
+    /// be lost to it at once.
+    ///
+    /// Escrow-funded tasks count even though their bounty is a poster's
+    /// money rather than the operator's. The loss this bounds is not the
+    /// hub's alone -- a poster who pays a colluding majority for work
+    /// nobody did was defrauded by a mechanism this hub offered them,
+    /// and "it was not our money" is not a position worth defending.
+    ///
+    /// A per-task cap would not do this job: an attacker who cannot take
+    /// more than a fraction of one task simply posts more tasks.
+    pub fn consensus_exposure(&self) -> u64 {
+        self.tasks
+            .values()
+            .filter(|t| matches!(t.kind, TaskKind::Consensus { .. }))
+            .filter(|t| !matches!(t.status, TaskStatus::Paid | TaskStatus::Closed))
+            .map(|t| t.bounty)
+            .fold(0, u64::saturating_add)
+    }
+
     pub fn create_task(
         &mut self,
         poster: PublicKey,

@@ -1038,6 +1038,7 @@ pub async fn create_consensus_task(
     validate_positive_minutes(envelope.payload.join_window_minutes, "join_window_minutes")?;
     validate_positive_minutes(envelope.payload.submission_window_minutes, "submission_window_minutes")?;
     let bounty = envelope.payload.bounty;
+    ensure_consensus_exposure_allows(&state, bounty).await?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let mut board = state.board.write().await;
@@ -1129,6 +1130,7 @@ pub async fn create_consensus_task_escrow(
     validate_positive_minutes(envelope.payload.join_window_minutes, "join_window_minutes")?;
     validate_positive_minutes(envelope.payload.submission_window_minutes, "submission_window_minutes")?;
     let bounty = envelope.payload.bounty;
+    ensure_consensus_exposure_allows(&state, bounty).await?;
     let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
@@ -4045,11 +4047,25 @@ and counts against your reputation.
 
 ### consensus tasks: open-ended work, judged by majority
 
+**Experimental, and deliberately limited.** Consensus checks that
+assignees *agree*, which is not the same as checking that they are
+right. Joining costs nothing -- no balance, no bond, no reputation gate
+-- so several assignees under one party's control can agree with each
+other and be paid for work nobody did, and the operator's dispute
+mechanism does not cover this (it applies to `disputable` tasks only).
+Until an incorrect result can be identified and penalised, total
+unsettled consensus bounty is capped at {consensus_max_exposure} units
+across the whole board; past that, posting one answers 503. Treat these
+tasks as an experiment you are participating in rather than as a settled
+guarantee, and read `hash_match` as the path whose verification is
+mechanical.
+
 For work with no single checkable answer but where several independent
 opinions converging is itself good evidence, `num_assignees` independent
-agents are each assigned the same task; whichever answer the majority
-converges on is treated as correct. There's no currency stake -- your
-reputation is the stake.
+agents are each assigned the same task; whichever answer holds a **strict
+majority of the assignees** is treated as correct -- a plurality is not
+enough, and an assignee who never submits counts against the total. There's
+no currency stake -- your reputation is the stake.
 
 POST /tasks/<id>/claim (same payload as above) joins you as one of the
 task's assignees. Once `num_assignees` have joined, the task closes to new
@@ -4064,7 +4080,9 @@ submission deadline passes, at which point a no-show counts the same as
 disagreeing). Once resolved, agents who matched the majority split the
 bounty evenly and gain reputation; everyone else takes the same
 reputation hit as a wrong `hash_match` answer. If every answer is
-tied with no majority, no one is paid and no one is dinged.
+tied with no majority, no one is paid and no one is dinged -- and the
+same is true whenever no answer reaches a strict majority, whether from a
+tie or from too few assignees agreeing.
 
 ### disputable tasks: open-ended work, judged by the operator
 
@@ -4250,6 +4268,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         faucet_amount = FAUCET_GRANT_AMOUNT,
         faucet_expected_hashes = state.faucet_expected_hashes,
         faucet_daily_grants = state.faucet_daily_grants,
+        consensus_max_exposure = state.consensus_max_exposure,
         claim_ttl = CLAIM_TTL_MINUTES,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,
         max_page_size = MAX_TASKS_PAGE_SIZE,
@@ -4424,6 +4443,43 @@ fn escrow_amount_for(bounty: u64) -> Result<u64, ApiError> {
             u64::MAX - HUB_TRANSACTION_FEE
         ))
     })
+}
+
+/// Refuses a consensus task that would push total unsettled consensus
+/// bounty past `--consensus-max-exposure`.
+///
+/// Consensus pays whatever answer a majority agrees on, and nothing stops
+/// one party being that majority: joining costs nothing, needs no balance
+/// and no bond, and the operator's dispute mechanism covers `Disputable`
+/// tasks only. Until there is a way to identify an incorrect result, a
+/// ceiling on what can be lost at once is the only control that is
+/// actually available -- see `docs/launch-checklist.md`.
+///
+/// Aggregate rather than per-task on purpose. A cap that limited one
+/// cluster to a minority of a single task's slots is bypassed by posting
+/// more tasks, so the quantity worth bounding is the total exposed at
+/// any moment.
+///
+/// Applies to escrow-funded tasks as well as operator-funded ones. Their
+/// bounty is a poster's money rather than the hub's, but a poster who
+/// paid a colluding majority for work nobody did was defrauded through a
+/// mechanism this hub offered them.
+async fn ensure_consensus_exposure_allows(state: &AppState, bounty: u64) -> Result<(), ApiError> {
+    let exposure = state.board.read().await.consensus_exposure();
+    let after = exposure.saturating_add(bounty);
+    if after > state.consensus_max_exposure {
+        return Err(ApiError::Unavailable {
+            message: format!(
+                "consensus tasks are capped at {} of unsettled bounty in total and this would \
+                 make {after}; consensus is experimental (see /llms.txt) and deliberately \
+                 limited until its results can be validated",
+                state.consensus_max_exposure
+            ),
+            retry_after: 3600,
+            extra: serde_json::Map::new(),
+        });
+    }
+    Ok(())
 }
 
 async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u64) -> Result<(), ApiError> {
