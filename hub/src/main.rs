@@ -6748,6 +6748,121 @@ mod tests {
         );
     }
 
+    /// Node loss on the faucet path, which is what `payments.rs` exists
+    /// for. The grant is submitted and the node never hears it -- the
+    /// exact shape of a node restart discarding its mempool. The old code
+    /// reported success and forgot; the record has to survive, stay
+    /// unconfirmed, and be resent by the sweep.
+    #[tokio::test]
+    async fn a_faucet_grant_the_node_never_heard_is_not_reported_as_settled() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let payments: Vec<_> = hub.state.board.read().await.payments.values().cloned().collect();
+        assert_eq!(payments.len(), 1, "the grant must leave a durable record behind");
+        assert_eq!(
+            payments[0].status,
+            payments::Status::Pending,
+            "nothing has been seen on chain, so nothing may read as confirmed"
+        );
+        assert_eq!(fake_node.balance_of(&agent.public_key()).await, 0);
+
+        // The sweep resends rather than giving up, because a swallowed
+        // send is indistinguishable from one still in flight. Counted on
+        // the hub's own record: a `Swallowed` submission is by definition
+        // one the node never registers, so its transaction log cannot
+        // witness the resend that this is checking for.
+        assert_eq!(payments[0].submissions, 1);
+        payments::resolve_all(&hub.state, Utc::now() + chrono::Duration::seconds(31)).await;
+        let after: Vec<_> = hub.state.board.read().await.payments.values().cloned().collect();
+        assert_eq!(
+            after[0].submissions, 2,
+            "an unconfirmed grant must be resent, not abandoned"
+        );
+        assert_eq!(after[0].status, payments::Status::Pending);
+    }
+
+    /// The property that separates this from the code it replaced: an
+    /// uncertain send is never permission to undo the debit. The agent's
+    /// coins may be on chain already, so crediting the balance back is
+    /// how one withdrawal becomes two.
+    #[tokio::test]
+    async fn a_withdrawal_the_node_never_acknowledged_keeps_its_debit() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        fake_node.fund(hub.state.exchange_custody_public_key.clone(), 100_000).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        let resp = hub
+            .client
+            .post(format!("{}/exchange/withdraw", hub.base_url))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 2_000 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let account = hub.state.board.read().await.exchange_account(&owner_key.public_key());
+        assert_eq!(
+            account.base_balance, 3_000,
+            "the debit stands: the coins may already be on chain and the hub cannot tell"
+        );
+        let payments: Vec<_> = hub.state.board.read().await.payments.values().cloned().collect();
+        assert_eq!(payments.len(), 1);
+        assert_ne!(payments[0].status, payments::Status::Confirmed);
+    }
+
+    /// The ledger and the pool have to move by the same amount. The
+    /// account loses the whole `amount`; custody spends `amount - fee` on
+    /// the recipient and `fee` on the miner. Before this, the ledger lost
+    /// `amount` while custody lost `amount + fee`, so every withdrawal
+    /// quietly ate the surplus backing everyone else's balance.
+    #[tokio::test]
+    async fn a_withdrawal_costs_custody_exactly_what_it_debits() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let custody = hub.state.exchange_custody_public_key.clone();
+        fake_node.fund(custody.clone(), 100_000).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        let custody_before = fake_node.balance_of(&custody).await;
+        let resp = hub
+            .client
+            .post(format!("{}/exchange/withdraw", hub.base_url))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 2_000 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        fake_node.wait_for_submitted_count(1).await;
+
+        let ledger_debit = 5_000 - hub.state.board.read().await
+            .exchange_account(&owner_key.public_key()).base_balance;
+        let custody_outflow = custody_before - fake_node.balance_of(&custody).await;
+        assert_eq!(ledger_debit, 2_000);
+        assert_eq!(
+            custody_outflow, ledger_debit,
+            "the pool may not fund the network fee out of everyone else's backing"
+        );
+        assert_eq!(
+            fake_node.balance_of(&owner_key.public_key()).await,
+            2_000 - handlers::HUB_TRANSACTION_FEE,
+            "and the recipient is paid net of the fee they were charged for"
+        );
+    }
+
     /// Amounts sit above `MIN_EXCHANGE_WITHDRAWAL` on purpose: what is
     /// under test is the balance check, and a request small enough to
     /// trip the minimum would never reach it.

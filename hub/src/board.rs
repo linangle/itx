@@ -4568,6 +4568,54 @@ mod tests {
         assert_eq!(task.unconfirmed_payout_total(), 0);
     }
 
+    /// Every state in which money is owed or moving, in one table, so a
+    /// new settlement state cannot be added without someone deciding what
+    /// cancelling it means. `Submitted` is the one this originally missed
+    /// alongside `PayoutFailed`: a payout on the wire whose task is
+    /// cancelled releases a bounty the hub is still trying to pay.
+    #[test]
+    fn cancellation_is_refused_in_every_state_that_owes_money() {
+        for (label, drive) in [
+            ("Verified", 0usize),
+            ("Submitted", 1),
+            ("PayoutFailed", 2),
+            ("Paid", 3),
+        ] {
+            let mut board = TaskBoard::new();
+            let (poster, worker) = (pubkey(), pubkey());
+            let task = board.create_task(poster, "owed".into(), 100, Hash::hash_bytes(b"ok"));
+            board.claim_task(task.id, worker.clone(), Utc::now() + chrono::Duration::minutes(10)).unwrap();
+            board.submit(task.id, worker.clone(), Hash::hash_bytes(b"ok")).unwrap();
+            let submit_payout = |board: &mut TaskBoard| {
+                board.record_payout_attempt(PayoutAttempt {
+                    task_id: task.id,
+                    recipient: worker.clone(),
+                    amount: 100,
+                    output_hash: Hash::hash_bytes(b"payout"),
+                    spent_inputs: vec![Hash::hash_bytes(b"input")],
+                    source: pubkey(),
+                    submitted_at: Utc::now(),
+                    submissions: 1,
+                });
+            };
+            match drive {
+                0 => {}
+                1 => submit_payout(&mut board),
+                2 => { board.mark_payout_failed(task.id).unwrap(); }
+                _ => {
+                    submit_payout(&mut board);
+                    board.mark_recipient_paid(task.id, &worker, 100).unwrap();
+                }
+            }
+            let before = board.get_task(task.id).unwrap().status;
+            assert!(
+                board.cancel_task(task.id).is_err(),
+                "cancelling a {label} task would release a bounty that is owed or already moving"
+            );
+            assert_eq!(board.get_task(task.id).unwrap().status, before, "{label} must be untouched");
+        }
+    }
+
     #[test]
     fn cancellation_preserves_failed_payout_obligation() {
         let mut board = TaskBoard::new();
