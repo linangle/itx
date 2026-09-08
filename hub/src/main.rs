@@ -1321,6 +1321,16 @@ mod tests {
         /// fate of the very message under test -- which is not a
         /// hypothetical, it is how this fake first lied to a test.
         submissions_seen: Arc<std::sync::atomic::AtomicUsize>,
+        /// Submissions whose effect on `utxos` has actually been applied.
+        ///
+        /// Distinct from `submissions_seen`, which counts arrivals
+        /// *before* the fate is consulted. The gap between the two is a
+        /// real window: `submit_transaction` is fire-and-forget, so a
+        /// handler returns as soon as the bytes are written, and a test
+        /// that then reads `outputs_of` can catch the node mid-apply.
+        /// That window is invisible on a fast machine and reliably open
+        /// on a loaded CI runner, which is where it was found.
+        applied: Arc<std::sync::atomic::AtomicUsize>,
         /// How many TCP connections this fake has accepted over its
         /// lifetime. The figure the connection-pooling tests assert on:
         /// with a pool, a run of operations should cost far fewer
@@ -1358,6 +1368,7 @@ mod tests {
                 Arc::new(AsyncMutex::new(Vec::new()));
             let fate = Arc::new(AsyncMutex::new(SubmissionFate::Mined));
             let submissions_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let applied = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let drain_after_next_fetch = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1366,6 +1377,7 @@ mod tests {
             let utxos_for_accept_loop = utxos.clone();
             let fate_for_accept_loop = fate.clone();
             let seen_for_accept_loop = submissions_seen.clone();
+            let applied_for_accept_loop = applied.clone();
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
             let drain_for_accept_loop = drain_after_next_fetch.clone();
@@ -1380,6 +1392,7 @@ mod tests {
                     let utxos = utxos_for_accept_loop.clone();
                     let fate = fate_for_accept_loop.clone();
                     let submissions_seen = seen_for_accept_loop.clone();
+                    let applied = applied_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
                     let drain = drain_for_accept_loop.clone();
                     let blocks = blocks_for_accept_loop.clone();
@@ -1467,6 +1480,10 @@ mod tests {
                                         }
                                         SubmissionFate::Swallowed => unreachable!("handled above"),
                                     }
+                                    // Under the same lock the mutation
+                                    // took, so an observer that sees this
+                                    // count sees the effect too.
+                                    applied.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 }
                                 Message::FetchBlocks { start, count } => {
                                     let held = blocks.lock().await;
@@ -1501,6 +1518,7 @@ mod tests {
                 utxos,
                 fate,
                 submissions_seen,
+                applied,
                 connections,
                 hang_up_after_one,
                 drain_after_next_fetch,
@@ -1558,6 +1576,26 @@ mod tests {
         /// changing `fate`, or before asserting that a transaction was
         /// swallowed -- `wait_for_submitted_count` cannot serve either,
         /// since a swallowed transaction never reaches `submitted`.
+        fn applied_count(&self) -> usize {
+            self.applied.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Waits until the node has finished applying `expected`
+        /// submissions. The precondition for reading `outputs_of` after
+        /// anything that pays: see `applied`.
+        async fn wait_for_applied(&self, expected: usize) {
+            for _ in 0..400 {
+                if self.applied_count() >= expected {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!(
+                "the node never applied {expected} submission(s); it applied {}",
+                self.applied_count()
+            );
+        }
+
         async fn wait_for_submissions_seen(&self, expected: usize) {
             for _ in 0..200 {
                 if self.submissions_seen.load(std::sync::atomic::Ordering::SeqCst) >= expected {
@@ -2623,6 +2661,7 @@ mod tests {
         fake_node.set_fate(SubmissionFate::HeldInMempool).await;
 
         let grants = 8;
+        let applied_before = fake_node.applied_count();
         for i in 0..grants {
             let agent = PrivateKey::new_key();
             let resp = claim_faucet(&hub, &agent).await;
@@ -2634,6 +2673,10 @@ mod tests {
             );
         }
 
+        // Every grant's transaction has to be applied before the wallet
+        // can be counted -- otherwise this measures how far the node got,
+        // not how many slots a grant consumes.
+        fake_node.wait_for_applied(applied_before + grants).await;
         let spendable = fake_node
             .outputs_of(&operator_key.public_key())
             .await
@@ -2666,7 +2709,9 @@ mod tests {
         fake_node.set_fate(SubmissionFate::HeldInMempool).await;
 
         let agent = PrivateKey::new_key();
+        let applied_before = fake_node.applied_count();
         assert_eq!(claim_faucet(&hub, &agent).await.status(), reqwest::StatusCode::OK);
+        fake_node.wait_for_applied(applied_before + 1).await;
 
         let marked: Vec<u64> = fake_node
             .outputs_of(&operator_key.public_key())
