@@ -37,7 +37,7 @@ protocol itself; this doc is about running it as a public ecosystem.
   Consequences to work through, in the order they bite: the Python SDK, its CLI
   and the MCP server still carry exchange methods and tools that a launched hub
   will 404; §7.3's publishing playbook should not ship them describing a surface
-  that is off. `docs/house-agents.md`'s market maker has nothing to quote. The
+  that is off. The
   wordmark still expands to "internet traffic exchange" on the site, which is a
   naming question rather than a code one and is left for the owner.
 
@@ -2330,7 +2330,8 @@ Measure every stage from day one:
    config. TTFP counter live on the page.
 6. **Cookbook** (`agent-sdk-py/examples/`): worker loop, task poster,
    consensus participant, market maker on the exchange, news-bettor skeleton.
-   Each is both documentation and a house-agent starting point (§7.4).
+   Each is both documentation and a starting point for whoever writes the
+   first standing agent (§7.4 is deferred).
 7. **A2A endpoint** (post-launch): the hub as an A2A server with an Agent Card,
    so LangGraph / CrewAI / ADK / Semantic Kernel agents can find and work ITX
    with no SDK at all, and get paid via push notification instead of polling.
@@ -2407,33 +2408,18 @@ the order below matters.
 - Keep the client-side rate limiter already in `mcp_server.py`; it protects the
   hub from runaway agent loops.
 
-### 7.4 Seed population: house agents (we are the first cohort)
+### 7.4 Seed population — deferred 2026-09-08
 
-All agentic work is first-party at the start — use that deliberately. Run
-10–30 house agents with distinct strategies and wordlist names: workers grinding
-HashMatch streams, a couple of market makers keeping the book two-sided, news
-bettors on the prediction markets, one contractor that decomposes a big task and
-reposts funded subtasks (the flywheel demo). They provide liquidity, exercise
-every code path continuously, and make the board worth watching before strangers
-arrive.
+**Deferred, and `docs/house-agents.md` is deleted with it.** See §11 for what
+the design concluded and what has to be re-decided if it comes back.
 
-**Designed up in `docs/house-agents.md`** (2026-09-06), which supersedes this
-paragraph where the two differ. The load-bearing conclusion: build **two**
-populations, not one. Scripted participants with no language model anywhere
-provide the liquidity and the code-path soak, and are explicitly *not* evidence
-that the product works. A separate rotating cohort of genuine LLM agents, given
-only what a stranger gets and never repaired when they stall, is the only thing
-that tests the onboarding rails or makes TTFP mean anything — a hand-coded house
-agent never reads `/llms.txt`, so it never finds the sentence that is wrong.
-
-Two things from that document that other sections need to know. It resolves the
-disclosure question as **disclose, on the profile and in the docs**, for the
-reason §1 gives about credibility. And it surfaces a direct collision with §4:
-a fleet on one box is, correctly, one cluster, so cluster caps will exclude the
-house agents from the consensus tasks they exist to populate. Whoever builds
-cluster limiting and whoever plans the fleet's hosting need the same answer, and
-the document argues for giving the fleet real address diversity rather than
-special-casing it in the production path.
+The launch runs with no house population at all. That is a real cost and worth
+naming rather than discovering: the board a stranger arrives at will be as empty
+as it actually is, nothing exercises the code paths continuously between
+deploys, and time-to-first-payout has no baseline to compare against. §9's note
+on watching a hub with no synthetic traffic is now the whole operating picture
+rather than a caveat on it -- silence is ambiguous, so *failed* attempts are the
+thing to watch.
 
 ### 7.5 Operator task streams (the standing demand)
 
@@ -2479,8 +2465,10 @@ what bootstrap it.
 
 ### 7.7 Launch sequence
 
-1. **Soft launch (quiet):** everything in §2 green; rails published; house agents
-   running for ≥1 week; watch TTFP and friction, fix silently.
+1. **Soft launch (quiet):** everything in §2 green; rails published; the
+   operator's own task streams running for ≥1 week so an arrival finds work;
+   watch TTFP and friction, fix silently. There is no house population to lean
+   on (§7.4), so this phase is measuring a genuinely empty board.
 2. **Public moment:** write-up + Show HN + X thread on one day; quickstart page is
    the only CTA; operator streams at full cadence so arrivals find work instantly.
 3. **Sustain:** weekly cadence of changelog + close-report content; seasons;
@@ -2854,6 +2842,29 @@ launch-blocking work rather than first (§7.3, §13).
 
 ## 11. Deferred (noted, not forgotten)
 
+- **House agents, both populations** — deferred 2026-09-08 along with the
+  newsroom and the prediction market, and `docs/house-agents.md` removed. Three
+  conclusions worth keeping, because each cost an argument to reach:
+
+  1. **Two populations, not one.** Scripted participants with no language model
+     anywhere give liquidity and a code-path soak, and are explicitly *not*
+     evidence the product works. A separate rotating cohort of genuine LLM
+     agents, given only what a stranger gets and never repaired when they
+     stall, is the only thing that tests the onboarding rails. A hand-coded
+     house agent never reads `/llms.txt`, so it never finds the sentence that
+     is wrong — it is a model of us, not of an arriving agent.
+  2. **Disclose it**, on the profile and in the docs, for the credibility
+     reason §1 gives. Moltbook's trouble started with a number that was not
+     what it claimed.
+  3. **It collides with §4 and the collision is correct.** A fleet on one box
+     is one cluster, so cluster caps would exclude the house agents from the
+     consensus tasks they exist to populate. The answer argued for was real
+     address diversity for the fleet rather than a special case in the
+     production path — worth re-reading before anyone writes that special case.
+
+  What has changed since it was designed: the market maker in it has nothing to
+  quote, because the order book is off (see the decisions log).
+
 - **Stake-to-join consensus tasks** — the escalation if cluster caps fail against
   collusion. Design sketch: joining a consensus task locks a bond via the existing
   escrow primitive; losing-side bonds pay the majority. Deferred 2026-09-05.
@@ -2904,7 +2915,8 @@ its attached-payment shape is what §7.8 borrows):
 [Openfort's 2026 landscape](https://www.openfort.io/blog/agentic-payments-landscape)
 
 **Marketplace cold start:** Andrew Chen, *The Cold Start Problem* — the chapters
-on subsidizing the hard side of the network (that's §7.4/§7.5).
+on subsidizing the hard side of the network (that's §7.5, and §7.4 if the
+seed population comes back).
 
 ## 13. Open questions
 

@@ -23,9 +23,9 @@ prediction market stay on their own unmerged branches. Reasoning in
 
 | | Item | Why it matters |
 |---|---|---|
-| ☐ | The Python SDK, its CLI and the MCP server still carry exchange methods and tools | A launched hub 404s them. Publishing (plan §7.3) should not ship a surface that is off |
-| ☐ | `docs/house-agents.md`'s market maker | Has nothing to quote now; the scripted population needs a different job |
-| ☐ | The wordmark expands to "internet traffic exchange" on the site | A naming question, not a code one. Owner's call |
+| ✅ | ~~The Python SDK, its CLI and the MCP server still carry exchange methods and tools~~ | **Done 2026-09-08.** Removed from all three; payment receipts kept. Found on the way that the MCP server's 36 tests had never run in CI at all — fixed, see the SDK changelog |
+| ✅ | ~~House agents~~ | **Deferred 2026-09-08** with the newsroom and the prediction market. `docs/house-agents.md` is gone; what it concluded is in plan §11 |
+| ☐ | The wordmark expands to "internet traffic exchange" on the site | Kept for now — the owner's call, and a naming question rather than a code one |
 
 ## Done, and verified
 
@@ -78,12 +78,16 @@ result. Until there is a credible way to identify and penalise an incorrect
 result, the honest description is that consensus verifies *agreement*, not
 *correctness*.
 
-## Watching it, now that there are no house agents
+## Watching it, with nothing synthetic on the board
 
-With no synthetic traffic, **silence is ambiguous**: "nobody came" and
-"somebody came and could not get in" produce identical gauges. That makes the
-console (`console/`) the instrument rather than a convenience, and it makes
-*failed* attempts the thing to watch rather than successes.
+House agents are deferred (plan §7.4), so this is the operating picture rather
+than a caveat on it. With no synthetic traffic, **silence is ambiguous**:
+"nobody came" and "somebody came and could not get in" produce identical
+gauges. That makes the console (`console/`) the instrument rather than a
+convenience, and it makes *failed* attempts the thing to watch rather than
+successes. The board's activity section (plan §9.1) is the same argument on the
+public side: posted against paid, so an empty right-hand column is visible
+rather than inferred.
 
 `itx-console` runs on an operator's own machine, holds an admin key the browser
 never sees, and renders what the hub computes. Give each operator their own
@@ -100,9 +104,9 @@ they are deliberately about completion rather than motion:
   instructions, funding, execution, settlement. Five different bugs.
 - For posters: was the result useful, and would they post again. Nothing else
   says whether there is a market here.
-- **House activity excluded from every headline number.** Same discipline the
-  metrics section already commits to for cluster-adjusted actives, applied to
-  ourselves.
+- **Any house activity excluded from every headline number**, if a seed
+  population is ever built. Same discipline the metrics section already commits
+  to for cluster-adjusted actives, applied to ourselves.
 
 ## What "ready" does not mean
 
