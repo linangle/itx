@@ -51,6 +51,14 @@ const PORT = Number(process.env.PORT ?? 9101);
 const UNITS = 100_000_000;
 const NOW = Date.now();
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+// The same constants the hub uses, and the reason they are copied here
+// rather than derived: this fixture's whole job is to answer with the
+// shape and magnitudes the real hub answers with, so a page built
+// against it is not surprised by production. See `HUB_TRANSACTION_FEE`
+// and `FAUCET_GRANT_AMOUNT` in hub/src/handlers.rs.
+const HUB_TRANSACTION_FEE = 1_000;
+const FAUCET_GRANT_AMOUNT = 50_000_000;
 
 // A fixed 32-bit LCG rather than Math.random, so every reload shows the
 // same board and a layout change is the only thing that ever moves.
@@ -544,6 +552,17 @@ function makeTask(index) {
     close_reason: status === "Closed" ? pick(["no_majority", "understaffed"]) : null,
     capabilities: tagged ? [tagged.tag] : [],
     created_at,
+    // Mirrors `Task::settled_at`: set only once the payout confirmed,
+    // and always some way after the task was posted, because the whole
+    // reason the hub carries a second timestamp is that the two differ.
+    // Clamped an hour short of now so a task cannot appear to have
+    // settled in the future on a slow clock.
+    settled_at:
+      status === "Paid"
+        ? new Date(
+            Math.min(NOW - HOUR, Date.parse(created_at) + Math.min(0.4 * ageDays * DAY, 2 * DAY)),
+          ).toISOString()
+        : null,
     kind,
   };
 
@@ -610,6 +629,12 @@ const BACKFILL = 20_000;
 const TASKS = Array.from({ length: BACKFILL }, (_, i) => makeTask(i)).sort((a, b) =>
   a.created_at.localeCompare(b.created_at),
 );
+
+// When the faucet issued, in epoch millis. The hub keeps one instant per
+// granted key; a fixture only has to be plausible, so this is a thinning
+// arrival stream over the backfill window -- busier lately, which is what
+// an onboarding curve looks like when it is working.
+const FAUCET_GRANT_TIMES = Array.from({ length: 140 }, () => NOW - Math.pow(random(), 1.8) * 30 * DAY);
 
 // ------------------------------------------------------------- names
 //
@@ -827,24 +852,79 @@ function boardSeries({ capability, windowMs, buckets }) {
 
   const posted_series = new Array(n).fill(0);
   const bounty_series = new Array(n).fill(0);
+  const settled_series = new Array(n).fill(0);
+  const paid_bounty_series = new Array(n).fill(0);
+  const fees_series = new Array(n).fill(0);
+  const faucet_series = new Array(n).fill(0);
   let posted = 0;
   let bounty = 0;
   let open = 0;
   let open_bounty = 0;
+  let settled = 0;
+  let paid_bounty = 0;
+  let fees = 0;
+  // One set per bucket plus one for the window, exactly as the hub does
+  // it: distinct-per-bucket and distinct-over-the-window are different
+  // numbers and the series must not be summable into the total.
+  const bucketAgents = Array.from({ length: n }, () => new Set());
+  const windowAgents = new Set();
+
+  const bucketOf = (at) =>
+    Number.isFinite(at) && at >= start_ms && at <= end_ms
+      ? Math.min(n - 1, Math.floor((at - start_ms) / bucketMs))
+      : null;
 
   for (const t of matching) {
     if (t.status === "Open") {
       open += 1;
       open_bounty += t.bounty;
     }
-    const at = Date.parse(t.created_at);
-    if (!Number.isFinite(at) || at < start_ms || at > end_ms) continue;
-    const b = Math.min(n - 1, Math.floor((at - start_ms) / bucketMs));
-    posted_series[b] += 1;
-    bounty_series[b] += t.bounty;
-    posted += 1;
-    bounty += t.bounty;
+    const posted_at = bucketOf(Date.parse(t.created_at));
+    if (posted_at !== null) {
+      posted_series[posted_at] += 1;
+      bounty_series[posted_at] += t.bounty;
+      posted += 1;
+      bounty += t.bounty;
+      bucketAgents[posted_at].add(t.poster);
+      windowAgents.add(t.poster);
+    }
+
+    if (!t.settled_at) continue;
+    const at = bucketOf(Date.parse(t.settled_at));
+    if (at === null) continue;
+    // One leg for a hash-match or disputable task, one per winner for a
+    // consensus task -- and one chain fee each.
+    const winners =
+      t.kind === "consensus"
+        ? Array.from({ length: t.num_assignees ?? 1 }, (_, i) => `${t.id}:winner:${i}`)
+        : t.claimant
+          ? [t.claimant]
+          : [];
+    if (winners.length === 0) continue;
+    settled_series[at] += 1;
+    settled += 1;
+    const each = Math.floor(t.bounty / winners.length);
+    for (const w of winners) {
+      paid_bounty_series[at] += each;
+      paid_bounty += each;
+      bucketAgents[at].add(w);
+      windowAgents.add(w);
+    }
+    fees_series[at] += winners.length * HUB_TRANSACTION_FEE;
+    fees += winners.length * HUB_TRANSACTION_FEE;
   }
+
+  // Board-wide and unfiltered, matching the hub: the faucet issues
+  // against a key, not against a kind of work.
+  let faucet_grants = 0;
+  for (const at of FAUCET_GRANT_TIMES) {
+    const b = bucketOf(at);
+    if (b === null) continue;
+    faucet_series[b] += 1;
+    faucet_grants += 1;
+  }
+
+  const agents_series = bucketAgents.map((a) => a.size);
 
   return {
     capability: tag,
@@ -854,8 +934,19 @@ function boardSeries({ capability, windowMs, buckets }) {
     end_ms,
     posted_series,
     bounty_series,
+    settled_series,
+    paid_bounty_series,
+    agents_series,
+    fees_series,
+    faucet_series,
     posted,
     bounty,
+    settled,
+    paid_bounty,
+    agents: windowAgents.size,
+    fees,
+    faucet_grants,
+    faucet_itx: faucet_grants * FAUCET_GRANT_AMOUNT,
     open,
     open_bounty,
     first_task_at: Number.isFinite(oldest) ? new Date(oldest).toISOString() : null,

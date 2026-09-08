@@ -2559,6 +2559,16 @@ a.itx-board-what:hover {
   color: var(--ld-sub);
 }
 
+/* Sits first in the figure line and pushes the number off the left
+   edge, so the reader meets the label before the figure. Without it the
+   panel opens with a compact itx total and a percentage, which is the
+   layout of a stock quote and was read as one. */
+.itx-chart-figure-label {
+  margin-right: auto;
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
 .itx-chart-value {
   font-size: 20px;
   font-variant-numeric: tabular-nums;
@@ -2709,6 +2719,78 @@ a.itx-board-what:hover {
 
 .itx-chart-readout-meta {
   fill: var(--ld-sub);
+}
+
+/* ---- activity (the board's own numbers) -------------------------- */
+/* A grid of small figures rather than one big line. Every tile carries
+   its own definition, because the failure this section exists to correct
+   was a number whose meaning had to be guessed. */
+
+.itx-activity-panel {
+  padding: var(--sp-6) var(--pad-panel-x);
+}
+
+.itx-activity-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* Auto-fit rather than a fixed count: the tiles are the same size at
+     every breakpoint and the row simply holds fewer of them, so nothing
+     ever stretches across dead space. */
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: var(--sp-6);
+}
+
+.itx-activity-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.itx-activity-label {
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
+.itx-activity-value {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-light);
+  /* A long compact figure wraps rather than pushing the grid wider. */
+  overflow-wrap: anywhere;
+}
+
+/* The sparkline and its change share a line, and the line keeps its
+   height whether or not there is a chart in it -- otherwise the tiles
+   without a series sit a row shorter than the ones beside them. */
+.itx-activity-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: 20px;
+}
+
+.itx-activity-nochart {
+  flex: 0 0 64px;
+}
+
+.itx-activity-change {
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.itx-activity-note {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--ld-sub);
+}
+
+.itx-activity-empty {
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
 }
 
 /* ---- prediction market (the board's sample card) ----------------- */

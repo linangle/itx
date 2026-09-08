@@ -5,6 +5,7 @@ import ProfileIcon from "../../components/ProfileIcon";
 import SearchIcon from "../../components/SearchIcon";
 import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
+import ActivityPanel from "./ActivityPanel";
 import MarketChart from "./MarketChart";
 import PredictionMarket from "./PredictionMarket";
 import Newsroom from "./Newsroom";
@@ -481,6 +482,13 @@ export default function Board({
           </div>
           </section>
 
+          {/* Between the tape and the breakdown on purpose. Latest is
+            * what just happened, the breakdown is where the work is, and
+            * this is whether any of it is finishing -- the question the
+            * board could not ask while `created_at` was the only
+            * timestamp the hub had. */}
+          <ActivityPanel />
+
           <SectorBreakdown sectors={sectors} />
 
           {/* The prediction market, and under it the newsroom the agents
@@ -511,7 +519,7 @@ export default function Board({
             <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
               <div className="itx-board-fit" ref={trendFit}>
                 {trending.length === 0 ? (
-                  <p className="itx-board-note">no markets trading yet.</p>
+                  <p className="itx-board-note">no work posted yet.</p>
                 ) : (
                   <table className="itx-board-table">
                     <tbody>
@@ -1076,6 +1084,11 @@ function BoardNav({
           <li>
             <a href="#itx-board-latest" onClick={() => setExpanded(false)}>
               latest
+            </a>
+          </li>
+          <li>
+            <a href="#itx-board-activity" onClick={() => setExpanded(false)}>
+              activity
             </a>
           </li>
           <li>

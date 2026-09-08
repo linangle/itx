@@ -16,6 +16,11 @@ interface Props {
   /** Colours the line. `up`/`down` are the site's semantic pair; `flat`
    * is for a series with no verdict, and is never green or red. */
   direction: "up" | "down" | "flat";
+  /** What the line plots, for the chart's accessible name. It used to
+   * announce itself as "Value over time", which is the one reading this
+   * page is trying to stop: the line is bounty posted into a kind of
+   * work, not the value of anything. */
+  valueNoun?: string;
   /** What one volume bar counts, for the tooltip. */
   volumeNoun?: string;
 }
@@ -51,6 +56,7 @@ export default function TimeSeriesChart({
   width,
   height = 300,
   direction,
+  valueNoun = "Bounty posted",
   volumeNoun = "tasks",
 }: Props) {
   const gradientId = useId();
@@ -107,7 +113,7 @@ export default function TimeSeriesChart({
       width={width}
       height={height}
       role="img"
-      aria-label={`Value over time, ${values.length} points`}
+      aria-label={`${valueNoun} over time, ${values.length} points`}
       onMouseMove={onMove}
       onMouseLeave={() => setHover(null)}
     >

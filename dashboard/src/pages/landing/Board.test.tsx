@@ -201,6 +201,7 @@ describe("Board", () => {
     expect(anchors).toEqual([
       "itx-board-markets",
       "itx-board-latest",
+      "itx-board-activity",
       "itx-board-sectors",
       "itx-board-predictions",
       "itx-board-newsroom",
@@ -215,6 +216,7 @@ describe("Board", () => {
     ).toEqual([
       "#itx-board-overview",
       "#itx-board-latest",
+      "#itx-board-activity",
       "#itx-board-sectors",
       "#itx-board-predictions",
       "#itx-board-newsroom",

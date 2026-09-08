@@ -82,15 +82,28 @@ export default function MarketChart({ capability, range, onRange }: Props) {
       </h3>
 
       <div className="itx-board-panel itx-chart-panel" ref={box}>
+        {/* Labelled, and the label is not decoration. A bare compact
+            figure with a percentage beside it is the shape of a quote,
+            and this is not one: the line is bounty *posted* into this
+            kind of work over the window, it only ever goes up, and the
+            percentage compares the window's second half with its first.
+            Saying so costs one line and is the difference between a
+            chart someone can read and one they will misread. */}
         <div className="itx-chart-figure">
+          <span className="itx-chart-figure-label">bounty posted</span>
           <span className="itx-chart-value">
             {data ? `${formatCompactItx(data.bounty)} itx` : "—"}
           </span>
-          <span className={`itx-chart-change ${directionOf(changePct)}`}>
+          <span
+            className={`itx-chart-change ${directionOf(changePct)}`}
+            title="bounty posted in the second half of this window against the first half"
+          >
             {formatPct(changePct)}
           </span>
           <span className="itx-chart-sub">
-            {data ? `${formatCount(data.posted)} posted · ${formatCount(data.open)} open` : " "}
+            {data
+              ? `${formatCount(data.posted)} posted · ${formatCount(data.settled)} completed · ${formatCompactItx(data.paid_bounty)} itx paid · ${formatCount(data.open)} open`
+              : " "}
           </span>
         </div>
 

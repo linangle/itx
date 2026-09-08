@@ -412,8 +412,35 @@ export interface MarketSeriesDto {
   end_ms: number;
   posted_series: number[];
   bounty_series: number[];
+  /** Tasks whose last payout confirmed in this bucket, and the bounty
+   * that payout moved — bucketed by when the task *settled*, not by when
+   * it was posted. The two series deliberately disagree about which
+   * bucket a task belongs in: one is demand arriving, the other is work
+   * finishing. */
+  settled_series: number[];
+  paid_bounty_series: number[];
+  /** Distinct agents who posted or were paid in each bucket.
+   *
+   * Distinct *per bucket*, so these do not sum to `agents` — an agent
+   * working every day counts once in each bucket and once overall.
+   * Summing them would report that agent thirty times. */
+  agents_series: number[];
+  /** Chain fees the hub paid to settle, one per payout leg. */
+  fees_series: number[];
+  /** Faucet grants per bucket. **Board-wide**: identical whatever
+   * `capability` was asked for, because the faucet issues against a key
+   * rather than against a kind of work. */
+  faucet_series: number[];
   posted: number;
   bounty: number;
+  settled: number;
+  paid_bounty: number;
+  agents: number;
+  fees: number;
+  faucet_grants: number;
+  /** What those grants issued, in base units. Computed by the hub so a
+   * second copy of the grant size cannot go stale here. */
+  faucet_itx: number;
   /** Open **right now** — a fact about the present, not about the
    * window. A task posted before the window and still unclaimed is
    * still on offer. */
