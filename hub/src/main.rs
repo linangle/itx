@@ -145,9 +145,12 @@ pub struct AppState {
     /// Ceiling on unsettled consensus bounty. See
     /// `Args::consensus_max_exposure`.
     pub consensus_max_exposure: u64,
-    /// Grants one network may take per window. See
-    /// `Args::faucet_grants_per_prefix`.
-    pub faucet_grants_per_prefix: u64,
+    /// Grants one network gets at base price. See
+    /// `Args::faucet_free_grants_per_prefix`.
+    pub faucet_free_grants_per_prefix: u64,
+    /// Grants per doubling of the price past that. See
+    /// `Args::faucet_pow_doubling_grants`.
+    pub faucet_pow_doubling_grants: u64,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -296,16 +299,26 @@ struct Args {
     /// minority of one task's slots simply posts more tasks.
     consensus_max_exposure: u64,
     #[argh(option, default = "5")]
-    /// how many faucet grants one network may take in the rolling
-    /// budget window. IPv4 is bucketed to a /24 and IPv6 to a /64 --
-    /// see `rate_limit::prefix_of` for why the two differ.
+    /// how many faucet grants one network may take at the base proof-of-
+    /// work price before the price starts rising. IPv4 is bucketed to a
+    /// /24 and IPv6 to a /64 -- see `rate_limit::prefix_of` for why the
+    /// two differ.
     ///
-    /// The weaker of the faucet's two controls, deliberately. It stops
-    /// one host cycling keys; it does nothing about an attacker holding
-    /// addresses in many networks, and `--faucet-daily-grants` is what
-    /// bounds the loss in that case. Setting this high does not open a
-    /// hole so much as lean harder on the budget.
-    faucet_grants_per_prefix: u64,
+    /// This is a free allowance, not a cap: past it the work gets
+    /// dearer rather than the answer becoming no. A flat cap turned away
+    /// the sixth agent behind a university NAT exactly as firmly as the
+    /// sixth sock puppet, and from one address those are the same
+    /// picture.
+    faucet_free_grants_per_prefix: u64,
+    #[argh(option, default = "5")]
+    /// how many further grants from one network double the proof-of-work
+    /// price.
+    ///
+    /// With the defaults, grants six to ten cost twice the base, eleven
+    /// to fifteen four times, sixteen to twenty eight times. Widen it for
+    /// a known shared network -- a campus, a large employer -- whose
+    /// users are not each other. Narrow it during an attack.
+    faucet_pow_doubling_grants: u64,
     #[argh(option, default = "String::new()")]
     /// comma-separated addresses of the reverse proxies in front of this
     /// hub, whose `X-Forwarded-For` header the rate limiter should
@@ -1015,7 +1028,8 @@ async fn main() -> Result<()> {
         faucet_expected_hashes: args.faucet_pow_expected_hashes,
         faucet_daily_grants: args.faucet_daily_grants,
         consensus_max_exposure: args.consensus_max_exposure,
-        faucet_grants_per_prefix: args.faucet_grants_per_prefix,
+        faucet_free_grants_per_prefix: args.faucet_free_grants_per_prefix,
+        faucet_pow_doubling_grants: args.faucet_pow_doubling_grants,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
         metrics,
@@ -1956,7 +1970,8 @@ mod tests {
             board: RwLock::new(TaskBoard::new()),
             faucet_daily_grants,
             consensus_max_exposure,
-            faucet_grants_per_prefix,
+            faucet_free_grants_per_prefix: faucet_grants_per_prefix,
+            faucet_pow_doubling_grants: 5,
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
@@ -6924,40 +6939,70 @@ mod tests {
         );
     }
 
-    /// One network's share of the faucet, and the reason it is only half
-    /// the story: every request here comes from 127.0.0.1, which is one
-    /// /24, so a cap of one lets exactly one key through however many
-    /// keys are generated.
+    /// A busy network is charged more, not turned away.
+    ///
+    /// This replaced a flat cap. The cap refused the sixth agent behind a
+    /// university NAT exactly as firmly as the sixth sock puppet, and
+    /// from one address those two are the same picture -- so it excluded
+    /// both. What the curve buys is that a shared network is never
+    /// refused for being shared; it is quoted more work.
     #[tokio::test]
-    async fn one_network_cannot_cycle_keys_through_the_faucet() {
+    async fn a_busy_network_is_charged_more_rather_than_refused() {
         let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        // Enough for several grants: one 100_000_000 output funds exactly
+        // one, and this test needs the second to be about pricing rather
+        // than about the operator being broke.
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 10_000_000_000).await;
+        // One grant at base price, then the curve starts.
         let hub = spawn_hub_with_prefix_cap(operator_key, fake_node.addr.clone(), 1).await;
 
         let first = PrivateKey::new_key();
-        let challenge = request_faucet_challenge(&hub, &first).await;
-        assert_eq!(redeem_faucet_challenge(&hub, &first, &challenge).await.status(), reqwest::StatusCode::OK);
+        let opening = request_faucet_challenge(&hub, &first).await;
+        let base = opening["expected_hashes"].as_u64().unwrap();
+        assert_eq!(redeem_faucet_challenge(&hub, &first, &opening).await.status(), reqwest::StatusCode::OK);
 
-        // A brand-new key, which the per-key rule has nothing to say
-        // about, from the network that has already taken its share.
+        // A brand-new key from the same network -- the case the per-key
+        // rule has nothing to say about.
         let second = PrivateKey::new_key();
-        let resp = hub
-            .client
-            .post(format!("{}/faucet/challenge", hub.base_url))
-            .json(&envelope(&second, "/faucet/challenge", ()))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
-        let body: Value = resp.json().await.unwrap();
-        assert!(
-            body["error"].as_str().unwrap().contains("127.0.0.0/24"),
-            "the refusal names the network, so an operator reading a log can tell \
-             a shared-NAT false positive from an attack: {body}"
+        let dearer = request_faucet_challenge(&hub, &second).await;
+        assert_eq!(
+            dearer["expected_hashes"].as_u64().unwrap(),
+            base * 2,
+            "past the free allowance the price doubles"
+        );
+
+        // And it is still redeemable: priced, not refused. The whole
+        // point of the change.
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &second, &dearer).await.status(),
+            reqwest::StatusCode::OK,
+            "a shared network must never be refused merely for being shared"
         );
     }
 
-    /// The record has to survive a restart, or restarting the hub would
+    /// The quote has to be the one this challenge will actually be judged
+    /// against. Quoting the hub's base while issuing a dearer target
+    /// would have an agent budget for a fraction of its real solve and
+    /// give up part-way, which reads as the faucet being broken.
+    #[tokio::test]
+    async fn the_quoted_work_is_the_work_this_challenge_costs() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_with_prefix_cap(operator_key, fake_node.addr.clone(), 0).await;
+
+        let agent = PrivateKey::new_key();
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let quoted = challenge["expected_hashes"].as_u64().unwrap();
+        let target = btclib::U256::from_str_radix(challenge["target"].as_str().unwrap(), 16).unwrap();
+
+        assert_eq!(
+            quoted,
+            faucet_pow::expected_hashes_for_target(target),
+            "the number quoted and the target issued have to be the same difficulty"
+        );
+    }
+
+    /// The record has to survive a restart, or restarting the hub would    /// The record has to survive a restart, or restarting the hub would
     /// refill the per-network allowance -- the same reason the global
     /// budget reads its window off disk.
     #[tokio::test]

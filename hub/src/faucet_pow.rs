@@ -120,6 +120,74 @@ pub fn target_for_expected_hashes(expected: u64) -> U256 {
     U256::MAX / U256::from(expected.max(1))
 }
 
+/// Ceiling on how many times the per-network price may double.
+///
+/// Two jobs. It stops `1 << doublings` running off the end of a `u64`,
+/// and it keeps the refusal honest: past about a million times the base
+/// the answer is "no" however it is phrased, and a number that pretends
+/// otherwise is worse than one that does not.
+pub const MAX_PREFIX_DOUBLINGS: u32 = 20;
+
+/// What the next grant to this network costs, in expected hashes.
+///
+/// # Why a curve rather than a cap
+///
+/// A flat per-network cap refuses the sixth agent behind a university
+/// NAT exactly as firmly as the sixth sock puppet, and the hub cannot
+/// tell them apart -- from one address, five hundred students and five
+/// hundred sybils are the same picture. A cap answers that by excluding
+/// both.
+///
+/// Pricing answers it by making the two diverge on the axis where they
+/// genuinely differ, which is *patience per identity*. A farm wants many
+/// identities cheaply and is priced superlinearly out of it; a shared
+/// network wants a few identities each and pays the same base as anyone
+/// else until it is well past ordinary use.
+///
+/// # The curve
+///
+/// The first `free` grants in the window cost `base`. After that the
+/// price doubles every `step` grants, capped at `MAX_PREFIX_DOUBLINGS`.
+/// With the defaults and a base near fourteen seconds of Python: grants
+/// six to ten cost half a minute, eleven to fifteen a minute, sixteen to
+/// twenty two minutes. A network onboarding twenty agents pays a couple
+/// of minutes for the last one, which is an irritation. One onboarding
+/// two hundred pays hours for the last one, which is the point.
+///
+/// # What this does not fix
+///
+/// A genuinely large shared network -- a whole campus -- is still
+/// effectively excluded, just gradually rather than abruptly. No
+/// function of "grants from this address" can avoid that, because the
+/// input carries no information distinguishing the two populations. The
+/// out-of-band answers are the real ones: widen `step` for a known
+/// shared network, or let its users fund agents from somewhere other
+/// than the faucet. Worth stating plainly so nobody reads this curve as
+/// having solved a problem it has only softened.
+pub fn expected_hashes_for_prefix(base: u64, taken: u64, free: u64, step: u64) -> u64 {
+    if taken < free {
+        return base;
+    }
+    let doublings = 1 + (taken - free) / step.max(1);
+    base.saturating_mul(1u64 << doublings.min(MAX_PREFIX_DOUBLINGS as u64) as u32)
+}
+
+/// The inverse of `target_for_expected_hashes`, for reporting the work a
+/// specific challenge actually costs.
+///
+/// The wire tells an agent `expected_hashes` so it can decide whether to
+/// bother, and once the price varies per challenge that number has to
+/// come from the challenge rather than from the hub's base setting --
+/// otherwise every quote is the cheapest one and an agent behind a busy
+/// network budgets for a fraction of what it is about to spend.
+pub fn expected_hashes_for_target(target: U256) -> u64 {
+    if target.is_zero() {
+        return u64::MAX;
+    }
+    let expected = U256::MAX / target;
+    if expected > U256::from(u64::MAX) { u64::MAX } else { expected.as_u64() }
+}
+
 /// An issued, not-yet-redeemed challenge.
 ///
 /// Stored by value in the durable table and held in memory by
@@ -337,7 +405,25 @@ impl ChallengeBook {
         pubkey: &PublicKey,
         now: DateTime<Utc>,
     ) -> std::result::Result<Challenge, RedemptionError> {
-        let challenge = Challenge::issue(pubkey, self.target, now);
+        self.issue_at_target(pubkey, self.target, now)
+    }
+
+    /// `issue`, at a difficulty this challenge alone carries.
+    ///
+    /// The book's own `target` is the hub's base setting; the faucet
+    /// prices each challenge against the network asking for it. Nothing
+    /// downstream changes, because `Challenge::is_solved_by` has always
+    /// judged a solution against the target recorded *at issuance*
+    /// rather than the hub's current one -- a property that existed so
+    /// an operator turning the knob could not invalidate work already
+    /// under way, and which makes per-challenge pricing free.
+    pub fn issue_at_target(
+        &self,
+        pubkey: &PublicKey,
+        target: U256,
+        now: DateTime<Utc>,
+    ) -> std::result::Result<Challenge, RedemptionError> {
+        let challenge = Challenge::issue(pubkey, target, now);
         if let Some(store) = &self.store {
             store
                 .save_faucet_challenge(&challenge)
@@ -496,6 +582,78 @@ mod tests {
             !solutions.iter().all(|solution| variant.is_solved_by(*solution)),
             "work done on one puzzle must not carry wholesale to the other"
         );
+    }
+
+    /// The curve, stated as the numbers an operator would reason about.
+    #[test]
+    fn the_price_is_flat_through_the_allowance_and_doubles_by_steps_after() {
+        let base = 20_000_000;
+        let price = |taken| expected_hashes_for_prefix(base, taken, 5, 5);
+
+        // The allowance is genuinely free -- a small shared network pays
+        // exactly what a lone agent pays.
+        for taken in 0..5 {
+            assert_eq!(price(taken), base, "grant {} is inside the allowance", taken + 1);
+        }
+        // Then it doubles a step at a time.
+        assert_eq!(price(5), base * 2, "the sixth grant");
+        assert_eq!(price(9), base * 2, "still the sixth-to-tenth band");
+        assert_eq!(price(10), base * 4);
+        assert_eq!(price(15), base * 8);
+    }
+
+    /// The property the design turns on: a farm's *total* cost grows
+    /// faster than its identity count, so many identities from one
+    /// network is the expensive way to get them.
+    #[test]
+    fn the_total_cost_of_many_identities_grows_superlinearly() {
+        let base = 1;
+        let total = |n: u64| (0..n).map(|t| expected_hashes_for_prefix(base, t, 5, 5)).sum::<u64>();
+
+        // The property stated directly: the cost of doubling your
+        // identities is itself rising. Going 5 -> 10 is a small multiple;
+        // going 20 -> 40 is a large one. A flat price would make both
+        // exactly 2x, which is what lets a farm scale.
+        let cheap_doubling = total(10) / total(5);
+        let dear_doubling = total(40) / total(20);
+        assert!(
+            dear_doubling > cheap_doubling * 4,
+            "doubling from 20 ({dear_doubling}x) has to cost far more than doubling from 5 \
+             ({cheap_doubling}x), or the curve is not doing its job"
+        );
+        // ...and the shared-network end stays somewhere a human would
+        // tolerate: ten agents behind one NAT is an irritation, not a wall.
+        assert!(total(10) <= 3 * total(5));
+    }
+
+    /// Doublings are capped, both so the shift cannot run off a `u64` and
+    /// so an absurd quote is not dressed up as a real one.
+    #[test]
+    fn the_price_stops_climbing_rather_than_overflowing() {
+        let huge = expected_hashes_for_prefix(u64::MAX, 1_000_000, 5, 5);
+        assert_eq!(huge, u64::MAX, "saturates instead of wrapping");
+        let capped = expected_hashes_for_prefix(1, 1_000_000, 5, 5);
+        assert_eq!(capped, 1 << MAX_PREFIX_DOUBLINGS);
+    }
+
+    /// A zero step would divide by zero. It is a configuration an
+    /// operator can type, so it has to mean something.
+    #[test]
+    fn a_zero_doubling_step_is_treated_as_one() {
+        assert_eq!(
+            expected_hashes_for_prefix(10, 7, 5, 0),
+            expected_hashes_for_prefix(10, 7, 5, 1)
+        );
+    }
+
+    /// The quote and the target have to agree, or an agent budgets for
+    /// one solve and gets another.
+    #[test]
+    fn expected_hashes_round_trips_through_a_target() {
+        for expected in [1_u64, 1_000, 20_000_000, 640_000_000] {
+            let target = target_for_expected_hashes(expected);
+            assert_eq!(expected_hashes_for_target(target), expected);
+        }
     }
 
     #[test]

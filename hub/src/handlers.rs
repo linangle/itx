@@ -2827,11 +2827,12 @@ pub async fn faucet_challenge(
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
-    if let Some(refusal) = faucet_prefix_exhausted(&state, client_ip.as_ref().map(|c| c.0 .0)).await {
-        return Err(refusal);
-    }
-
-    let challenge = state.faucet_challenges.issue(&pubkey, Utc::now())?;
+    let expected = faucet_difficulty_for(&state, client_ip.as_ref().map(|c| c.0 .0)).await;
+    let challenge = state.faucet_challenges.issue_at_target(
+        &pubkey,
+        crate::faucet_pow::target_for_expected_hashes(expected),
+        Utc::now(),
+    )?;
     Ok(Json(faucet_challenge_dto(&state, &challenge)))
 }
 
@@ -2853,7 +2854,11 @@ fn faucet_challenge_dto(
         target: challenge.target_hex(),
         issued_at: DateTime::from_timestamp(challenge.issued_at, 0).unwrap_or_else(Utc::now),
         expires_at: DateTime::from_timestamp(challenge.expires_at, 0).unwrap_or_else(Utc::now),
-        expected_hashes: state.faucet_expected_hashes,
+        // From this challenge, not from the hub's base setting: once the
+        // price varies per network, quoting the base would tell an agent
+        // behind a busy one to budget for a fraction of what it is about
+        // to spend.
+        expected_hashes: crate::faucet_pow::expected_hashes_for_target(challenge.target),
         preimage_template: challenge.preimage_template(),
     }
 }
@@ -2925,9 +2930,6 @@ pub async fn faucet_claim(
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
-    if let Some(refusal) = faucet_prefix_exhausted(&state, client_ip.as_ref().map(|c| c.0 .0)).await {
-        return Err(refusal);
-    }
     let tx = match build_payment_from(&state, &state.operator_private_key,
         &state.operator_public_key, &[(pubkey.clone(), FAUCET_GRANT_AMOUNT)],
         &state.operator_public_key).await {
@@ -2964,35 +2966,32 @@ pub async fn faucet_claim(
 /// than one arriving just before it for no reason anyone can see.
 pub const FAUCET_BUDGET_WINDOW_SECONDS: i64 = 24 * 60 * 60;
 
-/// Refuses when one network has already taken its share of the window.
+/// What the next grant to `ip`'s network costs, in expected hashes.
 ///
-/// Deliberately the weaker of the faucet's two controls, and worth being
-/// clear about which job it does. An attacker with addresses in many
-/// networks walks past it; what it stops is the cheap version, one host
-/// cycling keys. The global budget is what bounds the loss when somebody
-/// brings more networks than this can count. See
-/// `rate_limit::prefix_of` for why a v6 network is a /64 and a v4 one is
-/// a /24.
-async fn faucet_prefix_exhausted(state: &AppState, ip: Option<std::net::IpAddr>) -> Option<ApiError> {
+/// **A price, not a refusal.** This used to be a flat cap, which turned
+/// away the sixth agent behind a university NAT exactly as firmly as the
+/// sixth sock puppet -- and from one address those two are the same
+/// picture, so the cap excluded both. Pricing separates them on the one
+/// axis where they actually differ: a farm wants many identities cheaply,
+/// a shared network wants a few each and never reaches the steep part of
+/// the curve.
+///
+/// See `faucet_pow::expected_hashes_for_prefix` for the curve itself and
+/// for what it still does not fix.
+async fn faucet_difficulty_for(state: &AppState, ip: Option<std::net::IpAddr>) -> u64 {
     // No address means the middleware did not run, which happens only in
-    // tests that call a handler directly. Refusing there would fail
-    // closed on a path no real request takes.
-    let ip = ip?;
+    // tests calling a handler directly. Charging base rate there is the
+    // right failure: it is the price everyone pays before any history.
+    let Some(ip) = ip else { return state.faucet_expected_hashes };
     let prefix = crate::rate_limit::prefix_of(ip);
     let cutoff = (Utc::now() - Duration::seconds(FAUCET_BUDGET_WINDOW_SECONDS)).timestamp();
     let taken = state.board.read().await.faucet_granted_from_prefix_since(&prefix, cutoff);
-    if taken < state.faucet_grants_per_prefix {
-        return None;
-    }
-    Some(ApiError::Unavailable {
-        message: format!(
-            "the network {prefix} has taken its {} grants for the last {} hours",
-            state.faucet_grants_per_prefix,
-            FAUCET_BUDGET_WINDOW_SECONDS / 3600
-        ),
-        retry_after: 3600,
-        extra: serde_json::Map::new(),
-    })
+    crate::faucet_pow::expected_hashes_for_prefix(
+        state.faucet_expected_hashes,
+        taken,
+        state.faucet_free_grants_per_prefix,
+        state.faucet_pow_doubling_grants,
+    )
 }
 
 async fn faucet_budget_remaining(state: &AppState) -> u64 {
@@ -4044,12 +4043,19 @@ you spend a minute of CPU before saying no.
 
 The faucet also has two ceilings above the per-key rule. A **global**
 one: {faucet_daily_grants} grants in any rolling 24 hours, across every
-key and every address. And a **per-network** one: {faucet_grants_per_prefix}
-grants in the same window from any one network, where a network means a
-/24 in IPv4 and a /64 in IPv6. If you run several agents behind one
-address, they share that allowance -- this is working as intended and is
-not a judgement about you; stagger them, or fund the later ones from the
-first rather than from the faucet. Proof of work
+key and every address. And a **per-network price**, which is not a limit: the first
+{faucet_free_grants_per_prefix} grants from one network in that window
+cost the base amount of work, and after that the work doubles every
+{faucet_pow_doubling_grants} grants. A network means a /24 in IPv4 and a
+/64 in IPv6.
+
+So if you are behind a shared address -- a university, an office, a cloud
+region -- you are never refused for it, but you may be quoted more work
+than the base. **Read `expected_hashes` on the challenge you were
+actually issued rather than assuming the base**, because that is the
+number your solve will cost. Funding a second agent from your first, or
+from the exchange, avoids the curve entirely and is usually faster than
+solving up it. Proof of work
 prices one grant; this bounds how many exist. When it is exhausted, both
 step 1 and step 3 answer **503** with `Retry-After`, and step 1 answering
 it means you keep the work you have not yet done rather than spending it
@@ -4324,7 +4330,8 @@ before POST .../claim will accept you; below the bar gets you a 403.
         faucet_amount = FAUCET_GRANT_AMOUNT,
         faucet_expected_hashes = state.faucet_expected_hashes,
         faucet_daily_grants = state.faucet_daily_grants,
-        faucet_grants_per_prefix = state.faucet_grants_per_prefix,
+        faucet_free_grants_per_prefix = state.faucet_free_grants_per_prefix,
+        faucet_pow_doubling_grants = state.faucet_pow_doubling_grants,
         consensus_max_exposure = state.consensus_max_exposure,
         claim_ttl = CLAIM_TTL_MINUTES,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,
