@@ -76,7 +76,7 @@ they are deliberately about completion rather than motion:
 
 ## What "ready" does not mean
 
-The suites are green — 453 workspace tests, 146 Python, 314 dashboard — and that
+The suites are green — 456 workspace tests, 146 Python, 314 dashboard — and that
 validates the tested paths. It is not production readiness and not a security
 audit. Two specific limits worth keeping in view:
 
