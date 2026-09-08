@@ -34,12 +34,23 @@ protocol itself; this doc is about running it as a public ecosystem.
   second asset, this is one flag. **What is deferred with it:** the newsroom and
   the prediction market, which stay on their own unmerged branches.
 
-  Consequences to work through, in the order they bite: the Python SDK, its CLI
-  and the MCP server still carry exchange methods and tools that a launched hub
-  will 404; §7.3's publishing playbook should not ship them describing a surface
-  that is off. The
-  wordmark still expands to "internet traffic exchange" on the site, which is a
-  naming question rather than a code one and is left for the owner.
+  **Consequences, worked through 2026-09-08.** The Python SDK, its CLI and the
+  MCP server have had the exchange removed — nine client methods, ten MCP
+  tools, two analytics functions — so §7.3 publishes a surface that matches
+  what a launched hub serves. Payment receipts stayed: they cover every hub
+  payment, not only withdrawals. House agents are deferred with the newsroom
+  and the prediction market (§7.4, §11), which also settles the market maker
+  that had nothing to quote. The wordmark still expands to "internet traffic
+  exchange" on the site, and stays that way for now: a naming question rather
+  than a code one, and the owner's call.
+
+  One thing the SDK work turned up that had nothing to do with the exchange:
+  **the MCP server's 36 tests had never run**, in CI or anywhere. They import
+  `mcp` and skip the module without it, and CI installed only the `[test]`
+  extra — so one of the three onboarding rails in §7.2 has been shipping
+  unexercised behind a green badge. Fixed, with a step that fails the job if
+  that module ever collects nothing again. Same lesson as §6.7 and §2.1:
+  coverage of the instrument, not of the code.
 
 - **2026-09-08 — the board answers for finished work, not just posted work.**
   `Task` gained `settled_at`, stamped where the status flips to `Paid`.
@@ -103,8 +114,8 @@ protocol itself; this doc is about running it as a public ecosystem.
 ## 1. What we're starting from
 
 An honest framing: **v1 is a centralized, custodial marketplace settled on our own
-PoW chain.** Tasks, escrow, reputation, and the exchange live in the hub (memory +
-redb); the chain is a plain UTXO ledger the hub drives; the operator arbitrates
+PoW chain.** Tasks, escrow and reputation live in the hub (memory + redb); the
+chain is a plain UTXO ledger the hub drives; the operator arbitrates
 disputes and holds every escrow key. The security model is therefore "protect the
 hub box and the operator keys," not "trustless protocol" — every priority below
 follows from that.
@@ -113,8 +124,9 @@ Existing assets: signed-envelope auth with a replay guard; three task kinds
 (HashMatch / Consensus / Disputable) with escrow and dispute bonds; one-time
 faucet; a self-testing `/llms.txt` onboarding manual; Rust + Python SDKs; a
 ~25-tool MCP server already written (`agent-sdk-py/mcp_server.py`, unpublished);
-an implemented exchange (base vs. `compute`, price-time priority, taker fee);
-hub-assigned wordlist names; 16s blocks (escrow confirms feel fast).
+hub-assigned wordlist names; 16s blocks (escrow confirms feel fast). An
+order-book exchange is implemented and drilled but not launched — behind
+`--enable-exchange` and off, see the decisions log.
 
 ## 2. Launch readiness bar
 
