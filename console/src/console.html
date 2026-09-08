@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>itx console</title>
+<style>
+  :root {
+    --bg: #161418; --panel: #1e1c21; --line: #2e2b32;
+    --ink: #e9f2ed; --sub: #8d99ae;
+    --red: #ea2b1f; --amber: #d8912d; --green: #87a330; --blue: #91c4f2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 "Helvetica Neue", -apple-system, system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--bg); z-index: 2;
+  }
+  h1 { font-size: 15px; margin: 0; letter-spacing: .12em; text-transform: lowercase; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .muted { color: var(--sub); font-size: 12px; }
+  main { padding: 20px; display: grid; gap: 16px; max-width: 1200px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; }
+  .panel h2 {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--sub); margin: 0 0 12px; font-weight: 600;
+  }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 14px; }
+  .stat .n { font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 11px; color: var(--sub); text-transform: lowercase; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { .row2 { grid-template-columns: 1fr; } }
+  .alert { border-left: 3px solid var(--amber); padding: 8px 12px; margin-bottom: 8px; background: #241f1c; border-radius: 0 4px 4px 0; }
+  .alert.critical { border-left-color: var(--red); background: #2a1a19; }
+  .alert .t { font-weight: 600; }
+  .alert .d { color: var(--sub); font-size: 12px; margin-top: 2px; }
+  .ok { color: var(--green); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--sub); padding: 0 8px 8px 0; font-weight: 600; }
+  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line); }
+  td.n, th.n { text-align: right; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+  .bar > i { display: block; height: 100%; background: var(--blue); }
+  .bar.hot > i { background: var(--red); }
+  .pill { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--line); color: var(--sub); }
+  .pill.hot { background: #3a2320; color: #f0a49d; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  #err { color: var(--red); padding: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>itx console</h1>
+  <span id="health" class="muted"><span class="dot" style="background:var(--sub)"></span> connecting…</span>
+  <span id="chain" class="muted"></span>
+  <span class="muted" style="margin-left:auto">refreshes every 10s</span>
+</header>
+<div id="err" hidden></div>
+<main id="main" hidden>
+  <section class="panel">
+    <h2>Alerts</h2>
+    <div id="alerts"></div>
+  </section>
+
+  <div class="row2">
+    <section class="panel">
+      <h2>Agents</h2>
+      <div class="stats" id="agents"></div>
+    </section>
+    <section class="panel">
+      <h2>Work</h2>
+      <div class="stats" id="work"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Networks — faucet grants by /24 or /64</h2>
+    <table>
+      <thead><tr>
+        <th>network</th><th class="n">24h</th><th class="n">all time</th>
+        <th class="n">next costs</th><th style="width:32%">share of window budget</th>
+      </tr></thead>
+      <tbody id="networks"></tbody>
+    </table>
+    <p class="muted" id="netnote" style="margin:10px 0 0"></p>
+  </section>
+
+  <div class="row2">
+    <section class="panel">
+      <h2>Money</h2>
+      <div class="stats" id="money"></div>
+    </section>
+    <section class="panel">
+      <h2>Integrity</h2>
+      <div class="stats" id="integrity"></div>
+      <div id="disagreements" style="margin-top:10px"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const num = (n) => Number(n).toLocaleString();
+
+function stat(n, label, cls) {
+  return `<div class="stat"><div class="n ${cls || ''}">${n}</div><div class="l">${label}</div></div>`;
+}
+
+function render(d) {
+  $("err").hidden = true;
+  $("main").hidden = false;
+
+  const worst = d.alerts.some(a => a.severity === "critical") ? "critical"
+              : d.alerts.length ? "warning" : "ok";
+  const colour = { critical: "var(--red)", warning: "var(--amber)", ok: "var(--green)" }[worst];
+  const words = { critical: "needs attention now", warning: "worth a look", ok: "nothing flagged" }[worst];
+  $("health").innerHTML = `<span class="dot" style="background:${colour}"></span> ${words}`;
+  $("chain").textContent =
+    `chain ${num(d.chain_height)} · seen ${d.chain_observation_age_seconds}s ago`;
+
+  $("alerts").innerHTML = d.alerts.length
+    ? d.alerts.map(a =>
+        `<div class="alert ${a.severity}"><div class="t">${a.title}</div><div class="d">${a.detail}</div></div>`
+      ).join("")
+    : `<div class="ok">No alerts. Every threshold in deployment.md §8.3 is clear.</div>`;
+
+  const a = d.agents;
+  $("agents").innerHTML =
+    stat(num(a.known), "known keys") +
+    stat(num(a.funded_by_faucet), "funded by faucet") +
+    stat(num(a.with_completed_work), "completed work", a.with_completed_work ? "ok" : "") +
+    stat(num(a.with_failed_work), "failed work") +
+    stat(num(a.holding_balance), "holding balance");
+
+  const w = d.work;
+  $("work").innerHTML =
+    stat(num(w.open), "open") +
+    stat(num(w.claimed), "claimed") +
+    stat(num(w.awaiting_settlement), "settling") +
+    stat(num(w.paid), "paid") +
+    stat(num(w.payout_failed), "payout failed") +
+    stat(num(w.closed), "closed");
+
+  const f = d.faucet;
+  $("networks").innerHTML = d.networks.length
+    ? d.networks.map(n => {
+        const pct = Math.min(100, n.share_of_budget * 100);
+        const hot = n.share_of_budget >= 0.5;
+        return `<tr>
+          <td><code>${n.prefix}</code></td>
+          <td class="n">${num(n.grants_in_window)}</td>
+          <td class="n">${num(n.grants_all_time)}</td>
+          <td class="n"><span class="pill ${n.next_price_multiplier > 1 ? 'hot' : ''}">${n.next_price_multiplier}×</span></td>
+          <td>${pct.toFixed(1)}%<div class="bar ${hot ? 'hot' : ''}"><i style="width:${pct}%"></i></div></td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="5" class="muted">No faucet grants recorded yet.</td></tr>`;
+  $("netnote").textContent =
+    `${num(f.granted_in_window)} of ${num(f.window_budget)} grants used in the last ${d.window_hours}h · ` +
+    `first ${num(f.free_grants_per_network)} per network at base work, doubling every ${num(f.doubling_grants)} after · ` +
+    `one network near 100% is the shape of a farm, many small rows are a population`;
+
+  const m = d.money;
+  $("money").innerHTML =
+    stat(num(m.custody_balance), "custody balance") +
+    stat(num(m.exchange_liabilities), "owed to traders") +
+    stat(m.solvent ? "yes" : "NO", "solvent", m.solvent ? "ok" : "") +
+    stat(num(m.payments_pending), "payments pending") +
+    stat(num(m.payments_needs_review), "need review") +
+    stat(num(m.operator_ready_outputs), "operator outputs");
+
+  const i = d.integrity;
+  const limited = i.rate_limited_by_tier.reduce((s, [, n]) => s + Number(n), 0);
+  $("integrity").innerHTML =
+    stat(num(i.replays_rejected), "replays rejected") +
+    stat(num(limited), "rate limited") +
+    stat(num(i.rate_limited_per_key), "over key quota") +
+    stat(num(i.burned_envelopes), "burned envelopes") +
+    stat(i.replay_guard_degraded ? "YES" : "no", "guard degraded") +
+    stat(num(i.ledger_store_divergences), "ledger divergences");
+  $("disagreements").innerHTML = i.store_disagreements.length
+    ? i.store_disagreements.map(s => `<div class="alert critical"><div class="d">${s}</div></div>`).join("")
+    : "";
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/overview");
+    if (!r.ok) throw new Error(await r.text());
+    render(await r.json());
+  } catch (e) {
+    // Shown rather than swallowed: the two failures that actually happen
+    // are "this key is not on --admin-keys" and "the clock drifted", and
+    // both are unrecognisable if the page just stops updating.
+    $("err").hidden = false;
+    $("err").textContent = `Could not read the hub — ${e.message}`;
+    $("health").innerHTML = `<span class="dot" style="background:var(--red)"></span> not reading`;
+  }
+}
+tick();
+setInterval(tick, 10000);
+</script>
+</body>
+</html>

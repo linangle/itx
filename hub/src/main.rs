@@ -1,5 +1,6 @@
 use tracing::*;
 
+mod admin;
 mod auth;
 mod faucet_pow;
 mod board;
@@ -151,6 +152,8 @@ pub struct AppState {
     /// Grants per doubling of the price past that. See
     /// `Args::faucet_pow_doubling_grants`.
     pub faucet_pow_doubling_grants: u64,
+    /// Read-only keys admitted to `/admin/*`. See `Args::admin_keys`.
+    pub admin_keys: std::collections::BTreeSet<String>,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -319,6 +322,18 @@ struct Args {
     /// a known shared network -- a campus, a large employer -- whose
     /// users are not each other. Narrow it during an attack.
     faucet_pow_doubling_grants: u64,
+    #[argh(option, default = "String::new()")]
+    /// comma-separated hex pubkeys allowed to read /admin/overview.
+    ///
+    /// Read-only, and separate from the operator key on purpose. The
+    /// operator key moves money; watching the hub should not require
+    /// holding it, and handing it to a second person so they can read a
+    /// dashboard is how a treasury key ends up on two laptops. A viewer
+    /// key observes everything here and can change nothing.
+    ///
+    /// The operator key is always admitted as well, so a single-operator
+    /// deployment needs no extra configuration.
+    admin_keys: String,
     #[argh(option, default = "String::new()")]
     /// comma-separated addresses of the reverse proxies in front of this
     /// hub, whose `X-Forwarded-For` header the rate limiter should
@@ -1030,6 +1045,13 @@ async fn main() -> Result<()> {
         consensus_max_exposure: args.consensus_max_exposure,
         faucet_free_grants_per_prefix: args.faucet_free_grants_per_prefix,
         faucet_pow_doubling_grants: args.faucet_pow_doubling_grants,
+        admin_keys: args
+            .admin_keys
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect(),
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
         metrics,
@@ -1157,6 +1179,7 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/admin/overview", post(handlers::admin_overview))
         .route("/payments", get(handlers::list_payments))
         .route("/payments/:id", get(handlers::get_payment))
         // Lives here rather than in `handlers` on purpose: every other
@@ -1917,6 +1940,23 @@ mod tests {
         spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, consensus_max_exposure, u64::MAX).await
     }
 
+    async fn spawn_hub_with_admin_key(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        viewer: &btclib::crypto::PublicKey,
+    ) -> TestHub {
+        spawn_hub_full(
+            operator_private_key,
+            node_address,
+            rate_limit::TrustedProxies::new(),
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            [viewer.to_string()].into_iter().collect(),
+        )
+        .await
+    }
+
     async fn spawn_hub_with_prefix_cap(
         operator_private_key: PrivateKey,
         node_address: String,
@@ -1940,6 +1980,19 @@ mod tests {
         faucet_daily_grants: u64,
         consensus_max_exposure: u64,
         faucet_grants_per_prefix: u64,
+    ) -> TestHub {
+        spawn_hub_full(operator_private_key, node_address, trusted_proxies, faucet_daily_grants, consensus_max_exposure, faucet_grants_per_prefix, Default::default()).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_hub_full(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        trusted_proxies: rate_limit::TrustedProxies,
+        faucet_daily_grants: u64,
+        consensus_max_exposure: u64,
+        faucet_grants_per_prefix: u64,
+        admin_keys: std::collections::BTreeSet<String>,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
@@ -1972,6 +2025,7 @@ mod tests {
             consensus_max_exposure,
             faucet_free_grants_per_prefix: faucet_grants_per_prefix,
             faucet_pow_doubling_grants: 5,
+            admin_keys,
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
@@ -6936,6 +6990,107 @@ mod tests {
         assert!(
             hub.state.store.load_all_withdrawal_attempts().unwrap().is_empty(),
             "a payment that was never built leaves nothing for an operator to resolve"
+        );
+    }
+
+    /// The console feed, and the property that makes it safe to hand a
+    /// second person: a viewer key sees everything and can change
+    /// nothing.
+    #[tokio::test]
+    async fn a_viewer_key_can_read_the_console_and_move_nothing() {
+        let operator_key = PrivateKey::new_key();
+        let viewer = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 10_000_000_000).await;
+        let hub = spawn_hub_with_admin_key(operator_key.clone(), fake_node.addr.clone(), &viewer.public_key()).await;
+
+        let resp = hub
+            .client
+            .post(format!("{}/admin/overview", hub.base_url))
+            .json(&envelope(&viewer, "/admin/overview", ()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: Value = resp.json().await.unwrap();
+        assert!(body["agents"].is_object());
+        assert!(body["networks"].is_array());
+        assert!(body["alerts"].is_array());
+
+        // The same key on a route that moves money is refused. This is
+        // the whole reason the two key sets are separate.
+        let task = handlers::CreateTaskPayload {
+            description: "should not happen".into(),
+            bounty: 10,
+            expected_output_hash: hex::encode(Hash::hash_bytes(b"x").as_bytes()),
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let refused = hub
+            .client
+            .post(format!("{}/tasks", hub.base_url))
+            .json(&envelope(&viewer, "/tasks", task))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
+    /// A key nobody named gets nothing, even though the route is a read.
+    #[tokio::test]
+    async fn a_stranger_cannot_read_the_console() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        let stranger = PrivateKey::new_key();
+        let resp = hub
+            .client
+            .post(format!("{}/admin/overview", hub.base_url))
+            .json(&envelope(&stranger, "/admin/overview", ()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
+    /// The clustering view, which is the thing an operator opens the
+    /// console for: which networks are taking the faucet, and what the
+    /// curve is charging them.
+    #[tokio::test]
+    async fn the_console_groups_faucet_activity_by_network() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 10_000_000_000).await;
+        let hub = spawn_hub_with_prefix_cap(operator_key.clone(), fake_node.addr.clone(), 1).await;
+
+        for _ in 0..2 {
+            let agent = PrivateKey::new_key();
+            let challenge = request_faucet_challenge(&hub, &agent).await;
+            assert_eq!(redeem_faucet_challenge(&hub, &agent, &challenge).await.status(), reqwest::StatusCode::OK);
+        }
+
+        let body: Value = hub
+            .client
+            .post(format!("{}/admin/overview", hub.base_url))
+            .json(&envelope(&operator_key, "/admin/overview", ()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let networks = body["networks"].as_array().unwrap();
+        assert_eq!(networks.len(), 1, "both grants came from one network");
+        assert_eq!(networks[0]["prefix"], "127.0.0.0/24");
+        assert_eq!(networks[0]["grants_in_window"], 2);
+        assert_eq!(
+            networks[0]["next_price_multiplier"], 2,
+            "the console shows what the curve is about to charge, not just what happened"
+        );
+        assert_eq!(body["agents"]["funded_by_faucet"], 2);
+        assert_eq!(
+            body["agents"]["with_completed_work"], 0,
+            "funded is not the same as working, and the console must not conflate them"
         );
     }
 

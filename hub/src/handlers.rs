@@ -4376,6 +4376,35 @@ fn parse_hex_pubkey(hex_str: &str) -> Result<PublicKey, ApiError> {
 /// and is, unconditional: `BoardError::PosterCannotClaimOwnTask`,
 /// enforced in `claim_task`/`join_consensus_task` regardless of who
 /// funded the task or how.
+/// Admits the operator, or any key named by `--admin-keys`.
+///
+/// Read-only by construction: this gates `/admin/*` and nothing there
+/// writes. Keeping the two sets distinct is what lets a collaborator
+/// watch the hub without holding the key that spends its money.
+fn require_admin(pubkey: &PublicKey, state: &AppState) -> Result<(), ApiError> {
+    if *pubkey == state.operator_public_key || state.admin_keys.contains(&pubkey.to_string()) {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden("not an admin key for this hub".into()))
+}
+
+/// The operators' console feed. A signed read, because it carries
+/// identities and network prefixes that `/metrics` deliberately refuses
+/// to expose to a scraper.
+///
+/// `POST` rather than `GET` only because a signed envelope needs a body;
+/// it changes nothing.
+pub async fn admin_overview(
+    State(state): State<Arc<AppState>>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    Json(envelope): Json<SignedEnvelope<()>>,
+) -> Result<Json<crate::admin::Overview>, ApiError> {
+    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
+    require_admin(&pubkey, &state)?;
+    Ok(Json(crate::admin::overview(&state, Utc::now()).await))
+}
+
 fn require_operator(pubkey: &PublicKey, state: &AppState) -> Result<(), ApiError> {
     if *pubkey != state.operator_public_key {
         return Err(ApiError::Forbidden(

@@ -1,0 +1,23 @@
+[package]
+name = "console"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "itx-console"
+path = "src/main.rs"
+
+# Deliberately small. This binary's whole job is to hold a key the
+# browser must never see, sign one request shape, and serve one page --
+# every dependency past that is surface area on the machine an operator
+# runs during an incident.
+[dependencies]
+anyhow = "1.0.86"
+argh = "0.1.12"
+axum = "0.7"
+btclib = { path = "../lib" }
+sdk = { path = "../sdk" }
+ciborium = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1.0"
+tokio = { version = "1.37.0", features = ["full"] }

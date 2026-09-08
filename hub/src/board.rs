@@ -2169,6 +2169,23 @@ impl TaskBoard {
             .count() as u64
     }
 
+    /// Grants per network: `(in the window, all time)` keyed by prefix.
+    ///
+    /// The clustering view `admin` renders. Grouped here rather than in
+    /// the handler because it needs both maps at once and the board is
+    /// the only thing that holds them together.
+    pub fn faucet_grants_by_prefix(&self, cutoff: i64) -> Vec<(String, (u64, u64))> {
+        let mut rows: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for (pubkey, prefix) in &self.faucet_grant_prefixes {
+            let entry = rows.entry(prefix.clone()).or_insert((0, 0));
+            entry.1 += 1;
+            if self.faucet_grants.get(pubkey).is_some_and(|at| *at >= cutoff) {
+                entry.0 += 1;
+            }
+        }
+        rows.into_iter().collect()
+    }
+
     /// Restores the network a grant was claimed from. Separate from
     /// `restore_faucet_grant` because the two tables are read
     /// independently at boot and a grant may have no prefix recorded.
