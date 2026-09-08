@@ -529,9 +529,23 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         buckets: Optional[int] = None,
     ) -> dict:
         """One capability's (or, if `capability` is omitted, the whole
-        board's) posting/bounty history at a caller-chosen window and
-        resolution. Prefer `get_capability_trend` for the same data plus
-        computed period-over-period change percentages.
+        board's) history at a caller-chosen window and resolution.
+
+        Two halves, and they answer different questions. `posted_series`
+        and `bounty_series` are bucketed by when a task was created --
+        demand arriving. `settled_series` and `paid_bounty_series` are
+        bucketed by when its payout confirmed, so a task posted before
+        the window and paid inside it appears in the second and not the
+        first. `agents_series` counts distinct posters and earners per
+        bucket (not summable into the window-wide `agents`), `fees_series`
+        is one chain fee per payout leg, and `faucet_series` is
+        board-wide -- identical whatever `capability` is asked for,
+        because the faucet issues against a key rather than a kind of
+        work.
+
+        None of this is price data: bounty posted only ever goes up and
+        nothing is quoted against it. Prefer `get_capability_trend` for
+        period-over-period change percentages on the posting side.
         """
         return client.board_series(capability, window_ms, buckets)
 
