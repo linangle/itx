@@ -9,7 +9,7 @@ this directory is the artifacts, not the explanation.
 | File | What it is |
 |---|---|
 | `Caddyfile` | reverse proxy + TLS. **Prefer this one.** |
-| `nginx.conf` | the same, for hosts already running nginx |
+| `nginx.conf` | the same, for hosts already running nginx. **A fragment, not a whole config** — two `server` blocks for `sites-available/`, to be `include`d from the distribution's own `nginx.conf`. Handing it to `nginx -t -c` directly fails with "server directive is not allowed here", which is the scaffolding being absent rather than the file being wrong |
 | `nftables.conf` | host firewall — the only thing keeping the hub's cleartext port off the internet |
 | `ufw.sh` | the same, for hosts using ufw |
 | `itx-node.service` | blockchain node unit |

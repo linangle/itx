@@ -133,24 +133,40 @@ jobs:
         run: sudo nft -c -f deploy/nftables.conf
 
       - name: nginx
-        # The config names certificate paths that do not exist in a
-        # checkout, and `nginx -t` reads them, so stand in a throwaway
-        # self-signed pair first. This validates *syntax and directives*,
-        # which is the class of error §11 says was never checked -- it
-        # does not validate that the deployment works.
+        # Two pieces of scaffolding, both of which the first run of this
+        # job is what established.
+        #
+        # `deploy/nginx.conf` is a **fragment** -- two bare `server`
+        # blocks meant for `sites-available/`, not a whole config. Handed
+        # to `nginx -t -c` as-is it fails with "server directive is not
+        # allowed here", which says nothing about the file being wrong.
+        # So it gets wrapped in the minimal `events`/`http` scaffold an
+        # include would have supplied.
+        #
+        # And the cert paths it names do not exist in a checkout, while
+        # `nginx -t` reads them, so a throwaway self-signed pair stands
+        # in. This validates *syntax and directives* -- the class of
+        # error §11 says was never checked -- not that the deployment
+        # works.
         run: |
           sudo mkdir -p /etc/ssl/itx
           sudo openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
             -keyout /etc/ssl/itx/test.key -out /etc/ssl/itx/test.crt \
             -subj "/CN=itx.test" 2>/dev/null
-          # Point the config's cert directives at the throwaway pair
-          # rather than editing the file under test in place.
           # POSIX character classes, not \s: that is a GNU extension, and
           # a workflow that only parses on one sed is the kind of thing
           # this job exists to catch elsewhere. Key first, so the shorter
           # directive name cannot shadow the longer one.
           sed -E 's#(ssl_certificate_key)[[:space:]]+[^;]+;#\1 /etc/ssl/itx/test.key;#; s#(ssl_certificate)[[:space:]]+[^;]+;#\1 /etc/ssl/itx/test.crt;#' \
-            deploy/nginx.conf > /tmp/nginx-itx.conf
+            deploy/nginx.conf > /tmp/itx-site.conf
+          {
+            echo 'events {}'
+            echo 'http {'
+            echo '  include /etc/nginx/mime.types;'
+            echo '  default_type application/octet-stream;'
+            cat /tmp/itx-site.conf
+            echo '}'
+          } > /tmp/nginx-itx.conf
           sudo nginx -t -c /tmp/nginx-itx.conf
 
       - name: systemd units

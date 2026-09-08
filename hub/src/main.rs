@@ -1607,6 +1607,32 @@ mod tests {
             assert!(utxos.len() < before, "nothing to spend: the output was not in the set");
         }
 
+        /// Waits until `pubkey` holds `want` confirmed, unmarked outputs.
+        ///
+        /// Waiting on the wallet's *shape* rather than on a submission
+        /// count, because the count is a proxy and the proxy is wrong:
+        /// `spawn_hub` fires a boot fan-out of its own, so the first
+        /// submission a test sees may be that one, with the test's own
+        /// `maintain_operator_outputs` call then skipped by the inflight
+        /// guard. That race resolves differently on different machines --
+        /// it passed on macOS and failed on CI's Linux for months before
+        /// anyone ran it on a second platform.
+        async fn wait_for_ready_outputs(&self, pubkey: &PublicKey, want: usize) {
+            for _ in 0..400 {
+                let ready = self
+                    .outputs_of(pubkey)
+                    .await
+                    .iter()
+                    .filter(|(o, marked)| !marked && o.value >= operator_wallet::MIN_USEFUL_OUTPUT)
+                    .count();
+                if ready >= want {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("operator wallet never reached {want} spendable output(s)");
+        }
+
         async fn balance_of(&self, pubkey: &PublicKey) -> u64 {
             self.outputs_of(pubkey)
                 .await
@@ -1957,6 +1983,17 @@ mod tests {
         .await
     }
 
+    /// A hub whose operator wallet is kept at `floor` outputs. Passing a
+    /// floor the wallet already meets is how a test opts out of the
+    /// fan-out entirely.
+    async fn spawn_hub_with_wallet_floor(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        floor: usize,
+    ) -> TestHub {
+        spawn_hub_inner_with_floor(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, u64::MAX, u64::MAX, Default::default(), floor).await
+    }
+
     async fn spawn_hub_with_prefix_cap(
         operator_private_key: PrivateKey,
         node_address: String,
@@ -1993,6 +2030,20 @@ mod tests {
         consensus_max_exposure: u64,
         faucet_grants_per_prefix: u64,
         admin_keys: std::collections::BTreeSet<String>,
+    ) -> TestHub {
+        spawn_hub_inner_with_floor(operator_private_key, node_address, trusted_proxies, faucet_daily_grants, consensus_max_exposure, faucet_grants_per_prefix, admin_keys, operator_wallet::DEFAULT_WALLET_OUTPUTS).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_hub_inner_with_floor(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        trusted_proxies: rate_limit::TrustedProxies,
+        faucet_daily_grants: u64,
+        consensus_max_exposure: u64,
+        faucet_grants_per_prefix: u64,
+        admin_keys: std::collections::BTreeSet<String>,
+        wallet_floor: usize,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
@@ -2031,7 +2082,7 @@ mod tests {
             operator_private_key: operator_private_key.clone(),
             operator_public_key,
             payout_lock: Mutex::new(()),
-            operator_wallet_outputs: operator_wallet::DEFAULT_WALLET_OUTPUTS,
+            operator_wallet_outputs: wallet_floor,
             operator_fan_out_inflight: Mutex::new(Vec::new()),
         custody_fan_out_inflight: Mutex::new(Vec::new()),
             exchange_custody_private_key,
@@ -2554,8 +2605,17 @@ mod tests {
         let fake_node = FakeNode::spawn(operator_key.public_key(), 15_000_000_000).await;
         let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
 
+        // Wait for the wallet to actually be fanned out before charging
+        // anything to it. `spawn_hub` fires a boot fan-out, so this may
+        // already be done by the time the explicit call below runs -- and
+        // if it is not, the inflight guard makes that call a no-op. Either
+        // way what the test needs is the resulting shape, so wait for
+        // that and let whichever fan-out produced it be an implementation
+        // detail.
         handlers::maintain_operator_outputs(&hub.state).await;
-        fake_node.wait_for_submissions_seen(1).await;
+        fake_node
+            .wait_for_ready_outputs(&operator_key.public_key(), operator_wallet::DEFAULT_WALLET_OUTPUTS)
+            .await;
 
         // From here on the node accepts payments and mines nothing, so
         // every payout's change stays invisible and each grant has to
@@ -2597,7 +2657,12 @@ mod tests {
         for value in [15_000_000_000u64, 200_000_000, 900_000_000] {
             fake_node.credit(operator_key.public_key(), value).await;
         }
-        let hub = spawn_hub(operator_key.clone(), fake_node.addr.clone()).await;
+        // A floor of one, so the boot fan-out plans nothing: three ready
+        // outputs already clear it. What is under test is *selection*,
+        // and a reshape running beside it both changes the wallet and
+        // marks the 15-coin output as spent, which is precisely the
+        // assertion below. Suppressing it makes the test about one thing.
+        let hub = spawn_hub_with_wallet_floor(operator_key.clone(), fake_node.addr.clone(), 1).await;
         fake_node.set_fate(SubmissionFate::HeldInMempool).await;
 
         let agent = PrivateKey::new_key();
