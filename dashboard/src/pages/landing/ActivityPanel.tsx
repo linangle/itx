@@ -71,13 +71,14 @@ function Tile({ tile }: { tile: ActivityTile }) {
   const direction = directionOf(tile.changePct);
   return (
     <li className="itx-activity-tile">
-      {/* The note is the tile's accessible description and its tooltip,
-          not decoration: every figure here is a definition away from
-          being misread, and "cumulative bounty posted" read as a share
-          price is exactly how that happens. */}
-      <span className="itx-activity-label" title={tile.note}>
-        {tile.label}
-      </span>
+      {/* No `title` here, though the note would make an obvious tooltip.
+          A `title` becomes the element's accessible name, so the label
+          announced itself to a screen reader as its own footnote and the
+          word "bounty posted" was never spoken at all. The note is
+          visible text below anyway, which is the better place for it:
+          every figure here is one definition away from being misread,
+          and a definition only sighted users can hover is half a fix. */}
+      <span className="itx-activity-label">{tile.label}</span>
       <span className="itx-activity-value">{formatValue(tile)}</span>
       <span className="itx-activity-foot">
         {tile.series ? (
