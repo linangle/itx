@@ -82,42 +82,34 @@ impl EscrowSecret {
         EscrowSecret(bytes)
     }
 
-    /// Reads the secret at `path`, generating and writing a new one if
-    /// nothing is there yet -- mirroring how `main` already treats the
-    /// operator and custody key files, so a first run of a fresh hub
-    /// still needs no setup step.
-    ///
-    /// The file is created with owner-only permissions in the same syscall
-    /// that creates it (rather than being chmodded afterwards, which would
-    /// leave a window where a fresh secret is world-readable), and with
-    /// `create_new`, so two hubs racing to initialize the same path fail
-    /// loudly instead of one silently overwriting the other's secret and
-    /// orphaning its escrows.
-    pub fn load_or_create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+    /// Reads an existing secret at `path`. Missing files are deliberately
+    /// errors: only the startup policy in `main` may decide that this is a
+    /// first boot where explicit key generation is safe.
+    pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref();
-        match fs::read(path) {
-            Ok(bytes) => {
-                let len = bytes.len();
-                let bytes: [u8; SECRET_LEN] = bytes.try_into().map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "escrow secret at {} must be exactly {SECRET_LEN} bytes, found {len} \
-                             -- refusing to start rather than derive escrow addresses from a \
-                             truncated or unrelated file",
-                            path.display()
-                        ),
-                    )
-                })?;
-                Ok(EscrowSecret(bytes))
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let secret = Self::generate();
-                secret.write_new_file(path)?;
-                Ok(secret)
-            }
-            Err(e) => Err(e),
-        }
+        let bytes = fs::read(path)?;
+        let len = bytes.len();
+        let bytes: [u8; SECRET_LEN] = bytes.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "escrow secret at {} must be exactly {SECRET_LEN} bytes, found {len} \
+                     -- refusing to start rather than derive escrow addresses from a \
+                     truncated or unrelated file",
+                    path.display()
+                ),
+            )
+        })?;
+        Ok(EscrowSecret(bytes))
+    }
+
+    /// Generates a secret and atomically creates its file. Called only after
+    /// `main` has established that `--generate-keys` was explicit and no hub
+    /// store exists.
+    pub fn generate_and_save<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let secret = Self::generate();
+        secret.write_new_file(path.as_ref())?;
+        Ok(secret)
     }
 
     fn write_new_file(&self, path: &Path) -> io::Result<()> {
@@ -212,10 +204,10 @@ mod tests {
     }
 
     #[test]
-    fn load_or_create_writes_once_then_reads_back_the_same_secret() {
+    fn generate_and_save_then_load_reads_back_the_same_secret() {
         let path = temp_path("roundtrip");
-        let created = EscrowSecret::load_or_create(&path).unwrap();
-        let reloaded = EscrowSecret::load_or_create(&path).unwrap();
+        let created = EscrowSecret::generate_and_save(&path).unwrap();
+        let reloaded = EscrowSecret::load(&path).unwrap();
 
         let id = Uuid::new_v4();
         assert_eq!(
@@ -228,11 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn load_does_not_create_a_missing_secret() {
+        let path = temp_path("missing");
+        let err = EscrowSecret::load(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn refuses_a_secret_file_of_the_wrong_length() {
         let path = temp_path("truncated");
         std::fs::write(&path, b"too short").unwrap();
 
-        let err = EscrowSecret::load_or_create(&path).unwrap_err();
+        let err = EscrowSecret::load(&path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 
         std::fs::remove_file(&path).ok();
@@ -244,7 +244,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let path = temp_path("permissions");
-        EscrowSecret::load_or_create(&path).unwrap();
+        EscrowSecret::generate_and_save(&path).unwrap();
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(

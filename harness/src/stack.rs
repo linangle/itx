@@ -308,6 +308,7 @@ impl Stack {
             self.node_address(),
             "--store-file".into(),
             "./hub.redb".into(),
+            "--generate-keys".into(),
             "--operator-key-file".into(),
             "./operator.priv.cbor".into(),
             "--faucet-pow-expected-hashes".into(),

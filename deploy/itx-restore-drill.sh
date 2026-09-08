@@ -146,16 +146,25 @@ step "2. verifying the manifest"
     || fail "checksums do not match -- the archive is corrupt, not just old"
 echo "all files match their recorded checksums"
 
-# --- 3. the escrow secret, specifically -------------------------------
+# --- 3. all hub secrets, then the escrow secret specifically ----------
 #
 # The one file whose bytes have to be exactly right. Escrow addresses are
 # HKDF(secret, deposit id), so a single flipped bit produces a valid-
 # looking hub that derives a different address for every deposit and
-# sweeps nothing. Length and fingerprint are both checked because the
-# hub itself only checks length.
-step "3. checking the escrow secret"
+# sweeps nothing. The hub checks the secret against every restored derived
+# deposit; this drill also checks its length and optional out-of-band
+# fingerprint so an internally consistent but substituted archive is caught.
+step "3. checking all hub secrets"
+for NAME in \
+    hub_operator.priv.cbor \
+    hub_exchange_custody.priv.cbor \
+    hub_escrow_secret.bin
+do
+    [[ -f "$R/secrets/$NAME" ]] || fail "$NAME is not in the backup"
+done
+echo "operator, exchange custody, and escrow secret files are present"
+
 SECRET="$R/secrets/hub_escrow_secret.bin"
-[[ -f "$SECRET" ]] || fail "hub_escrow_secret.bin is not in the backup"
 LEN=$(wc -c < "$SECRET" | tr -d ' ')
 [[ "$LEN" == "32" ]] || fail "escrow secret is $LEN bytes, expected 32"
 FP=$(sha256sum "$SECRET" | cut -d' ' -f1)
@@ -239,6 +248,11 @@ case "$HEALTH_CODE" in
     000) cat "$WORK/hub.log"; fail "hub never answered /health" ;;
     *)   cat "$WORK/hub.log"; fail "hub answered /health with $HEALTH_CODE" ;;
 esac
+
+if grep -q 'generating a new one' "$WORK/hub.log"; then
+    cat "$WORK/hub.log"
+    fail "the restored hub generated replacement key material"
+fi
 
 # --- 6. same deployment? ---------------------------------------------
 #

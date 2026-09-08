@@ -559,8 +559,10 @@ Seeing it at all means the store could not be read. §9.5 has what to do.
 
 ## 6. Keys and secrets
 
-The hub creates three files on first run, all `0600`, all in its working
-directory unless told otherwise. §5's unit puts them in
+The hub creates three files only when `--generate-keys` is explicitly supplied
+on a first run, all `0600`, all in its working directory unless told otherwise.
+If `hub.redb` already exists, missing key material is always fatal even with the
+flag. §5's unit puts the files in
 `/var/lib/itx/secrets/` (mode `0700`) so they are one directory to back up, one
 directory to audit, and one directory to keep out of everything else's reach.
 
@@ -602,11 +604,13 @@ database used to be:
 
 ### 6.2 Back up the escrow secret before the hub takes a single deposit
 
-This is the ordering that matters, and it is easy to get wrong because the hub
-generates the file silently on first start and then works perfectly.
+This is the ordering that matters. The packaged unit supplies
+`--generate-keys`, but the hub honors it only while `hub.redb` does not exist;
+a restored database with an incomplete `secrets/` directory therefore refuses
+to boot instead of minting a new identity.
 
 ```bash
-sudo systemctl start itx-hub          # generates the secret
+sudo systemctl start itx-hub          # explicitly generates all three keys on first boot
 sudo systemctl stop itx-hub           # before anything can deposit
 # back it up now -- see §7 for the encrypted-backup mechanics
 sudo systemctl start itx-hub

@@ -29,6 +29,7 @@ use btclib::util::Saveable;
 use names::NameRegistry;
 use node_client::NodeClient;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -252,16 +253,21 @@ struct Args {
     #[argh(option, default = "String::from(\"./hub.redb\")")]
     /// path to the hub's durable store (a redb database file)
     store_file: String,
+    #[argh(switch)]
+    /// generate missing key files on a first boot. Refused when
+    /// --store-file already exists, because a restored store with missing
+    /// secrets must fail closed rather than silently change identities.
+    generate_keys: bool,
     #[argh(option, default = "String::from(\"./hub_operator.priv.cbor\")")]
-    /// path to the operator's private key (generated on first run if missing)
+    /// path to the operator's private key
     operator_key_file: String,
     #[argh(option, default = "String::from(\"./hub_exchange_custody.priv.cbor\")")]
-    /// path to the exchange's pooled custody private key (generated on first run if missing)
+    /// path to the exchange's pooled custody private key
     exchange_custody_key_file: String,
     #[argh(option, default = "String::from(\"./hub_escrow_secret.bin\")")]
     /// path to the master secret every escrow deposit key is derived from
-    /// (generated on first run if missing). Back this up: without it, any
-    /// escrow address already handed out becomes unsweepable.
+    /// Back this up: without it, any escrow address already handed out
+    /// becomes unsweepable.
     escrow_secret_file: String,
     #[argh(option, default = "faucet_pow::DEFAULT_EXPECTED_HASHES")]
     /// how much work a faucet grant costs, in expected SHA-256 hashes.
@@ -354,18 +360,68 @@ struct Args {
     operator_wallet_outputs: usize,
 }
 
-fn load_or_create_key(path: &str) -> Result<PrivateKey> {
+fn load_or_generate_key(path: &str, label: &str, generate_missing: bool) -> Result<PrivateKey> {
     match PrivateKey::load_from_file(path) {
         Ok(key) => Ok(key),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("no key found at {path}, generating a new one...");
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && generate_missing => {
+            println!("creating missing {label} at {path} because --generate-keys was supplied");
             let key = PrivateKey::new_key();
             key.save_to_file(path)?;
             restrict_to_owner(path)?;
             Ok(key)
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
+            "{label} is missing at {path}; refusing to generate it without a safe first-boot \
+             --generate-keys decision"
+        ),
         Err(e) => Err(e.into()),
     }
+}
+
+fn key_generation_policy(
+    store_exists: bool,
+    generate_keys: bool,
+    missing: &[(&str, &str)],
+) -> Result<bool> {
+    if missing.is_empty() {
+        return Ok(false);
+    }
+    let listed = missing
+        .iter()
+        .map(|(label, path)| format!("{label} ({path})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if store_exists {
+        anyhow::bail!(
+            "refusing to generate missing key material because --store-file already exists; \
+             restore the matching secret files before starting the hub. Missing: {listed}"
+        );
+    }
+    if !generate_keys {
+        anyhow::bail!(
+            "missing key material on a new hub: {listed}. Pass --generate-keys explicitly for \
+             the first boot"
+        );
+    }
+    Ok(true)
+}
+
+fn validate_derived_deposit_keys(board: &TaskBoard, secret: &EscrowSecret) -> Result<()> {
+    for deposit in board
+        .all_pending_deposits()
+        .filter(|deposit| deposit.deposit_private_key.is_none())
+    {
+        let derived = secret.derive(deposit.id).public_key();
+        anyhow::ensure!(
+            deposit.deposit_pubkey == derived,
+            "escrow secret does not match derived deposit {}: store has {}, secret derives {}; \
+             refusing to start before any payment can use the wrong key",
+            deposit.id,
+            deposit.deposit_pubkey,
+            derived,
+        );
+    }
+    Ok(())
 }
 
 /// Narrows a freshly-written key file to owner-only. `PrivateKey::save_to_file`
@@ -788,11 +844,41 @@ async fn main() -> Result<()> {
     let trusted_proxies = rate_limit::parse_trusted_proxies(&args.trusted_proxies)
         .map_err(|e| anyhow::anyhow!("--trusted-proxies is not a list of IP addresses: {e}"))?;
 
-    let operator_private_key = load_or_create_key(&args.operator_key_file)?;
+    let store_exists = Path::new(&args.store_file).try_exists()?;
+    let key_files = [
+        ("operator private key", args.operator_key_file.as_str()),
+        ("exchange custody private key", args.exchange_custody_key_file.as_str()),
+        ("escrow master secret", args.escrow_secret_file.as_str()),
+    ];
+    let mut missing_key_files = Vec::new();
+    for (label, path) in key_files {
+        if !Path::new(path).try_exists()? {
+            missing_key_files.push((label, path));
+        }
+    }
+    let generate_missing =
+        key_generation_policy(store_exists, args.generate_keys, &missing_key_files)?;
+
+    let operator_private_key =
+        load_or_generate_key(&args.operator_key_file, "operator private key", generate_missing)?;
     let operator_public_key = operator_private_key.public_key();
-    let exchange_custody_private_key = load_or_create_key(&args.exchange_custody_key_file)?;
+    let exchange_custody_private_key = load_or_generate_key(
+        &args.exchange_custody_key_file,
+        "exchange custody private key",
+        generate_missing,
+    )?;
     let exchange_custody_public_key = exchange_custody_private_key.public_key();
-    let escrow_secret = EscrowSecret::load_or_create(&args.escrow_secret_file)?;
+    let escrow_secret = match EscrowSecret::load(&args.escrow_secret_file) {
+        Ok(secret) => secret,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && generate_missing => {
+            println!(
+                "creating missing escrow master secret at {} because --generate-keys was supplied",
+                args.escrow_secret_file
+            );
+            EscrowSecret::generate_and_save(&args.escrow_secret_file)?
+        }
+        Err(e) => return Err(e.into()),
+    };
     println!("================================================================");
     println!("hub operator address -- fund this so the hub can pay out tasks/faucet grants:");
     println!("{operator_public_key}");
@@ -831,6 +917,7 @@ async fn main() -> Result<()> {
     for deposit in store.load_all_pending_deposits()? {
         board.restore_pending_deposit(deposit);
     }
+    validate_derived_deposit_keys(&board, &escrow_secret)?;
     for (pubkey, account) in store.load_all_exchange_accounts()? {
         board.restore_exchange_account(pubkey, account);
     }
@@ -1241,7 +1328,7 @@ fn build_router(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::TaskStatus;
+    use crate::board::{EscrowPurpose, TaskStatus};
     use btclib::crypto::Signature;
     use btclib::network::Message;
     use btclib::sha256::Hash;
@@ -1255,6 +1342,48 @@ mod tests {
 
     fn temp_store_path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("itx_hub_maintest_{}.redb", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn existing_store_never_allows_missing_key_generation() {
+        let missing = [("escrow master secret", "/restored/secrets/escrow.bin")];
+        let error = key_generation_policy(true, true, &missing).unwrap_err();
+        assert!(error.to_string().contains("--store-file already exists"));
+    }
+
+    #[test]
+    fn fresh_store_requires_explicit_key_generation() {
+        let missing = [("operator private key", "/new/operator.key")];
+        assert!(key_generation_policy(false, false, &missing).is_err());
+        assert!(key_generation_policy(false, true, &missing).unwrap());
+    }
+
+    #[test]
+    fn private_key_loader_does_not_generate_without_permission() {
+        let path = temp_store_path().with_extension("key");
+        let path = path.to_str().unwrap();
+        let error = load_or_generate_key(path, "test private key", false).unwrap_err();
+        assert!(error.to_string().contains("refusing to generate"));
+        assert!(!Path::new(path).exists());
+    }
+
+    #[test]
+    fn restored_derived_deposits_must_match_the_escrow_secret() {
+        let secret = EscrowSecret::generate();
+        let mut board = TaskBoard::new();
+        board.reserve_escrow(
+            &secret,
+            PrivateKey::new_key().public_key(),
+            100,
+            EscrowPurpose::FundExchangeAccount,
+            Utc::now() + chrono::Duration::minutes(30),
+        );
+
+        validate_derived_deposit_keys(&board, &secret).unwrap();
+        let error = validate_derived_deposit_keys(&board, &EscrowSecret::generate()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("escrow secret does not match derived deposit"));
     }
 
     /// Fixed `AskChainTip` response every `FakeNode` reports -- there's no

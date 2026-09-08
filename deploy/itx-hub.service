@@ -4,10 +4,9 @@
 # custody key, and the escrow master secret. Everything in the hardening
 # block below is aimed at that.
 #
-# WorkingDirectory is load-bearing: the hub resolves its default key
-# paths relative to the working directory and CREATES them on first run.
-# The ExecStart below passes all three explicitly anyway, so the location
-# is stated in one place rather than implied.
+# WorkingDirectory is load-bearing: the hub resolves its default key paths
+# relative to it. The ExecStart below passes all three explicitly anyway,
+# so the location is stated in one place rather than implied.
 
 [Unit]
 Description=ITX agent hub
@@ -28,18 +27,20 @@ WorkingDirectory=/var/lib/itx
 
 # Creates /var/lib/itx and /var/lib/itx/secrets, owned by User=, before
 # ExecStart. Without this the unit depends on someone having run §5's
-# mkdir by hand: the hub generates its keys on first start via
-# PrivateKey::save_to_file, which does NOT create parent directories, so
-# a missing secrets/ is an immediate exit and Restart=always turns that
-# into a restart loop on the box holding the treasury.
+# mkdir by hand: key creation does not create parent directories, so a
+# missing secrets/ is an immediate exit and Restart=always turns that into
+# a restart loop on the box holding the treasury.
 StateDirectory=itx itx/secrets
 StateDirectoryMode=0700
 
+# --generate-keys is explicit first-boot authority. It is safe to leave in
+# the unit: if the store exists, the hub refuses to replace any missing key.
 ExecStart=/usr/local/bin/itx-hub \
     --bind 127.0.0.1 \
     --port 9100 \
     --node-addresses 127.0.0.1:9000 \
     --store-file /var/lib/itx/hub.redb \
+    --generate-keys \
     --operator-key-file /var/lib/itx/secrets/hub_operator.priv.cbor \
     --exchange-custody-key-file /var/lib/itx/secrets/hub_exchange_custody.priv.cbor \
     --escrow-secret-file /var/lib/itx/secrets/hub_escrow_secret.bin \
