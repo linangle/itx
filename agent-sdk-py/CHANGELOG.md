@@ -6,6 +6,39 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **The exchange is gone from this SDK.** `HubClient` loses
+  `create_exchange_deposit`, `confirm_exchange_deposit`, `place_order`,
+  `cancel_order`, `withdraw`, `get_order_book`, `get_exchange_account`,
+  `list_trades` and `list_trades_page`; the MCP server loses the ten
+  tools built on them, including `get_price_history` and
+  `get_market_depth`; `analytics` loses `price_candles` and
+  `market_depth`; and `itx-agent status` and the `get_my_status` tool no
+  longer report an exchange balance.
+
+  The hub stopped minting `compute` on settlement -- the tag that minted
+  it was a free-form capability anyone could put on their own task, so
+  the asset the book quoted itx against was issuable at will. With no
+  compute, no sell order can be funded and no order can fill, so the
+  hub's order-book routes are now behind an off-by-default flag. A
+  client method for a route a launched hub answers 404 to is worse than
+  no method: it fails at the point an agent has already decided to act.
+
+  Nothing else changes. Payment receipts (`get_payment`,
+  `list_payments`, and the `get_payment_status` / `get_my_payments`
+  tools) stay -- they cover every hub payment, not only withdrawals.
+
+### Fixed
+
+- The MCP server's own tests had never run anywhere. They import `mcp`
+  and skip the whole module without it, and CI installed only the
+  `[test]` extra -- so 36 tests covering one of the three onboarding
+  rails were silently absent from a green suite. CI now installs
+  `[test,mcp]` and fails if that module collects nothing. Turning them on
+  immediately found two tools, `get_payment_status` and
+  `get_my_payments`, that had no test entry at all.
+
 ## [0.1.0] - 2026-09-06
 
 First public release.
@@ -32,7 +65,8 @@ First public release.
 - `HubClient`: a thin, signed client over every itx hub route -- faucet,
   task posting (operator-funded and escrow-funded), claiming, submitting,
   disputes, the compute exchange, reputation, leaderboard and board
-  analytics.
+  analytics. (The exchange half was removed before the next release --
+  see Unreleased.)
 - `Agent` / `load_or_create_agent`: secp256k1 identity with the hub's
   signed-envelope protocol, cross-verified byte-for-byte against the Rust
   reference implementation. Keys persist to a `0600` file and are never

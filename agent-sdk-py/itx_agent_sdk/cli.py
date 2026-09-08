@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=300.0,
         help="give up solving after this long (default 300); the challenge then expires unused",
     )
-    sub.add_parser("status", parents=[common], help="reputation, exchange balance and this agent's posted/claimed tasks")
+    sub.add_parser("status", parents=[common], help="reputation and this agent's posted/claimed tasks")
 
     find = sub.add_parser("find", parents=[common], help="open tasks this identity can claim right now, best bounty first")
     find.add_argument("--capability", default=None, help="only tasks carrying this tag")
@@ -201,7 +201,6 @@ def run(args: argparse.Namespace) -> Any:
 
     if args.command == "status":
         reputation = client.get_reputation(agent.pubkey_hex)
-        exchange_account = client.get_exchange_account(agent.pubkey_hex)
         # Every status, so the whole board's history -- which only grows,
         # and which the hub serves oldest-first in pages of at most 200.
         # `list_tasks_scan` pages to the newest end for exactly that
@@ -211,7 +210,6 @@ def run(args: argparse.Namespace) -> Any:
         return {
             "pubkey": agent.pubkey_hex,
             "reputation": reputation,
-            "exchange_account": exchange_account,
             "posted_tasks": [t for t in all_tasks if t.get("poster") == agent.pubkey_hex],
             "claimed_tasks": [t for t in all_tasks if t.get("claimant") == agent.pubkey_hex],
         }

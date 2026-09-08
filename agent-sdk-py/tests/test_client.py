@@ -384,96 +384,12 @@ def test_resolve_names_joins_pubkeys_with_commas():
     assert result == {"02aa": "alice", "02bb": None}
 
 
-def test_create_exchange_deposit_signs_a_null_payload():
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"deposit_address": "addr1"})
-    agent = Agent.generate()
-
-    client.create_exchange_deposit(agent)
-
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/exchange/deposit"
-    assert kwargs["json"]["payload"] is None
-
-
-def test_confirm_exchange_deposit_url_and_payload():
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"base_balance": 100})
-    agent = Agent.generate()
-
-    client.confirm_exchange_deposit(agent, "e1")
-
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/exchange/deposit/e1/confirm"
-    assert kwargs["json"]["payload"] == {"escrow_id": "e1"}
-
-
-def test_place_order_sends_fields_in_struct_declaration_order():
-    """`hub/src/handlers.rs::PlaceOrderPayload` declares side, price,
-    quantity in that order.
-    """
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"id": "o1", "status": "Open"})
-    agent = Agent.generate()
-
-    client.place_order(agent, "buy", 100, 5)
-
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/exchange/orders"
-    payload = kwargs["json"]["payload"]
-    assert list(payload.keys()) == ["side", "price", "quantity"]
-    assert payload == {"side": "buy", "price": 100, "quantity": 5}
-
-
-def test_cancel_order_uses_the_order_id_in_both_url_and_payload():
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"id": "o1", "status": "Cancelled"})
-    agent = Agent.generate()
-
-    client.cancel_order(agent, "o1")
-
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/exchange/orders/o1/cancel"
-    assert kwargs["json"]["payload"] == {"order_id": "o1"}
-
-
-def test_withdraw_url_and_payload():
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"amount": 500})
-    agent = Agent.generate()
-
-    client.withdraw(agent, 500)
-
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/exchange/withdraw"
-    assert kwargs["json"]["payload"] == {"amount": 500}
-
-
-def test_get_order_book_hits_the_right_url():
-    client = make_client_with_mock_session()
-    client.session.get.return_value = mock_response({"bids": [], "asks": []})
-    result = client.get_order_book()
-    client.session.get.assert_called_once_with(
-        "http://hub.test/exchange/orders", params=None, timeout=ANY
-    )
-    assert result == {"bids": [], "asks": []}
-
-
-def test_get_exchange_account_hits_the_right_url():
-    client = make_client_with_mock_session()
-    client.session.get.return_value = mock_response({"base_balance": 0})
-    client.get_exchange_account("02aabbcc")
-    client.session.get.assert_called_once_with(
-        "http://hub.test/exchange/account/02aabbcc", params=None, timeout=ANY
-    )
-
-
-def test_list_trades_page_returns_total_from_header():
+def test_get_with_total_reads_the_header_when_it_is_there():
     client = make_client_with_mock_session()
     client.session.get.return_value = mock_response([{"id": "t1"}], headers={"x-total-count": "2"})
-    items, total = client.list_trades_page(offset=0, limit=1)
+    items, total = client._get_with_total("/tasks", params={"offset": 0, "limit": 1})
     client.session.get.assert_called_once_with(
-        "http://hub.test/exchange/trades", params={"offset": 0, "limit": 1}, timeout=ANY
+        "http://hub.test/tasks", params={"offset": 0, "limit": 1}, timeout=ANY
     )
     assert items == [{"id": "t1"}]
     assert total == 2
@@ -515,9 +431,9 @@ def test_signed_posts_do_not_follow_redirects():
     the same route and return the reply as if the write had happened.
     """
     client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"id": "o1"})
+    client.session.post.return_value = mock_response({"id": "t1"})
 
-    client.place_order(Agent.generate(), "buy", 100, 5)
+    client.submit_task(Agent.generate(), "11111111-1111-4111-8111-111111111111", "42")
 
     _, kwargs = client.session.post.call_args
     assert kwargs["allow_redirects"] is False
@@ -526,15 +442,15 @@ def test_signed_posts_do_not_follow_redirects():
 def test_a_redirected_signed_post_raises_and_explains_the_http_base_url():
     client = make_client_with_mock_session()
     client.session.post.return_value = mock_response(
-        None, status_code=301, headers={"location": "https://hub.test/exchange/orders"}
+        None, status_code=301, headers={"location": "https://hub.test/tasks"}
     )
 
     with pytest.raises(HubError) as excinfo:
-        client.place_order(Agent.generate(), "buy", 100, 5)
+        client.create_task(Agent.generate(), "work", 10, "cafe")
 
     assert excinfo.value.status_code == 301
     body = excinfo.value.body
-    assert "https://hub.test/exchange/orders" in body
+    assert "https://hub.test/tasks" in body
     assert "http://" in body and "signature binds the request path" in body
 
 
@@ -614,8 +530,6 @@ def test_every_signed_route_that_carries_an_id_canonicalises_it():
         (lambda: client.create_dispute_escrow(agent, loud, "why"), f"/tasks/{CANONICAL_ID}/dispute/escrow"),
         (lambda: client.confirm_dispute_escrow(agent, loud, loud), f"/tasks/{CANONICAL_ID}/dispute/confirm"),
         (lambda: client.resolve_dispute(agent, loud, "assignee_wins"), f"/tasks/{CANONICAL_ID}/dispute/resolve"),
-        (lambda: client.confirm_exchange_deposit(agent, loud), f"/exchange/deposit/{CANONICAL_ID}/confirm"),
-        (lambda: client.cancel_order(agent, loud), f"/exchange/orders/{CANONICAL_ID}/cancel"),
     ]:
         call()
         args, kwargs = client.session.post.call_args

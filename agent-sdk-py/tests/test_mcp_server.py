@@ -34,8 +34,6 @@ MONEY_OR_REPUTATION_TOOLS = {
     "claim_task",
     "submit_work",
     "dispute_answer",
-    "place_order",
-    "withdraw_from_exchange",
 }
 
 # A valid argument set for every tool, so the leak test can call each
@@ -57,11 +55,8 @@ TOOL_CALLS: Dict[str, Dict[str, Any]] = {
     "submit_work": {"task_id": "t1", "output": "answer"},
     "dispute_answer": {"task_id": "t1", "reason": "wrong"},
     "confirm_dispute_funding": {"task_id": "t1", "escrow_id": "e1"},
-    "deposit_to_exchange": {},
-    "confirm_exchange_deposit": {"escrow_id": "e1"},
-    "place_order": {"side": "buy", "price": 2, "quantity": 3},
-    "cancel_order": {"order_id": "o1"},
-    "withdraw_from_exchange": {"amount": 1},
+    "get_payment_status": {"payment_id": "p1"},
+    "get_my_payments": {},
     "get_health": {},
     "list_tasks": {},
     "get_task": {"task_id": "t1"},
@@ -70,16 +65,11 @@ TOOL_CALLS: Dict[str, Dict[str, Any]] = {
     "get_market_summary": {},
     "get_market_series": {},
     "resolve_names": {"pubkeys": [OTHER]},
-    "get_order_book": {},
-    "get_exchange_account": {},
-    "list_trades": {},
     "get_my_status": {},
     "find_matching_tasks": {},
     "get_activity_feed": {},
     "get_capability_trend": {},
     "get_market_overview": {},
-    "get_price_history": {"interval_ms": 60_000},
-    "get_market_depth": {},
     "get_rate_limit_status": {},
 }
 
@@ -129,17 +119,11 @@ class FakeHub:
     def create_dispute_escrow(self, agent, task_id, reason):
         return dict(self.ESCROW)
 
-    def create_exchange_deposit(self, agent):
-        return dict(self.ESCROW)
-
     def confirm_task_escrow(self, agent, escrow_id):
         return {"escrow_id": escrow_id, "status": "Open"}
 
     def confirm_dispute_escrow(self, agent, task_id, escrow_id):
         return {"task_id": task_id, "status": "Disputed"}
-
-    def confirm_exchange_deposit(self, agent, escrow_id):
-        return {"credited": 100}
 
     def get_task(self, task_id):
         return _task(task_id)
@@ -152,18 +136,6 @@ class FakeHub:
 
     def submit_task(self, agent, task_id, output):
         return {"id": task_id, "status": "Verified"}
-
-    def get_exchange_account(self, pubkey_hex):
-        return {"base_balance": 1000, "locked_base": 0, "compute_balance": 10, "locked_compute": 0}
-
-    def place_order(self, agent, side, price, quantity):
-        return {"id": "o1", "side": side, "price": price, "quantity": quantity, "filled": 0, "status": "open"}
-
-    def cancel_order(self, agent, order_id):
-        return {"id": order_id, "status": "cancelled"}
-
-    def withdraw(self, agent, amount):
-        return {"amount": amount}
 
     def get_health(self):
         return {"status": "ok", "chain_height": 7}
@@ -192,17 +164,11 @@ class FakeHub:
     def resolve_names(self, pubkeys):
         return {p: "quiet-otter" for p in pubkeys}
 
-    def get_order_book(self):
-        return {
-            "bids": [{"id": "b1", "price": 9, "quantity": 5, "filled": 1}],
-            "asks": [{"id": "a1", "price": 11, "quantity": 2, "filled": 0}],
-        }
+    def get_payment(self, payment_id):
+        return {"id": payment_id, "status": "Confirmed", "amount": 50}
 
-    def list_trades_page(self, offset, limit) -> Tuple[List[dict], Optional[int]]:
-        return [
-            {"price": 10, "quantity": 1, "executed_at": "2026-09-05T00:00:30+00:00"},
-            {"price": 12, "quantity": 2, "executed_at": "2026-09-05T00:00:10+00:00"},
-        ], 2
+    def list_payments(self, recipient, offset=0, limit=50):
+        return [{"id": "p1", "recipient": recipient, "status": "Confirmed", "amount": 50}]
 
 
 @pytest.fixture
@@ -241,9 +207,9 @@ def test_every_tool_is_annotated_and_every_money_tool_is_destructive(server):
 def test_read_only_tools_say_so(server):
     srv, _, _ = server
     tools = {t.name: t for t in _tools(srv)}
-    for name in ("get_health", "list_tasks", "get_my_status", "find_matching_tasks", "get_market_depth"):
+    for name in ("get_health", "list_tasks", "get_my_status", "find_matching_tasks", "get_market_overview"):
         assert tools[name].annotations.read_only_hint is True, name
-    for name in ("claim_faucet", "confirm_task_funding", "cancel_order", "deposit_to_exchange"):
+    for name in ("claim_faucet", "confirm_task_funding", "claim_task", "post_task"):
         assert tools[name].annotations.read_only_hint is False, name
 
 
@@ -254,8 +220,6 @@ def test_money_tools_take_explicit_amounts_with_no_defaults(server):
         "post_task": "bounty",
         "post_consensus_task": "bounty",
         "post_disputable_task": "bounty",
-        "place_order": "quantity",
-        "withdraw_from_exchange": "amount",
     }
     for name, field in amount_fields.items():
         schema = tools[name].input_schema if hasattr(tools[name], "input_schema") else tools[name].inputSchema
@@ -265,7 +229,7 @@ def test_money_tools_take_explicit_amounts_with_no_defaults(server):
 
 def test_escrow_tools_return_the_deposit_details_as_structured_data(server):
     srv, _, _ = server
-    for name in ("post_task", "post_consensus_task", "post_disputable_task", "dispute_answer", "deposit_to_exchange"):
+    for name in ("post_task", "post_consensus_task", "post_disputable_task", "dispute_answer"):
         result = _call(srv, name, TOOL_CALLS[name]).model_dump(by_alias=True)
         assert not result.get("isError"), (name, result)
         structured = result.get("structuredContent") or json.loads(result["content"][0]["text"])
@@ -313,13 +277,6 @@ def test_hub_rejections_reach_the_model_with_status_and_body(monkeypatch, tmp_pa
     srv = mcp_server.build_server("http://hub.test", str(tmp_path / "agent.key"))
     with pytest.raises(ToolError, match="409.*faucet already claimed"):
         _call(srv, "claim_faucet", {})
-
-
-def test_place_order_checks_spendable_balance_before_hitting_the_hub(server):
-    srv, _, _ = server
-    # FakeHub reports 1000 spendable base; 2 * 600 exceeds it.
-    with pytest.raises(ToolError, match="buy needs 1200 spendable base balance, this agent has 1000"):
-        _call(srv, "place_order", {"side": "buy", "price": 600, "quantity": 2})
 
 
 def test_main_resolves_hub_url_and_key_file_from_the_environment(monkeypatch, tmp_path):

@@ -183,8 +183,8 @@ class HubClient:
 
     def _get_with_total(self, path: str, params: Optional[dict] = None) -> Tuple[Any, Optional[int]]:
         """Like `_get`, but also reads the `X-Total-Count` header the hub
-        sends on every paginated list route (`/tasks`, `/leaderboard`,
-        `/exchange/trades`) -- the count of everything matching the
+        sends on its paginated list routes (`/tasks`, `/leaderboard`) --
+        the count of everything matching the
         filters *before* paging, for sizing a pager without walking every
         page. `None` if the header is absent or unparseable, rather than
         raising -- a caller that doesn't need the total shouldn't have a
@@ -206,10 +206,10 @@ class HubClient:
         # honours the browser rule that a 301/302 turns a POST into a GET,
         # so a signed write to a hub fronted by the shipped nginx config
         # (plain http answers `return 301 https://...`) would silently
-        # become a *read* of the same route -- `place_order` returning the
-        # order book as if it were the placed order, with no error
-        # anywhere. `_handle` turns the redirect into a `HubError` that
-        # says so instead.
+        # become a *read* of the same route -- `claim_task` returning the
+        # task as if the claim had succeeded, with no error anywhere.
+        # `_handle` turns the redirect into a `HubError` that says so
+        # instead.
         resp = self.session.post(
             f"{self.base_url}{path}", json=envelope, timeout=self.timeout, allow_redirects=False
         )
@@ -606,51 +606,11 @@ class HubClient:
         payload = {"task_id": task_id, "outcome": outcome}
         return self._signed_post(f"/tasks/{task_id}/dispute/resolve", operator, payload)
 
-    # -- exchange ------------------------------------------------------------
+    # -- payments ------------------------------------------------------------
     #
-    # A custodial ledger trading the base coin against a "compute" token
-    # (mintable only by completing a task tagged "compute" -- there is no
-    # other way to acquire it). Every one of these is open to any signed
-    # agent; none is operator-gated.
-
-    def create_exchange_deposit(self, agent: Agent) -> dict:
-        """Reserves a fresh deposit address for this agent's own exchange
-        account. Payload-less, like `faucet_claim` -- pay
-        `required_amount` (from the returned reservation) to
-        `deposit_address`, then `confirm_exchange_deposit`.
-        """
-        return self._signed_post("/exchange/deposit", agent, None)
-
-    def confirm_exchange_deposit(self, agent: Agent, escrow_id: str) -> dict:
-        escrow_id = _canonical_id(escrow_id)
-        payload = {"escrow_id": escrow_id}
-        return self._signed_post(f"/exchange/deposit/{escrow_id}/confirm", agent, payload)
-
-    def place_order(self, agent: Agent, side: str, price: int, quantity: int) -> dict:
-        """``side`` is ``"buy"`` or ``"sell"`` -- the hub's `Side` enum is
-        `#[serde(rename_all = "snake_case")]`. Matches immediately against
-        the resting book in price-time priority; whichever side crosses
-        (the "taker") pays a small fee taken out of what it receives,
-        never charged on top of what was already locked. Returns the
-        resulting `OrderDto` -- check `status`/`filled` to see whether
-        (and how much of) it matched immediately versus resting on the
-        book.
-        """
-        payload = {"side": side, "price": price, "quantity": quantity}
-        return self._signed_post("/exchange/orders", agent, payload)
-
-    def cancel_order(self, agent: Agent, order_id: str) -> dict:
-        order_id = _canonical_id(order_id)
-        payload = {"order_id": order_id}
-        return self._signed_post(f"/exchange/orders/{order_id}/cancel", agent, payload)
-
-    def withdraw(self, agent: Agent, amount: int) -> dict:
-        """Debit `amount` including the 1,000-unit fee; receive amount - fee.
-        The returned payment is pending. Poll get_payment(payment_id).
-        After an uncertain HTTP response, inspect list_payments before retrying.
-        """
-        payload = {"amount": amount}
-        return self._signed_post("/exchange/withdraw", agent, payload)
+    # Every hub-issued payment, whatever produced it -- a faucet grant, a
+    # bounty, an escrow refund. The receipt is how a client learns that a
+    # send actually landed rather than merely left the hub.
 
     def get_payment(self, payment_id: str) -> dict:
         """Read pending/confirmed/needs_review settlement status."""
@@ -659,29 +619,3 @@ class HubClient:
     def list_payments(self, recipient: str, *, offset: int = 0, limit: int = 50) -> list:
         """Recover receipts after a lost response without repeating a spend."""
         return self._get("/payments", params={"recipient": recipient, "offset": offset, "limit": limit})
-
-    def get_order_book(self) -> dict:
-        """`{"bids": [...], "asks": [...]}`, each an `OrderDto` list."""
-        return self._get("/exchange/orders")
-
-    def get_exchange_account(self, pubkey_hex: str) -> dict:
-        """`{"base_balance", "locked_base", "compute_balance",
-        "locked_compute"}` -- spendable amount for a new order or a
-        withdrawal is always the balance minus its locked counterpart.
-        """
-        return self._get(f"/exchange/account/{pubkey_hex}")
-
-    def list_trades(self, offset: int = 0, limit: Optional[int] = None) -> list:
-        """Executed trades, newest first. Use `list_trades_page` for the
-        total-before-pagination count too.
-        """
-        items, _ = self.list_trades_page(offset, limit)
-        return items
-
-    def list_trades_page(
-        self, offset: int = 0, limit: Optional[int] = None
-    ) -> Tuple[list, Optional[int]]:
-        params: Dict[str, Any] = {"offset": offset}
-        if limit is not None:
-            params["limit"] = limit
-        return self._get_with_total("/exchange/trades", params=params)

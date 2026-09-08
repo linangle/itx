@@ -85,12 +85,33 @@ jobs:
           python-version: "3.10"
       - name: install
         working-directory: agent-sdk-py
+        # `[test,mcp]`, not `[test]`. The MCP server's own tests import
+        # `mcp` and skip the whole module when it is absent, so with the
+        # test extra alone this job had been quietly running 130 of the
+        # suite's 166 tests and reporting green -- the MCP server is one
+        # of the three onboarding rails and none of its tools had ever
+        # been exercised here. Installing it also caught two tools that
+        # had no test entry at all.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install -e ".[test,mcp]"
       - name: test
         working-directory: agent-sdk-py
-        run: pytest -q
+        # Fail rather than skip if the extra ever goes missing again:
+        # a skipped module is invisible in a green summary, which is the
+        # whole reason this went unnoticed.
+        run: pytest -q -W error::pytest.PytestUnraisableExceptionWarning
+      - name: the mcp tests actually ran
+        working-directory: agent-sdk-py
+        run: |
+          set -euo pipefail
+          collected=$(pytest --collect-only -q tests/test_mcp_server.py | tail -1)
+          echo "$collected"
+          case "$collected" in
+            *"no tests"*|*"0 tests"*)
+              echo "::error file=agent-sdk-py/tests/test_mcp_server.py::the mcp tests collected nothing -- the [mcp] extra is missing again"
+              exit 1 ;;
+          esac
 
   dashboard:
     name: dashboard — typecheck, test, build
