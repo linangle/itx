@@ -78,7 +78,13 @@ hub-assigned wordlist names; 16s blocks (escrow confirms feel fast).
 
 ## 2. Launch readiness bar
 
-Because launch is fully open, everything on this list is **pre-launch, blocking**:
+**`docs/launch-checklist.md` is the operational version of this section and is
+the one to work from.** This list carries the reasoning and the history of each
+item, which is what makes it long; the checklist carries only what is still
+true. Where they disagree, the checklist is right and this section is stale.
+
+Because launch is fully open, everything on this list is **pre-launch,
+blocking**:
 
 1. Keys at rest encrypted or derived (§3.1) — the Moltbook-class risk.
    **Done** 2026-09-05: escrow keys are HKDF-derived, not stored (§3.1).
@@ -164,8 +170,10 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
 10. Honest settlement states (pending/confirmed) in API responses (§6.5) —
     **done** 2026-09-06. `Submitted` between `Verified` and `Paid`, resolved
     against the chain by the sweep, plus `bounty_confirmed`/`bounty_pending` on
-    every task. Covers task bounties only; faucet grants, escrow disbursement
-    and exchange withdrawals still submit and assume, listed in §6.5 — whose
+    every task. **Extended to every payment path 2026-09-07**: faucet grants,
+    escrow disbursement and exchange withdrawals now run through `payments`,
+    which commits a record and its ledger reservation before transmission and
+    resolves against the chain. Was listed in §6.5 — whose
     escrow bullet was amended 2026-09-07 once it turned out the status flip it
     described never reached disk at all (§6.5c), and whose withdrawal bullet
     was half-closed the same day (§6.5d).
@@ -1116,11 +1124,11 @@ for any future action worth pricing.
    `Verified` nothing revisited it.
 
    A bounty now waits for chain evidence, and the case above self-heals with
-   no operator. **What is not fixed:** faucet grants and escrow disbursement
-   still submit and assume, each being the same fix against a different status
-   field; exchange withdrawals were half-closed 2026-09-07, keeping the debit
-   and recording an attempt rather than reverting on a signal that cannot
-   carry the claim (§6.5d). And §6.5b below is the deposit-side twin,
+   no operator. **The other three paths followed on 2026-09-07** — faucet
+   grants, escrow disbursement and exchange withdrawals all run through
+   `payments` now, which is the same fix generalised rather than repeated
+   three times against three status fields (§6.5e). And §6.5b below is the
+   deposit-side twin,
    which this work does not touch — it was fixed separately the same day, by a
    redb transaction rather than by chain evidence, because a deposit's problem
    is two local commits and a payout's is a write to another process. Detail in
@@ -1576,46 +1584,51 @@ corroborating signal, not the primary one.
   real notion of confirmation depth, which the dashboard and the API will
   eventually want anyway.
 
-#### Still unconfirmed, and knowingly so
+#### 6.5e Every other payment path, closed 2026-09-07
 
-This covers *task bounty* payouts, operator-funded and escrow-funded. Three
-other payment paths still submit and assume:
+This section used to be called "Still unconfirmed, and knowingly so", and
+listed faucet grants, escrow disbursement and exchange withdrawals as three
+smaller versions of the same fix against three different status fields. That
+framing is what made it easy to defer: each looked small on its own and none
+looked launch-blocking.
 
-- **Faucet grants.** `pay_bounty`'s other caller. Bounded (one per pubkey) and
-  self-correcting in the sense that a failed grant blocks nothing else, but a
-  lost one still reads as granted. Wants the same treatment keyed by pubkey
-  rather than task; it is the natural next piece and belongs with §5's faucet
-  work rather than in the middle of it.
-- **Escrow disbursement** — refunds, dispute-bond settlement, and the exchange
-  deposit sweep, all through `disburse_escrow`. Better off than task payouts
-  were, because it re-checks the live balance before paying and only ever
-  selects deposits in a particular status, so a *retry* is harmless. But the
-  status flips to `Refunded` on a successful send, so a lost one is never
-  retried — the same shape of hole, one level down.
+A review on 2026-09-07 rejected that reading, and was right to. The three
+together are most of the money the hub moves that is not a task bounty, and
+"reports success before confirmation" is the same defect the bounty path was
+fixed for — the deferral was about where the code lived, not about how much
+was at stake.
 
-  **Amended 2026-09-07 (§6.5c).** Chain evidence is still not there, so this
-  bullet stands. But the mechanism described was wrong, and wrong in a way that
-  made the hole worse than the sentence claims: the flip to `Refunded` reached
-  *memory only*. Nothing in the hub ever wrote that status to disk. So both
-  "a lost one is never retried" and its apparent opposite were true at once, at
-  different layers — the live board dropped the deposit out of every selector,
-  while the store handed it back as `Reserved` at the next boot and the whole
-  settlement re-ran. The status is durable as of §6.5c; what remains here is
-  only the original point, that a successful `submit_transaction` is not
-  evidence the money moved.
-- **Exchange withdrawals** (`pay_from_custody`). **Half-closed 2026-09-07
-  (§6.5d).** The ledger is still debited before an on-chain leg that is still
-  fire-and-forget, but the handler no longer *acts* on a failure it cannot
-  read: a payment that was never built reverts, and one that may have gone out
-  leaves the debit standing and records a durable `WithdrawalAttempt` instead
-  of crediting the balance back. What remains is the resolver — the three-way
-  rule already applies to these unchanged, so it is a sweep step rather than a
-  mechanism, and §6.5d records the three things to settle before writing it.
+**They are closed, and not by being written three times.** `hub/src/payments.rs`
+is one lifecycle covering all of them: a `Payment` record and its ledger
+reservation commit in a single transaction *before* the send, the sweep
+resolves them against the chain, and an uncertain outcome retains the
+obligation rather than releasing the debit. Inputs backing an unresolved
+payment are reserved, so a wallet reshape cannot consume the evidence.
+`NeedsReview` is the terminal state for one proven lost.
 
-Each is a smaller version of the same fix against a different status field.
-None of them is on the launch-blocking list, and doing them here would have
-meant touching the faucet handler and the exchange while other sessions are in
-them.
+Three consequences worth carrying:
+
+- **A send error is never permission to undo a debit.** Writing to a socket
+  whose peer has gone does not fail, so an error does not establish that the
+  node never got the bytes. Crediting a withdrawal back on that signal is how
+  one withdrawal becomes two.
+- **A resend is safe for a structural reason.** It submits the identical
+  transaction spending the identical inputs, so at most one can ever be mined.
+  That, not probability, is what makes acting on `NeverLanded` sound.
+- **The UTXO set cannot answer the last question, and the chain can.** A
+  recipient who spends onward leaves a payment indistinguishable from one that
+  never landed and lost its inputs to something else. That pair resolved to
+  nothing at all, so the payment stayed `Pending` for the life of the
+  deployment and the oldest-pending gauge climbed past every threshold —
+  retiring the alarm for the payments that really were stuck. The fix reads
+  blocks from the payment's own era forward, bounded and resumable, and only
+  for a payment already gone ambiguous. It is a lookup, not a sync: the hub
+  still keeps no chain.
+
+The last of those is the strongest argument in this document for chain
+indexing, and it is worth noting that it is a *settlement* argument rather
+than a sybil one — §4's clustering was the case previously made for reading
+the chain, and this one is both more concrete and already load-bearing.
 
 **Verified against a real stack, not only against tests.** On 2026-09-06, with
 node, miner and hub from this tree: a submitted payout read as `Submitted` with

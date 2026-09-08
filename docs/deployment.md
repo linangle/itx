@@ -1634,10 +1634,10 @@ actually meet it: backups must stop the hub to copy `hub.redb` consistently
 (§7.2), a restore must not open the file while the hub holds it (§9.7), and the
 drill works on a copy in a scratch directory for exactly that reason (§7.4).
 
-### 10.3 Settlement confirms itself, for bounties only
+### 10.3 Settlement confirms itself
 
-Fixed 2026-09-06 for task bounties; still open for everything else. Read this
-with §7.2.
+Fixed 2026-09-06 for task bounties, and 2026-09-07 for everything else. Read
+this with §7.2.
 
 `submit_transaction` is fire-and-forget: the wire protocol has no reply meaning
 accepted and none meaning rejected, so a successful send proves only that the
@@ -1648,11 +1648,20 @@ spent input still unspent and unmarked means it never landed, and it is re-sent;
 anything else is unresolvable and it waits. Four submissions is the cap, after
 which the task reaches `PayoutFailed` and stops. Plan §6.5 has the design.
 
-**Three payment paths still say "sent" and mean it:** faucet grants, escrow
-disbursement (refunds, dispute-bond settlement, the exchange deposit sweep) and
-exchange withdrawals. For these the old ceiling stands in full — the hub's
-record says the money moved, the chain may never have seen it, and nothing will
-ever notice.
+**The other three paths no longer say "sent" and mean it either.** Faucet
+grants, escrow disbursement (refunds, dispute-bond settlement, the exchange
+deposit sweep) and exchange withdrawals all run through `payments` as of
+2026-09-07: the record and its ledger reservation commit before the send, the
+sweep resolves them against the chain, and an uncertain outcome keeps the
+obligation rather than releasing it. `GET /payments/<id>` reports one; `GET
+/payments?recipient=<pubkey>` lists a key's own.
+
+Two states an operator acts on. **`needs_review`** is a payment the hub has
+proven it cannot complete — every resend refused, or no block holds it and its
+inputs are gone. Nothing further happens automatically; §10.4's procedure
+applies to all three paths, not only to withdrawals. **A `pending` that never
+moves** means the evidence scan is not reaching the node, because a scan that
+can read the chain always terminates in confirmation or review.
 
 What to watch, all of it visible in the journal (§8.4):
 
@@ -1884,7 +1893,9 @@ is right now that the hub binds loopback.
 binds IPv4 only — same as the hub, and the same reason §1 leans on the firewall.
 The restore drill now waits for exactly that line.
 
-**Known-open, and not fixable in `deploy/`:** the hub assuming a submitted
-transaction is a settled one (§7.2, §10.3) is a hub change — it needs
-confirmation tracking, plan §2 item 10. Everything the backup script and this
-document do about it is mitigation. So is §9.9's missing graceful shutdown.
+**Closed since this was written:** the hub assuming a submitted transaction is
+a settled one (§7.2, §10.3) needed confirmation tracking in the hub, and got it
+— task bounties 2026-09-06, every other payment path 2026-09-07 (plan §6.5e).
+The backup script's mitigations are still worth having, but they are no longer
+standing in for a missing mechanism. §9.9's missing graceful shutdown is still
+open and is still mitigation only.

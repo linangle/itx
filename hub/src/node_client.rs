@@ -542,9 +542,10 @@ impl NodeClient {
     /// Task bounties no longer treat the difference as academic: they go
     /// to `TaskStatus::Submitted` and the sweep asks the chain what
     /// became of them (`board::PayoutAttempt`). Faucet grants, escrow
-    /// disbursement and exchange withdrawals still take a successful
-    /// send as payment -- see plan §6.5 for why, and what it would take
-    /// to fix.
+    /// disbursement and exchange withdrawals no longer take a successful
+    /// send as payment either: since 2026-09-07 all three run through
+    /// `payments`, whose record commits before transmission and whose
+    /// resolution is chain evidence rather than a return value.
     pub async fn submit_transaction(&self, transaction: Transaction) -> Result<()> {
         self.send(&Message::SubmitTransaction(transaction)).await
     }
