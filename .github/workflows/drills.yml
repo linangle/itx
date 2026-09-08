@@ -1,0 +1,124 @@
+# Runs the chaos drills against a real stack, nightly.
+#
+# # Why these are not in `ci.yml`
+#
+# A drill brings up a node, a miner and a hub, drives real money through
+# them, kills something, and waits for the chain to settle. `escrow-refund`
+# alone takes about four minutes and 16 MB of chain. Eight of them on
+# every pull request would put a quarter-hour between a push and an
+# answer, and the first thing anyone does with a slow required check is
+# find a way around it.
+#
+# Nightly instead. The drills catch a class of regression the unit suite
+# structurally cannot — anything about what survives a process being
+# killed mid-write — and that class does not usually arrive between one
+# commit and the next.
+#
+# # The comparison is the point, not the run
+#
+# `harness compare` diffs a fresh report against the checked-in baseline
+# and exits non-zero when something got worse. That distinction is
+# load-bearing and was got wrong once already: for `node-crash` and
+# `signed-write-cost` the *healthy* verdict is `refuted`, so an earlier
+# version of this that keyed off "refuted or any finding" reported three
+# of eight drills failing against a sound hub, and `harness drill all` was
+# permanently red. A section now declares its own healthy verdict, and
+# every baseline is a healthy run rather than a pre-fix one.
+#
+# So: run, compare, and let `compare` decide. Nothing here re-implements
+# what "worse" means.
+
+name: drills
+
+on:
+  schedule:
+    # 04:00 UTC. Late enough that a day's merges are in, early enough
+    # that a red result is waiting rather than arriving mid-afternoon.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      drill:
+        description: "a single drill name, or `all`"
+        required: false
+        default: "all"
+
+jobs:
+  drill:
+    name: chaos drills
+    runs-on: ubuntu-latest
+    # Generous. A drill that hangs should be killed by the job, not by
+    # the six-hour default, and eight of them with builds is well inside
+    # this.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build the binaries under test
+        # Release, because that is what the drills measure and what a
+        # deployment runs. The dev profile has different arithmetic --
+        # `overflow-checks` is on there and off here — so a drill against
+        # a debug build would be measuring a different program.
+        run: cargo build --release -p node -p miner -p hub -p harness
+
+      - name: run
+        run: |
+          mkdir -p reports
+          ./target/release/harness drill "${{ github.event.inputs.drill || 'all' }}" \
+            --build-dir target/release \
+            --out reports
+
+      - name: compare against the checked-in baselines
+        # The gate. A verdict that turned into a refutation, or a finding
+        # that was not there before, exits non-zero here.
+        run: |
+          set -euo pipefail
+          # Without this an empty reports/ makes the loop run once on the
+          # literal glob and report a missing baseline for `*.json`, which
+          # is a confusing way to say "the drill step produced nothing".
+          shopt -s nullglob
+          found=0
+          failed=0
+          for report in reports/*.json; do
+            found=1
+            name=$(basename "$report")
+            baseline="harness/baselines/${name}"
+            if [ ! -f "$baseline" ]; then
+              echo "::warning file=${report}::no baseline for ${name} — a new drill needs its healthy run checked in"
+              continue
+            fi
+            echo "== ${name}"
+            if ! ./target/release/harness compare --baseline "$baseline" --against "$report"; then
+              echo "::error file=${baseline}::${name} got worse than its baseline"
+              failed=1
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::the drill step wrote no reports"
+            exit 1
+          fi
+          exit $failed
+
+      - name: keep the reports either way
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drill-reports
+          path: reports/
+          # Long enough to compare a bad night against the several before
+          # it, which is usually how a slow drift gets noticed at all.
+          retention-days: 30
+
+      - name: keep the logs when something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          # A drill failure is almost never diagnosable from the verdict
+          # alone — the interesting part is what the hub and node were
+          # saying in the seconds around the kill.
+          name: drill-logs
+          path: |
+            /tmp/itx-harness/**/*.log
+          retention-days: 14
+          if-no-files-found: ignore

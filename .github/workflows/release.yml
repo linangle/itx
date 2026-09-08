@@ -1,0 +1,105 @@
+# Builds the Linux binaries a deployment actually runs, and publishes
+# them with checksums.
+#
+# # Why this stops at "build an artifact" and does not push to a host
+#
+# Continuous deployment to the box holding the treasury would mean this
+# workflow holds credentials to it — an SSH key, or a token that can
+# restart the hub. That puts the keys to the money inside a system that
+# runs code from every pull request, and makes a compromised action a
+# compromised treasury. `docs/deployment.md` §1 is organised around the
+# opposite instinct.
+#
+# So the pipeline ends at a signed-for, checksummed artifact and a human
+# does the last step. That human step is short, it is in the runbook, and
+# it is the only place a rollback decision can be made by someone who can
+# see what is happening.
+#
+# # Checksums are not decoration
+#
+# `harness/` records the SHA-256 of every binary it measures, because
+# "which bytes were running" turned out to be a real question during the
+# load test — a shared target directory had already served one worktree's
+# binary to another. The same question arrives during an incident. The
+# manifest here is what lets an operator answer it.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "commit or tag to build"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build
+        # The GNU target, not musl. The deployment in `deploy/` is a
+        # systemd host with a normal glibc; musl would buy portability to
+        # Alpine that nothing here wants, and costs a different allocator
+        # and a different DNS resolver in the process that moves money.
+        run: cargo build --release --workspace
+
+      # The release profile is what ships, and it is not what the test
+      # suite runs under. That difference has already mattered once: a
+      # bounty's fee wrapped only in release, because `overflow-checks` is
+      # off there and on in dev. Running the suite against the profile
+      # being shipped is cheap insurance against the next one.
+      - name: test the profile being shipped
+        run: cargo test --release --workspace -- --test-threads=1
+
+      - name: package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME:-manual}"
+          out="itx-${version}-x86_64-linux"
+          mkdir -p "dist/${out}"
+          # Installed under their real names, not their build names.
+          # `deployment.md` §5 is emphatic: `target/release/node` in
+          # /usr/local/bin shadows Node.js for every user on the box, and
+          # a treasury host is a bad place to discover that.
+          cp target/release/node    "dist/${out}/itx-node"
+          cp target/release/miner   "dist/${out}/itx-miner"
+          cp target/release/hub     "dist/${out}/itx-hub"
+          cp target/release/itx-console "dist/${out}/itx-console"
+          cp -r deploy "dist/${out}/deploy"
+          cp docs/deployment.md docs/launch-checklist.md "dist/${out}/"
+          ( cd "dist/${out}" && sha256sum itx-* > SHA256SUMS )
+          ( cd dist && tar czf "${out}.tar.gz" "${out}" )
+          echo "artifact=dist/${out}.tar.gz" >> "$GITHUB_ENV"
+          cat "dist/${out}/SHA256SUMS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: itx-x86_64-linux
+          path: ${{ env.artifact }}
+          retention-days: 30
+
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.artifact }}
+          # Written by a human. A generated changelog would be a list of
+          # commit subjects, and the thing an operator needs before
+          # upgrading a treasury host is what changed about *the store*
+          # and whether it can be rolled back — which only a person
+          # knows. See `docs/deployment.md` on the schema stamp being a
+          # one-way door.
+          draft: true
+          fail_on_unmatched_files: true

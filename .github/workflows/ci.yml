@@ -1,0 +1,201 @@
+# Everything that has to be true before a change lands.
+#
+# # What this gates on, and what it deliberately does not
+#
+# It gates on **the three suites building and passing**, and on the deploy
+# configs parsing. It does not gate on `cargo fmt` or on clippy warnings,
+# and that is a decision rather than an omission: `cargo fmt --check`
+# currently reports over a thousand diffs and clippy 160 warnings, none of
+# them errors. Turning either into a gate would mean either a reformat
+# touching almost every file in a repository whose owner has not agreed to
+# one, or a red pipeline on the first run.
+#
+# A red pipeline nobody can turn green is worse than no pipeline. People
+# learn to ignore it, and then it is also worse than nothing when it goes
+# red for a real reason. Clippy still runs, because it catches things
+# `cargo build` does not; it is just not asked to enforce a style nobody
+# has adopted.
+#
+# # The part that is doing more than it looks
+#
+# `ubuntu-latest`. Nothing in this project has ever been built or run on
+# Linux -- every check to date was done on macOS, which
+# `docs/deployment.md` §11 is explicit about. This workflow is the first
+# time the code meets its target platform, and the `deploy-configs` job
+# below is the first time `nftables`, `nginx` and `systemd` see the files
+# written for them. That closes most of one blocking checklist item
+# without anyone provisioning a host.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run's answer
+# irrelevant, and the Rust job is the long pole.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust — build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Keyed on the lockfile: the workspace's own crates rebuild every
+      # run anyway, and it is the dependency tree that is slow to compile.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build
+        run: cargo build --workspace --all-targets
+
+      - name: test
+        # Single-threaded is not the default and is deliberate here. Parts
+        # of the suite bind real TCP ports and spawn real hub instances;
+        # `node`'s tests take a process-global lock precisely because they
+        # cannot run beside each other. Wall-clock is a few minutes either
+        # way, and a flake that only appears under CI's scheduling is the
+        # most expensive kind to chase.
+        run: cargo test --workspace -- --test-threads=1
+
+      - name: clippy
+        # No `-D warnings`. See the header: this catches genuine errors
+        # and reports the rest without pretending the repository has
+        # adopted a lint policy it has not.
+        run: cargo clippy --workspace --all-targets
+
+  python:
+    name: python — agent sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The floor `pyproject.toml` declares. Testing on the oldest
+          # supported version is the point: the newest one passing says
+          # nothing about the version an agent author actually has.
+          python-version: "3.10"
+      - name: install
+        working-directory: agent-sdk-py
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: test
+        working-directory: agent-sdk-py
+        run: pytest -q
+
+  dashboard:
+    name: dashboard — typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: install
+        working-directory: dashboard
+        run: npm ci
+      - name: typecheck
+        # Its own step rather than relying on `npm run build`, so a type
+        # error reports as a type error. This is the check that would have
+        # caught the status union falling behind the hub.
+        working-directory: dashboard
+        run: npx tsc -b --force
+      - name: test
+        working-directory: dashboard
+        run: npm test
+      - name: build
+        working-directory: dashboard
+        run: npm run build
+
+  deploy-configs:
+    name: deploy — parse the configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the software that runs them
+        run: sudo apt-get update && sudo apt-get install -y nftables nginx
+
+      - name: nftables
+        # `-c` checks and does not apply. Under sudo because nft parses
+        # against the running kernel's capabilities even in check mode.
+        run: sudo nft -c -f deploy/nftables.conf
+
+      - name: nginx
+        # The config names certificate paths that do not exist in a
+        # checkout, and `nginx -t` reads them, so stand in a throwaway
+        # self-signed pair first. This validates *syntax and directives*,
+        # which is the class of error §11 says was never checked -- it
+        # does not validate that the deployment works.
+        run: |
+          sudo mkdir -p /etc/ssl/itx
+          sudo openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /etc/ssl/itx/test.key -out /etc/ssl/itx/test.crt \
+            -subj "/CN=itx.test" 2>/dev/null
+          # Point the config's cert directives at the throwaway pair
+          # rather than editing the file under test in place.
+          # POSIX character classes, not \s: that is a GNU extension, and
+          # a workflow that only parses on one sed is the kind of thing
+          # this job exists to catch elsewhere. Key first, so the shorter
+          # directive name cannot shadow the longer one.
+          sed -E 's#(ssl_certificate_key)[[:space:]]+[^;]+;#\1 /etc/ssl/itx/test.key;#; s#(ssl_certificate)[[:space:]]+[^;]+;#\1 /etc/ssl/itx/test.crt;#' \
+            deploy/nginx.conf > /tmp/nginx-itx.conf
+          sudo nginx -t -c /tmp/nginx-itx.conf
+
+      - name: systemd units
+        # `systemd-analyze verify` reports missing executables and users,
+        # which a checkout will not have, so those specific complaints are
+        # filtered and anything else fails the step. Syntax, directive
+        # names and unit ordering are what this is here to catch.
+        run: |
+          set -o pipefail
+          for unit in deploy/*.service; do
+            echo "== $unit"
+            out=$(systemd-analyze verify "$unit" 2>&1 || true)
+            echo "$out"
+            # Drop the two classes a checkout cannot satisfy.
+            real=$(echo "$out" | grep -v "Command .* is not executable" \
+                               | grep -v "Unit configured to use KillMode=none" \
+                               | grep -vE "Failed to (resolve|open) .*(user|group)" \
+                               | grep -vE "^\s*$" || true)
+            if [ -n "$real" ]; then
+              echo "::error file=$unit::systemd-analyze reported problems beyond the missing binaries a checkout cannot have"
+              exit 1
+            fi
+          done
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    # Advisories appear without anyone pushing, so this must not be able
+    # to turn a green commit red retroactively and block unrelated work.
+    # It reports; a human decides. Plan §3.8 asks for the audit, not for
+    # an automatic veto.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: npm audit
+        working-directory: dashboard
+        run: npm audit --audit-level=high
