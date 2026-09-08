@@ -561,6 +561,23 @@ impl Task {
             .collect()
     }
 
+    /// The other half of `owed_payouts`: every (recipient, amount) this
+    /// task has actually paid. Written as the complement rather than as
+    /// its own walk of `kind` so the two can never disagree about who a
+    /// task owes -- `allocated_payouts` stays the single answer to that
+    /// question, and these two only differ on which side of
+    /// `is_recipient_paid` they keep.
+    ///
+    /// This is what "bounty paid" and "agents who earned" are counted
+    /// from. A `Consensus` task with three winners contributes three
+    /// entries, which is also the number of chain fees settling it cost.
+    pub fn paid_payouts(&self) -> Vec<(PublicKey, u64)> {
+        self.allocated_payouts()
+            .into_iter()
+            .filter(|(recipient, _)| self.is_recipient_paid(recipient))
+            .collect()
+    }
+
     /// Every (recipient, amount) this task will *ever* pay out, whether
     /// or not it already has. Only meaningful once a winner exists, so
     /// it is empty before resolution and for a dispute still awaiting
@@ -2183,6 +2200,18 @@ impl TaskBoard {
     /// is a ceiling on the total.
     pub fn faucet_granted_since(&self, cutoff: i64) -> u64 {
         self.faucet_grants.values().filter(|at| **at >= cutoff).count() as u64
+    }
+
+    /// When each grant was made, epoch *seconds*, in no useful order.
+    ///
+    /// `faucet_granted_since` answers "how many since a cutoff", which
+    /// is what the budget needs and is the wrong shape for a chart: a
+    /// series wants every instant so it can bucket them. Returned as
+    /// bare timestamps rather than as the map, because which key holds a
+    /// grant is not a chart's business and handing out the pubkeys would
+    /// make this an identity endpoint by accident.
+    pub fn faucet_grant_times(&self) -> Vec<i64> {
+        self.faucet_grants.values().copied().collect()
     }
 
     /// Grants made from `prefix` at or after `cutoff`.

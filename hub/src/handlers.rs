@@ -3855,10 +3855,58 @@ pub struct MarketSeriesDto {
     pub posted_series: Vec<u64>,
     /// Bounty posted per bucket, oldest first.
     pub bounty_series: Vec<u64>,
+    /// Tasks whose last payout confirmed in this bucket, oldest first --
+    /// bucketed by `Task::settled_at`, not by when they were posted, so
+    /// this series and `posted_series` deliberately disagree about which
+    /// bucket a given task belongs in. That disagreement is the point:
+    /// one is demand arriving, the other is work finishing.
+    pub settled_series: Vec<u64>,
+    /// Bounty actually paid out per bucket, oldest first. The other half
+    /// of `bounty_series`, and the number that says whether posted work
+    /// is being done rather than merely advertised.
+    pub paid_bounty_series: Vec<u64>,
+    /// Distinct agents who posted a task or were paid for one in this
+    /// bucket, oldest first.
+    ///
+    /// Distinct *per bucket*, so these do not sum to the window's own
+    /// `agents` total -- an agent working every day counts once in each
+    /// bucket and once overall. Summing them would count that agent
+    /// thirty times and call it thirty agents, which is exactly the
+    /// inflation this project has said it will not publish.
+    pub agents_series: Vec<u64>,
+    /// Chain fees the hub paid to settle the tasks in this bucket: one
+    /// `HUB_TRANSACTION_FEE` per payout leg, so a `Consensus` task with
+    /// three winners costs three.
+    ///
+    /// Attributed to the instant the task *fully* settled, because that
+    /// is the only settlement instant recorded. For a consensus task
+    /// whose winners confirmed in different buckets this is therefore
+    /// lumpy in time while remaining exact in total.
+    pub fees_series: Vec<u64>,
+    /// Faucet grants made per bucket, oldest first.
+    ///
+    /// **Board-wide, and identical whatever `capability` is set to.** The
+    /// faucet issues against a key, not against a kind of work, so it has
+    /// no capability dimension to filter on. Reporting it as though it
+    /// did -- silently returning a subset, or zeroes -- would be worse
+    /// than saying so here.
+    pub faucet_series: Vec<u64>,
     /// Totals over the window, so a header can be drawn without summing
     /// the arrays client-side and disagreeing about rounding.
     pub posted: u64,
     pub bounty: u64,
+    pub settled: u64,
+    pub paid_bounty: u64,
+    /// Distinct agents across the whole window. See `agents_series` for
+    /// why this is not the sum of that.
+    pub agents: u64,
+    pub fees: u64,
+    pub faucet_grants: u64,
+    /// What those grants issued, in itx. Kept beside the count rather
+    /// than left to the client, because the grant size is a hub constant
+    /// and a second copy of it on the client would go stale silently and
+    /// report a wrong number of coins.
+    pub faucet_itx: u64,
     /// Open right now, which is a fact about the present rather than
     /// about the window -- an open task posted before the window still
     /// counts, because it is still on offer.
@@ -3873,13 +3921,21 @@ pub struct MarketSeriesDto {
 pub async fn board_series(State(state): State<Arc<AppState>>, Query(query): Query<SeriesQuery>) -> Json<MarketSeriesDto> {
     let board = state.board.read().await;
     let tasks: Vec<&Task> = board.all_tasks().collect();
-    Json(series_for(&tasks, Utc::now(), &query))
+    // Read under the same guard as the tasks, so a grant made between
+    // the two reads cannot land in one series and not the other.
+    let faucet_grants = board.faucet_grant_times();
+    Json(series_for(&tasks, &faucet_grants, Utc::now(), &query))
 }
 
 /// The aggregation, with `now` injected rather than read from the clock
 /// -- same discipline `summarize_board` follows, and what lets a test
 /// pin a bucket boundary instead of racing one.
-fn series_for(tasks: &[&Task], now: DateTime<Utc>, query: &SeriesQuery) -> MarketSeriesDto {
+fn series_for(
+    tasks: &[&Task],
+    faucet_grants: &[i64],
+    now: DateTime<Utc>,
+    query: &SeriesQuery,
+) -> MarketSeriesDto {
     let capability = query.capability.as_deref().filter(|c| !c.trim().is_empty());
 
     // Only tasks in this market, and only their timestamps, decide the
@@ -3918,7 +3974,26 @@ fn series_for(tasks: &[&Task], now: DateTime<Utc>, query: &SeriesQuery) -> Marke
 
     let mut posted_series = vec![0u64; buckets];
     let mut bounty_series = vec![0u64; buckets];
+    let mut settled_series = vec![0u64; buckets];
+    let mut paid_bounty_series = vec![0u64; buckets];
+    let mut fees_series = vec![0u64; buckets];
+    let mut faucet_series = vec![0u64; buckets];
     let (mut posted, mut bounty, mut open, mut open_bounty) = (0u64, 0u64, 0u64, 0u64);
+    let (mut settled, mut paid_bounty, mut fees) = (0u64, 0u64, 0u64);
+    // One set per bucket, plus one for the window. Distinct-per-bucket
+    // and distinct-over-the-window are different numbers and the sets
+    // are the only honest way to get both in one pass; see the DTO's
+    // note on why they must not be summed into each other.
+    let mut bucket_agents: Vec<BTreeSet<PublicKey>> = vec![BTreeSet::new(); buckets];
+    let mut window_agents: BTreeSet<PublicKey> = BTreeSet::new();
+
+    // Anything outside the window is dropped rather than piled into
+    // bucket zero, where a leading spike of everything older would
+    // flatten the window's own shape into a baseline.
+    let bucket_of = |at: i64| -> Option<usize> {
+        (at >= start_ms && at <= end_ms)
+            .then(|| (((at - start_ms) as f64 / bucket_ms) as usize).min(buckets - 1))
+    };
 
     for task in &matching {
         // Open is a fact about now, not about the window: a task posted
@@ -3928,19 +4003,51 @@ fn series_for(tasks: &[&Task], now: DateTime<Utc>, query: &SeriesQuery) -> Marke
             open_bounty += task.bounty;
         }
 
-        let at = task.created_at.timestamp_millis();
-        if at < start_ms || at > end_ms {
-            continue;
+        if let Some(bucket) = bucket_of(task.created_at.timestamp_millis()) {
+            posted_series[bucket] += 1;
+            bounty_series[bucket] += task.bounty;
+            posted += 1;
+            bounty += task.bounty;
+            bucket_agents[bucket].insert(task.poster.clone());
+            window_agents.insert(task.poster.clone());
         }
-        // Tasks outside the window are dropped rather than piled into
-        // bucket zero, where a leading spike of everything older would
-        // flatten the window's own shape into a baseline.
-        let bucket = (((at - start_ms) as f64 / bucket_ms) as usize).min(buckets - 1);
-        posted_series[bucket] += 1;
-        bounty_series[bucket] += task.bounty;
-        posted += 1;
-        bounty += task.bounty;
+
+        // Bucketed by when the task settled, not by when it was posted,
+        // so a task posted before the window and paid inside it counts
+        // here and not above. That is the whole point of carrying a
+        // second timestamp.
+        let Some(settled_at) = task.settled_at else { continue };
+        let Some(bucket) = bucket_of(settled_at.timestamp_millis()) else { continue };
+        settled_series[bucket] += 1;
+        settled += 1;
+        let legs = task.paid_payouts();
+        // One chain fee per leg, not per task: a consensus task with
+        // three winners is three transactions and cost three fees.
+        let leg_fees = legs.len() as u64 * HUB_TRANSACTION_FEE;
+        fees_series[bucket] += leg_fees;
+        fees += leg_fees;
+        for (recipient, amount) in legs {
+            paid_bounty_series[bucket] += amount;
+            paid_bounty += amount;
+            bucket_agents[bucket].insert(recipient.clone());
+            window_agents.insert(recipient);
+        }
     }
+
+    // Grants are stamped in epoch *seconds* (`restore_faucet_grant` is
+    // handed `payment.created_at.timestamp()`), and every other instant
+    // in this function is milliseconds. Converting here rather than
+    // changing the board's storage keeps the faucet budget's own
+    // arithmetic -- which is all in seconds -- untouched.
+    let mut faucet_count = 0u64;
+    for granted_at in faucet_grants {
+        if let Some(bucket) = bucket_of(granted_at.saturating_mul(1_000)) {
+            faucet_series[bucket] += 1;
+            faucet_count += 1;
+        }
+    }
+
+    let agents_series: Vec<u64> = bucket_agents.iter().map(|a| a.len() as u64).collect();
 
     MarketSeriesDto {
         capability: capability.map(str::to_string),
@@ -3950,8 +4057,19 @@ fn series_for(tasks: &[&Task], now: DateTime<Utc>, query: &SeriesQuery) -> Marke
         end_ms,
         posted_series,
         bounty_series,
+        settled_series,
+        paid_bounty_series,
+        agents_series,
+        fees_series,
+        faucet_series,
         posted,
         bounty,
+        settled,
+        paid_bounty,
+        agents: window_agents.len() as u64,
+        fees,
+        faucet_grants: faucet_count,
+        faucet_itx: faucet_count.saturating_mul(FAUCET_GRANT_AMOUNT),
         open,
         open_bounty,
         first_task_at: first_task_at.map(|t| t.to_rfc3339()),
@@ -5146,7 +5264,128 @@ mod summary_tests {
 
     fn series(tasks: &[Task], query: SeriesQuery) -> MarketSeriesDto {
         let refs: Vec<&Task> = tasks.iter().collect();
-        series_for(&refs, now(), &query)
+        series_for(&refs, &[], now(), &query)
+    }
+
+    fn series_with_faucet(tasks: &[Task], grants: &[i64], query: SeriesQuery) -> MarketSeriesDto {
+        let refs: Vec<&Task> = tasks.iter().collect();
+        series_for(&refs, grants, now(), &query)
+    }
+
+    /// A task that was posted at one instant and paid at another, which
+    /// is the case the whole settlement half of the series exists for.
+    /// `claimant` and `Paid` together are what make `paid_payouts`
+    /// return a leg -- `is_recipient_paid` checks both.
+    fn settled_task(
+        created_at: DateTime<Utc>,
+        settled_at: DateTime<Utc>,
+        bounty: u64,
+        winner: &PublicKey,
+        tags: &[&str],
+    ) -> Task {
+        let mut t = task(created_at, bounty, TaskStatus::Paid, tags);
+        t.claimant = Some(winner.clone());
+        t.settled_at = Some(settled_at);
+        t
+    }
+
+    /// The claim that justifies carrying a second timestamp at all: a
+    /// task belongs to the bucket it was *posted* in for demand, and to
+    /// the bucket it *settled* in for earnings, and those are different
+    /// buckets. Charting paid work against `created_at` -- the only
+    /// timestamp there used to be -- would have dated every payout to
+    /// the day the work was advertised.
+    #[test]
+    fn a_task_counts_as_posted_when_it_was_posted_and_as_paid_when_it_was_paid() {
+        let winner = PrivateKey::new_key().public_key();
+        let tasks = [settled_task(
+            now() - Duration::hours(20),
+            now() - Duration::hours(2),
+            700,
+            &winner,
+            &["python"],
+        )];
+        // Twenty-four hours in four six-hour buckets: posted in the
+        // first, settled in the last.
+        let out = series(&tasks, ask(Some("python"), Some(24 * 3_600_000), Some(4)));
+        assert_eq!(out.posted_series, vec![1, 0, 0, 0]);
+        assert_eq!(out.bounty_series, vec![700, 0, 0, 0]);
+        assert_eq!(out.settled_series, vec![0, 0, 0, 1]);
+        assert_eq!(out.paid_bounty_series, vec![0, 0, 0, 700]);
+        assert_eq!(out.posted, 1);
+        assert_eq!(out.settled, 1);
+        assert_eq!(out.paid_bounty, 700);
+        // One winner, one transaction, one fee.
+        assert_eq!(out.fees_series, vec![0, 0, 0, HUB_TRANSACTION_FEE]);
+        assert_eq!(out.fees, HUB_TRANSACTION_FEE);
+    }
+
+    /// A task posted before the window but paid inside it is invisible
+    /// to `posted_series` and must still appear in the paid series --
+    /// the case a single-timestamp implementation gets wrong silently,
+    /// by dropping the task at the window check before ever looking at
+    /// when it settled.
+    #[test]
+    fn work_posted_before_the_window_still_counts_when_it_is_paid_inside_it() {
+        let winner = PrivateKey::new_key().public_key();
+        let tasks = [settled_task(
+            now() - Duration::days(30),
+            now() - Duration::hours(1),
+            400,
+            &winner,
+            &[],
+        )];
+        let out = series(&tasks, ask(None, Some(24 * 3_600_000), Some(2)));
+        assert_eq!(out.posted, 0, "posted a month ago, outside this window");
+        assert_eq!(out.settled, 1, "but paid an hour ago, inside it");
+        assert_eq!(out.paid_bounty, 400);
+        assert_eq!(out.settled_series, vec![0, 1]);
+    }
+
+    /// Distinct per bucket and distinct over the window are different
+    /// numbers, and the series must not be summable into the total. An
+    /// agent working every day is one agent, not one per day.
+    #[test]
+    fn agents_are_counted_distinctly_per_bucket_and_again_over_the_window() {
+        let regular = PrivateKey::new_key().public_key();
+        let tasks = [
+            settled_task(now() - Duration::hours(20), now() - Duration::hours(20), 10, &regular, &[]),
+            settled_task(now() - Duration::hours(2), now() - Duration::hours(2), 10, &regular, &[]),
+        ];
+        let out = series(&tasks, ask(None, Some(24 * 3_600_000), Some(2)));
+        // Each bucket sees the same worker plus that task's own poster,
+        // and `task()` gives every task a fresh poster.
+        assert_eq!(out.agents_series, vec![2, 2]);
+        // Three distinct keys across the window, not four: the worker is
+        // the same person in both buckets.
+        assert_eq!(out.agents, 3, "summing the series would say four");
+    }
+
+    /// The faucet issues against a key, not against a kind of work, so
+    /// it has no capability dimension. Returning a subset -- or zeroes --
+    /// for a filtered request would be a quieter lie than saying the
+    /// series is board-wide, which is what the DTO says.
+    #[test]
+    fn faucet_grants_are_board_wide_and_ignore_the_capability_filter() {
+        let grants = [
+            (now() - Duration::hours(20)).timestamp(),
+            (now() - Duration::hours(2)).timestamp(),
+            // Outside the window entirely.
+            (now() - Duration::days(9)).timestamp(),
+        ];
+        let tasks = [task(now() - Duration::hours(3), 1, TaskStatus::Open, &["python"])];
+        let window = ask(Some("python"), Some(24 * 3_600_000), Some(2));
+        let filtered = series_with_faucet(&tasks, &grants, window);
+        assert_eq!(filtered.faucet_series, vec![1, 1]);
+        assert_eq!(filtered.faucet_grants, 2, "the third is older than the window");
+        assert_eq!(filtered.faucet_itx, 2 * FAUCET_GRANT_AMOUNT);
+
+        let whole_board =
+            series_with_faucet(&tasks, &grants, ask(None, Some(24 * 3_600_000), Some(2)));
+        assert_eq!(
+            whole_board.faucet_series, filtered.faucet_series,
+            "identical whatever capability was asked for"
+        );
     }
 
     fn ask(capability: Option<&str>, window_ms: Option<u64>, buckets: Option<usize>) -> SeriesQuery {
