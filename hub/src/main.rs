@@ -139,6 +139,9 @@ pub struct AppState {
     /// The difficulty knob, kept alongside the book so `/faucet/challenge`
     /// can report it without recomputing it from the target.
     pub faucet_expected_hashes: u64,
+    /// Grants allowed in any rolling 24 hours, across every key. See
+    /// `Args::faucet_daily_grants`.
+    pub faucet_daily_grants: u64,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -256,6 +259,21 @@ struct Args {
     /// quicker. Applies to challenges issued from now on -- work already
     /// under way is judged against the target it was issued with.
     faucet_pow_expected_hashes: u64,
+    #[argh(option, default = "200")]
+    /// how many faucet grants may be made in any rolling 24 hours,
+    /// across every key and every address.
+    ///
+    /// The per-key rule ("one grant, ever") bounds what one identity can
+    /// take and bounds nothing at all about what a population can take --
+    /// keygen is free, so the only quantity anyone can promise an
+    /// operator is a ceiling on the total. Proof of work prices each
+    /// grant; this caps how many can be bought however cheap the work
+    /// turns out to be, which is the number that decides the worst case.
+    ///
+    /// Rolling rather than resetting at midnight, so exhausting it does
+    /// not schedule a stampede for 00:00. Set to 0 to close the faucet
+    /// entirely, which is also how 5.1 retires it.
+    faucet_daily_grants: u64,
     #[argh(option, default = "String::new()")]
     /// comma-separated addresses of the reverse proxies in front of this
     /// hub, whose `X-Forwarded-For` header the rate limiter should
@@ -608,7 +626,8 @@ async fn sample_gauges(state: &Arc<AppState>) {
     // node call. Holding it across an `await` on the network would make
     // the metrics sampler itself a source of the contention it is here to
     // measure -- and against the node, that await is unbounded.
-    let (grants, open_tasks, outstanding_payouts, liabilities) = {
+    let (grants, recent_grants, open_tasks, outstanding_payouts, liabilities) = {
+        let now = chrono::Utc::now();
         let board = state.board.read().await;
         let liabilities = board.exchange_liabilities();
         state.metrics.payments_pending.store(board.payments.values().filter(|p| p.status == payments::Status::Pending).count() as u64, Ordering::Relaxed);
@@ -618,6 +637,9 @@ async fn sample_gauges(state: &Arc<AppState>) {
         state.metrics.payments_oldest_pending_seconds.store(oldest, Ordering::Relaxed);
         (
             board.all_faucet_grants().count() as u64,
+            board.faucet_granted_since(
+                (now - chrono::Duration::seconds(handlers::FAUCET_BUDGET_WINDOW_SECONDS)).timestamp(),
+            ),
             board
                 .all_tasks()
                 .filter(|task| !matches!(task.status, TaskStatus::Paid | TaskStatus::Closed))
@@ -627,6 +649,14 @@ async fn sample_gauges(state: &Arc<AppState>) {
         )
     };
     state.metrics.faucet_grants.store(grants, Ordering::Relaxed);
+    state.metrics.faucet_granted_units.store(
+        grants.saturating_mul(handlers::FAUCET_GRANT_AMOUNT),
+        Ordering::Relaxed,
+    );
+    state.metrics.faucet_budget_remaining.store(
+        state.faucet_daily_grants.saturating_sub(recent_grants),
+        Ordering::Relaxed,
+    );
     state.metrics.board_open_tasks.store(open_tasks, Ordering::Relaxed);
     state.metrics.board_outstanding_payouts.store(outstanding_payouts, Ordering::Relaxed);
     state.metrics.exchange_liabilities.store(liabilities, Ordering::Relaxed);
@@ -732,8 +762,8 @@ async fn main() -> Result<()> {
     for (pubkey, reputation) in store.load_all_reputation()? {
         board.restore_reputation(pubkey, reputation);
     }
-    for pubkey in store.load_all_faucet_grants()? {
-        board.restore_faucet_grant(pubkey);
+    for (pubkey, granted_at) in store.load_all_faucet_grants_with_times()? {
+        board.restore_faucet_grant(pubkey, granted_at);
     }
     for deposit in store.load_all_pending_deposits()? {
         board.restore_pending_deposit(deposit);
@@ -948,6 +978,7 @@ async fn main() -> Result<()> {
         replay_guard,
         faucet_challenges,
         faucet_expected_hashes: args.faucet_pow_expected_hashes,
+        faucet_daily_grants: args.faucet_daily_grants,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
         metrics,
@@ -1816,10 +1847,30 @@ mod tests {
     /// test that wants to exercise the proxied path trusts `127.0.0.1`;
     /// the default (`spawn_hub`) trusts nothing, which is also the
     /// deployed default.
+    /// `spawn_hub`, with the faucet's rolling budget set. Its own
+    /// constructor because `AppState` lives behind an `Arc` the router
+    /// already shares by the time a test has a `TestHub` in hand.
+    async fn spawn_hub_with_faucet_budget(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        faucet_daily_grants: u64,
+    ) -> TestHub {
+        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), faucet_daily_grants).await
+    }
+
     async fn spawn_hub_with_trusted_proxies(
         operator_private_key: PrivateKey,
         node_address: String,
         trusted_proxies: rate_limit::TrustedProxies,
+    ) -> TestHub {
+        spawn_hub_inner(operator_private_key, node_address, trusted_proxies, u64::MAX).await
+    }
+
+    async fn spawn_hub_inner(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        trusted_proxies: rate_limit::TrustedProxies,
+        faucet_daily_grants: u64,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
@@ -1848,6 +1899,7 @@ mod tests {
         let metrics = metrics::Metrics::new();
         let state = Arc::new(AppState {
             board: RwLock::new(TaskBoard::new()),
+            faucet_daily_grants,
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
@@ -3083,6 +3135,22 @@ mod tests {
             llms.contains(&TEST_FAUCET_EXPECTED_HASHES.to_string()),
             "the difficulty must be the hub's live value, not a hardcoded one"
         );
+    }
+
+    /// The manual has to carry the *live* ceiling, not a number someone
+    /// typed into prose once. An agent that plans against a stale figure
+    /// spends work it cannot redeem.
+    #[tokio::test]
+    async fn llms_txt_states_the_live_faucet_budget() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_with_faucet_budget(operator_key, fake_node.addr.clone(), 37).await;
+
+        let body = hub.client.get(format!("{}/llms.txt", hub.base_url))
+            .send().await.unwrap().text().await.unwrap();
+
+        assert!(body.contains("37 grants"), "the configured ceiling has to be the one documented");
+        assert!(body.contains("rolling 24 hours"));
     }
 
     #[tokio::test]
@@ -6282,7 +6350,7 @@ mod tests {
         let store = &hub.state.store;
         let mut board = TaskBoard::new();
         for p in store.load_all_payments().unwrap() { board.payments.insert(p.id, p); }
-        for pk in store.load_all_faucet_grants().unwrap() { board.restore_faucet_grant(pk); }
+        for (pk, at) in store.load_all_faucet_grants_with_times().unwrap() { board.restore_faucet_grant(pk, at); }
         for order in store.load_all_orders().unwrap() { board.restore_order(order); }
         for trade in store.load_all_trades().unwrap() { board.restore_trade(trade); }
         for task in store.load_all_tasks().unwrap() {
@@ -6795,6 +6863,48 @@ mod tests {
         assert!(
             hub.state.store.load_all_withdrawal_attempts().unwrap().is_empty(),
             "a payment that was never built leaves nothing for an operator to resolve"
+        );
+    }
+
+    /// The global budget, which is the only quantity a fully-open faucet
+    /// can actually promise an operator.
+    ///
+    /// Per-key uniqueness bounds what one identity takes and says nothing
+    /// about a population, because keygen is free. Proof of work prices a
+    /// grant; it does not cap how many can be bought. This does.
+    ///
+    /// Asserted at both ends deliberately: refusing at `/faucet/challenge`
+    /// is what stops an agent spending a minute of proof of work only to
+    /// be told no, and that courtesy is easy to remove by accident.
+    #[tokio::test]
+    async fn the_faucet_stops_at_its_daily_budget_and_says_so_before_the_work() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        // One grant a day, so the second arrival is the interesting one.
+        let hub = spawn_hub_with_faucet_budget(operator_key, fake_node.addr.clone(), 1).await;
+
+        let first = PrivateKey::new_key();
+        let challenge = request_faucet_challenge(&hub, &first).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &first, &challenge).await.status(), reqwest::StatusCode::OK);
+
+        // The second key is refused before it is ever handed a puzzle.
+        let second = PrivateKey::new_key();
+        let resp = hub
+            .client
+            .post(format!("{}/faucet/challenge", hub.base_url))
+            .json(&envelope(&second, "/faucet/challenge", ()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            resp.headers().contains_key(reqwest::header::RETRY_AFTER),
+            "an agent refused for budget has to be told when to come back"
+        );
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("grants"),
+            "and told why, rather than being handed a bare 503: {body}"
         );
     }
 

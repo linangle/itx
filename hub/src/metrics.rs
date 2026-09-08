@@ -203,9 +203,20 @@ pub struct Metrics {
 
     // ---- faucet -----------------------------------------------------
     /// Distinct keys that have been granted, sampled from the board by
-    /// the sweep. See `docs/deployment.md` §8.3 for why the burn in units
-    /// is not here yet.
+    /// the sweep.
     pub faucet_grants: AtomicU64,
+    /// The same figure in coins rather than keys -- what the faucet has
+    /// actually cost the operator since genesis. Plan §2 item 11(a)
+    /// asked for this and it needed the grant size, which is a constant
+    /// the handler owns and this module had no reason to know.
+    pub faucet_granted_units: AtomicU64,
+    /// Grants still allowed inside the rolling budget window. The one an
+    /// operator alerts on: at zero the faucet is refusing everyone, which
+    /// is either an attack being absorbed exactly as intended or a
+    /// budget set too low for an honest cohort, and the two look
+    /// identical from here. `hub_faucet_grants` rising alongside it says
+    /// which.
+    pub faucet_budget_remaining: AtomicU64,
 
     /// Exchange withdrawals that were submitted to the node and never
     /// acknowledged, so the ledger stays debited with the coin's fate
@@ -524,6 +535,8 @@ impl Metrics {
         gauge(&mut out, "hub_replay_guard_degraded", "1 if this process could not restore its replay log at boot, so it is running without the history the previous process had (plan 3.3).", self.replay_guard_degraded.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_faucet_grants", "Distinct keys granted by the faucet, as of the last sweep.", self.faucet_grants.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_faucet_granted_units", "What the faucet has paid out in coins since genesis, as of the last sweep.", self.faucet_granted_units.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_faucet_budget_remaining", "Grants still allowed inside the rolling budget window (--faucet-daily-grants).", self.faucet_budget_remaining.load(Ordering::Relaxed));
 
         counter(&mut out, "hub_unresolved_withdrawals_total", "Exchange withdrawals submitted to the node and never acknowledged, whose ledger debit stands pending review (plan 6.5d).", self.unresolved_withdrawals.load(Ordering::Relaxed));
         gauge(&mut out, "hub_unresolved_withdrawals_at_boot", "Unresolved withdrawal attempts found in the store at startup.", self.unresolved_withdrawals_at_boot.load(Ordering::Relaxed));

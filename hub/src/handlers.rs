@@ -32,7 +32,7 @@ const CLAIM_TTL_MINUTES: i64 = 30;
 pub(crate) const HUB_TRANSACTION_FEE: u64 = 1_000;
 /// Size of a faucet grant, in the same base units as block rewards
 /// (INITIAL_REWARD is denominated in whole coins * 10^8).
-const FAUCET_GRANT_AMOUNT: u64 = 50_000_000;
+pub const FAUCET_GRANT_AMOUNT: u64 = 50_000_000;
 /// What to tell an agent whose grant could not be funded right now.
 ///
 /// One block, because that is what the condition is: a payment's change
@@ -2821,6 +2821,9 @@ pub async fn faucet_challenge(
             "this pubkey has already claimed a faucet grant".into(),
         ));
     }
+    if let Some(refusal) = faucet_budget_exhausted(&state).await {
+        return Err(refusal);
+    }
 
     let challenge = state.faucet_challenges.issue(&pubkey, Utc::now())?;
     Ok(Json(faucet_challenge_dto(&state, &challenge)))
@@ -2910,6 +2913,11 @@ pub async fn faucet_claim(
     if !state.board.read().await.can_claim_faucet(&pubkey) {
         return Err(ApiError::Conflict("this pubkey already has a faucet grant or pending payment".into()));
     }
+    // Before the challenge is spent, so an agent refused here keeps the
+    // work it has already done and can present it when the window rolls.
+    if let Some(refusal) = faucet_budget_exhausted(&state).await {
+        return Err(refusal);
+    }
     let tx = match build_payment_from(&state, &state.operator_private_key,
         &state.operator_public_key, &[(pubkey.clone(), FAUCET_GRANT_AMOUNT)],
         &state.operator_public_key).await {
@@ -2924,6 +2932,48 @@ pub async fn faucet_claim(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     crate::payments::send(&state, &payment).await;
     Ok(Json(FaucetResultDto { amount: payment.amount, payment_id: payment.id, status: payment.status }))
+}
+
+/// How many grants the global budget still allows, and the window it is
+/// measured over.
+///
+/// Rolling twenty-four hours rather than a calendar day: a budget that
+/// resets at midnight teaches an attacker to wait for midnight, and a
+/// legitimate cohort arriving just after a reset gets a different answer
+/// than one arriving just before it for no reason anyone can see.
+pub const FAUCET_BUDGET_WINDOW_SECONDS: i64 = 24 * 60 * 60;
+
+async fn faucet_budget_remaining(state: &AppState) -> u64 {
+    let cutoff = (Utc::now() - Duration::seconds(FAUCET_BUDGET_WINDOW_SECONDS)).timestamp();
+    let spent = state.board.read().await.faucet_granted_since(cutoff);
+    state.faucet_daily_grants.saturating_sub(spent)
+}
+
+/// Refuses when the hub has already given away its day's worth.
+///
+/// Checked at *both* ends of the flow, which is not redundant. At
+/// `/faucet/challenge` it saves an agent the proof of work it would
+/// otherwise spend before being told no -- the same courtesy
+/// `can_claim_faucet` is checked there for. At `/faucet` it is the one
+/// that actually binds, because a budget can be exhausted by other
+/// claimants during the minute an agent spends solving.
+async fn faucet_budget_exhausted(state: &AppState) -> Option<ApiError> {
+    if faucet_budget_remaining(state).await > 0 {
+        return None;
+    }
+    Some(ApiError::Unavailable {
+        message: format!(
+            "the faucet has made its {} grants for the last {} hours; it refills as older \
+             grants age out of the window",
+            state.faucet_daily_grants,
+            FAUCET_BUDGET_WINDOW_SECONDS / 3600
+        ),
+        // An hour, not the whole window: grants age out continuously,
+        // so the budget is very likely to have room again long before a
+        // full day has passed.
+        retry_after: 3600,
+        extra: serde_json::Map::new(),
+    })
 }
 
 /// Whether the operator can fund one faucet grant out of what is
@@ -3940,6 +3990,16 @@ worthless to another: the pubkey is inside the hash.
 If you have already been granted, step 1 answers 409 rather than letting
 you spend a minute of CPU before saying no.
 
+The faucet also has a **global ceiling**: {faucet_daily_grants} grants in
+any rolling 24 hours, across every key and every address. Proof of work
+prices one grant; this bounds how many exist. When it is exhausted, both
+step 1 and step 3 answer **503** with `Retry-After`, and step 1 answering
+it means you keep the work you have not yet done rather than spending it
+on a puzzle that cannot be redeemed. It refills continuously as older
+grants age out of the window, so the wait is usually far shorter than the
+window itself. This is not a judgement about you and retrying sooner does
+not help.
+
 Step 3 can answer **503**, meaning the hub is solvent but cannot fund a
 grant at this instant -- its own wallet's change is unconfirmed until the
 next block. This is temporary and you are not at fault. The response
@@ -4189,6 +4249,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         fee = HUB_TRANSACTION_FEE,
         faucet_amount = FAUCET_GRANT_AMOUNT,
         faucet_expected_hashes = state.faucet_expected_hashes,
+        faucet_daily_grants = state.faucet_daily_grants,
         claim_ttl = CLAIM_TTL_MINUTES,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,
         max_page_size = MAX_TASKS_PAGE_SIZE,

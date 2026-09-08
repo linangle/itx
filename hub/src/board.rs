@@ -910,7 +910,10 @@ pub struct TaskBoard {
     pub(crate) payments: BTreeMap<Uuid, crate::payments::Payment>,
     tasks: BTreeMap<Uuid, Task>,
     reputation: BTreeMap<PublicKey, Reputation>,
-    faucet_grants: BTreeSet<PublicKey>,
+    /// Every key granted, and when. A map rather than a set because the
+    /// global budget (`faucet_granted_since`) is a question about a
+    /// window, and a set can only answer questions about all time.
+    faucet_grants: BTreeMap<PublicKey, i64>,
     pending_deposits: BTreeMap<Uuid, PendingDeposit>,
     exchange_accounts: BTreeMap<PublicKey, ExchangeAccount>,
     orders: BTreeMap<Uuid, Order>,
@@ -1408,8 +1411,8 @@ impl TaskBoard {
     }
 
     /// Restores a faucet grant previously persisted by `HubStore`.
-    pub fn restore_faucet_grant(&mut self, pubkey: PublicKey) {
-        self.faucet_grants.insert(pubkey);
+    pub fn restore_faucet_grant(&mut self, pubkey: PublicKey, granted_at: i64) {
+        self.faucet_grants.insert(pubkey, granted_at);
     }
 
     pub fn get_task(&self, id: Uuid) -> Option<&Task> {
@@ -2067,7 +2070,7 @@ impl TaskBoard {
     /// Whether `pubkey` is still eligible for a faucet grant. Read-only
     /// on purpose -- see `record_faucet_grant`.
     pub fn can_claim_faucet(&self, pubkey: &PublicKey) -> bool {
-        !self.faucet_grants.contains(pubkey)
+        !self.faucet_grants.contains_key(pubkey)
     }
 
     /// Atomically reserves the one grant `pubkey` is entitled to (fails if
@@ -2077,8 +2080,8 @@ impl TaskBoard {
     /// `revoke_faucet_grant` to release the reservation if the payout
     /// then fails, so a transient failure doesn't permanently lock the
     /// agent out of a grant it never actually received.
-    pub fn record_faucet_grant(&mut self, pubkey: PublicKey) -> Result<(), BoardError> {
-        if !self.faucet_grants.insert(pubkey) {
+    pub fn record_faucet_grant(&mut self, pubkey: PublicKey, granted_at: i64) -> Result<(), BoardError> {
+        if self.faucet_grants.insert(pubkey, granted_at).is_some() {
             return Err(BoardError::AlreadyClaimed);
         }
         Ok(())
@@ -2100,7 +2103,18 @@ impl TaskBoard {
     }
 
     pub fn all_faucet_grants(&self) -> impl Iterator<Item = &PublicKey> {
-        self.faucet_grants.iter()
+        self.faucet_grants.keys()
+    }
+
+    /// How many grants were made at or after `cutoff`.
+    ///
+    /// The global budget's numerator. Per-key uniqueness bounds what one
+    /// identity can take and nothing bounds what a *population* can take,
+    /// which is the whole difficulty of a fully-open faucet: keygen is
+    /// free, so the only quantity anyone can actually promise an operator
+    /// is a ceiling on the total.
+    pub fn faucet_granted_since(&self, cutoff: i64) -> u64 {
+        self.faucet_grants.values().filter(|at| **at >= cutoff).count() as u64
     }
 
     pub fn exchange_account(&self, pubkey: &PublicKey) -> ExchangeAccount {
@@ -2730,10 +2744,10 @@ mod tests {
         let mut board = TaskBoard::new();
         let agent = pubkey();
         assert!(board.can_claim_faucet(&agent));
-        board.record_faucet_grant(agent.clone()).unwrap();
+        board.record_faucet_grant(agent.clone(), Utc::now().timestamp()).unwrap();
         assert!(!board.can_claim_faucet(&agent));
         assert!(matches!(
-            board.record_faucet_grant(agent),
+            board.record_faucet_grant(agent, Utc::now().timestamp()),
             Err(BoardError::AlreadyClaimed)
         ));
     }

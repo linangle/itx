@@ -910,6 +910,24 @@ impl HubStore {
         Ok(stale.len())
     }
 
+    /// Every granted key with the moment it was granted -- the same rows
+    /// `load_all_faucet_grants` reads, keeping the timestamp it discards.
+    /// The window the global budget is measured over has to survive a
+    /// restart, or restarting the hub would refill the budget.
+    pub fn load_all_faucet_grants_with_times(&self) -> Result<Vec<(PublicKey, i64)>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(FAUCET_GRANTS_TABLE)?;
+        table
+            .iter()?
+            .map(|entry| {
+                let (key, at) = entry?;
+                let pubkey = PublicKey::from_sec1_bytes(key.value())
+                    .map_err(|e| HubStoreError::BadPublicKey(e.to_string()))?;
+                Ok((pubkey, at.value()))
+            })
+            .collect()
+    }
+
     pub fn load_all_faucet_grants(&self) -> Result<Vec<PublicKey>> {
         let read_txn = self.db.begin_read()?;
         let table = read_txn.open_table(FAUCET_GRANTS_TABLE)?;

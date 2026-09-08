@@ -129,7 +129,9 @@ pub async fn prepare(state: &AppState, payment: Payment) -> anyhow::Result<Payme
         deposit.as_ref(), None, matches!(payment.purpose, Purpose::Faucet))?;
     if let Some(a) = account { board.restore_exchange_account(payment.recipient.clone(), a); }
     if let Some(d) = deposit { board.restore_pending_deposit(d); }
-    if matches!(payment.purpose, Purpose::Faucet) { board.restore_faucet_grant(payment.recipient.clone()); }
+    if matches!(payment.purpose, Purpose::Faucet) {
+        board.restore_faucet_grant(payment.recipient.clone(), payment.created_at.timestamp());
+    }
     board.payments.insert(payment.id, payment.clone());
     Ok(payment)
 }
