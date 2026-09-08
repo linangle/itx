@@ -1,6 +1,25 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
+
+// `waitFor` and `findBy*` default to giving up after one second, which is
+// a statement about the machine rather than about the code: it is
+// generous on a developer's laptop and marginal on a loaded CI runner
+// sharing a core with three other jobs.
+//
+// This is not hypothetical. `TasksPage`'s "asks for names only for the
+// posters on the page" passed eight times in a row locally and failed on
+// CI, where that single test took 1081ms against the 1000ms budget. The
+// failure reads as an assertion about arguments -- `expected "vi.fn()" to
+// be called with` -- which sends you looking at the component rather than
+// at the clock.
+//
+// Five seconds instead. A test that is genuinely broken still fails; it
+// just takes five seconds to say so, and only the ones that were about to
+// fail pay that. Raising it here rather than per-call because the next
+// slow render will be in a different file and nobody will connect the
+// two.
+configure({ asyncUtilTimeout: 5000 });
 
 // `@testing-library/react`'s auto-cleanup only self-registers when it
 // detects the test framework's globals on `globalThis`. This project
