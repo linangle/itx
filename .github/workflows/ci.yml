@@ -229,7 +229,16 @@ jobs:
           # starts being a place for the next advisory to hide. Failing
           # here is a one-line cleanup, and it is the only thing that
           # stops an ignore list rotting quietly.
-          if ! cargo audit --json 2>/dev/null | grep -q "$IGNORED"; then
+          #
+          # Captured before grepping rather than piped into it. Under
+          # `set -o pipefail` the pipeline reports *cargo audit's* exit
+          # status -- non-zero whenever it finds anything -- so `if !`
+          # was true even when the string was present, and this check
+          # fired on its first run against a tree the advisory still
+          # applies to. It failed loudly rather than silently, which is
+          # the one thing it got right.
+          report=$(cargo audit --json 2>/dev/null || true)
+          if ! grep -q "$IGNORED" <<<"$report"; then
             echo "::error file=.github/workflows/ci.yml::${IGNORED} no longer fires -- delete the --ignore and this check, and update docs/dependency-audit.md"
             exit 1
           fi
