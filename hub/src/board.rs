@@ -504,6 +504,25 @@ pub struct Task {
     /// or registry, matching this project's existing style -- a
     /// permissionless marketplace has no natural admin to maintain one.
     pub capabilities: BTreeSet<String>,
+    /// When this task's last payout was confirmed on chain, i.e. when it
+    /// reached `Paid`. `None` until then, and `None` forever for a task
+    /// that closed or failed without paying anyone.
+    ///
+    /// `created_at` alone can only answer questions about *demand* --
+    /// what was posted, and when. Every question about the other half of
+    /// the marketplace (bounty actually paid over time, tasks completed
+    /// per day, how long settlement takes) needs the instant the money
+    /// landed, and nothing recorded it: the status said a task was paid
+    /// but never when, so a chart of earnings was not derivable from the
+    /// board at all.
+    ///
+    /// `#[serde(default)]` because this arrived after stores existed.
+    /// A task written before it reloads as `None`, which reads correctly
+    /// as "we were not recording this yet" rather than as "settled at
+    /// the epoch" -- and is why the type is `Option` rather than a
+    /// sentinel timestamp.
+    #[serde(default)]
+    pub settled_at: Option<DateTime<Utc>>,
 }
 
 impl Task {
@@ -1015,6 +1034,7 @@ impl TaskBoard {
             close_reason: None,
             escrow_id: None,
             capabilities: BTreeSet::new(),
+            settled_at: None,
         };
         self.tasks.insert(task.id, task.clone());
         task
@@ -1058,6 +1078,7 @@ impl TaskBoard {
             close_reason: None,
             escrow_id: None,
             capabilities: BTreeSet::new(),
+            settled_at: None,
         };
         self.tasks.insert(task.id, task.clone());
         task
@@ -1092,6 +1113,7 @@ impl TaskBoard {
             close_reason: None,
             escrow_id: None,
             capabilities: BTreeSet::new(),
+            settled_at: None,
         };
         self.tasks.insert(task.id, task.clone());
         task
@@ -1953,6 +1975,16 @@ impl TaskBoard {
 
         if now_fully_paid {
             task.status = TaskStatus::Paid;
+            // Stamped here rather than by the caller, for the same
+            // reason `created_at` is stamped in `create_task`: this is
+            // the one line in the codebase where a task becomes paid, so
+            // a timestamp set anywhere else is a timestamp somebody can
+            // forget to set. `get_or_insert` rather than assignment
+            // because a `Consensus` task reaches this line once per
+            // winner and only the last one flips `now_fully_paid` -- but
+            // a retry that re-confirms an already-`Paid` task must not
+            // move the instant it settled.
+            task.settled_at.get_or_insert_with(Utc::now);
         }
         let rep = self.reputation.entry(recipient.clone()).or_default();
         rep.completed += 1;

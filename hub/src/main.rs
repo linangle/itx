@@ -7841,8 +7841,23 @@ mod tests {
         assert_eq!(account.base_balance, 5_000, "and the ledger is untouched");
     }
 
+    /// The inverse of the test that used to live here, and the reason
+    /// it was inverted.
+    ///
+    /// A `compute`-tagged task used to mint its winner an equal quantity
+    /// of the tradeable `compute` asset on top of the bounty. Settlement
+    /// was the only mint, which made compute look scarce. It was not:
+    /// `capabilities` is free-form with no reserved words, so one person
+    /// holding two keys could post an escrowed `compute` task, claim it
+    /// from the second key, submit the answer they had chosen, and get
+    /// the bounty back plus an equal quantity of the asset the order
+    /// book quoted ITX against. Two chain fees, repeatable forever.
+    ///
+    /// So the tag is now inert, and this test pins that: it is still a
+    /// legal capability tag, it still routes and filters like any other,
+    /// and it buys the winner nothing but the bounty.
     #[tokio::test]
-    async fn compute_minting_hook_credits_compute_balance_on_an_operator_funded_task_payout() {
+    async fn a_compute_tagged_task_mints_nothing_and_pays_only_its_bounty() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
@@ -7854,21 +7869,27 @@ mod tests {
         }
 
         assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
-        // Minting rides on the payout being *confirmed*, not merely sent
-        // -- the same evidence that credits reputation.
-        assert_eq!(
-            hub.state.board.read().await.exchange_account(&claimant).compute_balance,
-            0,
-            "nothing is minted off a transaction whose fate is still unknown"
-        );
         confirm_submitted_payouts(&hub.state, &fake_node).await;
 
-        let account = hub.state.board.read().await.exchange_account(&claimant);
-        assert_eq!(account.compute_balance, 500, "the settled bounty amount, minted as compute on top of the payout");
+        let board = hub.state.board.read().await;
+        assert_eq!(
+            board.exchange_account(&claimant).compute_balance,
+            0,
+            "the tag is a label on the work, not a licence to issue an asset"
+        );
+        // The other half of the claim: the tag is inert, not poisonous.
+        // Settlement itself still has to work on a task carrying it.
+        let task = board.get_task(task_id).expect("task survives settlement");
+        assert_eq!(task.status, crate::board::TaskStatus::Paid);
+        assert_eq!(
+            board.reputation(&claimant).total_earned,
+            500,
+            "the winner is paid the bounty, in itx, and nothing else"
+        );
     }
 
     #[tokio::test]
-    async fn compute_minting_hook_does_not_fire_for_a_task_without_the_compute_capability() {
+    async fn a_task_without_the_compute_capability_mints_nothing_either() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
@@ -7878,6 +7899,35 @@ mod tests {
         confirm_submitted_payouts(&hub.state, &fake_node).await;
 
         let account = hub.state.board.read().await.exchange_account(&claimant);
-        assert_eq!(account.compute_balance, 0, "no compute tag, no compute minted");
+        assert_eq!(account.compute_balance, 0, "no tag, no mint -- and now, no mint either way");
+    }
+
+    /// `settled_at` is what every "paid over time" chart reads, and the
+    /// only place it is written is the status flip to `Paid`. Pinning
+    /// both halves -- unset while the payout's fate is unknown, set once
+    /// the chain confirms it -- is what stops a later refactor stamping
+    /// it at submission, which would date every earning to the moment
+    /// the hub *tried* rather than the moment it succeeded.
+    #[tokio::test]
+    async fn a_task_is_stamped_with_the_instant_its_payout_confirmed() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        let (task_id, _claimant) = seed_verified_task(&hub.state, 500).await;
+        let before = Utc::now();
+
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        assert!(
+            hub.state.board.read().await.get_task(task_id).unwrap().settled_at.is_none(),
+            "submitted is not settled: the transaction's fate is still unknown here"
+        );
+
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+
+        let task = hub.state.board.read().await.get_task(task_id).unwrap().clone();
+        assert_eq!(task.status, crate::board::TaskStatus::Paid);
+        let settled = task.settled_at.expect("a paid task carries the instant it was paid");
+        assert!(settled >= before && settled <= Utc::now(), "stamped from the clock at confirmation");
     }
 }

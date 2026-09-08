@@ -2439,18 +2439,28 @@ async fn record_confirmed_payout(
         .get_task(task_id)
         .expect("mark_recipient_paid just succeeded on this task, and no path removes one")
         .clone();
-    // A task tagged "compute" pays its winner in the tradeable compute
-    // asset, on top of (not instead of) the ordinary bounty payout --
-    // placed strictly after mark_recipient_paid already succeeded, so it
-    // inherits that call's own dedup/retry safety (PAYOUT_IN_FLIGHT,
-    // re-checked live state) for free rather than needing a guard of its
-    // own.
-    let compute_account = if final_task.capabilities.contains("compute") {
-        board.credit_compute(recipient, amount);
-        Some(board.exchange_account(recipient))
-    } else {
-        None
-    };
+    // A task tagged "compute" used to pay its winner in the tradeable
+    // `compute` asset here, on top of the ordinary bounty. That mint is
+    // gone, and its absence is the whole of this version's shape.
+    //
+    // `compute` was minted by settlement and by nothing else, which made
+    // it look scarce. It was not: `capabilities` is a free-form tag with
+    // no reserved words (`validate_capabilities` lowercases and length-
+    // checks, and that is all), so anyone could post an escrow task
+    // tagged `compute` from one key, claim it from a second, submit the
+    // answer they had chosen themselves, and take the bounty back along
+    // with an equal quantity of a supposedly scarce asset. Cost: two
+    // chain fees, repeatable forever. An order book quoting ITX against
+    // something anyone can print at will does not discover a price, and
+    // the taker fee was charged in that same asset.
+    //
+    // So ITX is a marketplace for work rather than an exchange, and the
+    // only thing a task pays is its bounty, in ITX, on the chain. The
+    // parameter below stays because `save_confirmed_payout` is a general
+    // pair-writer -- its job is that the task, the reputation and any
+    // account move in one transaction, and that is still worth having
+    // the day something else needs the third leg.
+    let compute_account: Option<crate::board::ExchangeAccount> = None;
     let reputation = board.reputation(recipient);
 
     if let Err(e) = state.store.save_confirmed_payout(
@@ -5116,6 +5126,7 @@ mod summary_tests {
             close_reason: None,
             escrow_id: None,
             capabilities: tags.iter().map(|t| t.to_string()).collect(),
+            settled_at: None,
         }
     }
 

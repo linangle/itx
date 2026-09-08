@@ -1297,6 +1297,7 @@ mod tests {
             close_reason: None,
             escrow_id: None,
             capabilities: Default::default(),
+            settled_at: None,
         };
         store.save_task(&task).unwrap();
         let loaded = store.load_all_tasks().unwrap();
@@ -1954,6 +1955,7 @@ mod tests {
             close_reason: None,
             escrow_id: Some(escrow_id),
             capabilities: Default::default(),
+            settled_at: None,
         };
         (task, deposit)
     }
