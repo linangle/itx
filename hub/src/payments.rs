@@ -33,6 +33,16 @@ pub struct Payment {
     pub submitted_at: DateTime<Utc>,
     pub submissions: u32,
     pub status: Status,
+    /// How far up the chain this payment's evidence has already been
+    /// looked for. Only ever read by `scan_for_evidence`, which is only
+    /// reached when the UTXO view has gone ambiguous, so on the ordinary
+    /// path it stays exactly where `prepare` set it.
+    ///
+    /// `serde(default)` because records written before the scan existed
+    /// have no such field, and zero is the safe reading of its absence:
+    /// it costs a scan more blocks, never fewer.
+    #[serde(default)]
+    pub scanned_through: u64,
 }
 
 #[derive(Serialize)]
@@ -56,7 +66,7 @@ impl Payment {
         let fee = if transaction.is_some() { crate::handlers::HUB_TRANSACTION_FEE } else { 0 };
         Self { id: Uuid::new_v4(), purpose, source, recipient, amount, fee, transaction,
             output_hash, spent_inputs, created_at: Utc::now(), submitted_at: Utc::now(),
-            submissions: 1, status: Status::Pending }
+            submissions: 1, status: Status::Pending, scanned_through: 0 }
     }
 }
 
@@ -76,6 +86,13 @@ pub async fn reserve_inputs(state: &AppState, source: &PublicKey,
 /// Caller holds the funding wallet/escrow guard. Publish the reservation only
 /// after its entire durable effect commits; disk failure changes no live state.
 pub async fn prepare(state: &AppState, payment: Payment) -> anyhow::Result<Payment> {
+    let mut payment = payment;
+    // Where an evidence scan would start, recorded now rather than
+    // derived later: the transaction cannot be mined into a block older
+    // than the chain the hub could see when it built it.
+    payment.scanned_through = state.metrics.chain_height
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .saturating_sub(EVIDENCE_SCAN_LOOKBACK);
     if let Some(tx) = &payment.transaction {
         anyhow::ensure!(tx.outputs.first().is_some_and(|o| o.pubkey == payment.recipient && o.value == payment.amount), "payment output does not match its receipt");
     } else {
@@ -156,6 +173,86 @@ async fn confirm(state: &AppState, payment: &Payment) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How many blocks one pass may read looking for a payment's evidence.
+///
+/// Bounded so that a payment stuck behind a long chain cannot make a
+/// single sweep pass unbounded -- the sweep has a sixty-second interval
+/// to stay inside and other work to do. Progress is remembered on the
+/// payment, so successive passes walk forward rather than restarting.
+const EVIDENCE_SCAN_BLOCKS_PER_PASS: u32 = 64;
+
+/// Blocks of slack before the height the hub believed current when the
+/// payment was made. `metrics.chain_height` is sampled once a sweep and
+/// can be a minute stale, and starting a scan too early only costs reads
+/// while starting it too late would step over the block that settles it.
+const EVIDENCE_SCAN_LOOKBACK: u64 = 4;
+
+/// What the chain says about a payment the UTXO set could not settle.
+#[derive(Debug, PartialEq, Eq)]
+enum Evidence {
+    /// The output this payment created exists in a mined block. The
+    /// transaction landed, whatever the recipient has since done with it.
+    Mined,
+    /// Every block from the payment's own era to the tip has been read
+    /// and the output is in none of them.
+    AbsentFromChain,
+    /// Not yet settled: there are blocks still unread, or the node could
+    /// not be asked.
+    Inconclusive,
+}
+
+/// Answers the one question `resolve_against` cannot: was this payment's
+/// transaction mined?
+///
+/// **Why the UTXO view is not enough.** `resolve_against` confirms a
+/// payment by finding its output still sitting at the recipient. A
+/// recipient who has spent it onward no longer holds it, and the inputs
+/// that funded it are gone from the source because mining consumed them
+/// -- which is pixel-for-pixel what a payment that never landed looks
+/// like when something else took its inputs. That pair is `Ambiguous`,
+/// and `Ambiguous` used to resolve to nothing at all: the payment stayed
+/// `Pending` for the life of the deployment, and
+/// `hub_payments_oldest_pending_seconds` climbed past every threshold an
+/// operator might alert on, retiring the alarm for the payments that
+/// really were stuck.
+///
+/// The window is ordinary rather than exotic -- thirty seconds of grace
+/// plus a sixty-second sweep, against an agent that does something with
+/// its money on arrival.
+///
+/// **This is a lookup, not a sync.** The hub keeps no chain and gains
+/// none here: it reads blocks from the payment's own era forward, in
+/// bounded batches, only for a payment whose UTXO view has already gone
+/// ambiguous, and remembers how far it got. On a healthy hub it never
+/// runs at all.
+async fn scan_for_evidence(state: &AppState, payment: &mut Payment) -> Evidence {
+    let Some(wanted) = payment.output_hash else { return Evidence::Inconclusive };
+    for _ in 0..2 {
+        let start = payment.scanned_through as usize;
+        let blocks = match state.node.fetch_blocks(start, EVIDENCE_SCAN_BLOCKS_PER_PASS).await {
+            Ok(blocks) => blocks,
+            Err(e) => {
+                tracing::warn!("payment {} evidence scan could not read the chain: {e}", payment.id);
+                return Evidence::Inconclusive;
+            }
+        };
+        // An empty reply is the only thing that means the tip. A short
+        // one does not: the responder caps its own batch size.
+        if blocks.is_empty() {
+            return Evidence::AbsentFromChain;
+        }
+        let found = blocks.iter().any(|block| {
+            block.transactions.iter().any(|tx| tx.outputs.iter().any(|o| o.hash() == wanted))
+        });
+        payment.scanned_through = payment.scanned_through.saturating_add(blocks.len() as u64);
+        if found {
+            return Evidence::Mined;
+        }
+    }
+    // Still blocks to read. The next pass picks up where this one stopped.
+    Evidence::Inconclusive
+}
+
 pub async fn resolve_all(state: &AppState, now: DateTime<Utc>) {
     let payments: Vec<_> = state.board.read().await.payments.values()
         .filter(|p| p.status != Status::Confirmed).cloned().collect();
@@ -194,7 +291,46 @@ async fn resolve(state: &AppState, payment: &Payment, now: DateTime<Utc>) -> any
             }
             if next.status == Status::Pending { send(state, &next).await; }
         }
-        _ => {} // uncertainty retains the obligation and its reserved inputs
+        // Ambiguous: the UTXO set cannot tell a payment the recipient
+        // already spent from one that never landed and lost its inputs to
+        // something else. Ask the chain, which can.
+        _ => {
+            let mut scanned = payment.clone();
+            match scan_for_evidence(state, &mut scanned).await {
+                Evidence::Mined => confirm(state, payment).await?,
+                // The output is in no block, and the inputs that would
+                // have funded it are gone -- so nothing can mine this
+                // transaction now and resending it is futile. Somebody
+                // has to look, which is exactly what NeedsReview is.
+                Evidence::AbsentFromChain => {
+                    let mut next = scanned.clone();
+                    next.status = Status::NeedsReview;
+                    save_progress(state, payment, next).await?;
+                }
+                // Still reading, or the node could not be asked. The
+                // obligation and its reserved inputs stand either way;
+                // only the scan's progress is worth keeping.
+                Evidence::Inconclusive => save_progress(state, payment, scanned).await?,
+            }
+        }
     }
+    Ok(())
+}
+
+/// Commits `next` over `previous`, and only if nothing else has moved the
+/// payment in the meantime -- the same compare-then-write the resend path
+/// uses, for the same reason: one sweep owns resolution, but a restart
+/// can reload a record between a scan starting and its result landing.
+async fn save_progress(state: &AppState, previous: &Payment, next: Payment) -> anyhow::Result<()> {
+    let mut board = state.board.write().await;
+    let Some(current) = board.payments.get(&next.id) else { return Ok(()) };
+    if current.submissions != previous.submissions
+        || current.status != previous.status
+        || current.submitted_at != previous.submitted_at
+    {
+        return Ok(());
+    }
+    state.store.save_payment_effects(&next, None, None, None, false)?;
+    board.payments.insert(next.id, next);
     Ok(())
 }
