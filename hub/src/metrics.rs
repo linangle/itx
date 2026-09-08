@@ -61,6 +61,9 @@ const LATENCY_BUCKETS: [f64; 12] =
 /// router will later render.
 #[derive(Default)]
 pub struct Metrics {
+    pub payments_pending: AtomicU64,
+    pub payments_needs_review: AtomicU64,
+    pub payments_oldest_pending_seconds: AtomicU64,
     // ---- sweep loop -------------------------------------------------
     /// Passes completed. The denominator for every other sweep number.
     pub sweep_passes: AtomicU64,
@@ -216,6 +219,22 @@ pub struct Metrics {
     pub unresolved_withdrawals: AtomicU64,
     pub unresolved_withdrawals_at_boot: AtomicU64,
 
+    /// Withdrawals whose payout was never built, whose ledger credit-back
+    /// therefore *should* have stood, and whose durable write of it
+    /// failed -- so the balance in memory and the balance on disk now
+    /// disagree by the withdrawn amount, and a restart resolves that
+    /// disagreement against the user.
+    ///
+    /// Its own series rather than folded into
+    /// `unresolved_withdrawals`, because the two need opposite actions.
+    /// There the coin may have moved and an operator has to find out;
+    /// here nothing moved at all and the store is what is broken -- the
+    /// hub is very likely about to fail every authenticated write anyway,
+    /// since the replay guard fsyncs on the same store. Alert on the
+    /// first of either, and read this one as "the store is failing and it
+    /// has already cost a specific user a specific amount".
+    pub withdrawal_reverts_not_persisted: AtomicU64,
+
     // ---- operator wallet ---------------------------------------------
     /// Confirmed, unspoken-for operator outputs large enough to fund a
     /// payment on their own, as of the last sweep. This *is* the payout
@@ -251,7 +270,7 @@ pub struct Metrics {
     pub custody_fan_out_failures: AtomicU64,
 
     // ---- exchange solvency ------------------------------------------
-    /// Summed `base_balance + locked_base` across every exchange account:
+    /// Summed `base_balance` (including its locked portion) across every exchange account:
     /// what the hub owes its depositors.
     pub exchange_liabilities: AtomicU64,
     /// The custody address's on-chain balance, as of the last sweep: what
@@ -416,6 +435,8 @@ pub fn route_template(path: &str) -> &'static str {
         ["tasks", _, "dispute", "escrow"] => "/tasks/:id/dispute/escrow",
         ["tasks", _, "dispute", "confirm"] => "/tasks/:id/dispute/confirm",
         ["tasks", _, "dispute", "resolve"] => "/tasks/:id/dispute/resolve",
+        ["payments"] => "/payments",
+        ["payments", _] => "/payments/:id",
         ["faucet"] => "/faucet",
         // Missing until 2026-09-07, so every challenge request fell
         // through to "other" and its latency was pooled with 404s --
@@ -506,6 +527,7 @@ impl Metrics {
 
         counter(&mut out, "hub_unresolved_withdrawals_total", "Exchange withdrawals submitted to the node and never acknowledged, whose ledger debit stands pending review (plan 6.5d).", self.unresolved_withdrawals.load(Ordering::Relaxed));
         gauge(&mut out, "hub_unresolved_withdrawals_at_boot", "Unresolved withdrawal attempts found in the store at startup.", self.unresolved_withdrawals_at_boot.load(Ordering::Relaxed));
+        counter(&mut out, "hub_withdrawal_reverts_not_persisted_total", "Withdrawals whose payout was never built and whose credit-back could not be written, so the in-memory balance and the stored one disagree until an operator intervenes.", self.withdrawal_reverts_not_persisted.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_operator_ready_outputs", "Confirmed operator outputs large enough to fund a payment, as of the last sweep -- the payout ceiling (plan 6.4b).", self.operator_ready_outputs.load(Ordering::Relaxed));
         counter(&mut out, "hub_operator_fan_outs_total", "Self-paying transactions submitted to split the operator's wallet.", self.operator_fan_outs.load(Ordering::Relaxed));
@@ -516,6 +538,9 @@ impl Metrics {
 
         gauge(&mut out, "hub_exchange_liabilities", "Base units owed to exchange depositors, as of the last sweep.", self.exchange_liabilities.load(Ordering::Relaxed));
         gauge(&mut out, "hub_exchange_custody_balance", "On-chain balance of the custody address, as of the last sweep.", self.exchange_custody_balance.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_payments_pending", "Payments awaiting chain evidence.", self.payments_pending.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_payments_needs_review", "Payments requiring operator review; obligations retained.", self.payments_needs_review.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_payments_oldest_pending_seconds", "Age of oldest unresolved non-task payment.", self.payments_oldest_pending_seconds.load(Ordering::Relaxed));
         counter(&mut out, "hub_exchange_solvency_check_failures_total", "Sweeps that could not read the custody balance.", self.exchange_solvency_check_failures.load(Ordering::Relaxed));
 
         gauge(&mut out, "hub_board_open_tasks", "Non-terminal tasks on the board, as of the last sweep.", self.board_open_tasks.load(Ordering::Relaxed));

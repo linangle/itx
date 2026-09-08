@@ -190,6 +190,40 @@ Because launch is fully open, everything on this list is **pre-launch, blocking*
 12. Onboarding rails published and tested end-to-end: SKILL file, PyPI package,
     MCP registry listing, quickstart page (§7).
 
+### 2.1 Four defects the drills were never shaped to find (2026-09-07)
+
+Found by an audit after all nine handoffs merged, in code every previous pass
+had read, and fixed on `launch-bug-fixes`. Recorded here rather than under a
+numbered item because none of them belongs to one: they cut across the escrow
+invariant, the exchange, and the site.
+
+| What | Where | Effect |
+|---|---|---|
+| A bounty's fee wrapped | four escrow reservations in `handlers.rs` | `u64::MAX - 999` reserved **zero**, and `confirm_escrow` does not reject `0 < 0` — so a signed request minted a task carrying an unpayable bounty against an address holding nothing, breaking the one invariant escrow exists to hold |
+| A withdrawal of nothing reached custody | `board::debit_for_withdrawal` | a zero debit passes the balance check trivially, so a real transaction was built and sent: an output spent, a fee paid, a zero-value output created. Repeated, it drains the pool backing every ledger balance and walks the solvency pair apart |
+| The ticker took the site down | `dashboard/.../NewsTicker.tsx` | `TaskStatus` stopped at `Paid` while the hub served `Submitted` and `PayoutFailed`, so `headline` returned `undefined` and the duration calculation read `.length` from it. No error boundary, and the ticker is inside `SiteBar` — one settling task blanked **every page** |
+| A ledger/store divergence nobody could alert on | the withdrawal revert path | a best-effort durable write whose failure was a lone `error!`; memory and disk then differ by the withdrawn amount and a restart settles it against the user. Now `hub_withdrawal_reverts_not_persisted_total` and an alert row in `docs/deployment.md` §8.3 |
+
+**The pattern, which is the part worth keeping.** Every one of these is an
+input-validation or a fallback bug. Every drill in `harness/` targets crash
+safety — kill something mid-write and see whether the money balances. Nothing
+has ever asked what a route does with a number nobody sane would send, or what
+a renderer does with a value the server has begun returning and the client has
+never heard of. §6.7's lesson was coverage of the *instrument*; this is its
+second instance, and the first was found the same way — by reading for a
+pattern rather than by running the instrument again.
+
+Two of the four had a sibling in the same file doing it right, which is the
+cheapest tell there is: `place_order` refuses a zero price twelve lines from
+the debit that did not, and the deposit side has had `MIN_EXCHANGE_DEPOSIT`
+since it was written. **Where a validation exists on one side of a pair, look
+at the other side.**
+
+The drill this argues for is cheaper than the ones §6.7 built: no restart, no
+sampling, no A/B against a pre-fix binary. Send boundary values — zero,
+`u64::MAX`, `u64::MAX - fee` — at every route taking a `u64`, and assert the
+hub still balances and every invariant still holds.
+
 ## 3. Security hardening (the "don't be Moltbook" section)
 
 Moltbook's breach, for the record: a Supabase key sat in client-side JS; with no

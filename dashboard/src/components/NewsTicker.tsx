@@ -26,7 +26,23 @@ function dismissed(): boolean {
 /** One tape headline per task, phrased from its current status: money on
  * offer, money moving, and money settling. Lowercase throughout --
  * `formatKind` and pubkeys are lowercased at the end rather than at each
- * call site. */
+ * call site.
+ *
+ * **This function has to be total, and the `default` below is not
+ * defensive padding.** It used to switch over `TaskStatus` with no
+ * fallback, and `TaskStatus` was missing `Submitted` and `PayoutFailed`
+ * -- two statuses the hub had begun serving. A task in either fell
+ * through and returned `undefined`, which `chars` then read `.length`
+ * from. There is no error boundary in this app and `NewsTicker` sits
+ * inside `SiteBar`, which is on every screen, so one settling task in the
+ * newest fourteen threw during render and took the entire site down until
+ * it aged out of the window.
+ *
+ * So the fallback earns its place twice over: the union is maintained by
+ * hand against `TaskStatus` in `hub/src/board.rs` and will drift again,
+ * and the cost of drifting must be a dull headline rather than a blank
+ * site. The `never` binding is the other half -- once the union does
+ * learn a new status, this stops compiling until it gets a phrasing. */
 function headline(task: TaskDto): string {
   const itx = `${formatCompactItx(task.bounty)} itx`;
   const kind = formatKind(task.kind).toLowerCase();
@@ -45,8 +61,22 @@ function headline(task: TaskDto): string {
       return `dispute filed on ${itx} task`;
     case "Verified":
       return `work verified on ${itx} task`;
+    case "Submitted":
+      return task.claimant
+        ? `settling ${itx} → ${truncatePubkey(task.claimant)}`
+        : `settling ${itx} → consensus pool`;
+    case "PayoutFailed":
+      return `payout failed on ${itx} task, still owed`;
     case "Closed":
       return `closed ${kind} task, ${itx} released`;
+    default: {
+      // `never` while the switch covers the union, so adding a status to
+      // `TaskStatus` without phrasing it here fails the build.
+      const unphrased: never = task.status;
+      // And at runtime, where the hub may already be serving a status
+      // this build has never heard of: say the true, dull thing.
+      return `${itx} ${kind} task (${String(unphrased)})`.toLowerCase();
+    }
   }
 }
 

@@ -22,6 +22,14 @@ export type TaskStatus =
   | "AwaitingDispute"
   | "Disputed"
   | "Verified"
+  // Every payout is on the wire and the hub is waiting for chain
+  // evidence. An ordinary task passes through this on its way to `Paid`,
+  // so it is not an edge case -- leaving it out of this union is what let
+  // `NewsTicker` render a task the hub routinely serves.
+  | "Submitted"
+  // Terminal: the payout was proven never to have landed, and the money
+  // is still owed. An operator has to resolve it by hand.
+  | "PayoutFailed"
   | "Paid"
   | "Closed";
 

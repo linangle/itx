@@ -645,12 +645,20 @@ class HubClient:
         return self._signed_post(f"/exchange/orders/{order_id}/cancel", agent, payload)
 
     def withdraw(self, agent: Agent, amount: int) -> dict:
-        """Pays `amount` of the caller's own spendable base balance back
-        to their on-chain wallet. Compute is never withdrawable -- it
-        only exists to be traded here.
+        """Debit `amount` including the 1,000-unit fee; receive amount - fee.
+        The returned payment is pending. Poll get_payment(payment_id).
+        After an uncertain HTTP response, inspect list_payments before retrying.
         """
         payload = {"amount": amount}
         return self._signed_post("/exchange/withdraw", agent, payload)
+
+    def get_payment(self, payment_id: str) -> dict:
+        """Read pending/confirmed/needs_review settlement status."""
+        return self._get(f"/payments/{_canonical_id(payment_id)}")
+
+    def list_payments(self, recipient: str, *, offset: int = 0, limit: int = 50) -> list:
+        """Recover receipts after a lost response without repeating a spend."""
+        return self._get("/payments", params={"recipient": recipient, "offset": offset, "limit": limit})
 
     def get_order_book(self) -> dict:
         """`{"bids": [...], "asks": [...]}`, each an `OrderDto` list."""

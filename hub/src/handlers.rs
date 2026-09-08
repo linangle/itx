@@ -5,7 +5,7 @@ use crate::board::{
     BoardError, CloseReason, ConsensusTaskIntent, Dispute, DisputableTaskIntent, DisputeResolution,
     EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus,
     PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Side, Task, TaskBoard, TaskIntent,
-    TaskKind, TaskStatus, Trade, WithdrawalAttempt, MAX_PAYOUT_SUBMISSIONS,
+    TaskKind, TaskStatus, Trade, MAX_PAYOUT_SUBMISSIONS,
 };
 use crate::rate_limit::QuotaExceeded;
 use crate::AppState;
@@ -29,7 +29,7 @@ const CLAIM_TTL_MINUTES: i64 = 30;
 /// Flat fee attached to every hub-issued payment (faucet grants, task
 /// payouts). Small and nonzero, matching how a real fee market works,
 /// even though a private testnet has no real fee competition yet.
-const HUB_TRANSACTION_FEE: u64 = 1_000;
+pub(crate) const HUB_TRANSACTION_FEE: u64 = 1_000;
 /// Size of a faucet grant, in the same base units as block rewards
 /// (INITIAL_REWARD is denominated in whole coins * 10^8).
 const FAUCET_GRANT_AMOUNT: u64 = 50_000_000;
@@ -77,6 +77,18 @@ const MAX_CAPABILITY_TAG_LENGTH: usize = 64;
 /// deposit can't be "confirmed" into a balance that's immediately
 /// unsweepable.
 const MIN_EXCHANGE_DEPOSIT: u64 = HUB_TRANSACTION_FEE + 1;
+/// The mirror of `MIN_EXCHANGE_DEPOSIT`, and it exists for the mirror
+/// reason. A withdrawal is paid out of pooled custody and custody pays
+/// the network fee, so a withdrawal at or below that fee costs the pool
+/// more than it moves -- the on-chain side shrinks while the sum of
+/// ledger balances does not, which is the solvency pair drifting apart
+/// one request at a time.
+///
+/// The deposit side has had this floor all along. The withdrawal side
+/// had none at all, so `{"amount": 0}` was a spendable custody output
+/// and a fee, burned, for nothing (`TaskBoard::debit_for_withdrawal`
+/// has the rest of that story).
+const MIN_EXCHANGE_WITHDRAWAL: u64 = HUB_TRANSACTION_FEE + 1;
 /// `GET /exchange/trades`'s page size when the caller doesn't specify
 /// `limit`, mirroring `DEFAULT_TASKS_PAGE_SIZE`.
 const DEFAULT_TRADES_PAGE_SIZE: usize = 50;
@@ -251,7 +263,9 @@ impl From<BoardError> for ApiError {
             | BoardError::PosterCannotClaimOwnTask
             | BoardError::AssigneeCannotDisputeOwnSubmission
             | BoardError::NotOrderOwner => ApiError::Forbidden(e.to_string()),
-            BoardError::InvalidOrder | BoardError::OrderNotionalOverflow => ApiError::BadRequest(e.to_string()),
+            BoardError::InvalidOrder
+            | BoardError::OrderNotionalOverflow
+            | BoardError::ZeroWithdrawal => ApiError::BadRequest(e.to_string()),
         }
     }
 }
@@ -459,6 +473,8 @@ pub struct LeaderboardEntryDto {
 #[derive(Serialize)]
 pub struct FaucetResultDto {
     pub amount: u64,
+    pub payment_id: Uuid,
+    pub status: crate::payments::Status,
 }
 
 /// An issued proof-of-work challenge, as the client sees it.
@@ -780,6 +796,8 @@ pub struct ListTradesQuery {
 
 #[derive(Serialize)]
 pub struct ExchangeAccountDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment: Option<crate::payments::Receipt>,
     pub base_balance: u64,
     pub locked_base: u64,
     pub compute_balance: u64,
@@ -789,6 +807,7 @@ pub struct ExchangeAccountDto {
 impl From<ExchangeAccount> for ExchangeAccountDto {
     fn from(a: ExchangeAccount) -> Self {
         ExchangeAccountDto {
+            payment: None,
             base_balance: a.base_balance,
             locked_base: a.locked_base,
             compute_balance: a.compute_balance,
@@ -1064,7 +1083,7 @@ pub async fn create_task_escrow(
     validate_text_field(&envelope.payload.description, "description")?;
     let expected_output_hash = parse_hex_hash(&envelope.payload.expected_output_hash)?;
     let bounty = envelope.payload.bounty;
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let intent = TaskIntent {
@@ -1110,7 +1129,7 @@ pub async fn create_consensus_task_escrow(
     validate_positive_minutes(envelope.payload.join_window_minutes, "join_window_minutes")?;
     validate_positive_minutes(envelope.payload.submission_window_minutes, "submission_window_minutes")?;
     let bounty = envelope.payload.bounty;
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let intent = ConsensusTaskIntent {
@@ -1150,7 +1169,7 @@ pub async fn create_disputable_task_escrow(
     validate_text_field(&envelope.payload.description, "description")?;
     validate_positive_minutes(envelope.payload.dispute_window_minutes, "dispute_window_minutes")?;
     let bounty = envelope.payload.bounty;
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let capabilities = validate_capabilities(&envelope.payload.capabilities)?;
 
     let intent = DisputableTaskIntent {
@@ -1283,7 +1302,7 @@ pub async fn create_dispute_escrow(
         }
         task.bounty
     };
-    let required_amount = bounty + HUB_TRANSACTION_FEE;
+    let required_amount = escrow_amount_for(bounty)?;
     let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
     let deposit = state.board.write().await.reserve_escrow(
         &state.escrow_secret,
@@ -1484,11 +1503,15 @@ pub async fn cancel_task(
     require_operator(&pubkey, &state)?;
 
     let task = {
-        let mut board = state.board.write().await;
-        board.cancel_task(task_id)?;
-        board.get_task(task_id).expect("just touched it").clone()
+        let mut live = state.board.write().await;
+        let mut staged = TaskBoard::new();
+        staged.restore_task(live.get_task(task_id).cloned().ok_or(BoardError::NotFound)?);
+        staged.cancel_task(task_id)?;
+        let task = staged.get_task(task_id).unwrap().clone();
+        state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
+        live.restore_task(task.clone());
+        task
     };
-    state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
     refund_closed_task_escrow(&state, task_id).await;
     Ok(Json(TaskDto::from(&task)))
 }
@@ -1937,105 +1960,32 @@ async fn disburse_escrow(
     let Some(_guard) = EscrowSettlementGuard::try_acquire(deposit.id) else {
         return None;
     };
-    let balance = match state.node.balance(&deposit.deposit_pubkey).await {
-        Ok(balance) => balance,
-        Err(e) => {
-            error!("failed to check balance for escrow {} before disbursing: {e}", deposit.id);
-            return None;
+    {
+        let board = state.board.read().await;
+        if let Some(p) = board.payments.values().find(|p| matches!(p.purpose,
+            crate::payments::Purpose::Escrow { deposit_id, .. } if deposit_id == deposit.id)) {
+            return (p.status == crate::payments::Status::Confirmed).then_some(p.amount);
         }
-    };
-    // Below the network fee, there's nothing meaningfully disbursable --
-    // treat it the same as an empty balance rather than fail forever
-    // trying to build a transaction that can never cover its own fee.
-    let net_amount = balance.saturating_sub(HUB_TRANSACTION_FEE);
-    if balance > HUB_TRANSACTION_FEE {
-        if let Err(e) = pay_from(
-            state,
-            &deposit.private_key(&state.escrow_secret),
-            &deposit.deposit_pubkey,
-            &[(recipient.clone(), net_amount)],
-            recipient,
-        )
-        .await
-        {
-            error!("failed to disburse escrow {} to {}: {e}", deposit.id, recipient);
-            return None;
-        }
+        let current = board.get_pending_deposit(deposit.id)?;
+        if current.status == EscrowStatus::Refunded { return Some(0); }
+        if current.status != deposit.status { return None; }
     }
-
-    // `mark_escrow_refunded` used to be the whole of this, and it only
-    // ever touched memory: `save_pending_deposit`'s five call sites are
-    // all *creating* a reservation, so no path wrote a `Refunded` status
-    // to disk. A refunded deposit therefore reloaded as `Reserved` -- on
-    // every restart, not as a race -- and three things followed. The
-    // sweep re-selected every deposit ever refunded in the deployment's
-    // history, because `overdue_reserved_escrows` filters on `Reserved`.
-    // A depositor whose refund had already gone out could confirm the
-    // escrow again, with only the on-chain balance check in the way. And
-    // a settled dispute bond was handed back to the sweep at every boot,
-    // because its credit *was* persisted and its status was not (plan
-    // §6.5c, which also records what that re-settlement does and does
-    // not cost: it credits zero, since the retry reads a drained
-    // address, so the damage is unbounded repeated work rather than a
-    // wrong ledger).
-    //
-    // One write lock held across the store commit, and the board put
-    // back exactly as it was if that commit fails. That ordering matters
-    // here in a way it does not in the confirm handlers (§6.5b), which
-    // let the board move on and rely on the depositor's retry: nothing
-    // retries a sweep-driven disbursement except the sweep, and the
-    // sweep selects from *memory*. A board that had moved on while disk
-    // had not would simply never be revisited -- the same lost
-    // settlement, reached without a crash.
-    let mut board = state.board.write().await;
-    let Some(previous_deposit) = board.get_pending_deposit(deposit.id).cloned() else {
-        error!("escrow {} is no longer on the board and cannot be marked refunded", deposit.id);
-        return None;
-    };
-    let previous_reputation = match credit {
-        EscrowCredit::None => None,
-        EscrowCredit::ForfeitedBond => Some(board.reputation(recipient)),
-    };
-    if let Err(e) = board.mark_escrow_refunded(deposit.id) {
-        error!("failed to mark escrow {} refunded: {e}", deposit.id);
-        return None;
+    let balance = state.node.balance(&deposit.deposit_pubkey).await.ok()?;
+    let amount = balance.saturating_sub(HUB_TRANSACTION_FEE);
+    let tx = if amount > 0 {
+        Some(build_payment_from(state, &deposit.private_key(&state.escrow_secret),
+            &deposit.deposit_pubkey, &[(recipient.clone(), amount)], recipient).await.ok()?)
+    } else { None };
+    let payment = crate::payments::Payment::new(
+        crate::payments::Purpose::Escrow { deposit_id: deposit.id,
+            forfeited_bond: matches!(credit, EscrowCredit::ForfeitedBond), previous_status: deposit.status },
+        deposit.deposit_pubkey.clone(), recipient.clone(), amount, tx);
+    match crate::payments::prepare(state, payment).await {
+        Ok(payment) => { crate::payments::send(state, &payment).await;
+            let board = state.board.read().await;
+            (board.payments[&payment.id].status == crate::payments::Status::Confirmed).then_some(payment.amount) }
+        Err(e) => { warn!("escrow {} payment not prepared: {e}", deposit.id); None }
     }
-    // Read back under the same write lock that just settled it, so what
-    // is persisted below is this disbursement's own `Refunded` record
-    // rather than whatever a concurrent caller might have left between
-    // two separate acquisitions -- the same reasoning as
-    // `confirm_task_escrow`'s.
-    let settled = board
-        .get_pending_deposit(deposit.id)
-        .expect("just marked refunded above, and no path removes a deposit")
-        .clone();
-    let persisted = match credit {
-        // Already one transaction by itself; there is no companion
-        // record for a plain refund or a custody sweep to disagree with.
-        EscrowCredit::None => state.store.save_pending_deposit(&settled),
-        EscrowCredit::ForfeitedBond => {
-            // net_amount, not deposit.required_amount -- the latter is
-            // the gross funded amount including the network fee, which
-            // never reaches the recipient and so must not count as
-            // earned.
-            board.credit_forfeited_bond(recipient, net_amount);
-            let reputation = board.reputation(recipient);
-            state.store.save_deposit_and_reputation(&settled, recipient, &reputation)
-        }
-    };
-    if let Err(e) = persisted {
-        error!(
-            "failed to persist the settlement of escrow {} to {}: {e} -- rolling the board back \
-             so the sweep retries it rather than believing a settlement that is not on disk",
-            deposit.id, recipient
-        );
-        board.restore_pending_deposit(previous_deposit);
-        if let Some(previous) = previous_reputation {
-            board.restore_reputation(recipient.clone(), previous);
-        }
-        return None;
-    }
-    Some(net_amount)
 }
 
 /// Refunds whatever balance remains at `deposit`'s address back to its
@@ -2590,29 +2540,20 @@ pub async fn confirm_exchange_deposit(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let (depositor, account, deposit) = {
-        let mut board = state.board.write().await;
-        let (depositor, _credited) =
-            board.confirm_exchange_deposit(escrow_id, observed_amount, HUB_TRANSACTION_FEE, Utc::now())?;
-        // Balance and deposit both read back under the write lock that
-        // did the crediting, so the pair persisted below is internally
-        // consistent -- see `confirm_task_escrow`.
-        let account = board.exchange_account(&depositor);
-        let deposit = board
-            .get_pending_deposit(escrow_id)
-            .expect("confirm_exchange_deposit consumed this deposit, and no path removes one")
-            .clone();
-        (depositor, account, deposit)
+    let account = {
+        let mut live = state.board.write().await;
+        let mut staged = TaskBoard::new();
+        staged.restore_pending_deposit(live.get_pending_deposit(escrow_id).cloned().ok_or(BoardError::EscrowNotFound)?);
+        staged.restore_exchange_account(pubkey.clone(), live.exchange_account(&pubkey));
+        let (depositor, _) = staged.confirm_exchange_deposit(escrow_id, observed_amount, HUB_TRANSACTION_FEE, Utc::now())?;
+        let account = staged.exchange_account(&depositor);
+        let deposit = staged.get_pending_deposit(escrow_id).unwrap().clone();
+        state.store.save_exchange_account_and_deposit(&depositor, &account, &deposit)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        live.restore_exchange_account(depositor, account.clone());
+        live.restore_pending_deposit(deposit);
+        account
     };
-    // One transaction, not two -- see `confirm_task_escrow` and plan
-    // §6.5b. Never drilled either, and the worst of the three to get
-    // wrong: the effect is a ledger balance rather than a task, so a
-    // second credit from one payment is spendable and tradeable the
-    // moment it lands, and can leave the exchange before anyone notices.
-    state
-        .store
-        .save_exchange_account_and_deposit(&depositor, &account, &deposit)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
     if sweep_exchange_deposit(&state, escrow_id).await {
         info!("swept exchange deposit {escrow_id} into pooled custody");
     }
@@ -2652,8 +2593,9 @@ pub async fn place_order(
     // been persisted, which meant both the board and the store could be
     // observed in a state where a trade existed and the fee it charged
     // did not. Nothing else may run between a fill and its fee.
+    let mut live = state.board.write().await;
     let (order, trades, orders, accounts) = {
-        let mut board = state.board.write().await;
+        let mut board = live.stage_order(&pubkey, envelope.payload.side, envelope.payload.price, &state.operator_public_key);
         let (order, trades) = board.place_order(
             pubkey,
             envelope.payload.side,
@@ -2726,6 +2668,9 @@ pub async fn place_order(
         .store
         .save_fill(&orders, &trades, &accounts)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    for item in orders { live.restore_order(item); }
+    for trade in trades { live.restore_trade(trade); }
+    for (pk, account) in accounts { live.restore_exchange_account(pk, account); }
     Ok(Json(OrderDto::from(&order)))
 }
 
@@ -2753,22 +2698,16 @@ pub async fn cancel_order(
     // afterwards, as this handler used to, could persist whatever a
     // concurrent caller had left behind in between. Same reasoning as the
     // escrow confirm handlers (§6.5b).
-    let (order, account) = {
-        let mut board = state.board.write().await;
-        let order = board.cancel_order(order_id, &pubkey)?;
-        let account = board.exchange_account(&pubkey);
-        (order, account)
-    };
-    // Persisting is no longer best-effort. It was two commits with both
-    // errors logged behind a 200, which left the order and its lock able
-    // to disagree on disk -- see `HubStore::save_order_and_account` for
-    // what that bought an attacker. A store failure is now a 500 with
-    // nothing committed, matching what the task handlers have always
-    // done, and the client retries.
-    state
-        .store
-        .save_order_and_account(&order, &pubkey, &account)
+    let mut live = state.board.write().await;
+    let mut staged = TaskBoard::new();
+    staged.restore_order(live.get_order(order_id).cloned().ok_or(BoardError::OrderNotFound)?);
+    staged.restore_exchange_account(pubkey.clone(), live.exchange_account(&pubkey));
+    let order = staged.cancel_order(order_id, &pubkey)?;
+    let account = staged.exchange_account(&pubkey);
+    state.store.save_order_and_account(&order, &pubkey, &account)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    live.restore_order(order.clone());
+    live.restore_exchange_account(pubkey, account);
     Ok(Json(OrderDto::from(&order)))
 }
 
@@ -2790,93 +2729,59 @@ pub async fn get_exchange_account(
     Ok(Json(ExchangeAccountDto::from(account)))
 }
 
-/// Withdraws `amount` of the caller's exchange ledger balance back to
-/// their own on-chain address, paid out of the pooled custody address.
-/// The debit is durable *before* the payout is attempted (`debit_for_withdrawal`
-/// is a single atomic check-and-debit, the guard that stops two
-/// concurrent withdrawals from jointly overdrawing the same balance).
-///
-/// **Whether a failure after that point credits the balance back depends
-/// on whether anything could have reached the node**, and getting that
-/// wrong in the generous direction pays a user twice. It used to credit
-/// back on any error at all: the send is fire-and-forget, so an error
-/// does not mean the node never got the bytes (§6.2 established exactly
-/// that, in the other direction), and a user whose transaction did land
-/// ended up holding the coin and the balance. See
-/// `CustodyPaymentFailure` for the split (§6.5d).
+/// `amount` is the total ledger debit, including the network fee. The
+/// recipient receives amount - fee. A durable pending payment is returned;
+/// GET /payments/:id reports confirmation or the need for operator review.
 pub async fn withdraw(
-    State(state): State<Arc<AppState>>,
-    // The request as it actually arrived: bound into the signature,
-    // so this envelope cannot be replayed at a different endpoint.
-    method: Method,
-    OriginalUri(uri): OriginalUri,
+    State(state): State<Arc<AppState>>, method: Method, OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<WithdrawPayload>>,
 ) -> Result<Json<ExchangeAccountDto>, ApiError> {
     let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-    let amount = envelope.payload.amount;
-    {
-        state.board.write().await.debit_for_withdrawal(&pubkey, amount)?;
+    let debit = envelope.payload.amount;
+    if debit < MIN_EXCHANGE_WITHDRAWAL {
+        return Err(ApiError::BadRequest(format!("withdrawal must be at least {MIN_EXCHANGE_WITHDRAWAL}; amount includes the {HUB_TRANSACTION_FEE} fee")));
     }
+    let _guard = state.exchange_custody_payout_lock.lock().await;
+    let account = state.board.read().await.exchange_account(&pubkey);
+    let available = account.base_balance.saturating_sub(account.locked_base);
+    if available < debit { return Err(BoardError::InsufficientBalance { available, required: debit }.into()); }
+    let net = debit - HUB_TRANSACTION_FEE;
+    let tx = build_payment_from(&state, &state.exchange_custody_private_key,
+        &state.exchange_custody_public_key, &[(pubkey.clone(), net)],
+        &state.exchange_custody_public_key).await
+        .map_err(|e| ApiError::Internal(format!("withdrawal could not be built, nothing was sent: {e}")))?;
+    let payment = crate::payments::Payment::new(crate::payments::Purpose::Withdrawal { debited: debit },
+        state.exchange_custody_public_key.clone(), pubkey.clone(), net, Some(tx));
+    let payment = crate::payments::prepare(&state, payment).await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    crate::payments::send(&state, &payment).await;
+    let mut account = ExchangeAccountDto::from(state.board.read().await.exchange_account(&pubkey));
+    account.payment = Some(payment.receipt());
+    Ok(Json(account))
+}
 
-    let after_debit = state.board.read().await.exchange_account(&pubkey);
-    if let Err(e) = state.store.save_exchange_account(&pubkey, &after_debit) {
-        state.board.write().await.credit_back_withdrawal(&pubkey, amount);
-        return Err(ApiError::Internal(format!("failed to persist withdrawal debit, aborted: {e}")));
-    }
-    if let Err(failure) = pay_from_custody(&state, &pubkey, amount).await {
-        match failure {
-            // Nothing was built, so nothing was sent, and the caller's
-            // balance is unambiguously still owed to them. This is also
-            // the common case -- custody short of a spendable output is
-            // what fails here -- so the safe revert is the one that
-            // actually runs most of the time.
-            CustodyPaymentFailure::NotSent(e) => {
-                state.board.write().await.credit_back_withdrawal(&pubkey, amount);
-                let reverted = state.board.read().await.exchange_account(&pubkey);
-                if let Err(e) = state.store.save_exchange_account(&pubkey, &reverted) {
-                    error!("failed to persist reverted withdrawal balance for {pubkey}: {e}");
-                }
-                return Err(ApiError::Internal(format!(
-                    "withdrawal could not be built, nothing was sent, please retry: {e}"
-                )));
-            }
-            // A transaction was built and handed to the node, and the
-            // send reported an error -- which does not establish that the
-            // node never read it. Reverting here is what paid a user
-            // twice. The debit stands, and the attempt is recorded
-            // durably so an operator can settle it by hand until a
-            // resolver exists.
-            CustodyPaymentFailure::MaybeSent { error, attempt } => {
-                if let Err(e) = state.store.save_withdrawal_attempt(&attempt) {
-                    // The record is the only thing that makes this
-                    // recoverable, so failing to write it is worth a
-                    // louder line than the send failure itself.
-                    error!(
-                        "could not record unacknowledged withdrawal {} of {amount} to {pubkey}, \
-                         which now needs finding by hand: {e}",
-                        attempt.id
-                    );
-                } else {
-                    warn!(
-                        "withdrawal {} of {amount} to {pubkey} was submitted and not \
-                         acknowledged: the ledger stays debited and the attempt is recorded. \
-                         See docs/deployment.md 10.4. Send error: {error}",
-                        attempt.id
-                    );
-                }
-                state
-                    .metrics
-                    .unresolved_withdrawals
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Err(ApiError::Internal(format!(
-                    "withdrawal was submitted but not acknowledged and is being held for \
-                     review; do not retry, your balance is not lost: {error}"
-                )));
-            }
-        }
-    }
-    let final_account = state.board.read().await.exchange_account(&pubkey);
-    Ok(Json(ExchangeAccountDto::from(final_account)))
+/// Public payment status; the signed transaction is never exposed by this route.
+pub async fn get_payment(State(state): State<Arc<AppState>>, Path(id): Path<Uuid>)
+    -> Result<Json<crate::payments::Receipt>, ApiError> {
+    state.board.read().await.payments.get(&id).map(|p| Json(p.receipt()))
+        .ok_or_else(|| ApiError::NotFound("payment not found".into()))
+}
+
+#[derive(Deserialize)]
+pub struct PaymentsQuery {
+    pub recipient: String,
+    #[serde(default)] pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+/// Recover a receipt after a lost HTTP response without repeating the spend.
+pub async fn list_payments(State(state): State<Arc<AppState>>, Query(q): Query<PaymentsQuery>)
+    -> Result<Json<Vec<crate::payments::Receipt>>, ApiError> {
+    let pk = parse_hex_pubkey(&q.recipient)?;
+    let board = state.board.read().await;
+    let mut found: Vec<_> = board.payments.values().filter(|p| p.recipient == pk).collect();
+    found.sort_by_key(|p| (std::cmp::Reverse(p.created_at), p.id));
+    Ok(Json(found.into_iter().skip(q.offset).take(q.limit.unwrap_or(50).min(200)).map(|p| p.receipt()).collect()))
 }
 
 /// Lists every executed trade, newest first, paginated via
@@ -3001,62 +2906,24 @@ pub async fn faucet_claim(
         Utc::now(),
     )?;
 
-    // Reserve second: this is what makes two concurrent claims from the
-    // same pubkey safe. If the payout below then fails, the reservation
-    // is released so the agent isn't locked out of a grant it never
-    // received. The challenge is not released with it -- it is spent
-    // either way, and the agent solves another. That asymmetry is the
-    // point: a burnt challenge costs work, a wrongly-recorded grant
-    // costs the agent the faucet forever.
-    {
-        let mut board = state.board.write().await;
-        board.record_faucet_grant(pubkey.clone())?;
+    let _guard = state.payout_lock.lock().await;
+    if !state.board.read().await.can_claim_faucet(&pubkey) {
+        return Err(ApiError::Conflict("this pubkey already has a faucet grant or pending payment".into()));
     }
-
-    match pay_bounty(&state, &pubkey, FAUCET_GRANT_AMOUNT).await {
-        Ok(()) => {
-            // Only durably recorded once the payout is confirmed sent --
-            // the in-memory reservation above is what prevents a double
-            // grant in the meantime; the store only needs to reflect
-            // grants that actually went out, so a crash between the two
-            // costs at most a rare double-grant after restart. That was
-            // already judged harmless and is now dearer than harmless:
-            // the second grant needs a second challenge solved.
-            if let Err(e) = state.store.save_faucet_grant(&pubkey, Utc::now().timestamp()) {
-                error!("failed to persist faucet grant for {pubkey}: {e}");
-            }
-            Ok(Json(FaucetResultDto {
-                amount: FAUCET_GRANT_AMOUNT,
-            }))
-        }
-        Err(e) => {
-            {
-                let mut board = state.board.write().await;
-                board.revoke_faucet_grant(&pubkey);
-            }
-            // The pre-flight above said yes and the payment still could
-            // not be funded -- a slot was taken between the two, which
-            // is exactly what a burst looks like. The challenge is
-            // spent and cannot be unspent (see the redemption's own
-            // comment), so the only thing left worth giving back is a
-            // fresh one, issued at no cost. Deliberately not "hold the
-            // redemption open": the redemption record is what stops a
-            // solution being spent twice, and a hub that reopens it
-            // under any condition is a hub whose faucet can be replayed
-            // by arranging that condition.
-            if is_insufficient_funds(&e) {
-                return Err(grant_unfunded(
-                    &state,
-                    &pubkey,
-                    GrantUnfunded::AfterRedemption(e.to_string()),
-                )
-                .await);
-            }
-            Err(ApiError::Internal(format!(
-                "faucet payout failed, please retry: {e}"
-            )))
-        }
-    }
+    let tx = match build_payment_from(&state, &state.operator_private_key,
+        &state.operator_public_key, &[(pubkey.clone(), FAUCET_GRANT_AMOUNT)],
+        &state.operator_public_key).await {
+        Ok(tx) => tx,
+        Err(e) if is_insufficient_funds(&e) => return Err(grant_unfunded(&state, &pubkey,
+            GrantUnfunded::AfterRedemption(e.to_string())).await),
+        Err(e) => return Err(ApiError::Internal(format!("faucet not sent: {e}"))),
+    };
+    let payment = crate::payments::Payment::new(crate::payments::Purpose::Faucet,
+        state.operator_public_key.clone(), pubkey, FAUCET_GRANT_AMOUNT, Some(tx));
+    let payment = crate::payments::prepare(&state, payment).await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    crate::payments::send(&state, &payment).await;
+    Ok(Json(FaucetResultDto { amount: payment.amount, payment_id: payment.id, status: payment.status }))
 }
 
 /// Whether the operator can fund one faucet grant out of what is
@@ -4265,7 +4132,10 @@ the spendable amount for a new order or a withdrawal is always the
 balance minus its locked counterpart. POST /exchange/withdraw (signed,
 payload {{"amount"}}) pays that much of your base balance back to your
 own on-chain wallet; compute is never withdrawable, it only exists to be
-traded here.
+traded here. The amount must be at least {min_exchange_withdrawal}, the
+same floor a deposit has and for the same reason: the pool pays the
+{fee} network fee to send it, so anything smaller costs more to move
+than it moves.
 
 ## Getting paid, and knowing that you were
 
@@ -4327,6 +4197,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         max_capability_tag_length = MAX_CAPABILITY_TAG_LENGTH,
         max_text_field_length = MAX_TEXT_FIELD_LENGTH,
         min_exchange_deposit = MIN_EXCHANGE_DEPOSIT,
+        min_exchange_withdrawal = MIN_EXCHANGE_WITHDRAWAL,
         taker_fee_bps = crate::board::TAKER_FEE_BPS,
         default_trades_page_size = DEFAULT_TRADES_PAGE_SIZE,
         max_trades_page_size = MAX_TRADES_PAGE_SIZE,
@@ -4461,6 +4332,39 @@ fn validate_positive_minutes(value: i64, field: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// What a bounty's escrow address has to hold before the task it funds
+/// exists: the bounty itself, plus the fee the eventual payout will pay.
+///
+/// A checked add, and the check is the whole point. `bounty` arrives on a
+/// signed payload with no ceiling above it, and the release profile this
+/// ships under has `overflow-checks = false` -- so `bounty +
+/// HUB_TRANSACTION_FEE` wrapped, and a bounty of `u64::MAX - 999` asked
+/// for a `required_amount` of **zero**. `TaskBoard::confirm_escrow` then
+/// compares `observed_amount < required_amount`, which `0 < 0` does not
+/// satisfy, so the deposit confirmed against an address holding nothing
+/// and minted a task with an unfundable bounty that no one had paid for.
+/// That breaks the one invariant escrow exists to hold -- a task's bounty
+/// is backed by a confirmed deposit -- and every `open_bounty` sum on the
+/// public board endpoints overflowed on the second such task.
+///
+/// Rejecting rather than saturating: a saturated `u64::MAX` reservation
+/// is an address that can never be funded, so the caller would sit on a
+/// pending escrow until it expired with no idea why. A 400 says so.
+///
+/// No ceiling on `bounty` beyond this. One is not needed and would be a
+/// guess: an unwrappable `required_amount` is one nobody can ever pay
+/// into, so the reservation simply expires, which is the same outcome as
+/// any other underfunded escrow and needs no new rule.
+fn escrow_amount_for(bounty: u64) -> Result<u64, ApiError> {
+    bounty.checked_add(HUB_TRANSACTION_FEE).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "bounty must be at most {}, leaving room for the {HUB_TRANSACTION_FEE} network fee \
+             the payout pays",
+            u64::MAX - HUB_TRANSACTION_FEE
+        ))
+    })
+}
+
 async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u64) -> Result<(), ApiError> {
     let balance = state
         .node
@@ -4507,34 +4411,15 @@ async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u
 /// `state.payout_lock` for the operator's own address; escrow-sourced
 /// callers use `EscrowSettlementGuard`, keyed per `PendingDeposit` since
 /// each has its own independent, never-reused address.
-async fn pay_from(
-    state: &AppState,
-    signing_key: &PrivateKey,
-    source_pubkey: &PublicKey,
-    recipients: &[(PublicKey, u64)],
-    change_pubkey: &PublicKey,
-) -> anyhow::Result<()> {
-    let tx = build_payment_from(state, signing_key, source_pubkey, recipients, change_pubkey).await?;
-    state.node.submit_transaction(tx).await
-}
-
-/// The first half of `pay_from` on its own: fetch the source's UTXOs and
-/// build the transaction, without sending it.
-///
-/// Split out because a *task* payout has to write down what it is about
-/// to submit before it submits it (see `HubStore::save_payout_attempt`),
-/// and it cannot write down an output hash it has not built yet. The
-/// paths that have nothing to record -- the faucet, exchange
-/// withdrawals, escrow refunds and bond settlements -- still go through
-/// `pay_from` and are unchanged.
-async fn build_payment_from(
+pub(crate) async fn build_payment_from(
     state: &AppState,
     signing_key: &PrivateKey,
     source_pubkey: &PublicKey,
     recipients: &[(PublicKey, u64)],
     change_pubkey: &PublicKey,
 ) -> anyhow::Result<btclib::types::Transaction> {
-    let utxos = state.node.fetch_utxos(source_pubkey).await?;
+    let mut utxos = state.node.fetch_utxos(source_pubkey).await?;
+    crate::payments::reserve_inputs(state, source_pubkey, &mut utxos).await;
     // Which output this spends is the whole of plan §6.4b. The node
     // returns its UTXOs in `HashMap` order, and `build_multi_payment`
     // walks them front to back and stops as soon as it has enough --
@@ -4644,22 +4529,6 @@ async fn submit_task_payout(
     state.node.submit_transaction(tx).await
 }
 
-/// Pays a single `recipient` out of the operator's own wallet -- the
-/// hub's original, and still most common, funding source. A thin wrapper
-/// over `pay_from` for the single-recipient, operator-sourced,
-/// change-to-self case.
-async fn pay_bounty(state: &AppState, recipient: &PublicKey, amount: u64) -> anyhow::Result<()> {
-    let _guard = state.payout_lock.lock().await;
-    pay_from(
-        state,
-        &state.operator_private_key,
-        &state.operator_public_key,
-        &[(recipient.clone(), amount)],
-        &state.operator_public_key,
-    )
-    .await
-}
-
 /// Keeps the operator's wallet split across enough spendable outputs to
 /// pay out more than once per block, by splitting its largest output
 /// when the count has fallen below `AppState::operator_wallet_outputs`.
@@ -4748,7 +4617,7 @@ struct Wallet<'a> {
 async fn maintain_wallet(state: &AppState, wallet: Wallet<'_>) {
     let _guard = wallet.lock.lock().await;
 
-    let utxos = match state.node.fetch_utxos(wallet.public_key).await {
+    let mut utxos = match state.node.fetch_utxos(wallet.public_key).await {
         Ok(utxos) => utxos,
         Err(e) => {
             warn!("could not read the {} wallet to fan it out: {e}", wallet.label);
@@ -4756,6 +4625,25 @@ async fn maintain_wallet(state: &AppState, wallet: Wallet<'_>) {
             return;
         }
     };
+    if wallet.label == "custody" {
+        let board = state.board.read().await;
+        let liabilities: u128 = board.all_exchange_accounts().map(|(_, a)| a.base_balance as u128).sum();
+        let reserved: u128 = board.payments.values().filter(|p| p.status != crate::payments::Status::Confirmed)
+            .filter_map(|p| match p.purpose { crate::payments::Purpose::Withdrawal { debited } => Some(debited as u128), _ => None }).sum();
+        let assets: u128 = utxos.iter().map(|(_, o)| o.value as u128).sum();
+        // Reshapes pay their fees only from explicitly funded surplus, never customer backing.
+        if assets < liabilities + reserved + HUB_TRANSACTION_FEE as u128 {
+            wallet.ready_gauge.store(crate::operator_wallet::ready_outputs(&utxos) as u64, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+    }
+    crate::payments::reserve_inputs(state, wallet.public_key, &mut utxos).await;
+    {
+        let board = state.board.read().await;
+        for a in board.outstanding_payout_attempts().iter().filter(|a| a.source == *wallet.public_key) {
+            for (marked, output) in &mut utxos { if a.spent_inputs.contains(&output.hash()) { *marked = true; } }
+        }
+    }
     let ready = crate::operator_wallet::ready_outputs(&utxos);
     wallet.ready_gauge.store(ready as u64, std::sync::atomic::Ordering::Relaxed);
 
@@ -4883,91 +4771,6 @@ async fn submit_bounty_payout(
     .await
 }
 
-/// Pays a single `recipient` out of the exchange's pooled custody
-/// address -- an exchange withdrawal's only payment path. A thin
-/// wrapper over `pay_from`, mirroring `pay_bounty` exactly except for
-/// which key/lock it uses: a *different* UTXO set than the operator's
-/// own, so this never contends with an unrelated operator payout (see
-/// `AppState::exchange_custody_payout_lock`'s own doc comment).
-/// Why a custody payment did not complete, and -- the only part that
-/// changes what a caller may safely do about it -- whether any bytes
-/// could have reached the node.
-///
-/// `pay_from` collapses both into one `anyhow::Error`, which is fine for
-/// its other callers: a lost faucet grant or escrow refund is retried by
-/// the sweep against live balances, so neither has to decide anything
-/// from the error alone. A withdrawal does, because the compensating
-/// action is crediting a user's balance back, and doing that after a
-/// transaction that actually landed pays them twice (§6.5d).
-enum CustodyPaymentFailure {
-    /// The transaction was never built -- custody had no spendable
-    /// output, or the node could not be asked. Nothing was sent, so a
-    /// caller may safely undo whatever it did in anticipation.
-    NotSent(anyhow::Error),
-    /// The transaction was built, signed and written to the node, and
-    /// the write reported an error. Writing to a socket whose peer has
-    /// gone does not fail, and a fire-and-forget send has no
-    /// acknowledgement to wait for, so this is precisely the state where
-    /// the hub cannot tell a payment that never left from one that
-    /// arrived. The attempt is carried out so the caller can record it.
-    MaybeSent {
-        error: anyhow::Error,
-        attempt: WithdrawalAttempt,
-    },
-}
-
-/// Pays `recipient` out of the pooled custody wallet, distinguishing a
-/// payment that was never built from one that may have gone out.
-///
-/// Builds and submits as two steps rather than calling `pay_from`, which
-/// is the same split `submit_task_payout` already makes and for a
-/// related reason: it needs the built transaction in hand to describe
-/// what it is about to send.
-async fn pay_from_custody(
-    state: &AppState,
-    recipient: &PublicKey,
-    amount: u64,
-) -> std::result::Result<(), CustodyPaymentFailure> {
-    let _guard = state.exchange_custody_payout_lock.lock().await;
-    let recipients = [(recipient.clone(), amount)];
-    let tx = build_payment_from(
-        state,
-        &state.exchange_custody_private_key,
-        &state.exchange_custody_public_key,
-        &recipients,
-        &state.exchange_custody_public_key,
-    )
-    .await
-    .map_err(CustodyPaymentFailure::NotSent)?;
-
-    // Positional for the same reason `submit_task_payout` is:
-    // `build_multi_payment` emits one output per recipient in order and
-    // appends change last. The check is what makes that coupling safe --
-    // if the layout ever changes this fails here rather than recording a
-    // hash that makes every later resolution a lie.
-    let output = tx.outputs.first().filter(|o| o.pubkey == *recipient && o.value == amount);
-    let Some(output) = output else {
-        return Err(CustodyPaymentFailure::NotSent(anyhow::anyhow!(
-            "built withdrawal transaction does not pay {recipient} {amount} at output 0"
-        )));
-    };
-    let attempt = WithdrawalAttempt {
-        id: Uuid::new_v4(),
-        owner: recipient.clone(),
-        amount,
-        output_hash: output.hash(),
-        spent_inputs: tx.inputs.iter().map(|i| i.prev_transaction_output_hash).collect(),
-        source: state.exchange_custody_public_key.clone(),
-        submitted_at: Utc::now(),
-    };
-
-    state
-        .node
-        .submit_transaction(tx)
-        .await
-        .map_err(|error| CustodyPaymentFailure::MaybeSent { error, attempt })
-}
-
 /// Sweeps one confirmed `FundExchangeAccount` deposit into the pooled
 /// custody address -- a third call site of `disburse_escrow`, which
 /// already does exactly "pay this escrow's live balance, net of fee, to
@@ -5000,7 +4803,7 @@ pub async fn sweep_exchange_deposit(state: &AppState, deposit_id: Uuid) -> bool 
     let deposit = {
         let board = state.board.read().await;
         match board.get_pending_deposit(deposit_id) {
-            Some(d) if matches!(d.purpose, EscrowPurpose::FundExchangeAccount) && d.status == EscrowStatus::Consumed => {
+            Some(d) if matches!(d.purpose, EscrowPurpose::FundExchangeAccount) && matches!(d.status, EscrowStatus::Consumed | EscrowStatus::Disbursing) => {
                 d.clone()
             }
             _ => return true,
@@ -5591,5 +5394,50 @@ mod summary_tests {
             }).unwrap(),
             r#"{"challenge_id":"00000000-0000-0000-0000-000000000000","solution":42}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod escrow_amount_tests {
+    use super::*;
+
+    /// `ApiError` deliberately carries no `Debug`, so the results are
+    /// unwrapped through `ok()` rather than by adding a derive to a
+    /// production type for the benefit of three assertions.
+    fn amount(bounty: u64) -> Option<u64> {
+        escrow_amount_for(bounty).ok()
+    }
+
+    #[test]
+    fn an_ordinary_bounty_reserves_itself_plus_the_fee() {
+        assert_eq!(amount(1_000_000), Some(1_000_000 + HUB_TRANSACTION_FEE));
+        assert_eq!(amount(0), Some(HUB_TRANSACTION_FEE));
+    }
+
+    /// The exploit this closes, stated as its arithmetic. Under the
+    /// release profile -- no overflow checks -- `bounty +
+    /// HUB_TRANSACTION_FEE` wrapped to zero here, and a zero
+    /// `required_amount` is one that `TaskBoard::confirm_escrow` accepts
+    /// against a deposit address holding nothing: a free task carrying a
+    /// bounty nobody funded.
+    #[test]
+    fn a_bounty_whose_fee_would_wrap_is_refused_rather_than_reserved() {
+        let bounty = u64::MAX - HUB_TRANSACTION_FEE + 1;
+        assert_eq!(
+            bounty.wrapping_add(HUB_TRANSACTION_FEE),
+            0,
+            "this is the input that used to reserve zero, so pin it"
+        );
+        assert_eq!(amount(bounty), None);
+        assert_eq!(amount(u64::MAX), None);
+    }
+
+    /// The boundary, both sides. The largest bounty that still leaves
+    /// room for the fee is allowed, and reserves exactly `u64::MAX`.
+    #[test]
+    fn the_largest_bounty_that_leaves_room_for_the_fee_is_allowed() {
+        let largest = u64::MAX - HUB_TRANSACTION_FEE;
+        assert_eq!(amount(largest), Some(u64::MAX));
+        assert_eq!(amount(largest + 1), None);
     }
 }

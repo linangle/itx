@@ -236,7 +236,9 @@ const STATUS_LABELS: Record<string, string> = {
   AwaitingDispute: "awaiting dispute",
   Disputed: "disputed",
   Verified: "verified",
+  Submitted: "settling",
   Paid: "paid",
+  PayoutFailed: "payout failed",
   Closed: "closed",
 };
 

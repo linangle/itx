@@ -67,6 +67,8 @@ pub enum BoardError {
     InvalidOrder,
     #[error("order notional (price times quantity) overflows")]
     OrderNotionalOverflow,
+    #[error("withdrawal amount must be non-zero")]
+    ZeroWithdrawal,
     #[error("insufficient balance: {available} available, {required} required")]
     InsufficientBalance { available: u64, required: u64 },
 }
@@ -661,10 +663,8 @@ impl Task {
     }
 }
 
-/// The answer with strictly the most submissions, or `None` if there are
-/// no answers yet or the top spot is tied between two or more answers --
-/// a tie is deliberately treated as "no consensus" rather than picking
-/// arbitrarily among them.
+/// An answer supported by strictly more than half of all assigned voters.
+/// Missing submissions count against quorum; a plurality is not consensus.
 fn majority_answer(assignees: &BTreeMap<PublicKey, ConsensusAssignment>) -> Option<String> {
     let mut counts: BTreeMap<&String, usize> = BTreeMap::new();
     for assignment in assignees.values() {
@@ -675,7 +675,7 @@ fn majority_answer(assignees: &BTreeMap<PublicKey, ConsensusAssignment>) -> Opti
     let max_count = *counts.values().max()?;
     let mut top: Vec<&&String> = counts.iter().filter(|(_, &c)| c == max_count).map(|(k, _)| k).collect();
     match top.pop() {
-        Some(answer) if top.is_empty() => Some((*answer).clone()),
+        Some(answer) if top.is_empty() && max_count > assignees.len() / 2 => Some((*answer).clone()),
         _ => None, // either no answers at all, or a tie for first place
     }
 }
@@ -695,6 +695,8 @@ pub struct Reputation {
 /// actually there has been sent back to `depositor`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EscrowStatus {
+    /// A durable outgoing payment exists; confirmation is still pending.
+    Disbursing,
     Reserved,
     Consumed,
     Refunded,
@@ -905,6 +907,7 @@ pub struct Trade {
 /// back in here only to record the outcome.
 #[derive(Debug, Clone, Default)]
 pub struct TaskBoard {
+    pub(crate) payments: BTreeMap<Uuid, crate::payments::Payment>,
     tasks: BTreeMap<Uuid, Task>,
     reputation: BTreeMap<PublicKey, Reputation>,
     faucet_grants: BTreeSet<PublicKey>,
@@ -925,6 +928,13 @@ pub struct TaskBoard {
 impl TaskBoard {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn exchange_liabilities(&self) -> u64 {
+        self.exchange_accounts.values().map(|a| a.base_balance)
+            .chain(self.payments.values().filter(|p| p.status != crate::payments::Status::Confirmed
+                && matches!(p.purpose, crate::payments::Purpose::Withdrawal { .. })).map(|p| p.amount))
+            .fold(0, u64::saturating_add)
     }
 
     /// Total bounty already promised to tasks that haven't been paid out
@@ -1086,7 +1096,7 @@ impl TaskBoard {
     /// have) money moving for it.
     pub fn cancel_task(&mut self, id: Uuid) -> Result<(), BoardError> {
         let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
-        if matches!(task.status, TaskStatus::Verified | TaskStatus::Paid | TaskStatus::Closed) {
+        if matches!(task.status, TaskStatus::Verified | TaskStatus::Submitted | TaskStatus::PayoutFailed | TaskStatus::Paid | TaskStatus::Closed) {
             return Err(BoardError::AlreadyTerminal);
         }
         // A Disputed task has a bond actively contested between two named
@@ -2193,7 +2203,27 @@ impl TaskBoard {
     /// (mirrors `record_faucet_grant`'s atomic-reserve shape). Callers
     /// must call `credit_back_withdrawal` if the payout that was
     /// supposed to follow this debit then fails.
+    ///
+    /// **Zero is refused here rather than left to the caller**, for the
+    /// same reason `place_order` refuses a zero price or quantity twelve
+    /// lines down: a debit of nothing passes the balance check trivially
+    /// (`0 < 0` is false) and every step after it proceeds as if a real
+    /// withdrawal were happening. `pay_from_custody` then built and
+    /// submitted an actual transaction -- a custody output spent, a
+    /// network fee paid to a miner, a zero-value output created, and the
+    /// spent output's change invisible until the next block. Repeat it
+    /// and custody bleeds a fee per call that no ledger balance accounts
+    /// for, which walks the solvency pair apart and grinds
+    /// `custody_ready_outputs` down until real withdrawals start failing
+    /// for want of a spendable output.
+    ///
+    /// The floor above zero is the handler's (`MIN_EXCHANGE_WITHDRAWAL`),
+    /// because "large enough to be worth its fee" is policy and can be
+    /// tuned; "not nothing" is an invariant and belongs with the ledger.
     pub fn debit_for_withdrawal(&mut self, owner: &PublicKey, amount: u64) -> Result<(), BoardError> {
+        if amount == 0 {
+            return Err(BoardError::ZeroWithdrawal);
+        }
         let account = self.exchange_accounts.entry(owner.clone()).or_default();
         let available = account.base_balance.saturating_sub(account.locked_base);
         if available < amount {
@@ -2239,6 +2269,22 @@ impl TaskBoard {
             Side::Sell => candidates.sort_by(|a, b| b.price.cmp(&a.price).then(a.created_at.cmp(&b.created_at))),
         }
         candidates.first().map(|o| o.id)
+    }
+
+    /// A bounded working copy of only the orders/accounts this placement can
+    /// touch. The handler keeps the live write lock until the staged records
+    /// commit, then publishes them. History is not cloned on every write.
+    pub fn stage_order(&self, owner: &PublicKey, side: Side, price: u64, fee_sink: &PublicKey) -> Self {
+        let mut staged = Self::new();
+        staged.restore_exchange_account(owner.clone(), self.exchange_account(owner));
+        staged.restore_exchange_account(fee_sink.clone(), self.exchange_account(fee_sink));
+        for order in self.orders.values().filter(|o| o.status == OrderStatus::Open
+            && o.owner != *owner && o.side != side
+            && match side { Side::Buy => o.price <= price, Side::Sell => o.price >= price }) {
+            staged.restore_exchange_account(order.owner.clone(), self.exchange_account(&order.owner));
+            staged.restore_order(order.clone());
+        }
+        staged
     }
 
     /// Places a limit order, locking the full notional up front (a buy
@@ -4201,6 +4247,31 @@ mod tests {
         assert_eq!(board.exchange_account(&owner).base_balance, 0);
     }
 
+    /// A debit of nothing used to succeed -- `available < 0` is false
+    /// whatever the balance -- and everything downstream then behaved as
+    /// though a real withdrawal were under way: a custody output spent, a
+    /// network fee paid, a zero-value output created, all to move
+    /// nothing. Repeated, it drains the pool that backs every ledger
+    /// balance.
+    #[test]
+    fn debit_for_withdrawal_refuses_a_withdrawal_of_nothing() {
+        let mut board = TaskBoard::new();
+        let owner = pubkey();
+        board.restore_exchange_account(owner.clone(), ExchangeAccount { base_balance: 100, ..Default::default() });
+
+        assert!(matches!(board.debit_for_withdrawal(&owner, 0), Err(BoardError::ZeroWithdrawal)));
+        assert_eq!(board.exchange_account(&owner).base_balance, 100, "and it must not have touched the balance");
+    }
+
+    /// The empty-account case, which is the one an attacker actually
+    /// sends: no deposit, no balance, nothing locked, and the old check
+    /// still waved it through because zero is not less than zero.
+    #[test]
+    fn a_withdrawal_of_nothing_is_refused_even_on_an_account_that_has_never_existed() {
+        let mut board = TaskBoard::new();
+        assert!(matches!(board.debit_for_withdrawal(&pubkey(), 0), Err(BoardError::ZeroWithdrawal)));
+    }
+
     #[test]
     fn credit_compute_accumulates_across_multiple_calls() {
         let mut board = TaskBoard::new();
@@ -4473,5 +4544,89 @@ mod tests {
         let done = board.get_task(task_id).unwrap();
         assert_eq!(done.confirmed_payout_total(), 900);
         assert_eq!(done.unconfirmed_payout_total(), 0);
+    }
+    #[test]
+    fn a_plurality_of_two_of_five_is_not_consensus() {
+        let mut board = TaskBoard::new();
+        let (id, keys) = create_and_fill_consensus_task(&mut board, 5, Utc::now() + chrono::Duration::minutes(30));
+        for (key, answer) in keys.iter().zip(["collusion", "collusion", "a", "b", "c"]) {
+            board.submit_consensus_answer(id, key.clone(), answer.to_string()).unwrap();
+        }
+        let task = board.get_task(id).unwrap();
+        assert_eq!(task.status, TaskStatus::Closed);
+        assert!(task.pending_payouts().is_empty());
+    }
+    #[test]
+    fn one_of_five_cannot_win_after_timeout() {
+        let mut board = TaskBoard::new();
+        let (id, keys) = create_and_fill_consensus_task(&mut board, 5, Utc::now() + chrono::Duration::minutes(30));
+        board.submit_consensus_answer(id, keys[0].clone(), "alone".to_string()).unwrap();
+        board.resolve_expired_consensus_tasks(Utc::now() + chrono::Duration::hours(2));
+        let task = board.get_task(id).unwrap();
+        assert_eq!(task.status, TaskStatus::Closed);
+        assert!(task.pending_payouts().is_empty());
+        assert_eq!(task.unconfirmed_payout_total(), 0);
+    }
+
+    /// Every state in which money is owed or moving, in one table, so a
+    /// new settlement state cannot be added without someone deciding what
+    /// cancelling it means. `Submitted` is the one this originally missed
+    /// alongside `PayoutFailed`: a payout on the wire whose task is
+    /// cancelled releases a bounty the hub is still trying to pay.
+    #[test]
+    fn cancellation_is_refused_in_every_state_that_owes_money() {
+        for (label, drive) in [
+            ("Verified", 0usize),
+            ("Submitted", 1),
+            ("PayoutFailed", 2),
+            ("Paid", 3),
+        ] {
+            let mut board = TaskBoard::new();
+            let (poster, worker) = (pubkey(), pubkey());
+            let task = board.create_task(poster, "owed".into(), 100, Hash::hash_bytes(b"ok"));
+            board.claim_task(task.id, worker.clone(), Utc::now() + chrono::Duration::minutes(10)).unwrap();
+            board.submit(task.id, worker.clone(), Hash::hash_bytes(b"ok")).unwrap();
+            let submit_payout = |board: &mut TaskBoard| {
+                board.record_payout_attempt(PayoutAttempt {
+                    task_id: task.id,
+                    recipient: worker.clone(),
+                    amount: 100,
+                    output_hash: Hash::hash_bytes(b"payout"),
+                    spent_inputs: vec![Hash::hash_bytes(b"input")],
+                    source: pubkey(),
+                    submitted_at: Utc::now(),
+                    submissions: 1,
+                });
+            };
+            match drive {
+                0 => {}
+                1 => submit_payout(&mut board),
+                2 => { board.mark_payout_failed(task.id).unwrap(); }
+                _ => {
+                    submit_payout(&mut board);
+                    board.mark_recipient_paid(task.id, &worker, 100).unwrap();
+                }
+            }
+            let before = board.get_task(task.id).unwrap().status;
+            assert!(
+                board.cancel_task(task.id).is_err(),
+                "cancelling a {label} task would release a bounty that is owed or already moving"
+            );
+            assert_eq!(board.get_task(task.id).unwrap().status, before, "{label} must be untouched");
+        }
+    }
+
+    #[test]
+    fn cancellation_preserves_failed_payout_obligation() {
+        let mut board = TaskBoard::new();
+        let (poster, worker) = (pubkey(), pubkey());
+        let task = board.create_task(poster, "owed".into(), 100, Hash::hash_bytes(b"ok"));
+        board.claim_task(task.id, worker.clone(), Utc::now() + chrono::Duration::minutes(10)).unwrap();
+        board.submit(task.id, worker, Hash::hash_bytes(b"ok")).unwrap();
+        board.mark_payout_failed(task.id).unwrap();
+        assert_eq!(board.allocated_bounty(), 100);
+        assert!(board.cancel_task(task.id).is_err());
+        assert_eq!(board.get_task(task.id).unwrap().status, TaskStatus::PayoutFailed);
+        assert_eq!(board.allocated_bounty(), 100);
     }
 }

@@ -518,6 +518,21 @@ impl NodeClient {
             .sum())
     }
 
+    /// Blocks from the node's active chain, starting at `start`.
+    ///
+    /// The hub holds no chain of its own and deliberately asks one
+    /// question at a time, so this is not a sync: it is the narrow
+    /// evidence lookup `payments::scan_for_evidence` needs and nothing
+    /// more. A reply may be shorter than `count` for reasons of the
+    /// responder's own (`BLOCKS_PER_FETCH_BATCH`), so a short reply is
+    /// not by itself the tip -- only an empty one is.
+    pub async fn fetch_blocks(&self, start: usize, count: u32) -> Result<Vec<btclib::types::Block>> {
+        match self.request(&Message::FetchBlocks { start, count }).await? {
+            Message::Blocks(blocks) => Ok(blocks),
+            other => anyhow::bail!("unexpected response from node: {other:?}"),
+        }
+    }
+
     /// Submits a transaction and returns as soon as it's sent -- the node
     /// protocol doesn't send an acknowledgement back for this message
     /// (the wallet and miner both already rely on this same fire-and-

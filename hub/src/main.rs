@@ -6,6 +6,7 @@ mod board;
 mod escrow_key;
 mod handlers;
 mod metrics;
+mod payments;
 mod names;
 mod node_client;
 mod operator_wallet;
@@ -420,6 +421,7 @@ async fn board_write_timed(state: &AppState) -> tokio::sync::RwLockWriteGuard<'_
 const PAYOUT_RESOLUTION_GRACE_SECONDS: i64 = 30;
 
 async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc>) {
+    payments::resolve_all(state, now).await;
     let reopened = {
         let mut board = board_write_timed(state).await;
         board.expire_claims(now)
@@ -608,17 +610,12 @@ async fn sample_gauges(state: &Arc<AppState>) {
     // measure -- and against the node, that await is unbounded.
     let (grants, open_tasks, outstanding_payouts, liabilities) = {
         let board = state.board.read().await;
-        let liabilities: u64 = board
-            .all_exchange_accounts()
-            // `locked_base` is included because a balance locked behind a
-            // resting order is still money owed to the depositor: they can
-            // cancel the order and withdraw it. Counting only the free
-            // half would report a hub as solvent precisely when its order
-            // book is busiest, which is when it least deserves the
-            // benefit of the doubt. Saturating, because a solvency figure
-            // that wraps on overflow is worse than one that saturates.
-            .map(|(_, account)| account.base_balance.saturating_add(account.locked_base))
-            .fold(0u64, |total, owed| total.saturating_add(owed));
+        let liabilities = board.exchange_liabilities();
+        state.metrics.payments_pending.store(board.payments.values().filter(|p| p.status == payments::Status::Pending).count() as u64, Ordering::Relaxed);
+        state.metrics.payments_needs_review.store(board.payments.values().filter(|p| p.status == payments::Status::NeedsReview).count() as u64, Ordering::Relaxed);
+        let oldest = board.payments.values().filter(|p| p.status != payments::Status::Confirmed)
+            .map(|p| (chrono::Utc::now() - p.created_at).num_seconds().max(0) as u64).max().unwrap_or(0);
+        state.metrics.payments_oldest_pending_seconds.store(oldest, Ordering::Relaxed);
         (
             board.all_faucet_grants().count() as u64,
             board
@@ -728,6 +725,7 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(HubStore::open_or_create(&args.store_file)?);
     let mut board = TaskBoard::new();
+    for payment in store.load_all_payments()? { board.payments.insert(payment.id, payment); }
     for task in store.load_all_tasks()? {
         board.restore_task(task);
     }
@@ -782,6 +780,25 @@ async fn main() -> Result<()> {
     // exactly when somebody is looking (plan §6.5d,
     // `docs/deployment.md` §10.4).
     let unresolved_withdrawals = store.load_all_withdrawal_attempts()?;
+    // Legacy v3 attempts lack signed transaction bytes. Preserve their input
+    // reservations and expose them for review; never invent a debit or resend.
+    for old in &unresolved_withdrawals {
+        if !board.payments.contains_key(&old.id) {
+            let payment = payments::Payment {
+                id: old.id, purpose: payments::Purpose::Withdrawal { debited: old.amount },
+                source: old.source.clone(), recipient: old.owner.clone(), amount: old.amount,
+                fee: 1_000, transaction: None, output_hash: Some(old.output_hash),
+                spent_inputs: old.spent_inputs.clone(), created_at: old.submitted_at,
+                submitted_at: old.submitted_at, submissions: 1, status: payments::Status::NeedsReview,
+                // Already terminal and awaiting a human, so no scan will
+                // ever read this; zero is the honest "never looked".
+                scanned_through: 0,
+            };
+            store.save_payment_effects(&payment, None, None, None, false)?;
+            board.payments.insert(payment.id, payment);
+        }
+    }
+
     if !unresolved_withdrawals.is_empty() {
         warn!(
             "{} withdrawal(s) submitted and never acknowledged are awaiting review; \
@@ -1058,6 +1075,8 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/payments", get(handlers::list_payments))
+        .route("/payments/:id", get(handlers::get_payment))
         // Lives here rather than in `handlers` on purpose: every other
         // route in that module reaches the board, the store or the node,
         // and this one must reach none of them (see `metrics`). Keeping
@@ -1218,6 +1237,11 @@ mod tests {
         /// would be a test that passes for whichever reason it felt
         /// like that run.
         drain_after_next_fetch: Arc<std::sync::atomic::AtomicBool>,
+        /// Blocks this fake claims to have mined, one per accepted
+        /// transaction. Needed because a payment's evidence outlives its
+        /// UTXO: once a recipient spends onward, the chain is the only
+        /// place the payment can still be seen (`payments::scan_for_evidence`).
+        blocks: Arc<AsyncMutex<Vec<btclib::types::Block>>>,
     }
 
     impl FakeNode {
@@ -1232,6 +1256,7 @@ mod tests {
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let drain_after_next_fetch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let blocks: Arc<AsyncMutex<Vec<btclib::types::Block>>> = Arc::new(AsyncMutex::new(Vec::new()));
             let submitted_for_accept_loop = submitted.clone();
             let utxos_for_accept_loop = utxos.clone();
             let fate_for_accept_loop = fate.clone();
@@ -1239,6 +1264,7 @@ mod tests {
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
             let drain_for_accept_loop = drain_after_next_fetch.clone();
+            let blocks_for_accept_loop = blocks.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else {
@@ -1251,6 +1277,7 @@ mod tests {
                     let submissions_seen = seen_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
                     let drain = drain_for_accept_loop.clone();
+                    let blocks = blocks_for_accept_loop.clone();
                     tokio::spawn(async move {
                         if btclib::network::perform_handshake_acceptor(&mut socket)
                             .await
@@ -1301,6 +1328,20 @@ mod tests {
                                     let mut utxos = utxos.lock().await;
                                     match fate {
                                         SubmissionFate::Mined => {
+                                            // Mined means a block exists
+                                            // carrying it, which is the
+                                            // only evidence left once the
+                                            // recipient spends onward.
+                                            blocks.lock().await.push(btclib::types::Block::new(
+                                                btclib::types::BlockHeader::new(
+                                                    Utc::now(),
+                                                    0,
+                                                    btclib::sha256::Hash::hash_bytes(b"prev"),
+                                                    btclib::util::MerkleRoot::calculate(&[tx.clone()]),
+                                                    btclib::U256::from(1u64),
+                                                ),
+                                                vec![tx.clone()],
+                                            ));
                                             utxos.retain(|(output, _)| {
                                                 !tx.inputs.iter().any(|input| {
                                                     input.prev_transaction_output_hash == output.hash()
@@ -1320,6 +1361,18 @@ mod tests {
                                             }
                                         }
                                         SubmissionFate::Swallowed => unreachable!("handled above"),
+                                    }
+                                }
+                                Message::FetchBlocks { start, count } => {
+                                    let held = blocks.lock().await;
+                                    let page: Vec<btclib::types::Block> = held
+                                        .iter()
+                                        .skip(start)
+                                        .take(count as usize)
+                                        .cloned()
+                                        .collect();
+                                    if Message::Blocks(page).send_async(&mut socket).await.is_err() {
+                                        return;
                                     }
                                 }
                                 Message::AskChainTip => {
@@ -1346,6 +1399,7 @@ mod tests {
                 connections,
                 hang_up_after_one,
                 drain_after_next_fetch,
+                blocks,
             }
         }
 
@@ -1436,6 +1490,18 @@ mod tests {
 
         /// What `NodeClient::balance` would report for `pubkey`:
         /// everything the mempool has not spoken for.
+        /// Removes `output_hash` from the reported set, standing in for a
+        /// recipient who has spent what they were paid before anyone came
+        /// looking. The money was received; it is simply no longer sitting
+        /// at that address, which is a state the hub's UTXO-only view
+        /// cannot tell apart from "never arrived".
+        async fn spend_onward(&self, output_hash: &btclib::sha256::Hash) {
+            let mut utxos = self.utxos.lock().await;
+            let before = utxos.len();
+            utxos.retain(|(output, _)| output.hash() != *output_hash);
+            assert!(utxos.len() < before, "nothing to spend: the output was not in the set");
+        }
+
         async fn balance_of(&self, pubkey: &PublicKey) -> u64 {
             self.outputs_of(pubkey)
                 .await
@@ -1497,6 +1563,17 @@ mod tests {
             }
             handlers::resolve_payout_attempt(state, &attempt).await;
         }
+        let payments: Vec<_> = state.board.read().await.payments.values().cloned().collect();
+        for payment in payments {
+            if let Some(hash) = payment.output_hash {
+                for _ in 0..200 {
+                    if node.outputs_of(&payment.recipient).await.iter().any(|(o, _)| o.hash() == hash) { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+        payments::resolve_all(state, Utc::now() + chrono::Duration::seconds(31)).await;
+
     }
 
     /// An address guaranteed to have nothing listening on it right now --
@@ -5728,6 +5805,8 @@ mod tests {
         fake_node.fund(deposit_pubkey, reservation["required_amount"].as_u64().unwrap()).await;
 
         run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(61)).await;
+        assert_eq!(hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status, board::EscrowStatus::Disbursing);
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
         assert_eq!(
             hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status,
             board::EscrowStatus::Refunded,
@@ -5808,6 +5887,7 @@ mod tests {
             refund.outputs.iter().any(|o| o.pubkey == poster_key.public_key() && o.value == required_amount - 1_000),
             "the refund must pay back to the original poster, minus the network fee"
         );
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
         assert_eq!(
             hub.state.board.read().await.get_pending_deposit(escrow_id).unwrap().status,
             board::EscrowStatus::Refunded
@@ -6201,6 +6281,10 @@ mod tests {
     fn board_as_a_restart_would_load_it(hub: &TestHub) -> TaskBoard {
         let store = &hub.state.store;
         let mut board = TaskBoard::new();
+        for p in store.load_all_payments().unwrap() { board.payments.insert(p.id, p); }
+        for pk in store.load_all_faucet_grants().unwrap() { board.restore_faucet_grant(pk); }
+        for order in store.load_all_orders().unwrap() { board.restore_order(order); }
+        for trade in store.load_all_trades().unwrap() { board.restore_trade(trade); }
         for task in store.load_all_tasks().unwrap() {
             board.restore_task(task);
         }
@@ -6670,7 +6754,7 @@ mod tests {
         let submitted = fake_node.wait_for_submitted_count(1).await;
         assert_eq!(submitted.len(), 1);
         assert!(
-            submitted[0].outputs.iter().any(|o| o.pubkey == owner_key.public_key() && o.value == 2_000),
+            submitted[0].outputs.iter().any(|o| o.pubkey == owner_key.public_key() && o.value == 1_000),
             "must actually pay the withdrawing agent, out of pooled custody"
         );
     }
@@ -6714,22 +6798,260 @@ mod tests {
         );
     }
 
+    /// A payment whose recipient spent it before the sweep looked.
+    ///
+    /// The transaction was mined and the money is theirs, but the output
+    /// is no longer at their address, and the inputs that funded it are
+    /// gone from the source because mining consumed them. `resolve_against`
+    /// reads that pair as `Ambiguous` -- correctly, since from the UTXO set
+    /// alone it is indistinguishable from a payment that never landed and
+    /// whose inputs something else took.
+    ///
+    /// The bug is what happens next: `Ambiguous` resolves to nothing at
+    /// all, so the payment stays `Pending` forever. It never confirms,
+    /// never reaches `NeedsReview`, and `hub_payments_oldest_pending_seconds`
+    /// climbs without bound -- which retires the one alert that would tell
+    /// an operator about a genuinely stuck payment.
+    ///
+    /// The window is ordinary, not exotic: thirty seconds of grace plus a
+    /// sixty-second sweep, against an agent that does something with its
+    /// money on arrival.
+    #[tokio::test]
+    async fn a_payment_the_recipient_already_spent_still_resolves() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &agent, &challenge).await.status(), reqwest::StatusCode::OK);
+        fake_node.wait_for_submitted_count(1).await;
+
+        let payment = hub.state.board.read().await.payments.values().next().cloned().unwrap();
+        let output_hash = payment.output_hash.expect("a funded grant always carries one");
+
+        // The agent spends its grant before the sweep gets to it.
+        fake_node.spend_onward(&output_hash).await;
+
+        payments::resolve_all(&hub.state, Utc::now() + chrono::Duration::seconds(31)).await;
+
+        let after = hub.state.board.read().await.payments.get(&payment.id).cloned().unwrap();
+        assert_eq!(
+            after.status,
+            payments::Status::Confirmed,
+            "the transaction is on the chain, so the hub must be able to say so"
+        );
+    }
+
+    /// The other side of the same ambiguity, and the reason the scan
+    /// cannot simply assume a mined transaction.
+    ///
+    /// Here the payment genuinely never landed, and the inputs that would
+    /// have funded it were consumed by something else -- so it can never
+    /// be mined now, and resending it is futile. The UTXO view reads this
+    /// exactly as it reads the spent-onward case above; only the chain
+    /// tells them apart. It has to stop being `Pending` and start being
+    /// somebody's problem.
+    #[tokio::test]
+    async fn a_payment_that_can_never_land_stops_waiting_and_asks_for_a_human() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        // The grant never reaches the node at all.
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &agent, &challenge).await.status(), reqwest::StatusCode::OK);
+
+        let payment = hub.state.board.read().await.payments.values().next().cloned().unwrap();
+        // ...and something else spends the inputs it was built against,
+        // so the transaction it holds can never be mined.
+        for input in &payment.spent_inputs {
+            fake_node.spend_onward(input).await;
+        }
+
+        payments::resolve_all(&hub.state, Utc::now() + chrono::Duration::seconds(31)).await;
+
+        let after = hub.state.board.read().await.payments.get(&payment.id).cloned().unwrap();
+        assert_eq!(
+            after.status,
+            payments::Status::NeedsReview,
+            "no block holds it and its inputs are gone: waiting longer cannot help"
+        );
+    }
+
+    /// Node loss on the faucet path, which is what `payments.rs` exists
+    /// for. The grant is submitted and the node never hears it -- the
+    /// exact shape of a node restart discarding its mempool. The old code
+    /// reported success and forgot; the record has to survive, stay
+    /// unconfirmed, and be resent by the sweep.
+    #[tokio::test]
+    async fn a_faucet_grant_the_node_never_heard_is_not_reported_as_settled() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        let resp = redeem_faucet_challenge(&hub, &agent, &challenge).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let payments: Vec<_> = hub.state.board.read().await.payments.values().cloned().collect();
+        assert_eq!(payments.len(), 1, "the grant must leave a durable record behind");
+        assert_eq!(
+            payments[0].status,
+            payments::Status::Pending,
+            "nothing has been seen on chain, so nothing may read as confirmed"
+        );
+        assert_eq!(fake_node.balance_of(&agent.public_key()).await, 0);
+
+        // The sweep resends rather than giving up, because a swallowed
+        // send is indistinguishable from one still in flight. Counted on
+        // the hub's own record: a `Swallowed` submission is by definition
+        // one the node never registers, so its transaction log cannot
+        // witness the resend that this is checking for.
+        assert_eq!(payments[0].submissions, 1);
+        payments::resolve_all(&hub.state, Utc::now() + chrono::Duration::seconds(31)).await;
+        let after: Vec<_> = hub.state.board.read().await.payments.values().cloned().collect();
+        assert_eq!(
+            after[0].submissions, 2,
+            "an unconfirmed grant must be resent, not abandoned"
+        );
+        assert_eq!(after[0].status, payments::Status::Pending);
+    }
+
+    /// The property that separates this from the code it replaced: an
+    /// uncertain send is never permission to undo the debit. The agent's
+    /// coins may be on chain already, so crediting the balance back is
+    /// how one withdrawal becomes two.
+    #[tokio::test]
+    async fn a_withdrawal_the_node_never_acknowledged_keeps_its_debit() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        fake_node.fund(hub.state.exchange_custody_public_key.clone(), 100_000).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        let resp = hub
+            .client
+            .post(format!("{}/exchange/withdraw", hub.base_url))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 2_000 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let account = hub.state.board.read().await.exchange_account(&owner_key.public_key());
+        assert_eq!(
+            account.base_balance, 3_000,
+            "the debit stands: the coins may already be on chain and the hub cannot tell"
+        );
+        let payments: Vec<_> = hub.state.board.read().await.payments.values().cloned().collect();
+        assert_eq!(payments.len(), 1);
+        assert_ne!(payments[0].status, payments::Status::Confirmed);
+    }
+
+    /// The ledger and the pool have to move by the same amount. The
+    /// account loses the whole `amount`; custody spends `amount - fee` on
+    /// the recipient and `fee` on the miner. Before this, the ledger lost
+    /// `amount` while custody lost `amount + fee`, so every withdrawal
+    /// quietly ate the surplus backing everyone else's balance.
+    #[tokio::test]
+    async fn a_withdrawal_costs_custody_exactly_what_it_debits() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let custody = hub.state.exchange_custody_public_key.clone();
+        fake_node.fund(custody.clone(), 100_000).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        let custody_before = fake_node.balance_of(&custody).await;
+        let resp = hub
+            .client
+            .post(format!("{}/exchange/withdraw", hub.base_url))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 2_000 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        fake_node.wait_for_submitted_count(1).await;
+
+        let ledger_debit = 5_000 - hub.state.board.read().await
+            .exchange_account(&owner_key.public_key()).base_balance;
+        let custody_outflow = custody_before - fake_node.balance_of(&custody).await;
+        assert_eq!(ledger_debit, 2_000);
+        assert_eq!(
+            custody_outflow, ledger_debit,
+            "the pool may not fund the network fee out of everyone else's backing"
+        );
+        assert_eq!(
+            fake_node.balance_of(&owner_key.public_key()).await,
+            2_000 - handlers::HUB_TRANSACTION_FEE,
+            "and the recipient is paid net of the fee they were charged for"
+        );
+    }
+
+    /// Amounts sit above `MIN_EXCHANGE_WITHDRAWAL` on purpose: what is
+    /// under test is the balance check, and a request small enough to
+    /// trip the minimum would never reach it.
     #[tokio::test]
     async fn withdraw_rejects_amount_exceeding_available_balance_via_http() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let owner_key = PrivateKey::new_key();
-        seed_exchange_account(&hub.state, &owner_key.public_key(), 100, 0).await;
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
 
         let resp = hub
             .client
             .post(format!("{}/exchange/withdraw", hub.base_url))
-            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 101 }))
+            .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount: 5_001 }))
             .send()
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+    }
+
+    /// A withdrawal of nothing used to reach custody: a real transaction
+    /// built and submitted, a spendable output consumed and a network fee
+    /// paid to move zero coins. It is refused before the ledger is
+    /// touched now, and -- the part that matters -- before custody is.
+    #[tokio::test]
+    async fn withdraw_of_nothing_never_reaches_custody() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let owner_key = PrivateKey::new_key();
+        seed_exchange_account(&hub.state, &owner_key.public_key(), 5_000, 0).await;
+
+        let submitted_before = fake_node.submitted_transactions().await.len();
+        for amount in [0, 1, 500] {
+            let resp = hub
+                .client
+                .post(format!("{}/exchange/withdraw", hub.base_url))
+                .json(&envelope(&owner_key, "/exchange/withdraw", handlers::WithdrawPayload { amount }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "a withdrawal of {amount} is below the fee custody pays to send it"
+            );
+        }
+
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            submitted_before,
+            "not one of them may have built or sent a transaction"
+        );
+        let account = hub.state.board.read().await.exchange_account(&owner_key.public_key());
+        assert_eq!(account.base_balance, 5_000, "and the ledger is untouched");
     }
 
     #[tokio::test]

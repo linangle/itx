@@ -17,7 +17,13 @@ const STATUS_CLASS: Record<TaskStatus, string> = {
   AwaitingDispute: "itx-badge-warn",
   Disputed: "itx-badge-warn",
   Verified: "itx-badge-active",
+  // Money is on the wire and the hub is still waiting for chain
+  // evidence, which is work in progress rather than a settled result.
+  Submitted: "itx-badge-active",
   Paid: "itx-badge-done",
+  // Terminal, but the one terminal state that owes somebody money and
+  // needs a human -- amber for the same reason a dispute is.
+  PayoutFailed: "itx-badge-warn",
   Closed: "itx-badge-done",
 };
 
