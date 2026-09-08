@@ -6383,6 +6383,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirming_a_funded_bond_after_the_dispute_window_closes_does_not_wedge_the_board() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee_key = PrivateKey::new_key();
+        let challenger_key = PrivateKey::new_key();
+
+        let task_id = create_confirmed_disputable_task_awaiting_dispute(
+            &hub,
+            &fake_node,
+            &poster_key,
+            &assignee_key,
+            900,
+            30,
+        )
+        .await;
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
+            .json(&envelope(
+                &challenger_key,
+                &format!("/tasks/{task_id}/dispute/escrow"),
+                handlers::DisputeEscrowPayload {
+                    task_id,
+                    reason: "too late".to_string(),
+                },
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
+        fake_node
+            .fund(
+                deposit_pubkey,
+                reservation["required_amount"].as_u64().unwrap(),
+            )
+            .await;
+
+        // Advance only the task state, leaving the freshly funded bond
+        // reserved so confirmation takes the closed-window refund arm.
+        let finalized = hub
+            .state
+            .board
+            .write()
+            .await
+            .finalize_unchallenged_disputable_tasks(Utc::now() + chrono::Duration::minutes(31));
+        assert_eq!(finalized, vec![task_id]);
+
+        let confirm = hub
+            .client
+            .post(format!("{}/tasks/{task_id}/dispute/confirm", hub.base_url))
+            .json(&envelope(
+                &challenger_key,
+                &format!("/tasks/{task_id}/dispute/confirm"),
+                handlers::ConfirmDisputeEscrowPayload { task_id, escrow_id },
+            ))
+            .send();
+        let response = tokio::time::timeout(Duration::from_secs(2), confirm)
+            .await
+            .expect("closed-window confirmation wedged while refunding its bond")
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            hub.client.get(format!("{}/tasks", hub.base_url)).send(),
+        )
+        .await
+        .expect("the board remained wedged after closed-window confirmation")
+        .unwrap();
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
     async fn unchallenged_disputable_task_pays_the_claimant_via_sweep() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;

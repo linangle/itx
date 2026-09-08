@@ -1376,7 +1376,11 @@ pub async fn confirm_dispute_escrow(
     let (task, deposit) = match confirm_result {
         Ok(confirmed) => confirmed,
         Err(BoardError::DisputeWindowClosed) => {
-            if let Some(deposit) = state.board.read().await.get_pending_deposit(escrow_id).cloned() {
+            let deposit = {
+                let board = state.board.read().await;
+                board.get_pending_deposit(escrow_id).cloned()
+            };
+            if let Some(deposit) = deposit {
                 refund_escrow(&state, &deposit).await;
             }
             return Err(BoardError::DisputeWindowClosed.into());
