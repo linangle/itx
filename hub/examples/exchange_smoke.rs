@@ -4,6 +4,12 @@
 //! than trusting the hub's own bookkeeping. Run manually:
 //!
 //!   cargo run -p hub --example exchange_smoke -- <hub_base_url> <node_address>
+//!
+//! **Needs a hub started with `--enable-exchange`.** The order book is off
+//! by default -- settlement no longer mints the `compute` this trades
+//! against, so no order can fill on a hub that has not been asked for it
+//! (plan, decisions log 2026-09-08). Without the flag every call here
+//! answers 404.
 
 use anyhow::{Context, Result};
 use btclib::crypto::{PrivateKey, PublicKey};

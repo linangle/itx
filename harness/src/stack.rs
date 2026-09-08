@@ -313,6 +313,14 @@ impl Stack {
             "./operator.priv.cbor".into(),
             "--faucet-pow-expected-hashes".into(),
             self.config.faucet_expected_hashes.to_string(),
+            // On here even though a launched hub runs without it. The
+            // `exchange-restart` drill is the only check anything has
+            // that a fill, a cancellation and a withdrawal survive a
+            // kill, and the flag turning that drill into a wall of 404s
+            // would retire the coverage silently -- which is the exact
+            // failure the harness README calls "coverage of the
+            // instrument". Every other drill ignores the routes.
+            "--enable-exchange".into(),
         ];
         if let Some(proxies) = &self.config.trusted_proxies {
             args.push("--trusted-proxies".into());

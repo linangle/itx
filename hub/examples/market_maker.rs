@@ -16,6 +16,12 @@
 //!   cargo run -p hub --example market_maker -- <hub_base_url> <priv_key_file> <reference_price> [spread_bps] [order_size] [interval_secs]
 //!
 //! Runs forever. Ctrl-C to stop.
+//!
+//! **Needs a hub started with `--enable-exchange`.** The order book is off
+//! by default -- settlement no longer mints the `compute` this trades
+//! against, so no order can fill on a hub that has not been asked for it
+//! (plan, decisions log 2026-09-08). Without the flag every call here
+//! answers 404.
 
 use anyhow::{Context, Result};
 use btclib::crypto::PrivateKey;
