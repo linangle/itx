@@ -194,19 +194,46 @@ jobs:
   audit:
     name: dependency audit
     runs-on: ubuntu-latest
-    # Advisories appear without anyone pushing, so this must not be able
-    # to turn a green commit red retroactively and block unrelated work.
-    # It reports; a human decides. Plan §3.8 asks for the audit, not for
-    # an automatic veto.
-    continue-on-error: true
+    # A real gate. It was `continue-on-error` when it was first written,
+    # on the grounds that advisories appear without anyone pushing and so
+    # should not be able to turn a green commit red retroactively. That
+    # was the wrong shape: a job that can never fail is a job nobody
+    # reads, and the next advisory -- the one that does reach the hub --
+    # would arrive invisibly behind a badge that was already red.
+    #
+    # It gates now, with exactly one advisory ignored by name and a check
+    # that the ignore has not gone stale. The reasoning, and what would
+    # change it, is in `docs/dependency-audit.md`.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
       - name: cargo audit
+        # RUSTSEC-2022-0040 (`owning_ref`, multiple soundness issues) has
+        # no fixed version and never will -- the holes are in its API, so
+        # a fix would break every caller, and the crate is unmaintained.
+        # It reaches this tree only through `cursive` in the wallet's
+        # terminal UI: zero paths from hub, node, miner or console, and
+        # the wallet is not in the release artifact. See
+        # `docs/dependency-audit.md` for the full argument and for what
+        # would make this line wrong.
         run: |
+          set -euo pipefail
           cargo install cargo-audit --locked
-          cargo audit
+          IGNORED=RUSTSEC-2022-0040
+          cargo audit --ignore "$IGNORED"
+
+          # The ignore's own expiry check. If `cursive` ever migrates off
+          # `owning_ref`, the line above stops describing anything and
+          # starts being a place for the next advisory to hide. Failing
+          # here is a one-line cleanup, and it is the only thing that
+          # stops an ignore list rotting quietly.
+          if ! cargo audit --json 2>/dev/null | grep -q "$IGNORED"; then
+            echo "::error file=.github/workflows/ci.yml::${IGNORED} no longer fires -- delete the --ignore and this check, and update docs/dependency-audit.md"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -214,4 +241,8 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - name: npm audit
         working-directory: dashboard
-        run: npm audit --audit-level=high
+        # Nothing ignored here, and nothing needs to be: every advisory
+        # this found had a fix available and the fixes are taken.
+        run: |
+          npm ci
+          npm audit --audit-level=high
