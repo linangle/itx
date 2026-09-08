@@ -58,10 +58,18 @@ interface TaskCommon {
   min_reputation: number;
   close_reason: CloseReason | null;
   capabilities: string[];
-  /** RFC3339. The only timestamp the hub exposes for a task, and so the
-   * basis of every time series on this site. Creation time only -- see
-   * `series.ts` for what that does and doesn't let us claim. */
+  /** RFC3339, creation time. Was for a long while the only timestamp the
+   * hub exposed, which is why `series.ts` is careful about what a series
+   * built on it may claim. */
   created_at: string;
+  /** RFC3339, or `null` — when this task's last payout confirmed on
+   * chain. `null` while it is unpaid, and `null` forever for a task that
+   * closed or failed without paying anyone.
+   *
+   * The other end of `created_at`, and the reason the board can now say
+   * whether posted work is actually being finished rather than only that
+   * it was advertised. */
+  settled_at: string | null;
 }
 
 export type TaskDto = TaskCommon &

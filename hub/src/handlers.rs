@@ -365,10 +365,23 @@ pub struct TaskDto {
     /// (the dashboard's sparklines derive entirely from this field)
     /// without the hub having to serve pre-aggregated stats.
     ///
-    /// Note this is strictly a *creation* time. Nothing records when a
-    /// task was claimed, verified, or paid, so a client can chart when
-    /// work was posted but cannot honestly chart when it settled.
+    /// Strictly a *creation* time; `settled_at` below is the other end.
+    /// Nothing records when a task was claimed or verified.
     pub created_at: DateTime<Utc>,
+    /// When this task's last payout confirmed on chain -- when it
+    /// reached `Paid`. `null` until then, and `null` forever for a task
+    /// that closed or failed without paying anyone.
+    ///
+    /// The companion `created_at` used to say did not exist, and its
+    /// absence was load-bearing: a client could chart when work was
+    /// posted and had no honest way to chart when it was finished, so
+    /// every chart on the dashboard was a chart of demand. Pairing the
+    /// two is what makes "was any of this work actually done" a question
+    /// the API can answer.
+    ///
+    /// `null` on a task settled before this field existed, which reads
+    /// as "not recorded" rather than as the epoch.
+    pub settled_at: Option<DateTime<Utc>>,
     /// How much of the bounty the hub has *seen on chain*, and how much
     /// it has not. Distinct from `bounty`, which is what the task is
     /// worth, and from `status`, which says which of three quite
@@ -417,6 +430,7 @@ impl From<&Task> for TaskDto {
             close_reason: task.close_reason,
             capabilities: task.capabilities.clone(),
             created_at: task.created_at,
+            settled_at: task.settled_at,
             bounty_confirmed: task.confirmed_payout_total(),
             bounty_pending: task.unconfirmed_payout_total(),
             kind,
