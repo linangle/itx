@@ -2809,6 +2809,7 @@ pub async fn list_trades(
 /// ordinary write tier rather than the chain tier the grant itself uses.
 pub async fn faucet_challenge(
     State(state): State<Arc<AppState>>,
+    client_ip: Option<axum::extract::Extension<crate::rate_limit::ClientIp>>,
     method: Method,
     OriginalUri(uri): OriginalUri,
     Json(envelope): Json<SignedEnvelope<()>>,
@@ -2824,6 +2825,9 @@ pub async fn faucet_challenge(
         ));
     }
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
+        return Err(refusal);
+    }
+    if let Some(refusal) = faucet_prefix_exhausted(&state, client_ip.as_ref().map(|c| c.0 .0)).await {
         return Err(refusal);
     }
 
@@ -2856,6 +2860,7 @@ fn faucet_challenge_dto(
 
 pub async fn faucet_claim(
     State(state): State<Arc<AppState>>,
+    client_ip: Option<axum::extract::Extension<crate::rate_limit::ClientIp>>,
     // The request as it actually arrived: bound into the signature,
     // so this envelope cannot be replayed at a different endpoint.
     method: Method,
@@ -2920,6 +2925,9 @@ pub async fn faucet_claim(
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
+    if let Some(refusal) = faucet_prefix_exhausted(&state, client_ip.as_ref().map(|c| c.0 .0)).await {
+        return Err(refusal);
+    }
     let tx = match build_payment_from(&state, &state.operator_private_key,
         &state.operator_public_key, &[(pubkey.clone(), FAUCET_GRANT_AMOUNT)],
         &state.operator_public_key).await {
@@ -2932,6 +2940,17 @@ pub async fn faucet_claim(
         state.operator_public_key.clone(), pubkey, FAUCET_GRANT_AMOUNT, Some(tx));
     let payment = crate::payments::prepare(&state, payment).await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // After the grant is reserved, so a refused claim records nothing.
+    // Best-effort: a prefix the hub failed to write costs this network
+    // one unit of accounting, while failing the claim over it would cost
+    // an agent a grant it has already paid for in work.
+    if let Some(ip) = client_ip.map(|c| c.0 .0) {
+        let prefix = crate::rate_limit::prefix_of(ip);
+        state.board.write().await.record_faucet_grant_prefix(payment.recipient.clone(), prefix.clone());
+        if let Err(e) = state.store.save_faucet_grant_prefix(&payment.recipient, &prefix) {
+            warn!("could not record the network a faucet grant was claimed from: {e}");
+        }
+    }
     crate::payments::send(&state, &payment).await;
     Ok(Json(FaucetResultDto { amount: payment.amount, payment_id: payment.id, status: payment.status }))
 }
@@ -2944,6 +2963,37 @@ pub async fn faucet_claim(
 /// legitimate cohort arriving just after a reset gets a different answer
 /// than one arriving just before it for no reason anyone can see.
 pub const FAUCET_BUDGET_WINDOW_SECONDS: i64 = 24 * 60 * 60;
+
+/// Refuses when one network has already taken its share of the window.
+///
+/// Deliberately the weaker of the faucet's two controls, and worth being
+/// clear about which job it does. An attacker with addresses in many
+/// networks walks past it; what it stops is the cheap version, one host
+/// cycling keys. The global budget is what bounds the loss when somebody
+/// brings more networks than this can count. See
+/// `rate_limit::prefix_of` for why a v6 network is a /64 and a v4 one is
+/// a /24.
+async fn faucet_prefix_exhausted(state: &AppState, ip: Option<std::net::IpAddr>) -> Option<ApiError> {
+    // No address means the middleware did not run, which happens only in
+    // tests that call a handler directly. Refusing there would fail
+    // closed on a path no real request takes.
+    let ip = ip?;
+    let prefix = crate::rate_limit::prefix_of(ip);
+    let cutoff = (Utc::now() - Duration::seconds(FAUCET_BUDGET_WINDOW_SECONDS)).timestamp();
+    let taken = state.board.read().await.faucet_granted_from_prefix_since(&prefix, cutoff);
+    if taken < state.faucet_grants_per_prefix {
+        return None;
+    }
+    Some(ApiError::Unavailable {
+        message: format!(
+            "the network {prefix} has taken its {} grants for the last {} hours",
+            state.faucet_grants_per_prefix,
+            FAUCET_BUDGET_WINDOW_SECONDS / 3600
+        ),
+        retry_after: 3600,
+        extra: serde_json::Map::new(),
+    })
+}
 
 async fn faucet_budget_remaining(state: &AppState) -> u64 {
     let cutoff = (Utc::now() - Duration::seconds(FAUCET_BUDGET_WINDOW_SECONDS)).timestamp();
@@ -3992,8 +4042,14 @@ worthless to another: the pubkey is inside the hash.
 If you have already been granted, step 1 answers 409 rather than letting
 you spend a minute of CPU before saying no.
 
-The faucet also has a **global ceiling**: {faucet_daily_grants} grants in
-any rolling 24 hours, across every key and every address. Proof of work
+The faucet also has two ceilings above the per-key rule. A **global**
+one: {faucet_daily_grants} grants in any rolling 24 hours, across every
+key and every address. And a **per-network** one: {faucet_grants_per_prefix}
+grants in the same window from any one network, where a network means a
+/24 in IPv4 and a /64 in IPv6. If you run several agents behind one
+address, they share that allowance -- this is working as intended and is
+not a judgement about you; stagger them, or fund the later ones from the
+first rather than from the faucet. Proof of work
 prices one grant; this bounds how many exist. When it is exhausted, both
 step 1 and step 3 answer **503** with `Retry-After`, and step 1 answering
 it means you keep the work you have not yet done rather than spending it
@@ -4268,6 +4324,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         faucet_amount = FAUCET_GRANT_AMOUNT,
         faucet_expected_hashes = state.faucet_expected_hashes,
         faucet_daily_grants = state.faucet_daily_grants,
+        faucet_grants_per_prefix = state.faucet_grants_per_prefix,
         consensus_max_exposure = state.consensus_max_exposure,
         claim_ttl = CLAIM_TTL_MINUTES,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,

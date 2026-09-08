@@ -32,6 +32,15 @@ const FAUCET_GRANTS_TABLE: TableDefinition<&[u8], i64> = TableDefinition::new("f
 // garbage: an unredeemed challenge past its expiry can never be used
 // again, and a redeemed one stops mattering once its own expiry is far
 // enough behind. `prune_faucet_challenges` collects both.
+/// Which network each granted key claimed its grant from, keyed by the
+/// same pubkey `FAUCET_GRANTS_TABLE` is. A second table rather than a
+/// wider value, so the existing rows stay readable exactly as written.
+///
+/// Durable rather than in-memory because a per-prefix limit that resets
+/// on restart is one an operator would believe in and not have. The
+/// global budget is durable for the same reason.
+const FAUCET_GRANT_PREFIXES_TABLE: TableDefinition<&[u8], &str> =
+    TableDefinition::new("faucet_grant_prefixes");
 const FAUCET_CHALLENGES_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("faucet_challenges");
 // uuid bytes -> serialized PendingDeposit (private key included -- see
@@ -142,7 +151,7 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// first bump under the new policy, and the case it was written for: a
 /// rolled-back binary that could not see that table would read a debited
 /// ledger with no record of the payment that debited it (§6.5d).
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 /// The `PAYOUT_ATTEMPTS_TABLE` key for one payout: the task's uuid
 /// followed by the recipient's SEC1 bytes. Uuid bytes are fixed-width,
@@ -232,6 +241,7 @@ impl HubStore {
             write_txn.open_table(TASKS_TABLE)?;
             write_txn.open_table(REPUTATION_TABLE)?;
             write_txn.open_table(FAUCET_GRANTS_TABLE)?;
+            write_txn.open_table(FAUCET_GRANT_PREFIXES_TABLE)?;
             write_txn.open_table(PENDING_DEPOSITS_TABLE)?;
             write_txn.open_table(EXCHANGE_ACCOUNTS_TABLE)?;
             write_txn.open_table(ORDERS_TABLE)?;
@@ -914,6 +924,31 @@ impl HubStore {
     /// `load_all_faucet_grants` reads, keeping the timestamp it discards.
     /// The window the global budget is measured over has to survive a
     /// restart, or restarting the hub would refill the budget.
+    /// Saves the network a grant was claimed from, beside the grant.
+    pub fn save_faucet_grant_prefix(&self, pubkey: &PublicKey, prefix: &str) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(FAUCET_GRANT_PREFIXES_TABLE)?;
+            table.insert(pubkey.to_sec1_bytes().as_slice(), prefix)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn load_all_faucet_grant_prefixes(&self) -> Result<Vec<(PublicKey, String)>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(FAUCET_GRANT_PREFIXES_TABLE)?;
+        table
+            .iter()?
+            .map(|entry| {
+                let (key, prefix) = entry?;
+                let pubkey = PublicKey::from_sec1_bytes(key.value())
+                    .map_err(|e| HubStoreError::BadPublicKey(e.to_string()))?;
+                Ok((pubkey, prefix.value().to_string()))
+            })
+            .collect()
+    }
+
     pub fn load_all_faucet_grants_with_times(&self) -> Result<Vec<(PublicKey, i64)>> {
         let read_txn = self.db.begin_read()?;
         let table = read_txn.open_table(FAUCET_GRANTS_TABLE)?;

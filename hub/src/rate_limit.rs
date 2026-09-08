@@ -262,6 +262,49 @@ pub fn cleanup(table: &RateLimitTable) {
     table.retain(|_, w| w.started_at > cutoff);
 }
 
+/// The resolved client address, put into request extensions by
+/// `middleware` so a handler can reach it without re-deriving it.
+///
+/// A handler must never work this out for itself. `client_ip` honours
+/// `X-Forwarded-For` only from a trusted peer, and that rule is the
+/// difference between a limit and a decoration -- 130 requests with 130
+/// spoofed addresses shared one bucket with it and defeated the limit
+/// entirely without it (`docs/deployment.md` §11). One implementation,
+/// reached one way.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientIp(pub IpAddr);
+
+/// The network this address is treated as belonging to, for abuse
+/// controls that want a unit bigger than one address.
+///
+/// **IPv4 to /24, IPv6 to /64**, and the asymmetry is the point. A single
+/// v4 address is a meaningful unit of cost. A v6 address is not: a
+/// residential customer is typically handed a whole /64, so limiting per
+/// v6 address limits nothing at all -- an attacker walks 18 quintillion
+/// addresses inside one allocation without exhausting a single bucket.
+///
+/// /64 rather than /48 is a deliberate accepted weakness. /64 matches the
+/// usual residential allocation, so it groups one household as one
+/// client, which is what we want. A hosting provider hands out a /64 per
+/// VM, so a datacentre attacker with a /48 still gets 65,536 buckets --
+/// and the answer to that is not a coarser prefix, which would start
+/// grouping unrelated households behind one ISP segment. It is the
+/// global budget (`--faucet-daily-grants`), which bounds the total
+/// however many prefixes anyone assembles. This limit only has to make
+/// casual abuse tedious; the budget is what bounds the loss.
+pub fn prefix_of(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            format!("{a}.{b}.{c}.0/24")
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+    }
+}
+
 /// The reverse-proxy addresses whose `X-Forwarded-For` header this hub
 /// believes. Empty by default, and empty is the only safe default: the
 /// header is set by whoever sends the request, so honouring it from an
@@ -404,6 +447,8 @@ pub async fn middleware(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded, slow down").into_response();
     }
 
+    let mut req = req;
+    req.extensions_mut().insert(ClientIp(ip));
     let response = next.run(req).await;
     // This is the hub's only per-route timing, and it is deliberately
     // here rather than in each handler. The middleware already wraps the
@@ -443,6 +488,30 @@ fn static_method_name(method: &Method) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The asymmetry is the whole design, so pin it. A v4 address is a
+    /// unit of cost and a v6 address is not -- a residential customer
+    /// holds a whole /64, so per-address limiting in v6 limits nothing.
+    #[test]
+    fn a_v6_network_is_a_64_and_a_v4_network_is_a_24() {
+        let v4: IpAddr = "203.0.113.9".parse().unwrap();
+        assert_eq!(prefix_of(v4), "203.0.113.0/24");
+        assert_eq!(prefix_of("203.0.113.250".parse().unwrap()), prefix_of(v4), "same /24, same bucket");
+        assert_ne!(prefix_of("203.0.114.9".parse().unwrap()), prefix_of(v4));
+
+        // Every address in one /64 is one client. Without this an
+        // attacker walks 18 quintillion addresses inside a single
+        // residential allocation and never fills a bucket.
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap();
+        assert_eq!(prefix_of(a), prefix_of(b));
+        assert_eq!(prefix_of(a), "2001:db8:1:2::/64");
+
+        // ...and the next /64 along is a different client, which is the
+        // accepted weakness: a datacentre /48 is 65,536 of these. The
+        // global faucet budget is what bounds that case.
+        assert_ne!(prefix_of("2001:db8:1:3::1".parse().unwrap()), prefix_of(a));
+    }
 
     #[test]
     fn allows_requests_within_the_limit_and_rejects_beyond_it() {

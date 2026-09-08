@@ -145,6 +145,9 @@ pub struct AppState {
     /// Ceiling on unsettled consensus bounty. See
     /// `Args::consensus_max_exposure`.
     pub consensus_max_exposure: u64,
+    /// Grants one network may take per window. See
+    /// `Args::faucet_grants_per_prefix`.
+    pub faucet_grants_per_prefix: u64,
     /// Display names for agents (see `names`). Its own lock rather than
     /// a field on `board`: the registry is presentation, the board is
     /// the economy, and a read of the leaderboard should not have to
@@ -292,6 +295,17 @@ struct Args {
     /// Aggregate rather than per-task, because an attacker capped to a
     /// minority of one task's slots simply posts more tasks.
     consensus_max_exposure: u64,
+    #[argh(option, default = "5")]
+    /// how many faucet grants one network may take in the rolling
+    /// budget window. IPv4 is bucketed to a /24 and IPv6 to a /64 --
+    /// see `rate_limit::prefix_of` for why the two differ.
+    ///
+    /// The weaker of the faucet's two controls, deliberately. It stops
+    /// one host cycling keys; it does nothing about an attacker holding
+    /// addresses in many networks, and `--faucet-daily-grants` is what
+    /// bounds the loss in that case. Setting this high does not open a
+    /// hole so much as lean harder on the budget.
+    faucet_grants_per_prefix: u64,
     #[argh(option, default = "String::new()")]
     /// comma-separated addresses of the reverse proxies in front of this
     /// hub, whose `X-Forwarded-For` header the rate limiter should
@@ -783,6 +797,9 @@ async fn main() -> Result<()> {
     for (pubkey, granted_at) in store.load_all_faucet_grants_with_times()? {
         board.restore_faucet_grant(pubkey, granted_at);
     }
+    for (pubkey, prefix) in store.load_all_faucet_grant_prefixes()? {
+        board.restore_faucet_grant_prefix(pubkey, prefix);
+    }
     for deposit in store.load_all_pending_deposits()? {
         board.restore_pending_deposit(deposit);
     }
@@ -998,6 +1015,7 @@ async fn main() -> Result<()> {
         faucet_expected_hashes: args.faucet_pow_expected_hashes,
         faucet_daily_grants: args.faucet_daily_grants,
         consensus_max_exposure: args.consensus_max_exposure,
+        faucet_grants_per_prefix: args.faucet_grants_per_prefix,
         names: RwLock::new(names),
         net_worths: RwLock::new(None),
         metrics,
@@ -1874,7 +1892,7 @@ mod tests {
         node_address: String,
         faucet_daily_grants: u64,
     ) -> TestHub {
-        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), faucet_daily_grants, u64::MAX).await
+        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), faucet_daily_grants, u64::MAX, u64::MAX).await
     }
 
     async fn spawn_hub_with_consensus_cap(
@@ -1882,7 +1900,15 @@ mod tests {
         node_address: String,
         consensus_max_exposure: u64,
     ) -> TestHub {
-        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, consensus_max_exposure).await
+        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, consensus_max_exposure, u64::MAX).await
+    }
+
+    async fn spawn_hub_with_prefix_cap(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        faucet_grants_per_prefix: u64,
+    ) -> TestHub {
+        spawn_hub_inner(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, u64::MAX, faucet_grants_per_prefix).await
     }
 
     async fn spawn_hub_with_trusted_proxies(
@@ -1890,7 +1916,7 @@ mod tests {
         node_address: String,
         trusted_proxies: rate_limit::TrustedProxies,
     ) -> TestHub {
-        spawn_hub_inner(operator_private_key, node_address, trusted_proxies, u64::MAX, u64::MAX).await
+        spawn_hub_inner(operator_private_key, node_address, trusted_proxies, u64::MAX, u64::MAX, u64::MAX).await
     }
 
     async fn spawn_hub_inner(
@@ -1899,6 +1925,7 @@ mod tests {
         trusted_proxies: rate_limit::TrustedProxies,
         faucet_daily_grants: u64,
         consensus_max_exposure: u64,
+        faucet_grants_per_prefix: u64,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
         let store_path = temp_store_path();
@@ -1929,6 +1956,7 @@ mod tests {
             board: RwLock::new(TaskBoard::new()),
             faucet_daily_grants,
             consensus_max_exposure,
+            faucet_grants_per_prefix,
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
@@ -6380,6 +6408,7 @@ mod tests {
         let mut board = TaskBoard::new();
         for p in store.load_all_payments().unwrap() { board.payments.insert(p.id, p); }
         for (pk, at) in store.load_all_faucet_grants_with_times().unwrap() { board.restore_faucet_grant(pk, at); }
+        for (pk, prefix) in store.load_all_faucet_grant_prefixes().unwrap() { board.restore_faucet_grant_prefix(pk, prefix); }
         for order in store.load_all_orders().unwrap() { board.restore_order(order); }
         for trade in store.load_all_trades().unwrap() { board.restore_trade(trade); }
         for task in store.load_all_tasks().unwrap() {
@@ -6892,6 +6921,62 @@ mod tests {
         assert!(
             hub.state.store.load_all_withdrawal_attempts().unwrap().is_empty(),
             "a payment that was never built leaves nothing for an operator to resolve"
+        );
+    }
+
+    /// One network's share of the faucet, and the reason it is only half
+    /// the story: every request here comes from 127.0.0.1, which is one
+    /// /24, so a cap of one lets exactly one key through however many
+    /// keys are generated.
+    #[tokio::test]
+    async fn one_network_cannot_cycle_keys_through_the_faucet() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_with_prefix_cap(operator_key, fake_node.addr.clone(), 1).await;
+
+        let first = PrivateKey::new_key();
+        let challenge = request_faucet_challenge(&hub, &first).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &first, &challenge).await.status(), reqwest::StatusCode::OK);
+
+        // A brand-new key, which the per-key rule has nothing to say
+        // about, from the network that has already taken its share.
+        let second = PrivateKey::new_key();
+        let resp = hub
+            .client
+            .post(format!("{}/faucet/challenge", hub.base_url))
+            .json(&envelope(&second, "/faucet/challenge", ()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("127.0.0.0/24"),
+            "the refusal names the network, so an operator reading a log can tell \
+             a shared-NAT false positive from an attack: {body}"
+        );
+    }
+
+    /// The record has to survive a restart, or restarting the hub would
+    /// refill the per-network allowance -- the same reason the global
+    /// budget reads its window off disk.
+    #[tokio::test]
+    async fn a_networks_faucet_history_survives_a_restart() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_with_prefix_cap(operator_key, fake_node.addr.clone(), 1).await;
+
+        let first = PrivateKey::new_key();
+        let challenge = request_faucet_challenge(&hub, &first).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &first, &challenge).await.status(), reqwest::StatusCode::OK);
+
+        let reloaded = board_as_a_restart_would_load_it(&hub);
+        let cutoff = (Utc::now() - chrono::Duration::hours(1)).timestamp();
+        assert_eq!(
+            reloaded.faucet_granted_from_prefix_since("127.0.0.0/24", cutoff),
+            1,
+            "a per-network limit that resets on restart is one an operator would believe in \
+             and not have"
         );
     }
 

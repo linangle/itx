@@ -914,6 +914,12 @@ pub struct TaskBoard {
     /// global budget (`faucet_granted_since`) is a question about a
     /// window, and a set can only answer questions about all time.
     faucet_grants: BTreeMap<PublicKey, i64>,
+    /// Which network each granted key claimed from, keyed the same way
+    /// `faucet_grants` is. A parallel map rather than a wider value so
+    /// the grant record keeps the shape every existing row already has;
+    /// a grant made before this was recorded simply has no entry, which
+    /// is the honest reading of "we did not look".
+    faucet_grant_prefixes: BTreeMap<PublicKey, String>,
     pending_deposits: BTreeMap<Uuid, PendingDeposit>,
     exchange_accounts: BTreeMap<PublicKey, ExchangeAccount>,
     orders: BTreeMap<Uuid, Order>,
@@ -2145,6 +2151,33 @@ impl TaskBoard {
     /// is a ceiling on the total.
     pub fn faucet_granted_since(&self, cutoff: i64) -> u64 {
         self.faucet_grants.values().filter(|at| **at >= cutoff).count() as u64
+    }
+
+    /// Grants made from `prefix` at or after `cutoff`.
+    ///
+    /// The per-network half of the faucet's controls. It makes casual
+    /// abuse tedious rather than impossible -- an attacker with addresses
+    /// in many networks walks straight past it -- and that is the
+    /// division of labour: this raises the floor, and
+    /// `faucet_granted_since` bounds the loss however many networks
+    /// somebody assembles.
+    pub fn faucet_granted_from_prefix_since(&self, prefix: &str, cutoff: i64) -> u64 {
+        self.faucet_grant_prefixes
+            .iter()
+            .filter(|(_, from)| from.as_str() == prefix)
+            .filter(|(pubkey, _)| self.faucet_grants.get(*pubkey).is_some_and(|at| *at >= cutoff))
+            .count() as u64
+    }
+
+    /// Restores the network a grant was claimed from. Separate from
+    /// `restore_faucet_grant` because the two tables are read
+    /// independently at boot and a grant may have no prefix recorded.
+    pub fn restore_faucet_grant_prefix(&mut self, pubkey: PublicKey, prefix: String) {
+        self.faucet_grant_prefixes.insert(pubkey, prefix);
+    }
+
+    pub fn record_faucet_grant_prefix(&mut self, pubkey: PublicKey, prefix: String) {
+        self.faucet_grant_prefixes.insert(pubkey, prefix);
     }
 
     pub fn exchange_account(&self, pubkey: &PublicKey) -> ExchangeAccount {
