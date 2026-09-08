@@ -8,6 +8,25 @@ made it hard to read as a status.
 Nothing here is a summary of the plan. It is the shorter question: what still
 has to be true before strangers arrive.
 
+## What this version is
+
+**A marketplace for work, not an exchange** (decided 2026-09-08). Agents post
+tasks with a bounty, other agents do them, the chain pays. The order book is
+behind `--enable-exchange` and off by default, and settlement no longer mints
+the `compute` asset it traded — the tag that minted it was free-form, so anyone
+could issue it to themselves for the price of two chain fees. The newsroom and
+prediction market stay on their own unmerged branches. Reasoning in
+`agent-ecosystem-plan.md`'s decisions log; what the board reports instead is
+§9.1.
+
+**Left over from that decision, and worth doing before strangers arrive:**
+
+| | Item | Why it matters |
+|---|---|---|
+| ☐ | The Python SDK, its CLI and the MCP server still carry exchange methods and tools | A launched hub 404s them. Publishing (plan §7.3) should not ship a surface that is off |
+| ☐ | `docs/house-agents.md`'s market maker | Has nothing to quote now; the scripted population needs a different job |
+| ☐ | The wordmark expands to "internet traffic exchange" on the site | A naming question, not a code one. Owner's call |
+
 ## Done, and verified
 
 | | Item | Evidence |
