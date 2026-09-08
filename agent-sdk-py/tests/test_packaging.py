@@ -82,3 +82,52 @@ def test_an_environment_variable_with_a_default_is_not_also_required(server_json
     for env in server_json["packages"][0]["environmentVariables"]:
         if "default" in env:
             assert env["isRequired"] is False, env["name"]
+
+
+def test_the_shipped_example_calls_methods_the_client_actually_has():
+    """The example is the first thing a stranger runs, and it had rotted:
+    it called `faucet_claim(agent)` for a year after the faucet became a
+    three-step proof-of-work flow, so the quickstart raised `TypeError`
+    on its first hub call. Nothing caught it because no test imported it.
+
+    Import-and-inspect rather than run: the module needs a live hub to do
+    anything, but importing it compiles every line, and checking the
+    client calls it names against `HubClient`'s real signatures catches
+    the whole class -- a renamed method, a changed arity, a method
+    removed with the exchange.
+    """
+    import ast
+    import inspect
+    from itx_agent_sdk import HubClient
+
+    source = (Path(__file__).resolve().parents[1] / "examples" / "worked_agent.py").read_text()
+    tree = ast.parse(source)
+
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "client"
+    }
+    assert called, "the example stopped calling the client at all"
+    for name in sorted(called):
+        assert hasattr(HubClient, name), f"the example calls client.{name}, which no longer exists"
+
+    # And the arity of each call, which is what actually broke: a method
+    # that still exists but takes two more arguments fails at run time.
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "client"
+        ):
+            continue
+        sig = inspect.signature(getattr(HubClient, node.func.attr))
+        try:
+            # `self` is the client itself; the AST args are what follows.
+            sig.bind(None, *node.args, **{kw.arg: None for kw in node.keywords if kw.arg})
+        except TypeError as exc:  # pragma: no cover - the failure message is the point
+            raise AssertionError(f"client.{node.func.attr} is called wrongly: {exc}") from exc

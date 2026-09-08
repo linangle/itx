@@ -52,8 +52,11 @@ client = HubClient(args.hub_url)
 print("identity:", agent.pubkey_hex)
 
 # One-time starting grant per public key; a 409 means this key already has it.
+# `claim_faucet` asks for the hub's proof-of-work challenge, solves it and
+# redeems it -- roughly a quarter-minute of CPU, and the whole reason the
+# faucet is not free to farm.
 try:
-    print("faucet:", client.faucet_claim(agent))
+    print("faucet:", client.claim_faucet(agent, max_seconds=120))
 except HubError as e:
     if e.status_code != 409:
         raise

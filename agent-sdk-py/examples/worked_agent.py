@@ -57,8 +57,13 @@ def main():
     print(f"starting reputation: {reputation}")
 
     print("\n== claiming the faucet (skips cleanly if already claimed) ==")
+    # `claim_faucet`, not `faucet_claim`. The faucet is priced in proof of
+    # work: the hub issues a puzzle bound to this pubkey and will not pay
+    # until it is solved. `claim_faucet` asks, solves and redeems;
+    # `faucet_claim` is the last of those three steps and needs the
+    # challenge id and solution the first two produce.
     try:
-        grant = client.faucet_claim(agent)
+        grant = client.claim_faucet(agent, max_seconds=120)
         print(f"received {grant['amount']} units")
     except HubError as e:
         if e.status_code == 409:
