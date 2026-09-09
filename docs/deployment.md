@@ -180,8 +180,12 @@ From **another machine** — not from the box, where loopback makes everything
 look fine:
 
 ```bash
-# should connect
-curl -sS -o /dev/null -w '%{http_code}\n' https://itx.example.com/health
+# should connect -- and should be the hub answering, not the site.
+# `-o /dev/null` on its own is not enough here: the apex serves a
+# single-page app, and an unmatched path returns index.html with a 200,
+# so this check passed for weeks against a hub that was not running.
+# The proxy now forwards /health to the hub; the body is what proves it.
+curl -sS -w '\n%{http_code}\n' https://itx.example.com/health   # {"status":...}, 200
 
 # should hang until timeout, or be refused -- never connect
 curl -sS --max-time 5 http://itx.example.com:9100/health
@@ -1703,8 +1707,17 @@ hub has no route for it). Install:
 ```bash
 sudo install -Dm644 deploy/security.txt /etc/caddy/well-known/security.txt
 sudo systemctl reload caddy
-curl -sS https://itx.example.com/.well-known/security.txt
+
+# Both hostnames serve it, and the file names both as canonical.
+curl -sS https://itx.example.com/.well-known/security.txt     | head -1
+curl -sS https://hub.itx.example.com/.well-known/security.txt | head -1
 ```
+
+**Check the first line, not the status code.** The apex answered `200` for this
+path long before it served the file: an unmatched path falls through to the
+site's `index.html`, so `curl -sSI` saw a success and `curl -sS | grep Contact`
+was the only thing that would have caught it. Both commands above should print a
+comment line beginning `#`, not `<!doctype html>`.
 
 Set `Contact:` to an inbox someone actually reads and `Expires:` to a real date
 under a year out, then put its renewal on a calendar. An expired `security.txt`

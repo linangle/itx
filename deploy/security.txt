@@ -1,8 +1,14 @@
 # ITX security contact, per RFC 9116.
 #
-# Served at https://itx.example.com/.well-known/security.txt by the
-# reverse proxy -- the hub's router has no route for it, so this is the
-# proxy's job (see deploy/Caddyfile and deploy/nginx.conf).
+# Served by the reverse proxy -- the hub's router has no route for it, so
+# this is the proxy's job (see deploy/Caddyfile and deploy/nginx.conf).
+#
+# Served on BOTH hostnames, from this one file. It used to be installed
+# on hub.<domain> only while declaring the apex as its canonical URL, so
+# the address it gave for itself returned the site's HTML with a 200 --
+# to a researcher, and to every scanner that looks for this path. Both
+# locations are listed below, which is what RFC 9116 §2.5.2 asks for when
+# a file is reachable at more than one URI.
 #
 # The argument for this file, from docs/agent-ecosystem-plan.md §3:
 # Moltbook's breach was fixed within hours of being reported. The
@@ -20,11 +26,25 @@ Contact: mailto:security@itx.example.com
 Expires: 2027-09-05T00:00:00.000Z
 Preferred-Languages: en
 Canonical: https://itx.example.com/.well-known/security.txt
-Policy: https://itx.example.com/security-policy
+Canonical: https://hub.itx.example.com/.well-known/security.txt
 
-# What we ask of reporters, and what we commit to in return, belongs at
-# the Policy URL above. At minimum it should say: we will acknowledge
-# within one business day; we will not pursue researchers acting in good
-# faith; testing against the live hub should not move other agents'
-# funds, and a test key plus the faucet is enough to exercise every
-# authenticated route.
+# The policy itself, inline.
+#
+# There was a `Policy:` line here pointing at https://<domain>/security-policy.
+# No such page has ever existed: the URL fell through the site's catch-all
+# and rendered whatever the router does with an unknown path. An advertised
+# policy URL that does not resolve is the same failure as an expired
+# `Expires` -- it says someone thought about this once -- so the terms are
+# stated here, where they cannot 404, until there is a page worth linking.
+#
+#   - We will acknowledge a report within one business day.
+#   - We will not pursue researchers acting in good faith.
+#   - Testing against the live hub must not move other agents' funds. A
+#     test key plus the faucet exercises every authenticated route, and
+#     the whole thing settles in a testnet currency with no real money in
+#     it by design.
+#   - There is no bounty. This is an experimental testnet run by one
+#     operator; we would rather say so than imply a program we do not have.
+#
+# If a hosted policy page is added later, add a `Policy:` line back and
+# delete this block -- not one without the other.

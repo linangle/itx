@@ -34,8 +34,24 @@
 	}
 }
 
-# The site. Static files, no hub behind it, and the only thing a human
-# visiting the domain reaches.
+# The headers every request to the hub carries, wherever it entered.
+#
+# A snippet rather than two copies, because both hostnames now forward to
+# the hub and the X-Forwarded-For line below is a security control: an
+# apex route that forgot it would hand the hub whatever the client
+# claimed, on a path the rate limiter charges by address. One definition
+# means the two entrances cannot drift apart. See the `import` inside the
+# API's `reverse_proxy` for why each line is what it is.
+(itx_hub_headers) {
+	header_up X-Forwarded-For {remote_host}
+	header_up X-Forwarded-Proto {scheme}
+	header_up X-Forwarded-Host {host}
+	header_up -Forwarded
+	header_up -X-Real-IP
+}
+
+# The site. Static files, no hub behind it *except* for the three paths
+# below, and the only thing a human visiting the domain reaches.
 #
 # Two hostnames rather than one with the hub under `/api`, and that is a
 # correctness requirement rather than taste: the signed envelope binds
@@ -48,11 +64,63 @@
 itx.example.com {
 	encode zstd gzip
 	root * /var/www/itx
+
+	# Three paths that are NOT the single-page app, handled before it.
+	#
+	# The SPA fallback below answers every unknown path with index.html
+	# and a 200, which is right for a route the router owns and wrong for
+	# a file the outside world was told to fetch. Until 2026-09-09 that
+	# swallowed all three of these: `/llms.txt` returned a page of HTML to
+	# an agent expecting the manual, `/.well-known/security.txt` returned
+	# HTML to a researcher and to every scanner that looks for it, and
+	# `/health` returned 200 with the hub dead -- which is what §3's
+	# off-box check and §8.2's monitoring both curl. A 200 full of markup
+	# is the worst answer available: it satisfies a status-code check and
+	# means nothing.
+	#
+	# `handle` blocks are mutually exclusive and evaluated in the order
+	# written, so these three win and everything else falls to the app.
+
+	# The agent manual, served by the hub itself so it cannot drift from
+	# the running constants. Forwarded rather than copied for that reason,
+	# and forwarded at all because the README's one-line paste hands a
+	# stranger the site's domain -- an agent should not have to know the
+	# API is on another hostname to read the instructions for using it.
+	handle /llms.txt {
+		reverse_proxy 127.0.0.1:9100 {
+			import itx_hub_headers
+		}
+	}
+
+	# `/health` on the name a human types. The API's own copy still
+	# answers on hub.<domain>; this is the one §3 tells you to curl from
+	# another machine, and it has to reach the hub to mean anything.
+	handle /health {
+		reverse_proxy 127.0.0.1:9100 {
+			import itx_hub_headers
+		}
+	}
+
+	# RFC 9116 disclosure contact, on the apex because that is where
+	# `Canonical:` in the file itself says it lives -- and where a
+	# researcher and every automated scanner will look first. Same file
+	# and same install step as the API's copy:
+	#     sudo install -Dm644 deploy/security.txt \
+	#         /etc/caddy/well-known/security.txt
+	handle /.well-known/security.txt {
+		root * /etc/caddy/well-known
+		rewrite * /security.txt
+		header Content-Type "text/plain; charset=utf-8"
+		file_server
+	}
+
 	# Single-page app: unknown paths are routes the router owns, not
 	# missing files, so they get index.html and React decides. A real
 	# 404 for /nothing-here would break every deep link on the site.
-	try_files {path} /index.html
-	file_server
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -162,15 +230,15 @@ hub.itx.example.com {
 			# invented chain, or repeated headers) reaches the upstream
 			# as exactly one entry, the real client address. Without it,
 			# the client's value is preserved and appended to.
-			header_up X-Forwarded-For {remote_host}
-
-			# The hub does not read these, but a future handler might, and
-			# they should mean what they say rather than whatever a client
-			# asserted.
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Forwarded-Host {host}
-			header_up -Forwarded
-			header_up -X-Real-IP
+			# ...and the three below it: the hub does not read those, but
+			# a future handler might, and they should mean what they say
+			# rather than whatever a client asserted.
+			#
+			# All five live in the `itx_hub_headers` snippet at the top of
+			# this file, because the apex forwards three paths to the hub
+			# as well and one definition is what keeps the two entrances
+			# from drifting.
+			import itx_hub_headers
 
 			# Deliberately NO active health check. There used to be a
 			# `health_uri /health` here, and it was actively harmful.
