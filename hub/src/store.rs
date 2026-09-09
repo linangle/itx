@@ -1635,6 +1635,7 @@ mod tests {
         let challenge = crate::faucet_pow::Challenge::issue(
             &key.public_key(),
             crate::faucet_pow::target_for_expected_hashes(8),
+            None,
             Utc::now(),
         );
         store.save_faucet_challenge(&challenge).unwrap();
@@ -1654,8 +1655,8 @@ mod tests {
         let target = crate::faucet_pow::target_for_expected_hashes(8);
         let issued = Utc::now();
 
-        let abandoned = crate::faucet_pow::Challenge::issue(&key.public_key(), target, issued);
-        let mut redeemed = crate::faucet_pow::Challenge::issue(&key.public_key(), target, issued);
+        let abandoned = crate::faucet_pow::Challenge::issue(&key.public_key(), target, None, issued);
+        let mut redeemed = crate::faucet_pow::Challenge::issue(&key.public_key(), target, None, issued);
         redeemed.redeemed_at = Some(issued.timestamp());
         store.save_faucet_challenge(&abandoned).unwrap();
         store.save_faucet_challenge(&redeemed).unwrap();

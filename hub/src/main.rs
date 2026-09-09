@@ -7553,6 +7553,109 @@ mod tests {
         );
     }
 
+    /// Asking from one network and claiming from another must not leave
+    /// the asking network uncounted.
+    ///
+    /// The curve prices a challenge from how many grants the asking
+    /// network has already taken. The grant used to be recorded against
+    /// whatever address the *claim* arrived from, and those are two
+    /// separate readings of two separate requests -- so a caller who
+    /// asked over one network and redeemed over another left the asking
+    /// prefix with a count of zero. It stayed at the base price for
+    /// every key after that, and the doubling curve, which is the whole
+    /// per-network control, never engaged. One dual-stack host is enough
+    /// to do this by hand.
+    ///
+    /// Asserted on the counts rather than on the quoted price, because
+    /// the count is the fact and the price is derived from it -- and
+    /// with the default doubling step, one grant and two grants happen
+    /// to quote the same number, so a price assertion would pass on the
+    /// bug.
+    #[tokio::test]
+    async fn a_grant_is_charged_to_the_network_that_asked_not_the_one_that_claimed() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 10_000_000_000).await;
+        // Trusting the loopback lets one test stand in for two networks.
+        let hub = spawn_hub_inner(
+            operator_key.clone(),
+            fake_node.addr.clone(),
+            rate_limit::parse_trusted_proxies("127.0.0.1").unwrap(),
+            u64::MAX,
+            u64::MAX,
+            1,
+        )
+        .await;
+
+        let asked_from = "203.0.113.7";
+        let claimed_from = "198.51.100.7";
+
+        async fn ask(hub: &TestHub, key: &PrivateKey, via: &str) -> Value {
+            let resp = hub
+                .client
+                .post(format!("{}/faucet/challenge", hub.base_url))
+                .header("X-Forwarded-For", via)
+                .json(&envelope(key, "/faucet/challenge", ()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK, "challenge issuance");
+            resp.json().await.unwrap()
+        }
+        async fn claim(
+            hub: &TestHub,
+            key: &PrivateKey,
+            challenge: &Value,
+            via: &str,
+        ) -> reqwest::StatusCode {
+            let payload = handlers::FaucetClaimPayload {
+                challenge_id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+                solution: solve_faucet_challenge(challenge),
+            };
+            hub.client
+                .post(format!("{}/faucet", hub.base_url))
+                .header("X-Forwarded-For", via)
+                .json(&envelope(key, "/faucet", payload))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+
+        // One agent asks and claims from the same network, which is the
+        // honest case. One asks from that network and collects the grant
+        // somewhere else, which is the bypass.
+        let honest = PrivateKey::new_key();
+        let opening = ask(&hub, &honest, asked_from).await;
+        assert_eq!(claim(&hub, &honest, &opening, asked_from).await, reqwest::StatusCode::OK);
+
+        let split = PrivateKey::new_key();
+        let second = ask(&hub, &split, asked_from).await;
+        assert_eq!(claim(&hub, &split, &second, claimed_from).await, reqwest::StatusCode::OK);
+
+        let body: Value = hub
+            .client
+            .post(format!("{}/admin/overview", hub.base_url))
+            .json(&envelope(&operator_key, "/admin/overview", ()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let networks = body["networks"].as_array().unwrap();
+        assert_eq!(
+            networks.len(),
+            1,
+            "both grants were asked for by one network, so the operator sees one: {networks:?}"
+        );
+        assert_eq!(networks[0]["prefix"], "203.0.113.0/24", "the network that asked");
+        assert_eq!(
+            networks[0]["grants_in_window"], 2,
+            "collecting a grant elsewhere does not stop the asking network being charged for it"
+        );
+    }
+
     /// A busy network is charged more, not turned away.
     ///
     /// This replaced a flat cap. The cap refused the sixth agent behind a

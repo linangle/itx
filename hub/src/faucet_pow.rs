@@ -208,13 +208,44 @@ pub struct Challenge {
     pub target: U256,
     pub issued_at: i64,
     pub expires_at: i64,
+    /// The network this challenge was *priced for*, as
+    /// `rate_limit::prefix_of` renders it, or `None` when the hub had no
+    /// address to price against.
+    ///
+    /// Recorded at issuance and used at redemption, which is the whole
+    /// point. The per-network curve quotes a difficulty from how many
+    /// grants a prefix has already taken, and the grant used to be
+    /// recorded against whatever address the *claim* arrived from. Those
+    /// are two different addresses whenever a caller wants them to be:
+    /// ask for the challenge over IPv6, redeem it over IPv4, and the
+    /// prefix that was quoted the price never accumulates a count, so it
+    /// is quoted the base price forever. Carrying the prefix on the
+    /// challenge makes the two halves refer to the same network by
+    /// construction.
+    ///
+    /// Deliberately not enforced as "claim from where you asked". An
+    /// agent's address can change between asking and solving for
+    /// entirely ordinary reasons, and refusing the redemption would
+    /// throw away work already done. Pricing and accounting agree; where
+    /// the solution is presented from does not matter.
+    ///
+    /// `#[serde(default)]` because challenges outlived the field's
+    /// absence: one written before this reloads as `None` and is
+    /// accounted for exactly as an unpriced one is.
+    #[serde(default)]
+    pub prefix: Option<String>,
     /// `None` while outstanding.
     pub redeemed_at: Option<i64>,
 }
 
 impl Challenge {
     /// Issues a fresh challenge for `pubkey` at `target`.
-    pub fn issue(pubkey: &PublicKey, target: U256, now: DateTime<Utc>) -> Self {
+    pub fn issue(
+        pubkey: &PublicKey,
+        target: U256,
+        prefix: Option<String>,
+        now: DateTime<Utc>,
+    ) -> Self {
         let mut nonce = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut nonce);
         Challenge {
@@ -225,6 +256,7 @@ impl Challenge {
             target,
             issued_at: now.timestamp(),
             expires_at: (now + Duration::seconds(CHALLENGE_TTL_SECONDS)).timestamp(),
+            prefix,
             redeemed_at: None,
         }
     }
@@ -405,7 +437,7 @@ impl ChallengeBook {
         pubkey: &PublicKey,
         now: DateTime<Utc>,
     ) -> std::result::Result<Challenge, RedemptionError> {
-        self.issue_at_target(pubkey, self.target, now)
+        self.issue_at_target(pubkey, self.target, None, now)
     }
 
     /// `issue`, at a difficulty this challenge alone carries.
@@ -421,9 +453,10 @@ impl ChallengeBook {
         &self,
         pubkey: &PublicKey,
         target: U256,
+        prefix: Option<String>,
         now: DateTime<Utc>,
     ) -> std::result::Result<Challenge, RedemptionError> {
-        let challenge = Challenge::issue(pubkey, target, now);
+        let challenge = Challenge::issue(pubkey, target, prefix, now);
         if let Some(store) = &self.store {
             store
                 .save_faucet_challenge(&challenge)
@@ -535,7 +568,7 @@ mod tests {
     }
 
     fn challenge_for(key: &PrivateKey) -> Challenge {
-        Challenge::issue(&key.public_key(), easy(), Utc::now())
+        Challenge::issue(&key.public_key(), easy(), None, Utc::now())
     }
 
     /// Asserts that `variant` is a genuinely different puzzle from
@@ -732,7 +765,7 @@ mod tests {
         let rounds = 20;
         for _ in 0..rounds {
             let challenge =
-                Challenge::issue(&key.public_key(), target_for_expected_hashes(expected), Utc::now());
+                Challenge::issue(&key.public_key(), target_for_expected_hashes(expected), None, Utc::now());
             total += challenge.solve_from(0) + 1;
         }
         let mean = total / rounds;
@@ -770,7 +803,7 @@ mod tests {
     fn expiry_and_redemption_are_reported_from_the_record() {
         let key = PrivateKey::new_key();
         let now = Utc::now();
-        let mut challenge = Challenge::issue(&key.public_key(), easy(), now);
+        let mut challenge = Challenge::issue(&key.public_key(), easy(), None, now);
         assert!(!challenge.is_expired_at(now));
         assert!(!challenge.is_expired_at(now + Duration::seconds(CHALLENGE_TTL_SECONDS)));
         assert!(challenge.is_expired_at(now + Duration::seconds(CHALLENGE_TTL_SECONDS + 1)));

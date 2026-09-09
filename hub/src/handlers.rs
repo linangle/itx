@@ -2869,10 +2869,17 @@ pub async fn faucet_challenge(
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
-    let expected = faucet_difficulty_for(&state, client_ip.as_ref().map(|c| c.0 .0)).await;
+    // One address, read once, used for both halves: the price quoted and
+    // the network the resulting grant will be counted against. Reading
+    // it twice -- here and again at redemption -- is what let a caller
+    // ask over one network and claim over another, so the prefix that
+    // was quoted the price never accumulated a count.
+    let prefix = client_ip.as_ref().map(|c| crate::rate_limit::prefix_of(c.0 .0));
+    let expected = faucet_difficulty_for(&state, prefix.as_deref()).await;
     let challenge = state.faucet_challenges.issue_at_target(
         &pubkey,
         crate::faucet_pow::target_for_expected_hashes(expected),
+        prefix,
         Utc::now(),
     )?;
     Ok(Json(faucet_challenge_dto(&state, &challenge)))
@@ -2907,7 +2914,12 @@ fn faucet_challenge_dto(
 
 pub async fn faucet_claim(
     State(state): State<Arc<AppState>>,
-    client_ip: Option<axum::extract::Extension<crate::rate_limit::ClientIp>>,
+    // No `ClientIp` here any more. The network a grant is counted
+    // against comes from the challenge being redeemed, not from where
+    // the redemption arrived -- reading the address twice is what let
+    // the two disagree. Per-IP rate limiting still happens, in the
+    // middleware, where it always did.
+    //
     // The request as it actually arrived: bound into the signature,
     // so this envelope cannot be replayed at a different endpoint.
     method: Method,
@@ -2956,7 +2968,7 @@ pub async fn faucet_claim(
     // hub forgets is a solution that can be presented again. See
     // `HubStore::save_faucet_challenge` for why this write is ordered
     // before the payout while the grant record is ordered after it.
-    state.faucet_challenges.redeem(
+    let redeemed = state.faucet_challenges.redeem(
         envelope.payload.challenge_id,
         &pubkey,
         envelope.payload.solution,
@@ -2984,15 +2996,22 @@ pub async fn faucet_claim(
         state.operator_public_key.clone(), pubkey, FAUCET_GRANT_AMOUNT, Some(tx));
     let payment = crate::payments::prepare(&state, payment).await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // Recorded against the network the *challenge* was priced for, not
+    // the one this claim arrived from. Those used to be read separately
+    // and that was the hole: ask for a challenge over IPv6 and redeem it
+    // over IPv4 and the prefix that was quoted the base price never
+    // accumulated a count, so it stayed at the base price for every key
+    // after it. The curve was decorative. Now the two halves cannot
+    // disagree, because there is only one reading of one address.
+    //
     // After the grant is reserved, so a refused claim records nothing.
     // Best-effort: a prefix the hub failed to write costs this network
     // one unit of accounting, while failing the claim over it would cost
     // an agent a grant it has already paid for in work.
-    if let Some(ip) = client_ip.map(|c| c.0 .0) {
-        let prefix = crate::rate_limit::prefix_of(ip);
-        state.board.write().await.record_faucet_grant_prefix(payment.recipient.clone(), prefix.clone());
-        if let Err(e) = state.store.save_faucet_grant_prefix(&payment.recipient, &prefix) {
-            warn!("could not record the network a faucet grant was claimed from: {e}");
+    if let Some(prefix) = redeemed.prefix.as_deref() {
+        state.board.write().await.record_faucet_grant_prefix(payment.recipient.clone(), prefix.to_string());
+        if let Err(e) = state.store.save_faucet_grant_prefix(&payment.recipient, prefix) {
+            warn!("could not record the network a faucet grant was priced for: {e}");
         }
     }
     crate::payments::send(&state, &payment).await;
@@ -3020,14 +3039,16 @@ pub const FAUCET_BUDGET_WINDOW_SECONDS: i64 = 24 * 60 * 60;
 ///
 /// See `faucet_pow::expected_hashes_for_prefix` for the curve itself and
 /// for what it still does not fix.
-async fn faucet_difficulty_for(state: &AppState, ip: Option<std::net::IpAddr>) -> u64 {
+/// Takes the prefix rather than the address, so the caller is the one
+/// place that turns an address into a network -- and the same value it
+/// prices against is the one it stamps on the challenge.
+async fn faucet_difficulty_for(state: &AppState, prefix: Option<&str>) -> u64 {
     // No address means the middleware did not run, which happens only in
     // tests calling a handler directly. Charging base rate there is the
     // right failure: it is the price everyone pays before any history.
-    let Some(ip) = ip else { return state.faucet_expected_hashes };
-    let prefix = crate::rate_limit::prefix_of(ip);
+    let Some(prefix) = prefix else { return state.faucet_expected_hashes };
     let cutoff = (Utc::now() - Duration::seconds(FAUCET_BUDGET_WINDOW_SECONDS)).timestamp();
-    let taken = state.board.read().await.faucet_granted_from_prefix_since(&prefix, cutoff);
+    let taken = state.board.read().await.faucet_granted_from_prefix_since(prefix, cutoff);
     crate::faucet_pow::expected_hashes_for_prefix(
         state.faucet_expected_hashes,
         taken,

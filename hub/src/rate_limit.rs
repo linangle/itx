@@ -164,6 +164,15 @@ fn tier_for(method: &Method, path: &str) -> Tier {
 pub enum Bucket {
     /// A network source, bucketed per endpoint tier -- charged by the
     /// middleware before a handler runs.
+    ///
+    /// The address is `limit_key`'s, not the peer's: an IPv6 client is
+    /// bucketed by its /64. A residential or datacentre customer is
+    /// handed a whole /64 as a matter of course, so keying the full
+    /// address let one customer take a fresh bucket for every request
+    /// simply by using a different one of their own addresses -- every
+    /// tier, unbounded, at no cost. There is no equivalent on the IPv4
+    /// side, where an address is scarce and usually one client, so that
+    /// one is bucketed whole.
     Ip(IpAddr, Tier),
     /// A verified identity, one bucket for every signed request it makes
     /// -- charged by a handler once the envelope's signature checks out.
@@ -293,7 +302,12 @@ pub struct ClientIp(pub IpAddr);
 /// however many prefixes anyone assembles. This limit only has to make
 /// casual abuse tedious; the budget is what bounds the loss.
 pub fn prefix_of(ip: IpAddr) -> String {
-    match ip {
+    // Canonical first. An IPv4 client reaching a dual-stack listener
+    // arrives as `::ffff:a.b.c.d`, and truncating *that* to four
+    // segments yields `0:0:0:0::/64` -- the same string for every IPv4
+    // client on earth, which would put them all in one bucket and make
+    // the per-network price a global one.
+    match ip.to_canonical() {
         IpAddr::V4(v4) => {
             let [a, b, c, _] = v4.octets();
             format!("{a}.{b}.{c}.0/24")
@@ -346,8 +360,37 @@ pub fn parse_trusted_proxies(spec: &str) -> Result<TrustedProxies, AddrParseErro
 /// **An entry it cannot parse ends the walk rather than being skipped
 /// over**, and that direction is the whole of the 2026-09-07 fix -- see
 /// `parse_forwarded_entry`.
+/// What a per-IP bucket is keyed by: the client, canonicalised, and for
+/// IPv6 truncated to the /64 that is handed out as one allocation.
+///
+/// Keying the full IPv6 address meant a client holding a /64 -- which is
+/// the ordinary residential and datacentre allocation -- could source
+/// every request from a different address of its own and get a fresh
+/// bucket each time. Every tier became unbounded for the cost of using
+/// addresses it already had: node round trips through `/health`, an
+/// fsync per faucet challenge, an ECDSA verify per signed write. The
+/// per-pubkey quota is no help, because keygen is free.
+///
+/// `to_canonical` first for the reason `prefix_of` gives: an IPv4 client
+/// on a dual-stack listener arrives mapped, and truncating a mapped
+/// address would put every IPv4 client in one bucket -- turning a fix
+/// for one denial of service into another.
+fn limit_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+        }
+    }
+}
+
 fn client_ip(req: &Request<Body>, connect_addr: SocketAddr, trusted: &TrustedProxies) -> IpAddr {
-    let peer = connect_addr.ip();
+    // Canonical, so a proxy that connects over a dual-stack socket and
+    // therefore appears as `::ffff:127.0.0.1` still matches the
+    // `127.0.0.1` an operator listed. Without this the hub silently
+    // stops trusting its own proxy and charges every client to it.
+    let peer = connect_addr.ip().to_canonical();
     if !trusted.contains(&peer) {
         return peer;
     }
@@ -437,7 +480,7 @@ pub async fn middleware(
     let method = static_method_name(req.method());
     let template = crate::metrics::route_template(req.uri().path());
 
-    if !check_and_record(&state.rate_limits, Bucket::Ip(ip, tier), Utc::now()) {
+    if !check_and_record(&state.rate_limits, Bucket::Ip(limit_key(ip), tier), Utc::now()) {
         state.metrics.rate_limited_by_tier[tier.metric_index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Recorded as a served request too, not just as a rejection. A
         // 429 is a response the client waited for, and leaving it out of
@@ -511,6 +554,52 @@ mod tests {
         // accepted weakness: a datacentre /48 is 65,536 of these. The
         // global faucet budget is what bounds that case.
         assert_ne!(prefix_of("2001:db8:1:3::1".parse().unwrap()), prefix_of(a));
+    }
+
+    /// The same asymmetry, now applied where it was missing: the *rate
+    /// limiter's* own bucket key.
+    ///
+    /// `prefix_of` has always known a v6 address is not a unit of cost,
+    /// and the limiter keyed the full address anyway -- so every tier
+    /// was unbounded for anyone holding a /64, which is the ordinary
+    /// allocation. A node round trip per `/health`, an fsync per faucet
+    /// challenge and an ECDSA verify per signed write, all for the cost
+    /// of using addresses the client already had.
+    #[test]
+    fn the_limiter_buckets_a_v6_client_by_its_64_not_by_the_address_it_picked() {
+        let first: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let far: IpAddr = "2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap();
+        assert_eq!(
+            Bucket::Ip(limit_key(first), Tier::Read),
+            Bucket::Ip(limit_key(far), Tier::Read),
+            "one allocation is one client however many of its addresses it uses"
+        );
+
+        // The next allocation along is a different client, and a v4
+        // address is still a client on its own -- neighbours must not
+        // start sharing a bucket in the name of fixing v6.
+        assert_ne!(limit_key("2001:db8:1:3::1".parse().unwrap()), limit_key(first));
+        let v4: IpAddr = "203.0.113.9".parse().unwrap();
+        assert_eq!(limit_key(v4), v4);
+        assert_ne!(limit_key("203.0.113.10".parse().unwrap()), limit_key(v4));
+    }
+
+    /// An IPv4 client reaching a dual-stack listener arrives as
+    /// `::ffff:a.b.c.d`. Truncating *that* to a /64 gives `::/64` for
+    /// every IPv4 client there is, so the fix above would have handed
+    /// the whole internet one shared bucket -- trading one denial of
+    /// service for a worse one. Canonicalise before classifying.
+    #[test]
+    fn a_mapped_v4_client_is_treated_as_the_v4_client_it_is() {
+        let mapped: IpAddr = "::ffff:203.0.113.9".parse().unwrap();
+        let plain: IpAddr = "203.0.113.9".parse().unwrap();
+        assert_eq!(limit_key(mapped), limit_key(plain));
+        assert_eq!(prefix_of(mapped), prefix_of(plain));
+
+        // And two different v4 clients stay apart however they arrive.
+        let other: IpAddr = "::ffff:198.51.100.9".parse().unwrap();
+        assert_ne!(limit_key(other), limit_key(mapped));
+        assert_ne!(prefix_of(other), prefix_of(mapped));
     }
 
     #[test]
