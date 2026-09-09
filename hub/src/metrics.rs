@@ -300,6 +300,23 @@ pub struct Metrics {
     /// log count for the reason §8.3 gives: grepping the journal tells you
     /// a retry happened, not how many are outstanding right now.
     pub board_outstanding_payouts: AtomicU64,
+    /// How long the *oldest* outstanding payout attempt has been waiting,
+    /// in seconds, as of the last sweep. Zero when nothing is in flight.
+    ///
+    /// The count above cannot answer the question this one exists for. A
+    /// steady count of three is a healthy hub paying three agents; a
+    /// steady count of three where the same three have been waiting forty
+    /// minutes is a stalled miner burning each payout's submission budget
+    /// into `PayoutFailed`. Both read as `3`.
+    ///
+    /// That cycle is otherwise silent. `HeldInMempool` is deliberately
+    /// unlogged -- every payment passes through it on the way to a block,
+    /// so a line there is one per payment per minute of ordinary
+    /// operation -- and a resend logs, but a resend of the same bytes is
+    /// indistinguishable in the journal from ordinary retry noise. An age
+    /// that only climbs is the signal, and it is free: the sweep already
+    /// walks every attempt.
+    pub board_oldest_payout_attempt_seconds: AtomicU64,
     /// Payout sends refused because the task asking for one was
     /// `Submitted` with something still unsent -- a combination
     /// unreachable through correct operation (see
@@ -558,6 +575,7 @@ impl Metrics {
 
         gauge(&mut out, "hub_board_open_tasks", "Non-terminal tasks on the board, as of the last sweep.", self.board_open_tasks.load(Ordering::Relaxed));
         gauge(&mut out, "hub_board_outstanding_payouts", "Payouts submitted but not yet confirmed, as of the last sweep.", self.board_outstanding_payouts.load(Ordering::Relaxed));
+        gauge(&mut out, "hub_board_oldest_payout_attempt_seconds", "Age of the oldest payout still waiting for chain evidence, as of the last sweep. Climbs when settlement is stuck; zero when nothing is in flight.", self.board_oldest_payout_attempt_seconds.load(Ordering::Relaxed));
         counter(&mut out, "hub_payout_sends_refused_total", "Payout sends refused because the task was Submitted with something unsent, which means a lost PayoutAttempt row.", self.payout_sends_refused.load(Ordering::Relaxed));
 
         // Emitted for every class, including the zeroes. A label that

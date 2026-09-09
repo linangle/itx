@@ -780,7 +780,7 @@ async fn sample_gauges(state: &Arc<AppState>) {
     // node call. Holding it across an `await` on the network would make
     // the metrics sampler itself a source of the contention it is here to
     // measure -- and against the node, that await is unbounded.
-    let (grants, recent_grants, open_tasks, outstanding_payouts, liabilities) = {
+    let (grants, recent_grants, open_tasks, outstanding_payouts, oldest_payout_seconds, liabilities) = {
         let now = chrono::Utc::now();
         let board = state.board.read().await;
         let liabilities = board.exchange_liabilities();
@@ -799,6 +799,15 @@ async fn sample_gauges(state: &Arc<AppState>) {
                 .filter(|task| !matches!(task.status, TaskStatus::Paid | TaskStatus::Closed))
                 .count() as u64,
             board.outstanding_payout_attempts().len() as u64,
+            // Oldest first, so the head is the one that has been waiting
+            // longest. Saturating because a clock that went backwards
+            // between submission and now must read zero rather than wrap
+            // to a gauge of eighteen quintillion seconds.
+            board
+                .outstanding_payout_attempts()
+                .first()
+                .map(|a| (now - a.submitted_at).num_seconds().max(0) as u64)
+                .unwrap_or(0),
             liabilities,
         )
     };
@@ -813,6 +822,10 @@ async fn sample_gauges(state: &Arc<AppState>) {
     );
     state.metrics.board_open_tasks.store(open_tasks, Ordering::Relaxed);
     state.metrics.board_outstanding_payouts.store(outstanding_payouts, Ordering::Relaxed);
+    state
+        .metrics
+        .board_oldest_payout_attempt_seconds
+        .store(oldest_payout_seconds, Ordering::Relaxed);
     state.metrics.exchange_liabilities.store(liabilities, Ordering::Relaxed);
 
     match state.node.chain_tip().await {
@@ -2585,6 +2598,60 @@ mod tests {
             .unwrap()
     }
 
+
+    /// A stalled payout has to be visible, and the count cannot show it.
+    ///
+    /// `hub_board_outstanding_payouts` answers "how many are in flight",
+    /// which is the same `3` for a healthy hub paying three agents and
+    /// for a stalled miner burning three payouts' submission budgets into
+    /// `PayoutFailed`. Nothing else distinguishes them either:
+    /// `HeldInMempool` is deliberately unlogged, and each sweep's resend
+    /// reads as ordinary retry noise. The age is the signal.
+    #[tokio::test]
+    async fn the_oldest_payout_gauge_reports_how_long_settlement_has_been_stuck() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+
+        // Nothing in flight reads zero, not "unknown".
+        sample_gauges(&hub.state).await;
+        assert_eq!(
+            hub.state.metrics.board_oldest_payout_attempt_seconds.load(Ordering::Relaxed),
+            0,
+            "an idle hub must not report an age"
+        );
+
+        // Two attempts, one much older -- the gauge must report the
+        // oldest, not the newest or the mean.
+        let recipient = PrivateKey::new_key().public_key();
+        let other = PrivateKey::new_key().public_key();
+        for (who, age_minutes) in [(&recipient, 40), (&other, 2)] {
+            let attempt = board::PayoutAttempt {
+                task_id: Uuid::new_v4(),
+                recipient: who.clone(),
+                amount: 500,
+                output_hash: Hash::hash_bytes(b"out"),
+                spent_inputs: vec![],
+                source: hub.state.operator_public_key.clone(),
+                submitted_at: Utc::now() - chrono::Duration::minutes(age_minutes),
+                submissions: 1,
+                transaction: None,
+            };
+            hub.state.board.write().await.restore_payout_attempt(attempt);
+        }
+
+        sample_gauges(&hub.state).await;
+        let age = hub.state.metrics.board_oldest_payout_attempt_seconds.load(Ordering::Relaxed);
+        assert!(
+            (2340..=2460).contains(&age),
+            "the gauge must report the oldest attempt's age, about 2400s; got {age}"
+        );
+        assert_eq!(
+            hub.state.metrics.board_outstanding_payouts.load(Ordering::Relaxed),
+            2,
+            "and the count still counts, which is the number that cannot tell these apart"
+        );
+    }
 
     /// A replacement challenge is a replacement, not a discount.
     ///
