@@ -342,16 +342,36 @@ pub enum PayoutOutcome {
     /// consumed them, so the transaction is in no block and no mempool:
     /// safe -- and necessary -- to build a fresh one.
     NeverLanded,
-    /// Neither of the above: the output is absent but the inputs are
-    /// gone or the mempool has spoken for them. The transaction may be
-    /// queued for the next block, or it may have confirmed and had its
-    /// output spent onward between two sweeps.
+    /// Every input is still at the source and at least one is marked:
+    /// a mempool holds a transaction spending them, almost certainly
+    /// this one, waiting for a block.
+    ///
+    /// Split out of `Ambiguous`, and the split is the point. Both mean
+    /// "not resolved", but only one of them is *explicable*: nothing has
+    /// consumed the inputs, so there is nothing to look for on the chain
+    /// and nothing for a human to decide. It is an ordinary moment in
+    /// the life of a payment -- thirty seconds of grace against a
+    /// sixteen-second block means a healthy hub sees it constantly --
+    /// and treating it as a case needing review made the alert for real
+    /// trouble fire continuously from the first hour.
+    ///
+    /// Not terminal, and it does not have to be. If the transaction
+    /// mines, the next sweep reads `Confirmed`. If a mempool evicts it,
+    /// the inputs unmark and the next sweep reads `NeverLanded` and
+    /// resends. If something else spends them, they vanish and it
+    /// becomes `Ambiguous`, which is where the chain scan belongs.
+    HeldInMempool,
+    /// Neither of the above: the output is absent and at least one input
+    /// is *gone* from the source. Something consumed it. Either this
+    /// transaction confirmed and the output was spent onward between two
+    /// sweeps, or a different transaction took the inputs and this one
+    /// can never mine.
     ///
     /// Deliberately its own answer rather than being folded into a
     /// neighbour. Treating it as `NeverLanded` risks paying a bounty
     /// twice and earns a strike for the duplicate; treating it as
     /// `Confirmed` reintroduces exactly the lie this whole mechanism
-    /// removes. The hub waits and says so.
+    /// removes. This is the one the chain scan exists for.
     Ambiguous,
 }
 
@@ -405,15 +425,29 @@ pub fn resolve_against(
     if spent_inputs.is_empty() {
         return PayoutOutcome::Ambiguous;
     }
-    let unspent_at_source = |wanted: &Hash| {
-        source_utxos
-            .iter()
-            .any(|(marked, output)| !marked && output.hash() == *wanted)
-    };
-    if spent_inputs.iter().all(unspent_at_source) {
-        PayoutOutcome::NeverLanded
-    } else {
+    // Three-way on the source's own view, because "still there but
+    // spoken for" and "gone" are different facts with different
+    // remedies, and collapsing them sent every payment waiting for its
+    // first block to a human for review.
+    //
+    // Order matters: one vanished input decides the answer however many
+    // others are merely marked. A transaction cannot mine without all of
+    // its inputs, so the moment one is consumed elsewhere this is no
+    // longer a payment that is simply queued.
+    let mut any_vanished = false;
+    let mut any_marked = false;
+    for wanted in spent_inputs {
+        match source_utxos.iter().find(|(_, output)| output.hash() == *wanted) {
+            None => any_vanished = true,
+            Some((marked, _)) => any_marked |= *marked,
+        }
+    }
+    if any_vanished {
         PayoutOutcome::Ambiguous
+    } else if any_marked {
+        PayoutOutcome::HeldInMempool
+    } else {
+        PayoutOutcome::NeverLanded
     }
 }
 
@@ -4545,13 +4579,19 @@ mod tests {
         );
     }
 
-    /// Row three, the case that must never collapse into either
-    /// neighbour: the inputs are marked, so the node's mempool is
-    /// holding a transaction that spends them -- most likely this very
-    /// one, waiting for a block. Resending here is the duplicate the
-    /// node answers with a strike.
+    /// Row three, and the split this used to be missing: the inputs are
+    /// marked, so a mempool is holding a transaction that spends them --
+    /// most likely this very one, waiting for a block. Resending here is
+    /// the duplicate the node answers with a strike.
+    ///
+    /// This asserted `Ambiguous` until 2026-09-08, and that was the
+    /// whole bug. Ambiguous sends a payment to the chain scan and then
+    /// to a human, and with thirty seconds of grace against a sixteen
+    /// second block a healthy hub produces this state constantly -- so
+    /// the alert meaning "a payment needs a person" fired on ordinary
+    /// traffic from the first hour, which is the same as not having it.
     #[test]
-    fn a_payout_whose_inputs_the_mempool_has_marked_is_ambiguous() {
+    fn a_payout_whose_inputs_the_mempool_has_marked_is_merely_queued() {
         let (worker, operator) = (pubkey(), pubkey());
         let spent = output(1_000, &operator);
         let paid = output(100, &worker);
@@ -4559,14 +4599,31 @@ mod tests {
 
         assert_eq!(
             attempt.resolve(&[], &[(true, spent)]),
-            PayoutOutcome::Ambiguous
+            PayoutOutcome::HeldInMempool
         );
     }
 
-    /// The same row reached the other way: the inputs are gone from the
-    /// source entirely. Either the transaction confirmed and the
-    /// recipient has since spent the output, or something else consumed
-    /// them. Both are unresolvable from here.
+    /// One vanished input decides the answer however many others are
+    /// merely marked. A transaction cannot mine without all of its
+    /// inputs, so this is not a payment that is simply waiting its turn.
+    #[test]
+    fn one_vanished_input_outranks_every_marked_one() {
+        let (worker, operator) = (pubkey(), pubkey());
+        let (queued, taken) = (output(60, &operator), output(60, &operator));
+        let paid = output(100, &worker);
+        let attempt = attempt(&worker, &operator, &paid, &[&queued, &taken]);
+
+        assert_eq!(
+            attempt.resolve(&[], &[(true, queued)]),
+            PayoutOutcome::Ambiguous,
+            "one input marked and the other gone is not a queued transaction"
+        );
+    }
+
+    /// The genuinely ambiguous row: the inputs are gone from the source
+    /// entirely. Either the transaction confirmed and the recipient has
+    /// since spent the output, or something else consumed them. Both are
+    /// unresolvable from here, and this is what the chain scan is for.
     #[test]
     fn a_payout_whose_inputs_have_vanished_is_ambiguous() {
         let (worker, operator) = (pubkey(), pubkey());

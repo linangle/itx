@@ -1993,7 +1993,7 @@ async fn disburse_escrow(
     let balance = state.node.balance(&deposit.deposit_pubkey).await.ok()?;
     let amount = balance.saturating_sub(HUB_TRANSACTION_FEE);
     let tx = if amount > 0 {
-        Some(build_payment_from(state, &deposit.private_key(&state.escrow_secret),
+        Some(build_payment_from_fresh(state, &deposit.private_key(&state.escrow_secret),
             &deposit.deposit_pubkey, &[(recipient.clone(), amount)], recipient).await.ok()?)
     } else { None };
     let payment = crate::payments::Payment::new(
@@ -2239,13 +2239,27 @@ pub async fn resolve_payout_attempt(state: &AppState, attempt: &PayoutAttempt) -
             resend_lost_payout(state, attempt).await;
             false
         }
+        PayoutOutcome::HeldInMempool => {
+            // Quiet, and inert. The node is holding this transaction and
+            // nothing has consumed its inputs, so there is no decision
+            // to make and nothing for anyone to look at: the next sweep
+            // reads `Confirmed` when it mines, or `NeverLanded` if a
+            // mempool drops it, and resends from there.
+            //
+            // Deliberately not logged at all. A sweep runs every minute
+            // and every payment passes through this state on its way to
+            // a block, so a line here is one per payment per minute of
+            // ordinary operation -- which is how a log stops being read.
+            false
+        }
         PayoutOutcome::Ambiguous => {
-            // Deliberately loud and deliberately inert. This should be
-            // rare -- it needs the recipient to spend the bounty, or the
-            // node to still be holding the transaction, in the window
-            // between two sweeps -- and how often it actually fires is
-            // the number that decides whether the hub should follow the
-            // chain properly instead of polling (plan §6.5).
+            // Deliberately loud and deliberately inert. This is now
+            // genuinely rare: it needs an input to have been *consumed*
+            // by something other than this transaction, or the recipient
+            // to have spent the bounty onward between two sweeps. A
+            // transaction merely waiting for a block no longer reaches
+            // here -- see `HeldInMempool` above, which is the state this
+            // arm used to absorb and shout about.
             warn!(
                 "payout for task {} to {} is unresolved: submitted {}, neither confirmed nor \
                  provably lost. Not resending -- a duplicate risks paying twice and earns a \
@@ -2776,7 +2790,7 @@ pub async fn withdraw(
     let available = account.base_balance.saturating_sub(account.locked_base);
     if available < debit { return Err(BoardError::InsufficientBalance { available, required: debit }.into()); }
     let net = debit - HUB_TRANSACTION_FEE;
-    let tx = build_payment_from(&state, &state.exchange_custody_private_key,
+    let tx = build_payment_from_fresh(&state, &state.exchange_custody_private_key,
         &state.exchange_custody_public_key, &[(pubkey.clone(), net)],
         &state.exchange_custody_public_key).await
         .map_err(|e| ApiError::Internal(format!("withdrawal could not be built, nothing was sent: {e}")))?;
@@ -2958,7 +2972,7 @@ pub async fn faucet_claim(
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
-    let tx = match build_payment_from(&state, &state.operator_private_key,
+    let tx = match build_payment_from_fresh(&state, &state.operator_private_key,
         &state.operator_public_key, &[(pubkey.clone(), FAUCET_GRANT_AMOUNT)],
         &state.operator_public_key).await {
         Ok(tx) => tx,
@@ -4782,15 +4796,36 @@ async fn ensure_operator_can_fund(state: &AppState, board: &TaskBoard, bounty: u
 /// `state.payout_lock` for the operator's own address; escrow-sourced
 /// callers use `EscrowSettlementGuard`, keyed per `PendingDeposit` since
 /// each has its own independent, never-reused address.
-pub(crate) async fn build_payment_from(
+/// `build_payment_from` for everything that is not a task-payout resend,
+/// which is every caller but one.
+///
+/// A named wrapper rather than an `Option` at four call sites: a payment
+/// that replaces nothing should not have to say so, and the three
+/// callers here (an escrow disbursement, a custody withdrawal, a faucet
+/// grant) never rebuild anything. Only the task payout does, and it is
+/// the one that spells out what it is replacing.
+async fn build_payment_from_fresh(
     state: &AppState,
     signing_key: &PrivateKey,
     source_pubkey: &PublicKey,
     recipients: &[(PublicKey, u64)],
     change_pubkey: &PublicKey,
 ) -> anyhow::Result<btclib::types::Transaction> {
+    build_payment_from(state, signing_key, source_pubkey, recipients, change_pubkey, &[]).await
+}
+
+pub(crate) async fn build_payment_from(
+    state: &AppState,
+    signing_key: &PrivateKey,
+    source_pubkey: &PublicKey,
+    recipients: &[(PublicKey, u64)],
+    change_pubkey: &PublicKey,
+    // The (task, recipient) attempts this build replaces, if any. Empty
+    // for every payment that is not a task-payout resend.
+    rebuilding: &[(Uuid, PublicKey)],
+) -> anyhow::Result<btclib::types::Transaction> {
     let mut utxos = state.node.fetch_utxos(source_pubkey).await?;
-    crate::payments::reserve_inputs(state, source_pubkey, &mut utxos).await;
+    crate::payments::reserve_inputs(state, source_pubkey, &mut utxos, rebuilding).await;
     // Which output this spends is the whole of plan §6.4b. The node
     // returns its UTXOs in `HashMap` order, and `build_multi_payment`
     // walks them front to back and stops as soon as it has enough --
@@ -4840,8 +4875,16 @@ async fn submit_task_payout(
     recipients: &[(PublicKey, u64)],
     change_pubkey: &PublicKey,
 ) -> anyhow::Result<()> {
-    let tx =
-        build_payment_from(state, signing_key, source_pubkey, recipients, change_pubkey).await?;
+    // Every leg this call pays is a leg it may be *re*paying, so each is
+    // exempt from its own reservation. On a first settlement there is no
+    // attempt yet and this is a no-op; on a resend it is what lets the
+    // replacement spend the inputs `NeverLanded` just proved are free.
+    let rebuilding: Vec<(Uuid, PublicKey)> =
+        recipients.iter().map(|(recipient, _)| (task_id, recipient.clone())).collect();
+    let tx = build_payment_from(
+        state, signing_key, source_pubkey, recipients, change_pubkey, &rebuilding,
+    )
+    .await?;
     let spent_inputs: Vec<Hash> =
         tx.inputs.iter().map(|input| input.prev_transaction_output_hash).collect();
     let submitted_at = Utc::now();
@@ -5008,13 +5051,10 @@ async fn maintain_wallet(state: &AppState, wallet: Wallet<'_>) {
             return;
         }
     }
-    crate::payments::reserve_inputs(state, wallet.public_key, &mut utxos).await;
-    {
-        let board = state.board.read().await;
-        for a in board.outstanding_payout_attempts().iter().filter(|a| a.source == *wallet.public_key) {
-            for (marked, output) in &mut utxos { if a.spent_inputs.contains(&output.hash()) { *marked = true; } }
-        }
-    }
+    // Covers unresolved payments *and* unresolved payout attempts -- the
+    // second loop used to live here, which is exactly why the payment
+    // builder went without it. See `reserve_inputs`.
+    crate::payments::reserve_inputs(state, wallet.public_key, &mut utxos, &[]).await;
     let ready = crate::operator_wallet::ready_outputs(&utxos);
     wallet.ready_gauge.store(ready as u64, std::sync::atomic::Ordering::Relaxed);
 

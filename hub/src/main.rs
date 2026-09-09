@@ -1826,6 +1826,22 @@ mod tests {
             assert!(utxos.len() < before, "nothing to spend: the output was not in the set");
         }
 
+        /// Unmarks every output, which is what a node restart does: the
+        /// mempool is memory only, so a process that comes back has no
+        /// record of the transactions it was holding and reports every
+        /// input as freely spendable again.
+        ///
+        /// The state that makes double-spending the hub's own outputs
+        /// possible, and therefore the state anything about input
+        /// reservation has to be tested against. Nothing simulated it
+        /// before, which is a fair part of why `build_payment_from` went
+        /// so long without the mask `maintain_wallet` had.
+        async fn forget_mempool(&self) {
+            for (_, marked) in self.utxos.lock().await.iter_mut() {
+                *marked = false;
+            }
+        }
+
         /// Waits until `pubkey` holds `want` confirmed, unmarked outputs.
         ///
         /// Waiting on the wallet's *shape* rather than on a submission
@@ -7790,6 +7806,117 @@ mod tests {
             after.status,
             payments::Status::NeedsReview,
             "no block holds it and its inputs are gone: waiting longer cannot help"
+        );
+    }
+
+    /// A payment built while a task payout is unresolved must not spend
+    /// the output that payout already committed.
+    ///
+    /// The setup is ordinary, which is the point. A task settles and its
+    /// transaction sits in the node's mempool. The node restarts, so
+    /// every input it was holding reads spendable again -- the mempool
+    /// is memory only. A faucet grant is then built from the same
+    /// wallet.
+    ///
+    /// `maintain_wallet` masked both unresolved payments and unresolved
+    /// payout attempts; `build_payment_from` masked only payments. And
+    /// `ordered_for_payment` is deterministic, so the grant does not
+    /// pick a random output, it picks the *same* one the payout chose --
+    /// making the collision the likely case rather than the unlucky one.
+    /// Whichever transaction loses, the task's attempt then reads
+    /// `Ambiguous` forever, and task payouts have no evidence scan and
+    /// no way out of it.
+    #[tokio::test]
+    async fn a_grant_will_not_spend_an_output_an_unresolved_payout_already_took() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let (task_id, _claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        // The payout reaches the node and waits for a block.
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        fake_node.wait_for_submitted_count(1).await;
+
+        let attempt = hub.state.board.read().await.outstanding_payout_attempts()[0].clone();
+        assert!(!attempt.spent_inputs.is_empty(), "the attempt records what it spent");
+
+        // A second, larger output, so the grant has a real choice to get
+        // wrong. `ordered_for_payment` takes the smallest output that
+        // covers the amount, and the payout's input is the smaller of
+        // the two -- so an unmasked builder picks the colliding output
+        // deterministically rather than occasionally.
+        fake_node.credit(hub.state.operator_public_key.clone(), 400_000_000).await;
+
+        // The node restarts: its mempool is gone and every input it was
+        // holding reads spendable again.
+        fake_node.forget_mempool().await;
+
+        let agent = PrivateKey::new_key();
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &agent, &challenge).await.status(), reqwest::StatusCode::OK);
+        let submitted = fake_node.wait_for_submitted_count(2).await;
+
+        let grant = submitted.last().expect("the grant was submitted");
+        for input in &grant.inputs {
+            assert!(
+                !attempt.spent_inputs.contains(&input.prev_transaction_output_hash),
+                "the grant took an output the unresolved payout for task {task_id} had already spent"
+            );
+        }
+    }
+
+    /// The ordinary case, and the one that used to be filed as an
+    /// emergency: a grant that reached the node and is waiting for a
+    /// block.
+    ///
+    /// This is not an exotic state. The sweep resolves a payment thirty
+    /// seconds after it was submitted, blocks target sixteen, and the
+    /// hub polls once a minute -- so a healthy chain produces payments
+    /// sitting in a mempool at resolution time continuously. Until
+    /// 2026-09-08 every one of them read `Ambiguous`, went to the chain
+    /// scan, found no block holding it yet, and was written
+    /// `NeedsReview`. The alert that means "a payment needs a person"
+    /// therefore fired on ordinary traffic from the first hour, which is
+    /// the same as not having the alert at all.
+    #[tokio::test]
+    async fn a_payment_still_waiting_for_its_block_is_not_somebody_s_problem() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key();
+
+        // Accepted and held, which is what a node does with every
+        // transaction between arrival and the next block.
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+        let challenge = request_faucet_challenge(&hub, &agent).await;
+        assert_eq!(redeem_faucet_challenge(&hub, &agent, &challenge).await.status(), reqwest::StatusCode::OK);
+        fake_node.wait_for_submitted_count(1).await;
+
+        let payment = hub.state.board.read().await.payments.values().next().cloned().unwrap();
+        let submissions_before = payment.submissions;
+
+        // Well past the grace period, and more than once: a state that
+        // resolves correctly on the first sweep and degrades on the
+        // fourth is not fixed.
+        for extra in [31, 91, 151, 211] {
+            payments::resolve_all(&hub.state, Utc::now() + chrono::Duration::seconds(extra)).await;
+        }
+
+        let after = hub.state.board.read().await.payments.get(&payment.id).cloned().unwrap();
+        assert_eq!(
+            after.status,
+            payments::Status::Pending,
+            "the node is holding it and nothing has taken its inputs: there is nothing to review"
+        );
+        assert_eq!(
+            after.submissions, submissions_before,
+            "and nothing to resend -- a duplicate here is what earns a node strike"
+        );
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            1,
+            "exactly one transaction ever reached the node"
         );
     }
 

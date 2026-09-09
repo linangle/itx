@@ -70,17 +70,53 @@ impl Payment {
     }
 }
 
-/// Also applied to wallet reshapes and task payouts, so maintenance cannot
-/// consume the evidence or funds backing an unresolved non-task payment.
+/// Marks every output this address has already committed elsewhere, so
+/// nothing the hub builds next can spend it: the inputs of an unresolved
+/// payment *and* of an unresolved task payout.
+///
+/// Both halves, in one function, deliberately. They used to be separate
+/// and only one caller applied both: `maintain_wallet` masked payments
+/// and attempts, `build_payment_from` masked payments alone. So a faucet
+/// grant built after a node restart -- which unmarks everything the
+/// mempool was holding -- could pick the exact output a task payout had
+/// already spent. `ordered_for_payment` is deterministic, so it picks the
+/// *same* output rather than a random one, which makes the collision the
+/// likely case rather than the unlucky one. The task's attempt then reads
+/// `Ambiguous` forever: task payouts have no evidence scan and no exit.
+///
+/// One function with both loops under one read guard is what makes that
+/// unrepeatable. A caller cannot take half of this by accident.
+/// `rebuilding` names the (task, recipient) attempts this build is
+/// *replacing*, and they are exempt. A resend is entitled to its own
+/// inputs: it only happens after `PayoutOutcome::NeverLanded`, which is
+/// the proof that every one of them is still unspent and unmarked. Mask
+/// them and the resend has nothing to spend, which is what the payout
+/// tests caught the moment the attempt loop was added.
+///
+/// Named per (task, recipient) rather than per task, because a consensus
+/// task pays several winners independently: resending one leg must not
+/// be allowed to take the inputs another leg is still waiting on.
 pub async fn reserve_inputs(state: &AppState, source: &PublicKey,
-    utxos: &mut [(bool, TransactionOutput)]) {
+    utxos: &mut [(bool, TransactionOutput)], rebuilding: &[(uuid::Uuid, PublicKey)]) {
     let board = state.board.read().await;
     for payment in board.payments.values().filter(|p| p.source == *source && p.status != Status::Confirmed) {
         for (marked, output) in utxos.iter_mut() {
             if payment.spent_inputs.contains(&output.hash()) { *marked = true; }
         }
     }
-
+    let replacing = |a: &&crate::board::PayoutAttempt| {
+        rebuilding.iter().any(|(task, recipient)| *task == a.task_id && *recipient == a.recipient)
+    };
+    for attempt in board
+        .outstanding_payout_attempts()
+        .iter()
+        .filter(|a| a.source == *source)
+        .filter(|a| !replacing(a))
+    {
+        for (marked, output) in utxos.iter_mut() {
+            if attempt.spent_inputs.contains(&output.hash()) { *marked = true; }
+        }
+    }
 }
 
 /// Caller holds the funding wallet/escrow guard. Publish the reservation only
@@ -293,6 +329,27 @@ async fn resolve(state: &AppState, payment: &Payment, now: DateTime<Utc>) -> any
             }
             if next.status == Status::Pending { send(state, &next).await; }
         }
+        // Queued, not stuck. Every input is still at the source and at
+        // least one is marked, so a mempool holds this transaction and
+        // nothing has consumed what it spends. There is nothing on the
+        // chain to look for and no decision for a person to make: wait.
+        //
+        // This is the fix for the alert that cried wolf. The state used
+        // to fall through to the scan below, which reads to the tip,
+        // finds no block yet and answers `AbsentFromChain` -- so an
+        // ordinary faucet grant waiting out its first block was filed as
+        // `NeedsReview` and paged somebody. Thirty seconds of grace
+        // against a sixteen-second block means a healthy hub produces
+        // this constantly.
+        //
+        // Self-healing in every direction, which is why doing nothing is
+        // right rather than merely cheap: it mines and the next sweep
+        // confirms it, or a mempool evicts it and the inputs unmark and
+        // the arm above resends, or something else takes them and it
+        // becomes genuinely ambiguous and lands in the scan after all.
+        // A record already sitting in `NeedsReview` recovers too --
+        // `confirm` does not care what status it is called from.
+        PayoutOutcome::HeldInMempool => {}
         // Ambiguous: the UTXO set cannot tell a payment the recipient
         // already spent from one that never landed and lost its inputs to
         // something else. Ask the chain, which can.
