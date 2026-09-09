@@ -197,10 +197,29 @@ jobs:
         # the dashboard got a home, which is exactly when that stops
         # being acceptable.
         #
-        # `caddy validate` reads the certificate paths no more than
-        # `adapt` does, so unlike nginx this needs no stand-in files. The
-        # `automatic HTTPS` warnings about the example domain are
-        # expected and are not failures.
+        # `caddy validate` reads no certificate paths, so unlike nginx
+        # this needs no stand-in certificates. It does, however, do more
+        # than `adapt`: it *provisions* every module in the adapted
+        # config, and the `log` directive's file writer opens its file to
+        # do that. This step therefore failed on its first-ever run with
+        #
+        #   Error: setting up custom log 'log0': ... open
+        #   /var/log/caddy/itx-access.log: permission denied
+        #
+        # -- the config the docs recommend logs to /var/log/caddy, the
+        # caddy package creates that directory owned by the caddy user,
+        # and the step runs as the runner. Nothing was wrong with the
+        # Caddyfile; the check could not get far enough to say so.
+        #
+        # `install -d` rather than `mkdir -p` because the directory
+        # already exists from the package, so ownership is the part that
+        # has to change. Hardcoding the runner user would be wrong on a
+        # self-hosted runner, hence `id -un`.
+        #
+        # The `automatic HTTPS` warnings about the example domain are
+        # expected and are not failures, and neither are the
+        # `Unnecessary header_up X-Forwarded-For` warnings -- deploy/Caddyfile
+        # explains at length why that line stays.
         run: |
           set -euo pipefail
           curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
@@ -208,6 +227,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
             | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
           sudo apt-get update && sudo apt-get install -y caddy
+          sudo install -d -o "$(id -un)" /var/log/caddy
           caddy validate --config deploy/Caddyfile --adapter caddyfile
 
       - name: systemd units
