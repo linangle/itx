@@ -1,16 +1,16 @@
 {
   "name": "drill: escrow-restart",
-  "started_at": "2026-09-07T08:10:11.453475Z",
+  "started_at": "2026-09-09T21:56:47.976853Z",
   "environment": {
-    "commit": "44fef477fa7d325508d80fb6887b3d113d3d39ba",
+    "commit": "e6154d717de54cb683912362b62a3025005d08d4",
     "dirty": true,
     "profile": "release",
     "host": "Darwin arm64",
     "cpus": 10,
     "binaries": {
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/hub": "69afd36a4b7dd5552727e8521ea1c2e57a899474abfd8ac43f4c574a0cd463cc",
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/hub": "c7477baa59d1f7ed10c0dfc8af8abcc9a883fd475f00034c5ed266081c108447",
+      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/miner": "a6c720e9095d6b330e23a3642c3b95cb78a4ba9051eb9bf922e6c3e878aebbad",
+      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/node": "c1c3f936701adc7521cff6646760f3461aa5354f683479ebb24e88cb9f030cff"
     }
   },
   "sections": [
@@ -24,7 +24,7 @@
         "confirmations_in_flight": 12,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 7.801667,
+        "handler_latency_ms": 6.7045,
         "never_answered": 0,
         "recovered_by_retry": 0,
         "tasks_before": 1,
@@ -44,10 +44,10 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 7.801667,
-          "p90_ms": 7.801667,
-          "p99_ms": 7.801667,
-          "max_ms": 7.801667,
+          "p50_ms": 6.7045,
+          "p90_ms": 6.7045,
+          "p99_ms": 6.7045,
+          "max_ms": 6.7045,
           "per_second": null
         },
         {
@@ -57,10 +57,10 @@
           "by_status": {
             "200": 12
           },
-          "p50_ms": 56.116125000000004,
-          "p90_ms": 67.980083,
-          "p99_ms": 72.082459,
-          "max_ms": 72.082459,
+          "p50_ms": 66.826208,
+          "p90_ms": 82.6465,
+          "p99_ms": 84.360708,
+          "max_ms": 84.360708,
           "per_second": null
         },
         {
@@ -70,10 +70,10 @@
           "by_status": {
             "409": 12
           },
-          "p50_ms": 3.719791,
-          "p90_ms": 4.24125,
-          "p99_ms": 4.791042,
-          "max_ms": 4.791042,
+          "p50_ms": 4.050875,
+          "p90_ms": 4.9034580000000005,
+          "p99_ms": 4.940416000000001,
+          "max_ms": 4.940416000000001,
           "per_second": null
         }
       ]
@@ -81,21 +81,21 @@
     {
       "title": "Restart the hub mid-escrow (SIGKILL)",
       "plan_item": "§6.5b",
-      "verdict": "inconclusive",
+      "verdict": "confirmed",
       "facts": {
         "answered_error": 0,
-        "answered_success": 0,
+        "answered_success": 1,
         "confirmations_in_flight": 12,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 6.336417,
-        "never_answered": 12,
+        "handler_latency_ms": 8.807792,
+        "never_answered": 11,
         "recovered_by_retry": 11,
         "tasks_before": 14,
         "tasks_that_survived_the_restart": 1
       },
       "notes": [
-        "No deposit funded two tasks and none was stranded in this run. That is a failure to reproduce, not a clean bill of health: the window is one step wide, 1 of 12 handlers got as far as committing a task, and nothing here can force the kill to land between that commit and the deposit's. See plan §6.5b, which was written from a run that did reproduce it and confirmed independently against the store."
+        "11 of 12 confirmations were killed in flight and 1 had committed a task by then. No deposit funded two tasks and none was stranded, which with a single write transaction is the atomicity holding rather than a failure to reproduce: `save_task_and_deposit` stages the task and the deposit's `Consumed` status together, so a crash leaves both or neither. Splitting those commits again would show up here as a refutation. See plan §6.5b for the two-commit version this replaced."
       ],
       "findings": [],
       "accepted": [],
@@ -108,10 +108,23 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 6.336417,
-          "p90_ms": 6.336417,
-          "p99_ms": 6.336417,
-          "max_ms": 6.336417,
+          "p50_ms": 8.807792,
+          "p90_ms": 8.807792,
+          "p99_ms": 8.807792,
+          "max_ms": 8.807792,
+          "per_second": null
+        },
+        {
+          "label": "POST /tasks/escrow/:id/confirm (interrupted)",
+          "requests": 1,
+          "success_rate": 1.0,
+          "by_status": {
+            "200": 1
+          },
+          "p50_ms": 8.224125,
+          "p90_ms": 8.224125,
+          "p99_ms": 8.224125,
+          "max_ms": 8.224125,
           "per_second": null
         },
         {
@@ -122,10 +135,10 @@
             "200": 11,
             "409": 1
           },
-          "p50_ms": 8.875,
-          "p90_ms": 11.064459000000001,
-          "p99_ms": 13.964,
-          "max_ms": 13.964,
+          "p50_ms": 8.2495,
+          "p90_ms": 12.640792,
+          "p99_ms": 16.776667,
+          "max_ms": 16.776667,
           "per_second": null
         }
       ]

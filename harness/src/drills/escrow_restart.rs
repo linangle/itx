@@ -2,9 +2,19 @@
 //!
 //! An escrow confirmation is the most state-heavy write the hub makes. It
 //! reads a pending deposit, asks the node what actually landed at the
-//! derived address, creates a task in memory, persists the task, and only
-//! then persists the deposit's new `Consumed` status. Four steps, three of
-//! which can be the last one to run before the process stops existing.
+//! derived address, creates a task in memory, and persists the task and
+//! the deposit's new `Consumed` status **together**, in one redb write
+//! transaction (`HubStore::save_task_and_deposit`).
+//!
+//! That last part is the whole point and it is recent. Until 2026-09-07
+//! the task and the deposit were two commits, and a process that stopped
+//! between them came back with a task on disk beside a deposit still
+//! reading `Reserved` -- confirmable a second time, one deposit funding
+//! two bounties. This drill was written to hunt that window. The window
+//! is now closed by construction, so what the drill measures has changed
+//! from "can we reproduce it" to "does the atomicity hold under a crash",
+//! and its SIGKILL phase can finally confirm rather than shrug. Splitting
+//! those two commits again would show up here as a refutation.
 //!
 //! Two restarts are worth telling apart and this drill does both.
 //! `SIGTERM` is what `systemctl restart` sends and what the hub drains on,
@@ -310,11 +320,13 @@ async fn phase(
         section = section
             .verdict(Verdict::Refuted)
             .finding(format!(
-                "{duplicated} escrow deposit(s) funded a second task after a hub restart. The \
-                 confirmation handler creates the task, persists it, and only then persists the \
-                 deposit's `Consumed` status; a process that stops between the second and third \
-                 step leaves a task on disk beside a deposit that still reads `Reserved`, and \
-                 the deposit can be confirmed again. One deposit, two bounties."
+                "{duplicated} escrow deposit(s) funded a second task after a hub restart. \
+                 This is supposed to be unreachable: since 2026-09-07 the task and the deposit's \
+                 `Consumed` status are staged in ONE redb write transaction \
+                 (`HubStore::save_task_and_deposit`), so a crash leaves both records or neither. \
+                 Seeing a task on disk beside a deposit that still reads `Reserved` means that \
+                 guarantee has been broken -- someone split the commit again, or the write \
+                 transaction is not doing what its name says. One deposit, two bounties."
             ));
     } else if stranded > 0 {
         section = section
@@ -325,23 +337,53 @@ async fn phase(
                  operator, who holds the escrow secret, but the depositor cannot reach it and \
                  nothing tells them so."
             ));
-    } else if hard {
-        // Not "confirmed". This phase can demonstrate the bug and cannot
-        // demonstrate its absence: the dangerous interval is one step
-        // wide, whether the kill lands inside it is chance, and the hub
-        // offers no fault-injection point to make it deterministic. A run
-        // that finds nothing has failed to reproduce, which is a
-        // different statement from "this is safe" and must not be
-        // recorded as the same one. `tasks_that_survived_the_restart`
-        // says how many handlers got as far as committing a task at all,
-        // which is the closest thing to a coverage figure available.
+    } else if hard && never_answered == 0 {
+        // The kill landed after every handler had already replied, so
+        // nothing was interrupted and the two zeros above are about a
+        // batch that ran to completion. That says nothing either way.
+        //
+        // Worth its own arm rather than folding into the confirmation
+        // below: this is the shape a drill quietly rots into on a fast
+        // machine, where the staggered start finishes before the kill,
+        // and it would otherwise report a clean confirmation for a run
+        // that tested nothing.
         section = section.verdict(Verdict::Inconclusive).note(format!(
-            "No deposit funded two tasks and none was stranded in this run. That is a failure \
-             to reproduce, not a clean bill of health: the window is one step wide, {survived} \
-             of {BATCH} handlers got as far as committing a task, and nothing here can force \
-             the kill to land between that commit and the deposit's. See plan §6.5b, which was \
-             written from a run that did reproduce it and confirmed independently against the \
-             store."
+            "The kill landed after all {BATCH} confirmations had already answered, so none was \
+             interrupted and this run demonstrates nothing about a crash. Re-run; if it \
+             persists, the control handler's measured duration is no longer a good estimate of \
+             how long the batch takes."
+        ));
+    } else if hard {
+        // Confirmed, and this arm is new on 2026-09-09.
+        //
+        // It used to be `Inconclusive` unconditionally, on the argument
+        // that the dangerous interval is one step wide -- between the
+        // task's commit and the deposit's -- so a run that found nothing
+        // had failed to reproduce rather than shown safety. That was
+        // exactly right when it was written and stopped being right on
+        // 2026-09-07, when `confirm_escrow` moved to
+        // `HubStore::save_task_and_deposit` and staged both records in
+        // ONE redb write transaction. There is no longer an interval to
+        // land in.
+        //
+        // So the two zeros changed meaning underneath this code and it
+        // did not notice. `deposits_funding_two_tasks == 0` used to mean
+        // "we did not hit the window"; with a single commit it means the
+        // invariant held across every one of these kills. That is a
+        // demonstration, and recording it as a shrug wasted the run --
+        // and, worse, left a section that could never reach its own
+        // healthy verdict, which reads as a drill nobody has looked at.
+        //
+        // The guard above is what keeps this honest: a confirmation is
+        // only claimed when the kill actually interrupted requests.
+        section = section.verdict(Verdict::Confirmed).note(format!(
+            "{never_answered} of {BATCH} confirmations were killed in flight and {survived} had \
+             committed a task by then. No deposit funded two tasks and none was stranded, which \
+             with a single write transaction is the atomicity holding rather than a failure to \
+             reproduce: `save_task_and_deposit` stages the task and the deposit's `Consumed` \
+             status together, so a crash leaves both or neither. Splitting those commits again \
+             would show up here as a refutation. See plan §6.5b for the two-commit version this \
+             replaced."
         ));
     } else {
         section = section.verdict(Verdict::Confirmed).note(
