@@ -132,10 +132,22 @@ const DEFAULT_HUB_URL = "http://127.0.0.1:9100";
  *
  *     <meta name="itx-hub-url" content="https://hub.itx.example.com" />
  *
- * The env var still wins where it is set, because that is what the dev
- * server and the mock fixture use (`dashboard/.env.local`). Order is
- * therefore: build-time override, then deploy-time tag, then loopback
- * for someone running the whole stack on their own machine.
+ * The env var is for the dev server and the mock fixture
+ * (`dashboard/.env.local`), and it is read **only in dev**. It used to
+ * be read first and unconditionally, which quietly undid the paragraph
+ * above: Vite loads `.env.local` in every mode, `build` included, so a
+ * site built on a developer's checkout — which is what §5.1 tells an
+ * operator to do — came out pinned to that machine's mock hub on
+ * `127.0.0.1:9101`, with the tag branch below compiled out as dead
+ * code. The release tarball was clean only because CI has no
+ * `.env.local`. A build must not be able to inherit a private hub from
+ * the machine that ran it, so the gate is on `import.meta.env.DEV`
+ * rather than on anyone remembering to move a file.
+ *
+ * Order is therefore: deploy-time tag, then the dev-only override, then
+ * loopback for someone running the whole stack on their own machine.
+ * The tag comes first so an operator who edits the shipped `index.html`
+ * gets what they edited, whatever the bundle was built with.
  *
  * The hub is a *different origin* from the site by design — the signed
  * envelope binds the exact request path, so mounting the hub under a
@@ -144,7 +156,6 @@ const DEFAULT_HUB_URL = "http://127.0.0.1:9100";
  * exactly and only what this page needs.
  */
 export function hubUrl(): string {
-  if (import.meta.env.VITE_HUB_URL) return import.meta.env.VITE_HUB_URL;
   const configured = document
     .querySelector('meta[name="itx-hub-url"]')
     ?.getAttribute("content")
@@ -154,6 +165,9 @@ export function hubUrl(): string {
   // still carrying the example host as unset.
   if (configured && configured !== "" && !configured.includes("itx.example.com")) {
     return configured.replace(/\/+$/, "");
+  }
+  if (import.meta.env.DEV && import.meta.env.VITE_HUB_URL) {
+    return import.meta.env.VITE_HUB_URL;
   }
   return DEFAULT_HUB_URL;
 }

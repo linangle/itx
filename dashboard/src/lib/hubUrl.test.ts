@@ -59,9 +59,44 @@ describe("hubUrl", () => {
     expect(hubUrl()).toBe("https://hub.example.org");
   });
 
-  it("lets the build-time variable win, because that is what dev uses", () => {
+  it("uses the build-time variable in dev, because that is what dev uses", () => {
+    // Vitest runs with DEV true, which is the case this covers: the dev
+    // server and the mock fixture.
+    vi.stubEnv("VITE_HUB_URL", "http://127.0.0.1:9101");
+    setTag(null);
+    expect(hubUrl()).toBe("http://127.0.0.1:9101");
+  });
+
+  it("lets an edited tag beat the build-time variable", () => {
+    // The regression this pins: `.env.local` is loaded by `vite build`
+    // too, so building the site on a developer's checkout -- which §5.1
+    // tells the operator to do -- produced a bundle hard-wired to that
+    // machine's mock hub, with the tag compiled out as dead code. The
+    // page loaded, the board was empty, and it looked like a quiet day.
     vi.stubEnv("VITE_HUB_URL", "http://127.0.0.1:9101");
     setTag("https://hub.example.org");
-    expect(hubUrl()).toBe("http://127.0.0.1:9101");
+    expect(hubUrl()).toBe("https://hub.example.org");
+  });
+
+  it("ignores the build-time variable outside dev", () => {
+    // A production bundle must not be able to inherit a private hub from
+    // whichever machine ran `npm run build`.
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("VITE_HUB_URL", "http://127.0.0.1:9101");
+    setTag(null);
+    expect(hubUrl()).toBe("http://127.0.0.1:9100");
+  });
+});
+
+describe("the legacy pages' client", () => {
+  it("resolves the hub through the same function, tag included", async () => {
+    // `src/api.ts` used to carry a second copy that read only the env
+    // var. The three pages under /legacy/* therefore ignored the meta
+    // tag entirely and talked to loopback on a deployed site.
+    const legacy = await import("../api");
+    noBuildOverride();
+    setTag("https://hub.example.org");
+    expect(legacy.hubUrl()).toBe("https://hub.example.org");
+    expect(legacy.hubUrl).toBe(hubUrl);
   });
 });

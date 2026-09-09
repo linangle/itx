@@ -81,11 +81,21 @@ export interface ReputationDto {
 
 export type LeaderboardEntryDto = ReputationDto & { pubkey: string };
 
-const DEFAULT_HUB_URL = "http://127.0.0.1:9100";
-
-export function hubUrl(): string {
-  return import.meta.env.VITE_HUB_URL || DEFAULT_HUB_URL;
-}
+/** Where the hub is — the one resolver, re-exported rather than
+ * reimplemented.
+ *
+ * There were two of these. This file's copy read only `VITE_HUB_URL` and
+ * never looked at the `itx-hub-url` meta tag, so the three legacy pages
+ * under `/legacy/*` ignored the one knob a deployed site actually has:
+ * an operator who edited the shipped `index.html` moved the landing page
+ * to their hub and left these three pointed at loopback. Nothing said
+ * so, because on the machine that built the site loopback answers.
+ *
+ * A second copy of a rule is a second place for it to be wrong, and this
+ * one had been wrong since the tag was introduced. See `lib/hub.ts` for
+ * the resolution order and why the build-time override is dev-only. */
+export { hubUrl } from "./lib/hub";
+import { hubUrl } from "./lib/hub";
 
 export class HubRequestError extends Error {
   path: string;

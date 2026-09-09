@@ -598,17 +598,37 @@ Point both before starting the proxy. Caddy issues a certificate per hostname
 on first request and will retry a name that does not resolve yet; certbot needs
 the record to exist when you ask for the certificate at all.
 
+**Install the release tarball's `site/`, not a build of your own.** The tarball
+carries one that CI produced from a clean checkout:
+
+```bash
+# On the hub box, from the unpacked release.
+sudo mkdir -p /var/www/itx
+sudo cp -r site/. /var/www/itx/
+sudo chown -R root:root /var/www/itx      # served, never written to
+```
+
+If you must build it yourself — a branch CI has not tagged, say — build from a
+*clean* checkout, and check what came out:
+
 ```bash
 # On a machine with node, not necessarily the hub box.
 cd dashboard
+ls .env.local && echo "MOVE THIS FIRST"   # see below
 npm ci
-npm run build          # -> dashboard/dist
-
-# On the hub box.
-sudo mkdir -p /var/www/itx
-sudo cp -r dist/. /var/www/itx/
-sudo chown -R root:root /var/www/itx      # served, never written to
+npm run build                              # -> dashboard/dist
+grep -rc '127\.0\.0\.1:910' dist/assets/*.js   # every count must be 0
 ```
+
+`dashboard/.env.local` is a developer's file naming which hub the dev server
+talks to, usually the mock fixture on `127.0.0.1:9101`. Vite reads it during
+`build` as well as `dev`, so before 2026-09-09 a site built on a working
+checkout came out hard-wired to that developer's machine, ignoring the meta tag
+below entirely — a page that loaded perfectly and could never reach a hub.
+`hubUrl()` now reads the tag first and only consults `VITE_HUB_URL` under
+`import.meta.env.DEV`, so a build cannot inherit it. The `grep` is here anyway,
+because a check that costs one line outlives whichever mechanism it was written
+against.
 
 **Then tell it where its hub is.** One line, in the copy you just installed:
 
@@ -644,8 +664,8 @@ alone because the page itself loads perfectly.
 
 **What is not here.** No build step runs on the hub box — installing node beside
 the treasury to compile a static site is not a trade worth making. The release
-tarball carries a built `dist/` for exactly this reason (`release.yml`), so the
-box only ever sees files.
+tarball carries a built site under `site/` for exactly this reason
+(`release.yml`), so the box only ever sees files.
 
 ### 5.2 Upgrading, and the fact that you cannot simply roll back
 
