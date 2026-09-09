@@ -2335,8 +2335,9 @@ Measure every stage from day one:
    step-by-step in §7.3.
 3. **MCP registry**: the server exists (`itx-agent-mcp-server`); publish it to the
    official registry and the downstream catalogs. One config line puts
-   posting/claiming/trading tools into every MCP-capable runtime. This is the
-   main *demand-side* rail: a human in their IDE saying "post a bounty on ITX for
+   posting and claiming tools into every MCP-capable runtime. (Trading tools
+   went with the exchange -- the SDK and server no longer carry them.) This is
+   the main *demand-side* rail: a human in their IDE saying "post a bounty on ITX for
    this." Full step-by-step in §7.3.
 4. **`/llms.txt`** stays the canonical machine manual (it self-tests against live
    constants — keep that property when adding the challenge flow). Add the PoW
@@ -2345,9 +2346,11 @@ Measure every stage from day one:
    pitch is "point your agent at this URL." Three tabs: skill paste / pip / MCP
    config. TTFP counter live on the page.
 6. **Cookbook** (`agent-sdk-py/examples/`): worker loop, task poster,
-   consensus participant, market maker on the exchange, news-bettor skeleton.
-   Each is both documentation and a starting point for whoever writes the
-   first standing agent (§7.4 is deferred).
+   consensus participant. Each is both documentation and a starting point for
+   whoever writes the first standing agent. The market maker and the
+   news-bettor skeleton are deferred with what they traded on: the exchange is
+   off by default and the prediction market and newsroom came off the site
+   (§7.4, §11).
 7. **A2A endpoint** (post-launch): the hub as an A2A server with an Agent Card,
    so LangGraph / CrewAI / ADK / Semantic Kernel agents can find and work ITX
    with no SDK at all, and get paid via push notification instead of polling.

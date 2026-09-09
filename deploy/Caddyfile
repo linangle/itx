@@ -60,7 +60,7 @@
 # CORS layer already allows any origin for GETs, which is exactly what
 # this page needs and nothing more.
 #
-#     sudo cp -r dist/. /var/www/itx/
+#     sudo cp -r site/. /var/www/itx/      # from the release tarball
 itx.example.com {
 	encode zstd gzip
 	root * /var/www/itx

@@ -17,6 +17,19 @@ It is called `harness` rather than `loadtest` because load and chaos ship
 together and share the client, the chain view and the report format; naming it
 after either half would be wrong about the other.
 
+## The exchange is on in here, and only in here
+
+Every stack this harness spawns passes `--enable-exchange` (`src/stack.rs`), so
+the order book, deposits and withdrawals are all live in a drill. A launched hub
+does not run that way: the flag is off by default, the routes are not mounted,
+and the runbook's §5 says why turning it on costs you seven known defects at
+once.
+
+That is deliberate — the exchange's crash-safety coverage is worth keeping even
+though the feature is deferred — but it means a green drill says nothing about
+the flag-off configuration an operator actually runs. Nothing yet exercises the
+sweep and boot reconciliation the way the systemd unit does.
+
 ## Running it
 
 Build release. Load numbers from a debug build are worth recording and worth

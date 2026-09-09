@@ -104,7 +104,7 @@ describe("a hub the site cannot reach", () => {
     // itself, because the tape wants tasks where the rest wants totals.
     mocked.listLatestTasks.mockResolvedValue([]);
     mocked.getLeaderboard.mockResolvedValue({ items: [], total: 0 });
-    mocked.getNames.mockResolvedValue({});
+    mocked.getNames.mockResolvedValue(new Map());
     mocked.getMarketSeries.mockRejectedValue(new Error("not under test"));
 
     renderLanding();

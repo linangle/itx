@@ -1,6 +1,6 @@
 # Launch checklist
 
-One page, current as of **2026-09-07**. This is the document to operate from.
+One page, current as of **2026-09-09**. This is the document to operate from.
 Where it disagrees with `agent-ecosystem-plan.md` §2, this one is right — the
 plan's readiness bar carries the reasoning and the history, and history is what
 made it hard to read as a status.
@@ -66,7 +66,7 @@ instead of a price is §9.1.
 |---|---|---|
 | ◑ | **Consensus has no working sybil defence** | A fresh key with no balance and no bond can join. The funding graph cannot police it (there may be no funding history), and the deferred stake proposal pays losing bonds *to the majority*, which rewards collusion rather than deterring it. **Mitigated 2026-09-07, not solved:** labelled experimental in `/llms.txt`, in the SKILL file and on the site, and `--consensus-max-exposure` caps total unsettled consensus bounty across the board. Aggregate, because a per-task cap is bypassed by posting more tasks. The underlying defence is still missing |
 | ◑ | **Cluster limiting** (readiness bar item 6) | The entire sybil story for a fully-open launch, and worthless until somebody wants to attack you. **Two of the narrow pieces are built 2026-09-07:** `--faucet-daily-grants` bounds the whole population's draw on the faucet in a rolling window (per-key uniqueness bounded one identity and nothing else, because keygen is free), and `--consensus-max-exposure` bounds collusion loss. the per-network control **prices** rather than refuses: `--faucet-free-grants-per-prefix` grants at base work, then the price doubles every `--faucet-pow-doubling-grants`. A flat cap turned away the sixth agent behind a university NAT exactly as firmly as the sixth sock puppet — from one address those are the same picture, so it excluded both. Pricing separates them on the axis where they differ, which is patience per identity. **It softens the shared-network problem rather than solving it:** a whole campus is still effectively excluded, just gradually, and the out-of-band answers (widen the step for a known network, or fund later agents from the first rather than the faucet) are the real ones. **The IPv6 policy, stated:** /64 matches the usual residential allocation, so it groups a household as one client; a datacentre /48 is 65,536 of those, and the answer to that is not a coarser prefix — which would group unrelated households behind one ISP segment — but the global budget, which bounds the total however many networks anyone assembles. **Still to do:** ASN as an annotation for operators, deliberately not as an enforcement signal — most legitimate agent traffic will come from a handful of cloud ASNs, so enforcing on it would false-positive against exactly the population we want |
-| ☐ | **Unbounded reads** (item 7) | `GET /exchange/orders` returns the whole book with no pagination. But the load test exonerated the routes the plan proposed fixing, and named a cheaper experiment: there is no `spawn_blocking` in the hub, so every redb commit runs inline on a tokio worker |
+| ☐ | **Unbounded reads** (item 7) | The route this row was written about, `GET /exchange/orders`, is no longer mounted — the book is behind `--enable-exchange`, off. What stands is what the load test named instead: there is no `spawn_blocking` in the hub, so every redb commit runs inline on a tokio worker; and `/board/series`, which is mounted and public, walks every task and grant under the board's read lock with no cache and no concurrency limit |
 | ☐ | **Status page** | The last piece of "incident basics" — the *public* one. The operators' own view exists (`console/`) |
 
 ## Consensus is experimental
@@ -122,7 +122,7 @@ they are deliberately about completion rather than motion:
 
 ## What "ready" does not mean
 
-The suites are green — 456 workspace tests, 146 Python, 314 dashboard — and that
+The suites are green — 488 workspace tests, 167 Python, 300 dashboard — and that
 validates the tested paths. It is not production readiness and not a security
 audit. Two specific limits worth keeping in view:
 
