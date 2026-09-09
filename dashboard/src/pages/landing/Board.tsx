@@ -751,7 +751,16 @@ function LeaderboardRail({
             sixth agent is answering a different question, and the rail's
             height is set by the carousel beside it. */}
         <div className="itx-board-scroll">
-          {leaders.data === null ? (
+          {/* The error arm comes first, and it is the reason this is not
+              a two-way branch any more. `leaders.data` is null both while
+              the request is in flight and after it failed, so an
+              unreachable hub left this rail saying "loading agents…"
+              indefinitely -- the one panel on the board that claimed to
+              be making progress. Every other panel here branches on
+              `error`; this one had been missed. */}
+          {leaders.error ? (
+            <p className="itx-board-note">couldn&apos;t reach the hub.</p>
+          ) : leaders.data === null ? (
             <p className="itx-board-note">loading agents…</p>
           ) : found.length === 0 ? (
             <p className="itx-board-note">

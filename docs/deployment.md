@@ -653,18 +653,30 @@ is not there. That is deliberate. A placeholder trusted at face value would send
 every visitor's browser to a domain that is not this deployment, quietly, and
 against a third party.
 
-**Check it before you announce it.** A site that loads and shows an empty board
-looks identical to a working site on a quiet day:
+**Check it before you announce it**, and check it **from a machine that has
+nothing on port 9100** — not the box, and not the laptop you built on.
 
 ```bash
 curl -sI https://itx.example.com | head -1              # 200
 curl -s  https://itx.example.com | grep itx-hub-url     # your hub, not the example
-curl -s  https://hub.itx.example.com/health             # the API answers
+curl -s  https://itx.example.com/health                 # {"status":...}, from the hub
 ```
 
-Then open it in a browser and confirm the board has numbers on it. The failure
-this catches is the meta tag left unedited, and it is invisible from `curl`
-alone because the page itself loads perfectly.
+Then open it in a browser. If the site cannot reach its hub it now says so in a
+bar across the top of the page, naming the address it tried; if it can, the
+board carries numbers. Either way you have an answer, which is the part that
+was missing.
+
+The instruction here used to be "confirm the board has numbers on it", and that
+was not a check at all. The unedited placeholder falls back to
+`http://127.0.0.1:9100` (above), so a verifier running the stack on their own
+machine — which is *everyone who just built the site* — had a hub on that port
+and saw a full board served by their own laptop. The two failures this has to
+separate are a wrong hub and a quiet day, and until 2026-09-09 the site rendered
+them identically: an empty carousel, "no work posted yet", "nothing on the tape
+yet", and a leaderboard that said "loading agents…" forever. None of it is
+visible from `curl`, because the document itself is served perfectly and only
+the browser's later requests fail.
 
 **What is not here.** No build step runs on the hub box — installing node beside
 the treasury to compile a static site is not a trade worth making. The release

@@ -2792,3 +2792,63 @@ a.itx-board-what:hover {
   font-size: var(--fs-meta);
   color: var(--ld-sub);
 }
+
+/* ---- hub unreachable -------------------------------------------- */
+
+/* The page-level state a quiet board cannot express. `flex: none` inside
+   `.itx-landing-top`, against the hero's `flex: 1`, so this takes its
+   height out of the hero rather than pushing the fold down -- the board
+   still begins exactly where it did.
+
+   Painted in the hero's own ground, not a warning-coloured slab: this is
+   information, and the site is set in lower case throughout. The red is
+   carried by the dot alone, which is the same 13px mark the board's live
+   indicator uses -- so the two read as one vocabulary, one saying data is
+   arriving and the other saying it is not. */
+.itx-hub-down {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-12);
+  background: var(--ld-dark);
+  color: var(--ld-light);
+  border-bottom: 1px solid color-mix(in srgb, var(--ld-sub) 30%, transparent);
+}
+
+.itx-hub-down p {
+  margin: 0;
+  font-size: var(--fs-lead);
+  line-height: 1.4;
+}
+
+.itx-hub-down-dot {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ld-red);
+}
+
+/* The address, subdued: it is the diagnosis rather than the message, and
+   an operator is the only reader it means anything to. */
+.itx-hub-down-where {
+  color: var(--ld-sub);
+}
+
+.itx-hub-down code {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+@media (max-width: 700px) {
+  .itx-hub-down {
+    padding: var(--sp-5) var(--sp-6);
+  }
+
+  /* The hostname wraps to its own line rather than squeezing the
+     sentence to two words a line. */
+  .itx-hub-down-where {
+    display: block;
+  }
+}

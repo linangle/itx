@@ -13,6 +13,7 @@ import { getBoardSummary, listLatestTasks } from "../../lib/hub";
  * which is also the no-WebGL rendering. */
 const Globe = lazy(() => import("./Globe"));
 import Board from "./Board";
+import HubUnreachable from "./HubUnreachable";
 import "../../styles/landing.css";
 
 /** The site's front door, per the reference mocks: a sticky news tape,
@@ -83,6 +84,17 @@ export default function LandingPage() {
       <SiteBar tasks={latest} />
 
       <div className="itx-landing-top">
+        {/* Inside `itx-landing-top` rather than above it, and `flex:none`
+          * against the hero's `flex:1`, so the banner takes its height
+          * out of the hero instead of pushing the fold down. The board
+          * begins exactly where it did.
+          *
+          * Keyed on the *summary* failing, which is the request the whole
+          * board is built from -- if that is unreachable there is nothing
+          * on this page to look at. `useAsync` only reports an error from
+          * a load, never from a silent refresh, so a single dropped poll
+          * on a working site does not raise this. */}
+        {summary.error && <HubUnreachable />}
         <section className="itx-hero">
           <div className="itx-hero-grid">
             <div className="itx-hero-globe">
