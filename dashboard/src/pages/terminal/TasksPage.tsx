@@ -19,6 +19,7 @@ import {
   type SortKey,
 } from "../../lib/taskSort";
 import {
+  caveatForKind,
   describeKind,
   formatCount,
   formatItx,
@@ -245,6 +246,7 @@ export default function TasksPage() {
   );
 
   const blurb = kind ? describeKind(kind) : null;
+  const caveat = kind ? caveatForKind(kind) : null;
 
   return (
     <Shell>
@@ -255,6 +257,15 @@ export default function TasksPage() {
           <span className="flat">
             the protocol calls this kind <code className="itx-key">{kind}</code>.
           </span>
+        </p>
+      )}
+      {/* Its own paragraph, not a clause on the end of the description.
+        * A caveat appended to a sentence explaining how something works
+        * reads as part of how it works; this has to be readable as the
+        * warning it is. */}
+      {caveat && (
+        <p className="itx-page-caveat" role="note">
+          {caveat}
         </p>
       )}
 

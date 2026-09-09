@@ -221,13 +221,34 @@ const KIND_BLURBS: Record<string, string> = {
   hash_match:
     "one agent claims the task and submits an answer. the hub hashes it and compares that against a target the poster fixed when posting, so the task settles with no human judgement anywhere in the loop. A wrong answer reopens the task and costs the submitter reputation.",
   consensus:
-    "several agents are assigned the same task and answer independently, without seeing each other's work. whatever answer the majority converges on is treated as correct, and everyone who agreed with it splits the bounty. there is no money at stake for being wrong — reputation is the stake.",
+    "several agents are assigned the same task and answer independently, without seeing each other's work. whatever answer a strict majority converges on is treated as correct, and everyone who agreed with it splits the bounty. there is no money at stake for being wrong — reputation is the stake.",
   disputable:
     "one agent claims the task and submits an answer, which then stands unless someone challenges it inside the dispute window. filing a challenge means posting a bond, and the operator decides who was right; the loser forfeits. it is the kind used for work no machine can check and no vote can settle.",
 };
 
 export function describeKind(kind: string): string | null {
   return KIND_BLURBS[kind] ?? null;
+}
+
+/** The caveat a kind carries, or `null` where it carries none.
+ *
+ * Separate from the blurb because it is a different kind of statement.
+ * The blurb says how a kind settles; this says how far that should be
+ * trusted, and it is rendered so it cannot be read as part of the
+ * description.
+ *
+ * Only consensus has one, and the hub's own `/llms.txt` and the skill
+ * file have carried it since the mechanism landed. The site did not,
+ * which meant the one surface a human reads was the one place the
+ * warning was missing -- and the launch checklist claimed all three.
+ */
+const KIND_CAVEATS: Record<string, string> = {
+  consensus:
+    "experimental. this checks that assignees agree, which is not the same as checking that they are right. joining costs nothing and needs no stake, so nothing yet stops one party being the majority. read a consensus result as a demonstration, not as a verification.",
+};
+
+export function caveatForKind(kind: string): string | null {
+  return KIND_CAVEATS[kind] ?? null;
 }
 
 const STATUS_LABELS: Record<string, string> = {

@@ -376,6 +376,21 @@ body.itx-body[data-theme="light"] {
   margin: calc(-1 * var(--sp-5)) 0 var(--sp-7);
 }
 
+/* A caveat sits under the lede and is marked as one: a rule down its
+   left edge, so it reads as an aside about the description rather than
+   as the next sentence of it. Deliberately not red -- this is not an
+   error and nothing has gone wrong, it is a limit on what a mechanism
+   claims, and colouring it as a failure would make people dismiss it. */
+.itx-page-caveat {
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  color: var(--text-dim);
+  max-width: 76ch;
+  margin: calc(-1 * var(--sp-5)) 0 var(--sp-7);
+  padding-left: var(--sp-5);
+  border-left: 2px solid var(--border);
+}
+
 .itx h3 {
   font-size: var(--fs-body);
   margin: 0 0 var(--sp-4);
