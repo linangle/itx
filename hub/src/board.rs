@@ -2109,6 +2109,24 @@ impl TaskBoard {
         attempts
     }
 
+    /// Every outstanding attempt for one task, so a caller that resolved
+    /// a single leg can act on the rest of them.
+    ///
+    /// A consensus payout is one transaction paying every winner, and
+    /// each winner has an attempt of their own watching a different
+    /// output of it. Anything that happens to that transaction therefore
+    /// happens to all of them at once, and a caller holding one leg needs
+    /// the siblings to say so -- see `resend_lost_payout`, where treating
+    /// the legs independently made the hub send the same bytes once per
+    /// winner.
+    pub fn payout_attempts_for_task(&self, task_id: Uuid) -> Vec<PayoutAttempt> {
+        self.payout_attempts
+            .iter()
+            .filter(|((id, _), _)| *id == task_id)
+            .map(|(_, attempt)| attempt.clone())
+            .collect()
+    }
+
     /// Drops an attempt, because it resolved one way or the other.
     /// Returns what was there, if anything -- `None` when a concurrent
     /// resolution got to it first, which the caller must treat as "not

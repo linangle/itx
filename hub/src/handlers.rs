@@ -2303,7 +2303,17 @@ async fn resend_lost_payout(state: &AppState, attempt: &PayoutAttempt) {
         return;
     };
     if live.as_ref() != Some(attempt) {
-        return; // superseded while the node reads were in flight
+        // Superseded while the node reads were in flight -- and, since
+        // this resend bumps every leg of a shared transaction below, this
+        // is also the arm a sibling leg lands in once the first leg has
+        // gone out. Logged, because "the sweep decided not to resend" is
+        // otherwise indistinguishable from "the sweep never looked".
+        debug!(
+            "not resending the payout for task {} to {}: the attempt moved under us, \
+             which is what a sibling leg of the same transaction sees once one leg has resent",
+            attempt.task_id, attempt.recipient
+        );
+        return;
     }
 
     // The same transaction, if this attempt still has it. A resend that
@@ -2318,30 +2328,84 @@ async fn resend_lost_payout(state: &AppState, attempt: &PayoutAttempt) {
     //
     // A consensus payout's legs share one transaction, so this re-offers
     // the whole settlement, which is correct -- it is the transaction
-    // that was always going to pay all of them. Only the leg that
-    // resolved bumps its own counter, and the other legs will not
-    // stampede after it: once this is on the wire their inputs read
-    // marked, which is `HeldInMempool` and not a resend at all.
+    // that was always going to pay all of them. Every leg's attempt is
+    // therefore bumped together, not just the one that happened to
+    // resolve first.
+    //
+    // That last part is the whole point, and it used to be left out. The
+    // argument for leaving it out was that a sibling leg would read
+    // `HeldInMempool` once this transaction was on the wire and so would
+    // not resend -- true only if the node has *processed* the submission
+    // before it serves that sibling's UTXO read. It is a fire-and-forget
+    // send into a sweep that then immediately asks the same node two more
+    // questions per remaining leg, so the window is not narrow. A sibling
+    // that reads through it sees `NeverLanded`, resends the same bytes,
+    // and the node strikes a duplicate; three strikes in ten minutes ban
+    // the hub from its own node for an hour (plan §6.2), which takes
+    // settlement down for everyone.
+    //
+    // Bumping every leg closes it without depending on timing at all: a
+    // sibling's snapshot is stale the moment this returns, so it stops at
+    // the `live != attempt` guard above and never reaches the node. The
+    // rebuild path below was immune to this by accident, because
+    // `settle_escrow_funded_task` rewrites every owed leg's attempt; this
+    // is that property made deliberate.
+    //
+    // The counters stay in lockstep and each leg keeps its own value:
+    // one send is one submission for every leg it pays, which is what
+    // `MAX_PAYOUT_SUBMISSIONS` is counting.
     if let Some(tx) = attempt.transaction.clone() {
-        let mut next = attempt.clone();
-        next.submissions += 1;
-        next.submitted_at = Utc::now();
+        let legs: Vec<PayoutAttempt> = {
+            let board = state.board.read().await;
+            board
+                .payout_attempts_for_task(attempt.task_id)
+                .into_iter()
+                .filter(|leg| leg.transaction.as_ref() == Some(&tx))
+                .collect()
+        };
+        let submitted_at = Utc::now();
+        let next: Vec<PayoutAttempt> = legs
+            .into_iter()
+            .map(|mut leg| {
+                leg.submissions += 1;
+                leg.submitted_at = submitted_at;
+                leg
+            })
+            .collect();
+
         // Durable before the wire, for the same reason the first
         // submission is: a resend the hub forgets is a resend it will
         // make again with a fresh budget.
-        if let Err(e) = state.store.save_payout_attempt(&next) {
-            warn!(
-                "could not record the resend of the payout for task {} to {}: {e} -- \
-                 not sending, so the attempt on disk stays the one that was last submitted",
-                attempt.task_id, attempt.recipient
-            );
-            return;
+        //
+        // All of them, before any of them reaches the board. A partial
+        // write leaves disk ahead of memory for some legs, which on a
+        // restart costs those legs one submission of their budget and
+        // sends nothing twice -- the safe direction. Sending with some
+        // legs unrecorded would be the unsafe one.
+        for leg in &next {
+            if let Err(e) = state.store.save_payout_attempt(leg) {
+                warn!(
+                    "could not record the resend of the payout for task {} to {}: {e} -- \
+                     not sending, so the attempt on disk stays the one that was last submitted",
+                    leg.task_id, leg.recipient
+                );
+                return;
+            }
         }
-        state.board.write().await.record_payout_attempt(next.clone());
+        {
+            let mut board = state.board.write().await;
+            for leg in &next {
+                board.record_payout_attempt(leg.clone());
+            }
+        }
         warn!(
             "payout for task {} to {} never reached the chain; resending the same transaction \
-             (submission {} of {})",
-            attempt.task_id, attempt.recipient, next.submissions, MAX_PAYOUT_SUBMISSIONS
+             (submission {} of {}, covering {} leg(s))",
+            attempt.task_id,
+            attempt.recipient,
+            attempt.submissions + 1,
+            MAX_PAYOUT_SUBMISSIONS,
+            next.len()
         );
         if let Err(e) = state.node.submit_transaction(tx).await {
             warn!(

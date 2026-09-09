@@ -1443,10 +1443,10 @@ mod tests {
     /// tests to assert against.
     const FAKE_NODE_CHAIN_HEIGHT: u32 = 7;
 
-    /// What a `FakeNode` does with a transaction it is handed. The three
-    /// things a real node can do that the hub cannot tell apart from the
-    /// send alone -- which is the entire reason `TaskStatus::Submitted`
-    /// exists -- so each is stageable here.
+    /// What a `FakeNode` does with a transaction it is handed. The first
+    /// three are the things a real node can do that the hub cannot tell
+    /// apart from the send alone -- which is the entire reason
+    /// `TaskStatus::Submitted` exists -- so each is stageable here.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum SubmissionFate {
         /// Accepted and mined: inputs consumed, outputs credited. The
@@ -1462,6 +1462,25 @@ mod tests {
         /// nothing anywhere changes -- a node restart discarding its
         /// mempool, or a rejection that closed the connection.
         Swallowed,
+        /// Accepted, but not yet reflected in what this node will *say*:
+        /// the transaction is recorded and a repeat of it is struck, and
+        /// the UTXO set is left exactly as it was.
+        ///
+        /// Two real behaviours in one, and they belong together because
+        /// it is their conjunction that bites. A node strikes a peer that
+        /// re-sends a transaction it already holds, and three strikes in
+        /// ten minutes ban that peer for an hour (plan §6.2) -- so a
+        /// duplicate is not merely wasted bytes, it takes settlement
+        /// down for everyone. And a node's acceptance is not instant:
+        /// `submit_transaction` is fire-and-forget, so a sweep that sends
+        /// and then immediately asks the same node two more questions per
+        /// remaining leg can be answered from a UTXO set that has not
+        /// caught up yet.
+        ///
+        /// Holding the set still for the whole exchange makes that race
+        /// a certainty rather than a coin flip, which is the only way to
+        /// test what the hub does inside it. Read `strikes()` after.
+        RejectsDuplicates,
     }
 
     /// A minimal stand-in for a real node: speaks just enough of the wire
@@ -1512,6 +1531,26 @@ mod tests {
         /// That window is invisible on a fast machine and reliably open
         /// on a loaded CI runner, which is where it was found.
         applied: Arc<std::sync::atomic::AtomicUsize>,
+        /// How many transactions this node has rejected as duplicates of
+        /// one it already holds, under `SubmissionFate::RejectsDuplicates`.
+        ///
+        /// A real node's ban counter, in other words. Any value above
+        /// zero is a hub that sent the same bytes twice; three inside ten
+        /// minutes and it is banned from its own node for an hour.
+        strikes: Arc<std::sync::atomic::AtomicUsize>,
+        /// What this node currently considers itself to be holding, for
+        /// the purpose of striking a duplicate.
+        ///
+        /// Separate from `submitted`, which is every transaction this
+        /// fake has ever seen and is what tests assert against. A real
+        /// node strikes a copy of something in its mempool *now*; one it
+        /// dropped an hour ago is a transaction it will happily accept
+        /// again, and that is precisely the situation a resend after
+        /// `NeverLanded` is in -- the hub only resends because this node
+        /// showed it was holding nothing. `drops_its_mempool` is how a
+        /// test stages that, and without it the honest resend would be
+        /// struck along with the stampede it is trying to catch.
+        duplicates: Arc<AsyncMutex<Vec<Transaction>>>,
         /// How many TCP connections this fake has accepted over its
         /// lifetime. The figure the connection-pooling tests assert on:
         /// with a pool, a run of operations should cost far fewer
@@ -1550,6 +1589,8 @@ mod tests {
             let fate = Arc::new(AsyncMutex::new(SubmissionFate::Mined));
             let submissions_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let applied = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let strikes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let duplicates: Arc<AsyncMutex<Vec<Transaction>>> = Arc::new(AsyncMutex::new(Vec::new()));
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let drain_after_next_fetch = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1559,6 +1600,8 @@ mod tests {
             let fate_for_accept_loop = fate.clone();
             let seen_for_accept_loop = submissions_seen.clone();
             let applied_for_accept_loop = applied.clone();
+            let strikes_for_accept_loop = strikes.clone();
+            let duplicates_for_accept_loop = duplicates.clone();
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
             let drain_for_accept_loop = drain_after_next_fetch.clone();
@@ -1574,6 +1617,8 @@ mod tests {
                     let fate = fate_for_accept_loop.clone();
                     let submissions_seen = seen_for_accept_loop.clone();
                     let applied = applied_for_accept_loop.clone();
+                    let strikes = strikes_for_accept_loop.clone();
+                    let duplicates = duplicates_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
                     let drain = drain_for_accept_loop.clone();
                     let blocks = blocks_for_accept_loop.clone();
@@ -1623,6 +1668,33 @@ mod tests {
                                         // like from the hub's side.
                                         continue;
                                     }
+                                    if fate == SubmissionFate::RejectsDuplicates {
+                                        // A node that already holds this
+                                        // transaction rejects the copy
+                                        // and strikes the peer that sent
+                                        // it. Counted under the same
+                                        // lock the record is taken from,
+                                        // so a reader that sees one sees
+                                        // the other.
+                                        let mut held = duplicates.lock().await;
+                                        if held.contains(&tx) {
+                                            strikes.fetch_add(
+                                                1,
+                                                std::sync::atomic::Ordering::SeqCst,
+                                            );
+                                        } else {
+                                            held.push(tx.clone());
+                                            submitted.lock().await.push(tx.clone());
+                                        }
+                                        drop(held);
+                                        // The UTXO set deliberately does
+                                        // not move: this fate stages a
+                                        // node whose answers have not
+                                        // caught up with what it has
+                                        // accepted.
+                                        applied.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                        continue;
+                                    }
                                     submitted.lock().await.push(tx.clone());
                                     let mut utxos = utxos.lock().await;
                                     match fate {
@@ -1659,7 +1731,10 @@ mod tests {
                                                 }
                                             }
                                         }
-                                        SubmissionFate::Swallowed => unreachable!("handled above"),
+                                        SubmissionFate::Swallowed
+                                        | SubmissionFate::RejectsDuplicates => {
+                                            unreachable!("handled above")
+                                        }
                                     }
                                     // Under the same lock the mutation
                                     // took, so an observer that sees this
@@ -1700,11 +1775,22 @@ mod tests {
                 fate,
                 submissions_seen,
                 applied,
+                strikes,
+                duplicates,
                 connections,
                 hang_up_after_one,
                 drain_after_next_fetch,
                 blocks,
             }
+        }
+
+        /// How many duplicate transactions this node has struck the hub
+        /// for. Meaningful only under `SubmissionFate::RejectsDuplicates`,
+        /// and the assertion that matters is that it stays at zero: a
+        /// real node bans a peer for an hour after three of these in ten
+        /// minutes.
+        fn strikes(&self) -> usize {
+            self.strikes.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         /// How many TCP connections this fake has accepted so far.
@@ -1799,6 +1885,18 @@ mod tests {
         /// see `SubmissionFate`. The default is `Mined`.
         async fn set_fate(&self, fate: SubmissionFate) {
             *self.fate.lock().await = fate;
+        }
+
+        /// Forgets every transaction this node was holding, the way a
+        /// restart or a mempool eviction does.
+        ///
+        /// The precondition for a resend: `NeverLanded` means the hub has
+        /// been shown this node holds nothing, so the copy it sends next
+        /// is a first copy and must be accepted. Only a *second* one
+        /// after that -- a sibling leg stampeding after the first --
+        /// is a duplicate worth a strike. See `duplicates`.
+        async fn drops_its_mempool(&self) {
+            self.duplicates.lock().await.clear();
         }
 
         /// Every unspent output `pubkey` currently holds, newest last.
@@ -6571,6 +6669,151 @@ mod tests {
                 "each winner must receive their even 900/2 share"
             );
         }
+    }
+
+    /// One lost consensus payout is resent once, not once per winner.
+    ///
+    /// A consensus settlement is a single transaction paying every
+    /// winner, and each winner gets a `PayoutAttempt` of their own
+    /// watching a different output of it. The sweep resolves those
+    /// attempts one at a time, and each resolution is two node reads
+    /// followed, on `NeverLanded`, by a send.
+    ///
+    /// So the legs raced each other through the same node. The first to
+    /// resolve resent the transaction and bumped only its own attempt;
+    /// the second's UTXO read, served before the node had processed that
+    /// send, still showed the inputs untouched -- `NeverLanded` again --
+    /// and it put the same bytes back on the wire. The node strikes a
+    /// peer for a duplicate, and three strikes in ten minutes ban the hub
+    /// from its own node for an hour, which stops settlement for
+    /// everyone. Three winners is one sweep away from that ban.
+    ///
+    /// The comment that used to sit on this path argued the siblings
+    /// would read `HeldInMempool` and stand down. That is true only if
+    /// the node has caught up, and nothing made it. `RejectsDuplicates`
+    /// holds the UTXO set still for the whole sweep, which turns the race
+    /// into a certainty and makes the question answerable at all.
+    #[tokio::test]
+    async fn a_lost_consensus_payout_is_resent_once_for_every_leg_it_pays() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let winners = [PrivateKey::new_key(), PrivateKey::new_key(), PrivateKey::new_key()];
+
+        // Set before the settlement, so the very first send is already
+        // the kind this node remembers: it records the transaction and
+        // changes nothing else, which is a node that has taken the bytes
+        // and not yet acted on them. Every leg therefore reads
+        // `NeverLanded` -- honestly, because the inputs really are
+        // untouched and the outputs really are absent.
+        fake_node.set_fate(SubmissionFate::RejectsDuplicates).await;
+
+        let payload = handlers::EscrowConsensusTaskPayload {
+            description: "three winners, one transaction".to_string(),
+            bounty: 900,
+            num_assignees: 3,
+            join_window_minutes: 60,
+            submission_window_minutes: 30,
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/consensus/escrow", hub.base_url))
+            .json(&envelope(&poster_key, "/tasks/consensus/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
+        let required_amount = reservation["required_amount"].as_u64().unwrap();
+        fake_node.fund(deposit_pubkey, required_amount).await;
+
+        let task: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
+            .json(&envelope(
+                &poster_key,
+                &format!("/tasks/escrow/{escrow_id}/confirm"),
+                handlers::ConfirmEscrowPayload { escrow_id },
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let task_id: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+        for winner in &winners {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+                .json(&envelope(winner, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+        for winner in &winners {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
+                .json(&envelope(
+                    winner,
+                    &format!("/tasks/{task_id}/submit"),
+                    handlers::SubmitPayload { task_id, output: "42".to_string() },
+                ))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+
+        let settlement = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(settlement.len(), 1, "three winners settle in one transaction");
+        let legs = hub.state.board.read().await.payout_attempts_for_task(task_id);
+        assert_eq!(legs.len(), 3, "one attempt per winner, all watching that one transaction");
+        assert!(
+            legs.iter().all(|leg| leg.submissions == 1),
+            "each leg has been sent exactly once so far"
+        );
+
+        // The mempool drops it. This is the precondition for the whole
+        // scenario, not a convenience: the hub resends only because the
+        // node showed it was holding nothing, so the first copy the sweep
+        // sends is legitimate and must be accepted. Anything struck after
+        // this point is a second copy of a transaction already re-offered
+        // in the same sweep -- which is exactly the stampede.
+        fake_node.drops_its_mempool().await;
+
+        // Past PAYOUT_RESOLUTION_GRACE_SECONDS, so the sweep is willing
+        // to ask about all three.
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::seconds(31)).await;
+
+        assert_eq!(
+            fake_node.strikes(),
+            0,
+            "the same transaction must not go out twice in one sweep: a real node strikes the \
+             duplicate, and three strikes in ten minutes ban the hub from its own node"
+        );
+        assert_eq!(
+            fake_node.submitted_transactions().await.len(),
+            2,
+            "the original send and exactly one resend, whatever the number of winners"
+        );
+
+        let after = hub.state.board.read().await.payout_attempts_for_task(task_id);
+        assert_eq!(after.len(), 3, "no leg was dropped");
+        assert!(
+            after.iter().all(|leg| leg.submissions == 2),
+            "one send is one submission for every leg it pays, so the budget stays in lockstep: {:?}",
+            after.iter().map(|leg| leg.submissions).collect::<Vec<_>>()
+        );
     }
 
     /// Creates+confirms an escrow-funded `Disputable` task, claims it, and
