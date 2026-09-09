@@ -14,6 +14,20 @@ import * as hub from "../../lib/hub";
  * and it is invisible to `curl`, because the document itself is served
  * perfectly and only the browser's later requests fail.
  */
+/** The hero's globe is three.js, and this file is the only place in the
+ * suite that mounts `LandingPage` -- so without this mock it is the only
+ * reason the test run loads three.js at all, constructs a
+ * `WebGLRenderer`, and logs "Error creating WebGL context" twice per
+ * test because jsdom has no WebGL to give it.
+ *
+ * None of that is under test here. The globe is decoration: `LandingPage`
+ * renders it in a `Suspense` with a `null` fallback precisely because the
+ * hero has to work without it, which is also the no-WebGL rendering a
+ * real browser falls back to. Mocking it keeps this file cheap on a
+ * two-core runner, where the whole suite competes for the same cores and
+ * the slowest test is already within a second of its timeout. */
+vi.mock("./Globe", () => ({ default: () => null }));
+
 vi.mock("../../lib/hub", async (importOriginal) => ({
   ...(await importOriginal<typeof hub>()),
   getBoardSummary: vi.fn(),
