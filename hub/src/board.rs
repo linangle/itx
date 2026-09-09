@@ -325,6 +325,25 @@ pub struct PayoutAttempt {
     /// How many times this payout has been put on the wire, counting the
     /// first. Capped by `MAX_PAYOUT_SUBMISSIONS`.
     pub submissions: u32,
+    /// The signed transaction that was submitted, so a resend can put
+    /// *this* transaction back on the wire rather than building another
+    /// one that pays the same person.
+    ///
+    /// Two identical transactions are one transaction: same inputs, same
+    /// outputs, same id, so a node that receives both mines one. Two
+    /// *different* transactions paying the same recipient are two
+    /// payments, and if the first was sitting in a mempool the hub could
+    /// not see -- another node's, or a peer's, since a node broadcasts
+    /// what it accepts -- then both can mine and the bounty is paid
+    /// twice. Rebuilding was the only option before an attempt carried
+    /// its transaction; `payments.rs` has resent the same bytes since it
+    /// was written, and this is the same rule arriving on the task path.
+    ///
+    /// `#[serde(default)]` because attempts outlived the field. One
+    /// written before it reloads as `None` and falls back to a rebuild,
+    /// which is the old behaviour and no worse than it was.
+    #[serde(default)]
+    pub transaction: Option<btclib::types::Transaction>,
 }
 
 /// What the node's view of two addresses says became of a
@@ -2731,6 +2750,7 @@ mod tests {
             source: source.clone(),
             submitted_at: Utc::now(),
             submissions: 1,
+            transaction: None,
         }
     }
 
@@ -4808,6 +4828,7 @@ mod tests {
                     source: pubkey(),
                     submitted_at: Utc::now(),
                     submissions: 1,
+                    transaction: None,
                 });
             };
             match drive {

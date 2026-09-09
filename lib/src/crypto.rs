@@ -65,7 +65,7 @@ impl Saveable for PublicKey {
 
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Signature(ECDSASignature<Secp256k1>);
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]

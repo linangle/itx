@@ -1783,6 +1783,7 @@ mod tests {
             source: PrivateKey::new_key().public_key(),
             submitted_at: Utc::now(),
             submissions: 1,
+            transaction: None,
         };
         store.save_payout_attempt(&attempt).unwrap();
         assert_eq!(store.load_all_payout_attempts().unwrap(), vec![attempt.clone()]);
@@ -2040,6 +2041,7 @@ mod tests {
             source: PrivateKey::new_key().public_key(),
             submitted_at: Utc::now(),
             submissions: 1,
+            transaction: None,
         };
         (task, attempt)
     }

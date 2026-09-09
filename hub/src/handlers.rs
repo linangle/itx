@@ -2306,6 +2306,56 @@ async fn resend_lost_payout(state: &AppState, attempt: &PayoutAttempt) {
         return; // superseded while the node reads were in flight
     }
 
+    // The same transaction, if this attempt still has it. A resend that
+    // *rebuilds* is a second payment to the same recipient, and two
+    // payments can both mine: `NeverLanded` proves nothing on the node
+    // the hub is talking to holds the first, and it cannot prove that
+    // about a mempool it cannot see -- another node in the pool, or a
+    // peer the first node broadcast to. Two identical transactions are
+    // one transaction and a node mines one; two different ones paying
+    // the same person are two bounties. `payments.rs` has resent the
+    // same bytes since it was written; this is that rule arriving here.
+    //
+    // A consensus payout's legs share one transaction, so this re-offers
+    // the whole settlement, which is correct -- it is the transaction
+    // that was always going to pay all of them. Only the leg that
+    // resolved bumps its own counter, and the other legs will not
+    // stampede after it: once this is on the wire their inputs read
+    // marked, which is `HeldInMempool` and not a resend at all.
+    if let Some(tx) = attempt.transaction.clone() {
+        let mut next = attempt.clone();
+        next.submissions += 1;
+        next.submitted_at = Utc::now();
+        // Durable before the wire, for the same reason the first
+        // submission is: a resend the hub forgets is a resend it will
+        // make again with a fresh budget.
+        if let Err(e) = state.store.save_payout_attempt(&next) {
+            warn!(
+                "could not record the resend of the payout for task {} to {}: {e} -- \
+                 not sending, so the attempt on disk stays the one that was last submitted",
+                attempt.task_id, attempt.recipient
+            );
+            return;
+        }
+        state.board.write().await.record_payout_attempt(next.clone());
+        warn!(
+            "payout for task {} to {} never reached the chain; resending the same transaction \
+             (submission {} of {})",
+            attempt.task_id, attempt.recipient, next.submissions, MAX_PAYOUT_SUBMISSIONS
+        );
+        if let Err(e) = state.node.submit_transaction(tx).await {
+            warn!(
+                "resend of the payout for task {} to {} failed, will retry: {e}",
+                attempt.task_id, attempt.recipient
+            );
+        }
+        return;
+    }
+
+    // No stored transaction: an attempt written before they were
+    // recorded. Rebuilding is what this always did, and is no worse than
+    // it was -- but it is the path with the duplicate risk, so it exists
+    // only for records that predate the field.
     let resent = match escrow {
         // Straight to the escrow path rather than through
         // `try_settle_verified_task`, which would find nothing to do:
@@ -4941,6 +4991,13 @@ async fn submit_task_payout(
             source: source_pubkey.clone(),
             submitted_at,
             submissions: previous + 1,
+            // The exact bytes that went out, so a resend can put these
+            // back rather than build a second payment to the same
+            // person. One transaction per call, shared by every leg of a
+            // consensus payout, which is right: resending it re-offers
+            // the whole settlement, and it is the same transaction it
+            // always was.
+            transaction: Some(tx.clone()),
         });
     }
 

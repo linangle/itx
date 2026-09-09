@@ -467,6 +467,7 @@ mod tests {
             source: PrivateKey::new_key().public_key(),
             submitted_at: Utc::now(),
             submissions: 1,
+            transaction: None,
         });
         assert_eq!(board.get_task(task_id).unwrap().status, TaskStatus::Submitted);
         assert!(reconcile(&board).is_empty(), "with the attempt present, nothing to report");

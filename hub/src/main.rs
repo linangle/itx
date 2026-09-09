@@ -4633,9 +4633,29 @@ mod tests {
         assert!(resent[0].outputs.iter().any(|o| o.pubkey == claimant && o.value == 1_000));
         let attempts = hub.state.board.read().await.outstanding_payout_attempts();
         assert_eq!(attempts[0].submissions, 2, "and counted, so the budget is finite");
-        assert_ne!(
+
+        // The *same* transaction, and this assertion is inverted from
+        // what it used to say.
+        //
+        // It read `assert_ne!` on the output hash, on the reasoning that
+        // a rebuild is a new attempt and must not be confirmable by
+        // evidence of the old one. True of a rebuild, and the reason a
+        // rebuild is the wrong thing to do: `NeverLanded` proves nothing
+        // on the node the hub is talking to holds the first transaction,
+        // and cannot prove it about a mempool the hub cannot see -- a
+        // second node in the pool, or a peer the first broadcast to. Two
+        // *different* transactions paying the same recipient are two
+        // bounties if both mine. Two identical ones are one transaction
+        // and a node mines it once, which is why `payments.rs` has
+        // always resent the same bytes.
+        assert_eq!(
             attempts[0].output_hash, lost[0].output_hash,
-            "a rebuild is a new attempt -- it must not be confirmable by evidence of the old one"
+            "a resend must be the same payment, not a second one"
+        );
+        assert_eq!(
+            resent[0],
+            lost[0].transaction.clone().expect("the attempt recorded what it sent"),
+            "byte for byte the transaction that was submitted the first time"
         );
 
         // ...and the resend confirms, which is what makes this a
@@ -7910,6 +7930,62 @@ mod tests {
             payments::Status::NeedsReview,
             "no block holds it and its inputs are gone: waiting longer cannot help"
         );
+    }
+
+    /// A resend must not be able to pay the bounty twice.
+    ///
+    /// The scenario the rebuild could not survive: the first transaction
+    /// is accepted somewhere the hub cannot see -- a second node in the
+    /// pool, or a peer the first broadcast to -- while the node the hub
+    /// happens to read reports every input still free. That reads as
+    /// `NeverLanded`, which is a true statement about the node that was
+    /// asked and not about the network. A rebuild then puts a *second*
+    /// payment on the wire, and if both mine the worker is paid twice
+    /// and the operator is short a bounty.
+    ///
+    /// Resending the same bytes makes that impossible rather than
+    /// unlikely: the two submissions are one transaction, with one id
+    /// and one set of inputs, so a node that receives both mines one.
+    #[tokio::test]
+    async fn a_resent_payout_is_the_same_transaction_not_a_second_payment() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let (task_id, claimant) = seed_verified_task(&hub.state, 1_000).await;
+
+        // The hub sends, and the node it is talking to keeps nothing --
+        // which is what a lost submission looks like from here, and is
+        // indistinguishable from one another node accepted.
+        fake_node.set_fate(SubmissionFate::Swallowed).await;
+        assert!(handlers::try_settle_verified_task(&hub.state, task_id).await);
+        fake_node.wait_for_submissions_seen(1).await;
+
+        let first = hub.state.board.read().await.outstanding_payout_attempts()[0].clone();
+        let sent_first = first.transaction.clone().expect("the attempt recorded what it sent");
+
+        // Now it accepts, and the hub resolves the attempt twice over --
+        // once per sweep, as it would if the first resend were also
+        // swallowed.
+        fake_node.set_fate(SubmissionFate::Mined).await;
+        handlers::resolve_payout_attempt(&hub.state, &first).await;
+        // Wait for the node to have it rather than reading the log the
+        // instant the call returns: the submission is fire-and-forget.
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        let second = hub.state.board.read().await.outstanding_payout_attempts()[0].clone();
+
+        assert_eq!(submitted.len(), 1, "one resend");
+        assert_eq!(submitted[0], sent_first, "and it is the transaction that was lost");
+
+        // The claimant is owed one bounty however many times the hub had
+        // to offer it.
+        let paid: u64 = submitted
+            .iter()
+            .flat_map(|tx| tx.outputs.iter())
+            .filter(|o| o.pubkey == claimant)
+            .map(|o| o.value)
+            .sum();
+        assert_eq!(paid, 1_000, "resending must not double the bounty on the wire");
+        assert_eq!(second.submissions, 2, "and the retry budget is still finite");
     }
 
     /// A payment built while a task payout is unresolved must not spend
