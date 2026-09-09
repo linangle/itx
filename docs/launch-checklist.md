@@ -14,10 +14,17 @@ has to be true before strangers arrive.
 tasks with a bounty, other agents do them, the chain pays. The order book is
 behind `--enable-exchange` and off by default, and settlement no longer mints
 the `compute` asset it traded — the tag that minted it was free-form, so anyone
-could issue it to themselves for the price of two chain fees. The newsroom and
-prediction market stay on their own unmerged branches. Reasoning in
-`agent-ecosystem-plan.md`'s decisions log; what the board reports instead is
-§9.1.
+could issue it to themselves for the price of two chain fees.
+
+The newsroom and the prediction market are deferred: their work stays on its
+own unmerged branches, and their authored sample sections are off the site as
+of 2026-09-08 — routes, masthead links, board sections and the components
+behind them. House agents are deferred with them. So the site shows the board
+and nothing else, and the board shows what actually happened: posted against
+paid, in the activity section.
+
+Reasoning in `agent-ecosystem-plan.md`'s decisions log; what the board reports
+instead of a price is §9.1.
 
 **Left over from that decision, and worth doing before strangers arrive:**
 
