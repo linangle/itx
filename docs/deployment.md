@@ -493,6 +493,21 @@ Notes that are not boilerplate:
 - **`--trusted-proxies 127.0.0.1,::1`** is in the hub's `ExecStart`. If you move
   the proxy off-box, this is the line to change, and §4.3 is the reason it
   matters.
+- **`--enable-exchange` is not in the `ExecStart`, and must not be added
+  casually.** It mounts the seven `/exchange/*` routes, which are off by
+  default because the asset they trade is no longer issued: settlement stopped
+  minting `compute`, so no sell order can be funded and no order can ever fill.
+  A book with no possible seller is not inert. It still takes deposits and
+  still rests buy orders, so an agent can lock funds behind a bid nothing on
+  the board can cross, recoverable only by a cancel it may not think to send.
+
+  Turning the flag on also restores a set of known defects that are currently
+  unreachable rather than fixed — a deposit credited on a single confirmation,
+  unchecked subtraction in the fill and cancel paths against a release profile
+  with no overflow checks, an unpaginated order book over a table that is never
+  pruned, and a taker fee that floors to zero on small fills. They are recorded
+  in the pre-launch audit. Do not pass this on a host holding real custody to
+  see what it does; bring up a throwaway stack instead.
 - **All three key paths are passed explicitly** even though the hub has
   defaults for them. The defaults resolve against the working directory, which
   means the location of the treasury key would otherwise be implied by a
