@@ -241,12 +241,21 @@ impl Section {
     /// Whether this section's verdict is one that wants a human.
     ///
     /// `Inconclusive` never is, on its own. It means the drill could not
-    /// decide, which is an absence of an answer rather than a bad one --
-    /// and for a sampling drill like `escrow-restart` it is the expected
-    /// post-fix outcome, because absence of a race is not something a
-    /// sampling run can observe. A drill that wants an inconclusive run
-    /// to be loud says so with a finding, the way `escrow-refund` does
-    /// when no sweep pass completed inside its observation window.
+    /// decide, which is an absence of an answer rather than a bad one,
+    /// and on a run with no baseline to compare against there is nothing
+    /// else to say. A drill that wants an inconclusive run to be loud
+    /// says so with a finding, the way `escrow-refund` does when no sweep
+    /// pass completed inside its observation window.
+    ///
+    /// This used to cite `escrow-restart` as the example of a drill for
+    /// which inconclusive was the expected post-fix outcome. That stopped
+    /// being true on 2026-09-07, when the race it hunts was closed by
+    /// making the commit atomic, and its SIGKILL phase can now confirm.
+    ///
+    /// Note the asymmetry with `compare`, which since 2026-09-09 *does*
+    /// treat a slide out of the healthy verdict as a regression, this one
+    /// included. It can: it has a baseline, so it knows the section used
+    /// to do better. Here there is no such evidence.
     pub fn verdict_needs_attention(&self) -> bool {
         match self.verdict {
             None | Some(Verdict::Inconclusive) => false,
@@ -433,19 +442,42 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
         // see `Section::verdict_needs_attention`.
         let is_a_problem =
             |verdict: Option<&str>| !matches!(verdict, None | Some("inconclusive")) && verdict != Some(healthy);
+        // Whether a section is delivering the answer it exists to give.
+        let reaches_healthy = |verdict: Option<&str>| verdict == Some(healthy);
         if old_verdict != new_verdict {
             out.push_str(&format!(
                 "  verdict: {} -> {}\n",
                 old_verdict.unwrap_or("none"),
                 new_verdict.unwrap_or("none")
             ));
-            // Only one direction is a regression: becoming a problem
-            // when the baseline was not one. Which direction that *is*
-            // depends on the drill -- for `node-crash` the plan
-            // predicted the failure, so confirmed is the regression and
-            // refuted is the fix. Hardcoding "refuted is worse" read
-            // that exactly backwards.
-            if is_a_problem(new_verdict) && !is_a_problem(old_verdict) {
+            // Two ways a section gets worse, and it used to check only
+            // the second.
+            //
+            // First: it reached its healthy verdict and no longer does.
+            // That is a regression whatever it became, `inconclusive`
+            // included -- which is not a bad answer but *is* the loss of
+            // a good one, and a drill that has stopped being able to
+            // decide has stopped covering what it covered yesterday.
+            //
+            // Second: it became an outright bad answer even though the
+            // baseline was not healthy either. `inconclusive -> refuted`
+            // is the bug coming back, and no healthy verdict was lost
+            // because none was held.
+            //
+            // Which direction is which depends on the drill -- for
+            // `node-crash` the plan predicted the failure, so `refuted`
+            // is healthy and `confirmed` is the regression. Both rules
+            // are written against `healthy` rather than against a
+            // hardcoded verdict for that reason.
+            //
+            // The gap this closes is not hypothetical: `escrow-restart`'s
+            // SIGKILL phase reported `inconclusive` for two days after
+            // the race it hunts was closed, its baseline recorded that
+            // shrug three hours after the fix landed, and every
+            // comparison since passed without comment.
+            if (reaches_healthy(old_verdict) && !reaches_healthy(new_verdict))
+                || (is_a_problem(new_verdict) && !is_a_problem(old_verdict))
+            {
                 worse = true;
             }
         }
@@ -617,6 +649,47 @@ mod tests {
         current["sections"][0]["accepted"] = json!(["known drain variance"]);
         let (_, worse) = compare(&report("confirmed", vec![], 0), &current);
         assert!(worse, "accepting one thing must not silence everything else");
+    }
+
+    /// The gap that let a drill stop covering something in silence.
+    ///
+    /// `escrow-restart`'s SIGKILL phase confirmed, then the code changed
+    /// underneath it and it went inconclusive, and nothing failed --
+    /// because the old rule only asked whether the NEW verdict was bad,
+    /// and inconclusive is not bad. It is, however, the loss of an answer
+    /// that used to be there, which is what a baseline exists to notice.
+    #[test]
+    fn losing_the_healthy_verdict_to_inconclusive_is_a_regression() {
+        let (rendered, worse) = compare(
+            &report("confirmed", vec![], 0),
+            &report("inconclusive", vec![], 0),
+        );
+        assert!(worse, "a section that used to confirm and now cannot decide has regressed");
+        assert!(rendered.contains("verdict: confirmed -> inconclusive"));
+    }
+
+    /// The same rule read against a drill whose healthy verdict is
+    /// `refuted`, so this cannot be passing by treating one literal
+    /// verdict as special.
+    #[test]
+    fn a_pessimistic_drill_also_regresses_into_inconclusive() {
+        let (_, worse) = compare(
+            &report_healthy_when("refuted", "refuted", vec![], 0),
+            &report_healthy_when("refuted", "inconclusive", vec![], 0),
+        );
+        assert!(worse, "node-crash going undecided is the same loss of coverage");
+    }
+
+    /// And the improving direction must stay quiet, or every drill that
+    /// gets fixed fails its own gate on the run that fixes it.
+    #[test]
+    fn climbing_out_of_inconclusive_is_not_a_regression() {
+        let (rendered, worse) = compare(
+            &report("inconclusive", vec![], 0),
+            &report("confirmed", vec![], 0),
+        );
+        assert!(!worse, "inconclusive -> confirmed is the fix landing, not a regression");
+        assert!(rendered.contains("verdict: inconclusive -> confirmed"));
     }
 
     #[test]
