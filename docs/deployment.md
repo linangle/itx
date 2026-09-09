@@ -81,16 +81,26 @@ Single box, which is what the plan assumes until the single-instance ceiling
                   ┌────────▼────────┐
                   │  caddy / nginx  │   terminates TLS, sets X-Forwarded-For,
                   │                 │   caps body size, bounds slow clients
-                  └────────┬────────┘
-                           │ 127.0.0.1:9100  (plain HTTP, loopback)
-                  ┌────────▼────────┐
-                  │       hub       │   custodial: holds all three secrets
-                  └────────┬────────┘
-                           │ 127.0.0.1:9000  (raw TCP, unauthenticated)
-                  ┌────────▼────────┐
-                  │      node       │◄──── miner, same box or firewalled peer
-                  └─────────────────┘
+                  └───┬─────────┬───┘
+        itx.example.com         hub.itx.example.com
+                      │         │ 127.0.0.1:9100  (plain HTTP, loopback)
+              ┌───────▼──┐  ┌───▼─────────────┐
+              │  /var/   │  │       hub       │  custodial: holds all
+              │  www/itx │  │                 │  three secrets
+              │  static  │  └───┬─────────────┘
+              └──────────┘      │ 127.0.0.1:9000  (raw TCP, unauthenticated)
+                            ┌───▼─────────────┐
+                            │      node       │◄── miner, same box or
+                            └─────────────────┘    firewalled peer
 ```
+
+**Two hostnames, and it is a correctness requirement rather than taste.** The
+signed envelope binds the concrete request path and the hub verifies against the
+path as it arrived, so serving the API under a prefix on one hostname — `/api`,
+say — makes every authenticated request fail its own signature, with a 100% 401
+rate and nothing in either log saying why (§4.6). Separate names cost one extra
+certificate and remove the whole class. The hub's CORS layer already allows any
+origin for `GET`, which is exactly what the site needs and nothing more.
 
 **Exposed to the internet: the proxy's `:443`, and nothing else.**
 
@@ -570,7 +580,74 @@ this after an ordinary crash, or on a cold start, or once while it settles: a
 hub whose replay log is readable and empty prints `restored 0 …` and carries on.
 Seeing it at all means the store could not be read. §9.5 has what to do.
 
-### 5.1 Upgrading, and the fact that you cannot simply roll back
+### 5.1 Serving the site
+
+The board is the only thing a human visiting the domain can look at, so it is
+part of the deployment rather than a separate concern. It is static files:
+there is no server behind it, and nothing on it is secret.
+
+**Two DNS records, both to this box**, since the API answers on its own
+hostname (§2):
+
+```
+itx.example.com.       A     <the box>
+hub.itx.example.com.   A     <the box>
+```
+
+Point both before starting the proxy. Caddy issues a certificate per hostname
+on first request and will retry a name that does not resolve yet; certbot needs
+the record to exist when you ask for the certificate at all.
+
+```bash
+# On a machine with node, not necessarily the hub box.
+cd dashboard
+npm ci
+npm run build          # -> dashboard/dist
+
+# On the hub box.
+sudo mkdir -p /var/www/itx
+sudo cp -r dist/. /var/www/itx/
+sudo chown -R root:root /var/www/itx      # served, never written to
+```
+
+**Then tell it where its hub is.** One line, in the copy you just installed:
+
+```html
+<!-- /var/www/itx/index.html -->
+<meta name="itx-hub-url" content="https://hub.itx.example.com" />
+```
+
+Edited after the build rather than baked into it, because a build is one
+artifact and a deployment is many domains — a bundle compiled with
+`VITE_HUB_URL` set is pinned to whatever host compiled it, which is the wrong
+shape for something shipped in a release tarball. `hubUrl()` in
+`dashboard/src/lib/hub.ts` reads the tag at run time.
+
+It ships carrying `hub.itx.example.com`, the example host, and that value is
+treated as *unset*: the site falls back to loopback and fails against a hub that
+is not there. That is deliberate. A placeholder trusted at face value would send
+every visitor's browser to a domain that is not this deployment, quietly, and
+against a third party.
+
+**Check it before you announce it.** A site that loads and shows an empty board
+looks identical to a working site on a quiet day:
+
+```bash
+curl -sI https://itx.example.com | head -1              # 200
+curl -s  https://itx.example.com | grep itx-hub-url     # your hub, not the example
+curl -s  https://hub.itx.example.com/health             # the API answers
+```
+
+Then open it in a browser and confirm the board has numbers on it. The failure
+this catches is the meta tag left unedited, and it is invisible from `curl`
+alone because the page itself loads perfectly.
+
+**What is not here.** No build step runs on the hub box — installing node beside
+the treasury to compile a static site is not a trade worth making. The release
+tarball carries a built `dist/` for exactly this reason (`release.yml`), so the
+box only ever sees files.
+
+### 5.2 Upgrading, and the fact that you cannot simply roll back
 
 **Back up before you install. Every time.** Not because upgrades usually go
 wrong, but because of what the store does when one does.
@@ -645,7 +722,7 @@ against key material that is not yours, and nothing else it says is meaningful.
 This is why step 1 is not optional and why "I will take one if it looks wrong"
 does not work: by the time it looks wrong, the store has already been restamped.
 
-### 5.2 What an upgrade does not touch
+### 5.3 What an upgrade does not touch
 
 The chain and the keys. `blockchain.redb` is the node's and has its own format;
 the three secrets in `secrets/` are files the hub reads and never rewrites. A
@@ -1571,7 +1648,7 @@ Read the banner first; it usually says which.
   1. **Put the newer binary back.** If the upgrade itself was fine and the
      rollback was precautionary, this ends the incident with nothing lost.
   2. **Restore the pre-upgrade backup** (§7.4, §9.7), accepting that everything
-     written since it is gone. Read §5.1 before doing this: some of what you are
+     written since it is gone. Read §5.2 before doing this: some of what you are
      discarding is money in flight, and the running newer binary can tell you
      how much.
 
@@ -1990,7 +2067,7 @@ done on macOS:
   2026-09-08 the hub is restarted the moment the two stores are staged rather
   than in the exit trap, so the downtime should be seconds and independent of
   how large the chain has grown. If it is not, that is the bug returning.
-- **§5.1's upgrade and rollback procedure has never been performed.** It is
+- **§5.2's upgrade and rollback procedure has never been performed.** It is
   written from the code -- the restamp in `HubStore::open_or_create` and the
   refusal it produces are both pinned by tests -- but no one has yet upgraded a
   running deployment, and nobody has restored a pre-upgrade backup to roll one

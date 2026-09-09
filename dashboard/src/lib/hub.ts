@@ -120,8 +120,42 @@ export type LeaderboardEntryDto = ReputationDto & {
 
 const DEFAULT_HUB_URL = "http://127.0.0.1:9100";
 
+/** Where the hub is, resolved at *run* time rather than baked in.
+ *
+ * The build is one artifact and the deployment is many domains. Vite
+ * substitutes `import.meta.env` when it compiles, so a bundle built with
+ * `VITE_HUB_URL` set is pinned to whatever host that was — which is the
+ * wrong shape for something shipped in a release tarball whose whole
+ * premise is that the operator replaces the placeholders. So the built
+ * `index.html` carries a meta tag the operator edits, and no rebuild is
+ * needed to point the site at a different hub:
+ *
+ *     <meta name="itx-hub-url" content="https://hub.itx.example.com" />
+ *
+ * The env var still wins where it is set, because that is what the dev
+ * server and the mock fixture use (`dashboard/.env.local`). Order is
+ * therefore: build-time override, then deploy-time tag, then loopback
+ * for someone running the whole stack on their own machine.
+ *
+ * The hub is a *different origin* from the site by design — the signed
+ * envelope binds the exact request path, so mounting the hub under a
+ * path prefix on one hostname would fail every authenticated request's
+ * signature. The hub's CORS layer allows any origin for GETs, which is
+ * exactly and only what this page needs.
+ */
 export function hubUrl(): string {
-  return import.meta.env.VITE_HUB_URL || DEFAULT_HUB_URL;
+  if (import.meta.env.VITE_HUB_URL) return import.meta.env.VITE_HUB_URL;
+  const configured = document
+    .querySelector('meta[name="itx-hub-url"]')
+    ?.getAttribute("content")
+    ?.trim();
+  // An unedited placeholder is worse than no value: it would send every
+  // request to a domain that is not this deployment. Treat anything
+  // still carrying the example host as unset.
+  if (configured && configured !== "" && !configured.includes("itx.example.com")) {
+    return configured.replace(/\/+$/, "");
+  }
+  return DEFAULT_HUB_URL;
 }
 
 export class HubRequestError extends Error {

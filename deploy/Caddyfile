@@ -34,7 +34,47 @@
 	}
 }
 
+# The site. Static files, no hub behind it, and the only thing a human
+# visiting the domain reaches.
+#
+# Two hostnames rather than one with the hub under `/api`, and that is a
+# correctness requirement rather than taste: the signed envelope binds
+# the concrete request path, so mounting the hub under a prefix makes
+# every authenticated request fail its own signature (§4.6). The hub's
+# CORS layer already allows any origin for GETs, which is exactly what
+# this page needs and nothing more.
+#
+#     sudo cp -r dist/. /var/www/itx/
 itx.example.com {
+	encode zstd gzip
+	root * /var/www/itx
+	# Single-page app: unknown paths are routes the router owns, not
+	# missing files, so they get index.html and React decides. A real
+	# 404 for /nothing-here would break every deep link on the site.
+	try_files {path} /index.html
+	file_server
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# Nothing is cached by default. index.html above all must not be:
+		# it is what points at the current asset hashes, so a stale copy
+		# asks the browser for a bundle that no longer exists.
+		Cache-Control "no-cache"
+	}
+
+	# ...except the assets, which Vite gives content-addressed names, so
+	# a changed file is a changed name and the old one can be kept
+	# forever. Second, because two `header` directives run in the order
+	# they appear and this one is the exception to the rule above.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+}
+
+# The API. Everything below this line was the whole file before the site
+# had a home, and it is unchanged apart from the hostname it answers on.
+hub.itx.example.com {
 	# Body cap. Derived from the hub's own limit rather than picked: the
 	# hub accepts free-text fields (description, output, dispute reason)
 	# of up to MAX_TEXT_FIELD_LENGTH = 20,000 *characters*, counted with

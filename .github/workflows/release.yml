@@ -63,6 +63,26 @@ jobs:
       - name: test the profile being shipped
         run: cargo test --release --workspace -- --test-threads=1
 
+      # The site ships with the binaries. It is static files, so the hub
+      # box never needs node on it -- which is the point: installing a
+      # build toolchain beside the treasury to compile a page is not a
+      # trade worth making, and a release that carries only binaries
+      # leaves the operator no way to serve the one public surface there
+      # is (`deployment.md` §5.1).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: build the site
+        working-directory: dashboard
+        # No VITE_HUB_URL. Baking one in would pin this artifact to a
+        # single domain; the built index.html carries a meta tag the
+        # operator edits instead. See `hubUrl()` in dashboard/src/lib/hub.ts.
+        run: |
+          npm ci
+          npm run build
+
       - name: package
         run: |
           set -euo pipefail
@@ -78,6 +98,9 @@ jobs:
           cp target/release/hub     "dist/${out}/itx-hub"
           cp target/release/itx-console "dist/${out}/itx-console"
           cp -r deploy "dist/${out}/deploy"
+          # Under `site/`, so `cp -r site/. /var/www/itx/` is the whole
+          # install step and nothing collides with the binaries.
+          cp -r dashboard/dist "dist/${out}/site"
           cp docs/deployment.md docs/launch-checklist.md "dist/${out}/"
           ( cd "dist/${out}" && sha256sum itx-* > SHA256SUMS )
           ( cd dist && tar czf "${out}.tar.gz" "${out}" )

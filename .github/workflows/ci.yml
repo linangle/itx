@@ -190,6 +190,26 @@ jobs:
           } > /tmp/nginx-itx.conf
           sudo nginx -t -c /tmp/nginx-itx.conf
 
+      - name: caddy
+        # The preferred proxy, and until now the unvalidated one -- the
+        # job checked nginx and left the config the docs actually
+        # recommend to a human's eye. It grew a second site block when
+        # the dashboard got a home, which is exactly when that stops
+        # being acceptable.
+        #
+        # `caddy validate` reads the certificate paths no more than
+        # `adapt` does, so unlike nginx this needs no stand-in files. The
+        # `automatic HTTPS` warnings about the example domain are
+        # expected and are not failures.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+            | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y caddy
+          caddy validate --config deploy/Caddyfile --adapter caddyfile
+
       - name: systemd units
         # `systemd-analyze verify` reports missing executables and users,
         # which a checkout will not have, so those specific complaints are

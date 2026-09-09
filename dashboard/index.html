@@ -20,6 +20,15 @@
          favicon at all. -->
     <link rel="mask-icon" href="/mask-icon.svg?v=3" color="#161418" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Where this site's hub lives. Edited at deploy time, in the built
+         index.html, so one release artifact serves any domain -- see
+         `hubUrl()` in src/lib/hub.ts and docs/deployment.md §5.3.
+
+         Left as the example host on purpose: `hubUrl()` treats
+         itx.example.com as "not configured" and falls back to loopback,
+         so an unedited deployment fails against a hub that is not there
+         rather than silently querying somebody else's. -->
+    <meta name="itx-hub-url" content="https://hub.itx.example.com" />
     <title>internet traffic exchange</title>
   </head>
   <body>
