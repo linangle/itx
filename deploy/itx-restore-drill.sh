@@ -22,7 +22,15 @@
 #                        [--expect-operator <pubkey>] \
 #                        [--expect-escrow-sha256 <hex>] \
 #                        [--bin-dir /usr/local/bin] [--port-base 19000] \
+#                        [--unit-file deploy/itx-hub.service] \
 #                        [--no-isolate]
+#
+# --unit-file turns on the COLD check (§7.5): it reads the shipped systemd
+# unit and asserts the archive actually contains every file that unit
+# names, at the layout it names them in. Without it this drill proves the
+# archive restores *somewhere*; with it, that it restores where the
+# service will look. Those are different claims, and only the second one
+# is about recovering onto a fresh box.
 #
 # The identity file is the private half that deliberately does not live
 # on the hub box (see itx-backup.sh). Running this drill therefore also
@@ -38,6 +46,7 @@ IDENTITY=""
 EXPECT_OPERATOR=""
 EXPECT_ESCROW=""
 BIN_DIR=${ITX_BIN_DIR:-/usr/local/bin}
+UNIT_FILE=""
 PORT_BASE=19000
 USE_GPG=0
 ISOLATE=1
@@ -48,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         --identity)             IDENTITY="$2";        shift 2 ;;
         --expect-operator)      EXPECT_OPERATOR="$2"; shift 2 ;;
         --expect-escrow-sha256) EXPECT_ESCROW="$2";   shift 2 ;;
+        --unit-file)            UNIT_FILE="$2";       shift 2 ;;
         --bin-dir)              BIN_DIR="$2";         shift 2 ;;
         --port-base)            PORT_BASE="$2";       shift 2 ;;
         --gpg)                  USE_GPG=1;            shift ;;
@@ -191,6 +201,66 @@ step "4. checking permissions"
 BAD=$(find "$R/secrets" -type f ! -perm 600 -print)
 [[ -z "$BAD" ]] || fail "restored secrets are not 0600:"$'\n'"$BAD"
 echo "all three secrets are 0600"
+
+# --- 4b. cold: does the archive match where the service will look? ----
+#
+# The gap this closes, and why the rest of the drill cannot see it.
+#
+# Every path below points into $R -- the scratch tree this drill just
+# restored into. The service does not: it reads /var/lib/itx, and its
+# flags are written out in deploy/itx-hub.service. So if the archive's
+# internal layout ever stops matching the layout the unit expects, this
+# drill still passes, because it only ever looks where it put things.
+# That failure surfaces exactly once, on the box you are restoring onto
+# during an incident, which is the worst possible place to find it.
+#
+# This does not rehearse a fresh-host recovery. It removes one specific
+# way that recovery can fail while every check you ran beforehand said
+# it would work. §7.5 is still owed a real one.
+if [[ -n "$UNIT_FILE" ]]; then
+    step "4b. cold check: the archive matches the unit's own paths"
+    [[ -f "$UNIT_FILE" ]] || fail "no unit file at $UNIT_FILE"
+
+    # Every /var/lib/itx path the unit names, from its directives only.
+    #
+    # `grep -v '^[[:space:]]*#'` first, because the comments talk about
+    # these paths in prose -- "Creates /var/lib/itx and /var/lib/itx/secrets,
+    # owned by User=" yielded a path with the sentence's comma still
+    # attached, and the check reported a missing `secrets,`. Trailing
+    # backslashes (ExecStart is continued across lines) and stray
+    # punctuation come off for the same reason.
+    UNIT_PATHS=$(grep -v '^[[:space:]]*#' "$UNIT_FILE" \
+        | grep -o '/var/lib/itx[^ ]*' \
+        | sed 's/[\\,;:"'"'"']*$//' \
+        | sort -u)
+    [[ -n "$UNIT_PATHS" ]] \
+        || fail "no /var/lib/itx paths found in $UNIT_FILE -- has the state directory moved?"
+
+    COLD_MISSING=0
+    while read -r unit_path; do
+        [[ -z "$unit_path" ]] && continue
+        # /var/lib/itx/secrets/x.cbor -> $R/secrets/x.cbor
+        rel="${unit_path#/var/lib/itx}"
+        rel="${rel#/}"
+        if [[ -z "$rel" ]]; then
+            continue    # the state directory itself
+        fi
+        if [[ -e "$R/$rel" ]]; then
+            echo "  ok      $unit_path"
+        else
+            echo "  MISSING $unit_path  (expected in the archive as itx/$rel)"
+            COLD_MISSING=1
+        fi
+    done <<< "$UNIT_PATHS"
+
+    [[ "$COLD_MISSING" == "0" ]] || fail \
+        "the archive does not contain everything $UNIT_FILE names. A restore onto a fresh box \
+would start the service against missing files -- and because the unit passes --generate-keys, \
+a hub whose store is ALSO missing would quietly mint a new treasury and look healthy. Restore \
+before enabling the unit, always."
+
+    echo "every path the unit names is present in the archive"
+fi
 
 # --- 5. stand it up ---------------------------------------------------
 step "5. starting a node and hub against the restored state"

@@ -233,16 +233,58 @@ async fn run_drills(args: DrillArgs) -> Result<()> {
     };
 
     let mut failed = false;
+    // Drills that could not run at all, as (name, cause).
+    //
+    // This loop used to `?` straight out of the function on the first
+    // drill that errored, and on 9 september that cost the project every
+    // drill's verdict at once: `exchange-restart`'s setup waits for a
+    // compute credit the marketplace pivot removed, bailed after its
+    // 300-second budget, and took the eight drills queued behind it plus
+    // the baseline-comparison step with it. The nightly job had never
+    // produced a verdict in its life and read as a flaky schedule.
+    //
+    // A drill that cannot run is a failure of that drill and of nothing
+    // else. Record it, keep going, and still exit non-zero at the end --
+    // which is the same contract `needs_attention` already had for a
+    // drill that ran and found something.
+    let mut could_not_run: Vec<(String, String)> = Vec::new();
     for name in &names {
         println!("\n########## {name} ##########");
-        let report = drills::run(name, &args.repo, &bin_dir, &args.work_root).await?;
-        println!("{}", report.render());
-        if let Some(dir) = &args.out {
-            let path = dir.join(format!("{name}.json"));
-            report.write_json(&path)?;
-            println!("wrote {}", path.display());
+        match drills::run(name, &args.repo, &bin_dir, &args.work_root).await {
+            Ok(report) => {
+                println!("{}", report.render());
+                if let Some(dir) = &args.out {
+                    let path = dir.join(format!("{name}.json"));
+                    report.write_json(&path)?;
+                    println!("wrote {}", path.display());
+                }
+                failed |= report.needs_attention();
+            }
+            Err(e) => {
+                // `{e:#}` rather than `{e}`: anyhow's alternate form
+                // prints the whole context chain, and the useful half of
+                // one of these is usually the innermost cause.
+                println!("!! {name} could not run: {e:#}");
+                could_not_run.push((name.clone(), format!("{e:#}")));
+                failed = true;
+            }
         }
-        failed |= report.needs_attention();
+    }
+
+    if !could_not_run.is_empty() {
+        // Repeated at the end because the per-drill line above is buried
+        // under however many thousand lines the drills after it printed.
+        println!("\n########## drills that could not run ##########");
+        for (name, cause) in &could_not_run {
+            println!("  {name}: {cause}");
+        }
+        println!(
+            "\n{} of {} drill(s) never reached a verdict. Everything the other {} say is \
+             unaffected -- but a drill that cannot start is not a drill that passed.",
+            could_not_run.len(),
+            names.len(),
+            names.len() - could_not_run.len(),
+        );
     }
 
     if failed {

@@ -98,12 +98,17 @@ pub async fn wait_until_funded(chain: &ChainView, pubkey: &PublicKey, target: u6
     Ok(balance)
 }
 
-/// Names every drill, so the CLI and the README cannot disagree about
-/// what exists.
+/// The drills `drill all` runs, and therefore the ones the nightly job
+/// gates on.
+///
+/// `exchange-restart` is deliberately **not** here. It is not deleted --
+/// see `RETIRED` below for why it cannot run and what would bring it
+/// back -- but a drill that cannot reach its own setup has no business
+/// in a nightly gate, where it reads as a flaky schedule rather than as
+/// a retired feature.
 pub const ALL: &[&str] = &[
     "node-crash",
     "escrow-restart",
-    "exchange-restart",
     "escrow-refund",
     "replay-storm",
     "rate-limit-tiers",
@@ -111,6 +116,32 @@ pub const ALL: &[&str] = &[
     "payout-ceiling",
     "signed-write-cost",
 ];
+
+/// Drills that still exist and still compile, but cannot currently run,
+/// with the reason. Named so `drill <name>` explains itself rather than
+/// timing out, and so a reader of `ALL` can see what is missing from it.
+///
+/// `exchange-restart` needs a two-sided book, which needs `compute` to
+/// sell. Settlement minted `compute` and nothing else ever did; the
+/// marketplace pivot removed that mint, because `capabilities` is a
+/// free-form tag and anyone could print the asset the book quoted
+/// against for two chain fees. The only `credit_compute` left is the
+/// taker fee, which needs trades that need compute -- so there is no
+/// longer any way to obtain any, and the drill's setup can only wait out
+/// its 300-second budget and give up.
+///
+/// It is kept rather than deleted because the exchange itself is kept:
+/// the routes are behind `--enable-exchange`, off by default. Whoever
+/// restores a compute source restores this drill's coverage with it: put
+/// the name back in `ALL` and its arm back in `run`, and the checked-in
+/// baseline is still there to compare against. Deleting the drill would
+/// make that a rewrite instead of a re-listing.
+pub const RETIRED: &[(&str, &str)] = &[(
+    "exchange-restart",
+    "needs `compute` to sell, and settlement stopped minting it when the exchange was deferred. \
+     There is no path that credits `compute` any more, so the two-sided book this drill measures \
+     cannot be built. Restore a compute source and put it back in ALL.",
+)];
 
 /// Runs one drill by name.
 pub async fn run(
@@ -123,13 +154,81 @@ pub async fn run(
     match name {
         "node-crash" => node_crash::run(repo, bin_dir, work_dir).await,
         "escrow-restart" => escrow_restart::run(repo, bin_dir, work_dir).await,
-        "exchange-restart" => exchange_restart::run(repo, bin_dir, work_dir).await,
         "escrow-refund" => escrow_refund::run(repo, bin_dir, work_dir).await,
         "replay-storm" => replay_storm::run(repo, bin_dir, work_dir).await,
         "rate-limit-tiers" => rate_limit_tiers::run(repo, bin_dir, work_dir).await,
         "quota-isolation" => quota_isolation::run(repo, bin_dir, work_dir).await,
         "payout-ceiling" => payout_ceiling::run(repo, bin_dir, work_dir).await,
         "signed-write-cost" => signed_write_cost::run(repo, bin_dir, work_dir).await,
-        other => anyhow::bail!("unknown drill {other}; known drills are {}", ALL.join(", ")),
+        other => {
+            if let Some((_, why)) = RETIRED.iter().find(|(name, _)| *name == other) {
+                anyhow::bail!("{other} is retired: {why}");
+            }
+            anyhow::bail!("unknown drill {other}; known drills are {}", ALL.join(", "))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The registry and the retirement list must not disagree.
+    ///
+    /// A name in both would be listed for the nightly gate and refused by
+    /// the dispatcher, which is a drill that fails every night for a
+    /// reason the gate cannot explain -- exactly the state N21 recorded.
+    #[test]
+    fn no_drill_is_both_scheduled_and_retired() {
+        for (name, _) in RETIRED {
+            assert!(
+                !ALL.contains(name),
+                "{name} is in ALL and in RETIRED; the nightly would run a drill that cannot run"
+            );
+        }
+    }
+
+    /// Every scheduled drill has an arm in `run`.
+    ///
+    /// Without this, removing a dispatch arm and forgetting the `ALL`
+    /// entry produces "unknown drill" once a night. The same shape as the
+    /// MCP server's tool table, which had two tools missing from it and
+    /// an assertion that had never run.
+    #[tokio::test]
+    async fn every_scheduled_drill_dispatches() {
+        let tmp = std::env::temp_dir().join("itx-drill-dispatch-test");
+        for name in ALL {
+            // These cannot actually run here -- there are no pinned
+            // binaries -- so the assertion is only that dispatch found an
+            // arm. Reaching the drill and failing to bring a stack up is
+            // a pass; falling through to the catch-all is not.
+            let err = run(name, &tmp, &tmp, &tmp).await.expect_err(
+                "a drill cannot succeed without binaries; if this ever passes, rewrite the test",
+            );
+            let message = format!("{err:#}");
+            assert!(
+                !message.contains("unknown drill"),
+                "{name} is scheduled but has no arm in run(): {message}"
+            );
+        }
+    }
+
+    /// A retired drill says why, immediately.
+    ///
+    /// The alternative is what `exchange-restart` used to do: spend its
+    /// whole 300-second setup budget waiting for a credit that can no
+    /// longer exist, then bail with a message about a two-sided book.
+    #[tokio::test]
+    async fn a_retired_drill_explains_itself_rather_than_timing_out() {
+        let tmp = std::env::temp_dir().join("itx-drill-retired-test");
+        let err = run("exchange-restart", &tmp, &tmp, &tmp)
+            .await
+            .expect_err("a retired drill must not run");
+        let message = format!("{err:#}");
+        assert!(message.contains("retired"), "should say it is retired: {message}");
+        assert!(
+            message.contains("compute"),
+            "should say what it needs and no longer has: {message}"
+        );
     }
 }

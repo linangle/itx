@@ -1221,6 +1221,34 @@ fresh box. Do that once, deliberately, before launch, and write down how long it
 took — that number is your actual RTO, and it is the one figure an incident
 turns on.
 
+**One narrow part of that is now checked, and it is worth knowing exactly which
+part.** Pass `--unit-file deploy/itx-hub.service` and the drill also asserts the
+archive contains every file that unit names, at the layout it names them in:
+
+```bash
+itx-restore-drill.sh --archive ... --identity ... \
+                     --unit-file deploy/itx-hub.service
+```
+
+Without it the drill only ever looks where it put things — every path it checks
+points into its own scratch tree, while the service reads `/var/lib/itx`. So an
+archive whose internal layout had drifted from the unit's would pass this drill
+every night and fail on the one box you are restoring onto during an incident.
+
+**It does not tell you the restore works on a fresh host.** It removes one way
+that restore can fail while every check beforehand said it would work. The
+rehearsal is still owed.
+
+> **Restore before you enable the unit.** `itx-hub.service` passes
+> `--generate-keys`, which is safe as written — the hub refuses to replace a
+> missing key whenever `--store-file` already exists (`key_generation_policy`).
+> But on a genuinely fresh box, *before* the archive is in place, there is no
+> store and no secrets: `--generate-keys` is then first-boot authority, and the
+> service will mint a brand-new operator key, come up healthy, and answer
+> `/health` with `200`. Nothing is wrong with it except that it is not your
+> deployment and the treasury is empty. `Restart=always` means enabling the unit
+> early is enough to do this to yourself.
+
 Note the ordering constraint when you do: redb is single-process, so the live
 hub must be stopped before anything else opens `hub.redb`. That is the same
 property that blocks horizontal scaling (plan §3.3, §11), showing up in

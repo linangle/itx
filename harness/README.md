@@ -65,8 +65,23 @@ CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out 
 ```
 
 One at a time, by name: `node-crash`, `escrow-restart`, `escrow-refund`,
-`exchange-restart`, `replay-storm`, `rate-limit-tiers`, `quota-isolation`,
-`payout-ceiling`, `signed-write-cost`.
+`replay-storm`, `rate-limit-tiers`, `quota-isolation`, `payout-ceiling`,
+`signed-write-cost`.
+
+**`exchange-restart` is retired and is not in `drill all`.** It needs `compute`
+to sell, settlement was the only thing that ever minted `compute`, and the
+marketplace pivot removed that mint — so the two-sided book it measures cannot
+be built and its setup can only wait out its 300-second budget. Asking for it by
+name now says so immediately instead of timing out. It is kept, not deleted:
+restore a compute source, put the name back in `ALL` and its arm back in `run`,
+and its checked-in baseline is still there to compare against.
+
+That retirement went unnoticed for a day because nothing ran: the first
+scheduled nightly, 9 september, died in that drill's setup and — because
+`drill all` was one invocation that propagated the first error — took the eight
+drills queued behind it and the baseline comparison with it. A drill that cannot
+run is now recorded, survived, and summarised at the end of the run, and the run
+still exits non-zero.
 
 **`escrow-refund` is the one drill here that can assert.** Every other drill
 samples something — a race, a window, a rate — and so a clean run is weak
