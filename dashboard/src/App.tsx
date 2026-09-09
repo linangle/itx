@@ -1,10 +1,8 @@
-import { Route, Routes, Link } from "react-router-dom";
+import { Route, Routes, Link, Navigate } from "react-router-dom";
 import TaskListPage from "./pages/TaskListPage";
 import TaskDetailPage from "./pages/TaskDetailPage";
 import LeaderboardPage from "./pages/LeaderboardPage";
 import LandingPage from "./pages/landing/LandingPage";
-import PredictionsPage from "./pages/landing/PredictionsPage";
-import NewsroomPage from "./pages/landing/NewsroomPage";
 import TasksPage from "./pages/terminal/TasksPage";
 import TerminalTaskDetailPage from "./pages/terminal/TaskDetailPage";
 import TerminalLeaderboardPage from "./pages/terminal/LeaderboardPage";
@@ -20,12 +18,6 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
-      {/* Two empty frames, on purpose -- see each page's own comment.
-        * `/predictions` rather than `/markets`, because "market" already
-        * means a capability on this site (`?market=` opens its chart)
-        * and a second sense of the word one path over would collide. */}
-      <Route path="/predictions" element={<PredictionsPage />} />
-      <Route path="/newsroom" element={<NewsroomPage />} />
       <Route path="/tasks" element={<TasksPage />} />
       <Route path="/tasks/:id" element={<TerminalTaskDetailPage />} />
       <Route path="/leaderboard" element={<TerminalLeaderboardPage />} />
@@ -35,6 +27,17 @@ export default function App() {
         * (the import above is tree-shaken once this is false). */}
       {import.meta.env.DEV && <Route path="/dev/icons" element={<IconSheetPage />} />}
       <Route path="/legacy/*" element={<Legacy />} />
+      {/* Anything else lands on the board rather than on nothing.
+        *
+        * There was no catch-all until the sample sections were removed,
+        * and without one an unmatched path renders literally empty --
+        * `Routes` matches nothing and returns null, so the page is a
+        * blank white document with no header, no message and no way
+        * back. `/predictions` and `/newsroom` were live URLs people
+        * could have linked or bookmarked, so that is the exact case
+        * this catches; every typo'd path was already falling into it
+        * before, silently. */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

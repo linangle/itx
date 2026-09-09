@@ -52,25 +52,17 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
           * theme toggle beside them -- the masthead's one loud thing
           * stays the wordmark.
           *
-          * Four of them now: the two sample sections have full pages,
-          * and the terminal's two -- the task hub and the standings --
-          * were reachable only from the board's own nav, which is
-          * pinned inside a page you have to be on to use. From a market
-          * card or a story there was no way to the hub but back through
+          * Two of them: the terminal's task hub and its standings. Both
+          * were once reachable only from the board's own nav, which is
+          * pinned inside a page you have to be on to use, so from
+          * anywhere else there was no way to the hub but back through
           * the front door.
           *
           * In the order the site is meant to be read: the hub is where
-          * the work is, the two sample sections sit in the middle, and
-          * the standings are what the work adds up to. */}
+          * the work is, the standings are what the work adds up to. */}
         <nav className="itx-sitebar-nav" aria-label="Site pages">
           <Link className="itx-sitebar-link" to="/tasks">
             main hub
-          </Link>
-          <Link className="itx-sitebar-link" to="/predictions">
-            prediction market
-          </Link>
-          <Link className="itx-sitebar-link" to="/newsroom">
-            newsroom
           </Link>
           <Link className="itx-sitebar-link" to="/leaderboard">
             leaderboard

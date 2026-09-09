@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import Board from "./Board";
 import * as hub from "../../lib/hub";
 import type { BoardSummaryDto, CapabilitySummaryDto, TaskDto } from "../../lib/hub";
-import { SAMPLES, boardMarkets } from "../../lib/predictionSample";
 import type { AsyncState } from "../../hooks/useAsync";
 
 vi.mock("../../lib/hub", async (importOriginal) => ({
@@ -129,63 +128,6 @@ describe("Board", () => {
     expect(rows.length).toBe(12);
   });
 
-  it("carries the prediction market samples above the tape, with the way out", () => {
-    const { container } = renderBoard(capabilities);
-
-    const section = screen.getByRole("region", { name: "Prediction market" });
-    // One card per sample market, each quoting complementary odds and
-    // reciprocal payouts. Read through the first card's table.
-    const tables = within(section).getAllByRole("table");
-    // The head of the pool, not all of it: the full page carries the
-    // rest, and every card here draws a measured chart the board pays
-    // for whether or not anyone scrolls to it.
-    const shown = boardMarkets();
-    expect(shown.length).toBeLessThan(SAMPLES.length);
-    expect(tables).toHaveLength(shown.length);
-    const first = within(tables[0]);
-    expect(first.getByText("under 15")).toBeInTheDocument();
-    expect(first.getByText("72%")).toBeInTheDocument();
-    expect(first.getByText("1.39x")).toBeInTheDocument();
-    expect(first.getByText("15 or more")).toBeInTheDocument();
-    expect(first.getByText("3.57x")).toBeInTheDocument();
-
-    // And every card says on its face that its odds are authored. A card
-    // quoting a price and a volume looks live whether or not it is.
-    expect(within(section).getAllByText(/sample market/i)).toHaveLength(shown.length);
-
-    // The favoured side is outlined green and the other red, taken from
-    // the odds rather than from which row it is.
-    expect(first.getByText("72%")).toHaveClass("itx-pm-pill", "up");
-    expect(first.getByText("28%")).toHaveClass("itx-pm-pill", "down");
-
-    // The label row's arrow goes to the full page, and the pager says
-    // where in the row you are.
-    const door = within(section).getByRole("link", { name: /full prediction market/i });
-    expect(door).toHaveAttribute("href", "/predictions");
-    // The section's name is *inside* the link, not beside it: an arrow
-    // on its own is a control whose target the reader has to infer,
-    // and the words next to it were the part that said where it went.
-    expect(door).toHaveTextContent("prediction market");
-
-    // Two bare arrows and nothing between them: the counter that used
-    // to sit there said what the slider under the row already says, and
-    // the pair is the market overview's pager rather than a heavier
-    // look-alike -- same class, so they cannot drift apart.
-    const pager = section.querySelector(".itx-board-pager")!;
-    expect(pager).toBeInTheDocument();
-    expect(within(pager as HTMLElement).getAllByRole("button")).toHaveLength(2);
-    expect(pager.textContent?.trim()).toBe("");
-
-    // Last in the middle column, after the tape and the breakdown: the
-    // board's own market comes first, and the section that is not yet
-    // real comes last.
-    const latest = container.querySelector("#itx-board-latest");
-    expect(
-      // eslint-disable-next-line no-bitwise
-      latest!.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
   it("orders the middle column, and the rail's links with it", () => {
     const { container } = renderBoard(capabilities);
 
@@ -203,8 +145,6 @@ describe("Board", () => {
       "itx-board-latest",
       "itx-board-activity",
       "itx-board-sectors",
-      "itx-board-predictions",
-      "itx-board-newsroom",
     ]);
 
     const nav = screen.getByRole("navigation", { name: /board sections/i });
@@ -218,35 +158,7 @@ describe("Board", () => {
       "#itx-board-latest",
       "#itx-board-activity",
       "#itx-board-sectors",
-      "#itx-board-predictions",
-      "#itx-board-newsroom",
     ]);
-  });
-
-  it("ranks the newsroom's stories by agent views, and offers the way out", () => {
-    renderBoard(capabilities);
-    const section = screen.getByRole("region", { name: "Newsroom" });
-
-    // Five rows, most-read first: the numbers down the views column
-    // must already be in descending order, because the rank cells say
-    // they are.
-    const rows = within(section).getAllByRole("row");
-    expect(rows).toHaveLength(5);
-    const views = rows.map((row) =>
-      Number(row.querySelector(".itx-nr-views")?.textContent?.replace(/,/g, "")),
-    );
-    expect(views).toEqual([...views].sort((a, b) => b - a));
-    expect(rows[0].querySelector(".itx-board-rank")?.textContent).toBe("1");
-
-    // No note on the page saying the stories are authored -- asserted
-    // rather than merely deleted, so putting it back is a deliberate act
-    // with a test to change.
-    expect(within(section).queryByText(/sample stories/i)).toBeNull();
-
-    // The section's name is the door, words and arrow together.
-    const door = within(section).getByRole("link", { name: /full newsroom/i });
-    expect(door).toHaveAttribute("href", "/newsroom");
-    expect(door).toHaveTextContent("newsroom");
   });
 
   it("anchors each section on its panel, so the jumps land level", () => {
@@ -255,46 +167,12 @@ describe("Board", () => {
     // leaderboard panel. The offset itself (`--anchor-top`) is verified in
     // the browser, since jsdom applies no stylesheet.
     const { container } = renderBoard(capabilities);
-    for (const id of ["itx-board-latest", "itx-board-sectors", "itx-board-predictions"]) {
+    for (const id of ["itx-board-latest", "itx-board-activity", "itx-board-sectors"]) {
       const anchor = container.querySelector(`#${id}`);
       expect(anchor).toBeInTheDocument();
-      expect(anchor).not.toHaveClass("itx-pm");
+      expect(anchor).toHaveClass("itx-board-panel");
     }
     expect(container.querySelector("#itx-board-latest")).toHaveClass("itx-board-panel-latest");
-  });
-
-  it("keeps the samples' odds pills quiet: spans, not trade buttons", () => {
-    renderBoard(capabilities);
-    const section = screen.getByRole("region", { name: "Prediction market" });
-    // Nothing in the protocol can take a trade, so nothing on a card
-    // may offer one. The only buttons in the whole section are the
-    // pager's two.
-    const buttons = within(section).getAllByRole("button");
-    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Previous market",
-      "Next market",
-    ]);
-    within(section)
-      .getAllByRole("table")
-      .forEach((t) => expect(within(t).queryByRole("button")).not.toBeInTheDocument());
-  });
-
-  it("holds the samples in a row that scrolls, arrows and all", () => {
-    const { container } = renderBoard(capabilities);
-    const section = screen.getByRole("region", { name: "Prediction market" });
-
-    // A real scroll container with every card inside it, the two arrows
-    // over it, and the slider under it.
-    //
-    // Deliberately not asserting which arrow is live: jsdom does no
-    // layout, so the row measures as having nowhere to scroll and
-    // `useCarousel` correctly reports *both* ends reached. Where the
-    // arrows land is that hook's own test.
-    const track = container.querySelector(".itx-pm-track");
-    expect(track).toHaveAttribute("data-at-start");
-    expect(track?.children).toHaveLength(boardMarkets().length);
-    expect(container.querySelector(".itx-pm-slider")).toBeInTheDocument();
-    expect(within(section).getByRole("button", { name: "Previous market" })).toBeDisabled();
   });
 
   it("heads the market column with the market, not the agent", async () => {

@@ -7,8 +7,6 @@ import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
 import ActivityPanel from "./ActivityPanel";
 import MarketChart from "./MarketChart";
-import PredictionMarket from "./PredictionMarket";
-import Newsroom from "./Newsroom";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
 import type { AsyncState } from "../../hooks/useAsync";
@@ -491,11 +489,6 @@ export default function Board({
 
           <SectorBreakdown sectors={sectors} />
 
-          {/* The prediction market, and under it the newsroom the agents
-            * would be trading on -- that adjacency is the point of the
-            * order, since the stories are what move the odds above them. */}
-          <PredictionMarket />
-          <Newsroom />
           </div>
 
           {/* The column is an ordinary grid item; what pins is the box
@@ -1094,16 +1087,6 @@ function BoardNav({
           <li>
             <a href="#itx-board-sectors" onClick={() => setExpanded(false)}>
               breakdown
-            </a>
-          </li>
-          <li>
-            <a href="#itx-board-predictions" onClick={() => setExpanded(false)}>
-              predictions
-            </a>
-          </li>
-          <li>
-            <a href="#itx-board-newsroom" onClick={() => setExpanded(false)}>
-              newsroom
             </a>
           </li>
         </ul>
