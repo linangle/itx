@@ -2586,6 +2586,134 @@ mod tests {
     }
 
 
+    /// A replacement challenge is a replacement, not a discount.
+    ///
+    /// When the pre-flight balance check passes and the payment then
+    /// fails -- a slot taken in between, which is what a burst against
+    /// the operator's ready outputs looks like -- the challenge is
+    /// already spent and cannot be unspent, so the hub attaches a fresh
+    /// one. It used to issue that at the *base* target with no prefix,
+    /// whatever the spent one had been priced at.
+    ///
+    /// Two things wrong with that, and the second is the expensive one.
+    /// The agent is handed back something cheaper than what was taken.
+    /// And the grant it eventually yields is recorded against no network,
+    /// so the doubling curve H1 was fixed to engage never counts it --
+    /// which a farm can exploit on purpose, by firing claims
+    /// concurrently so that every loser comes back with a base-price
+    /// challenge that counts against nobody.
+    ///
+    /// `drain_after_the_next_fetch` stages the race deterministically:
+    /// the balance read answers truthfully and the wallet is empty by the
+    /// time the payment is built.
+    #[tokio::test]
+    async fn a_replacement_challenge_is_priced_and_counted_like_the_one_it_replaces() {
+        let operator_key = PrivateKey::new_key();
+        let operator_public = operator_key.public_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        // A difficulty above the base, so "kept its target" and "fell
+        // back to the base target" are different numbers. At the base
+        // they would coincide and a broken implementation would pass.
+        // A trusted proxy, so the requests below carry a client address
+        // and the challenge is priced for a real network rather than for
+        // `None`. Without that the prefix is `None` either way and the
+        // assertion cannot fail.
+        let trusted: rate_limit::TrustedProxies =
+            ["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()].into_iter().collect();
+        let hub = spawn_hub_with_trusted_proxies(operator_key, fake_node.addr.clone(), trusted).await;
+        let agent = PrivateKey::new_key();
+        let client_ip = "203.0.113.7";
+
+        let challenge: Value = hub
+            .client
+            .post(format!("{}/faucet/challenge", hub.base_url))
+            .header("x-forwarded-for", client_ip)
+            .json(&envelope(&agent, "/faucet/challenge", ()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let priced_target = challenge["target"].as_str().unwrap().to_string();
+        let spent_id: Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+        let prefix = crate::rate_limit::prefix_of(client_ip.parse().unwrap());
+
+        // Truthful balance read, empty wallet by the time it is spent.
+        fake_node.drain_after_the_next_fetch();
+        let payload = handlers::FaucetClaimPayload {
+            challenge_id: spent_id,
+            solution: solve_faucet_challenge(&challenge),
+        };
+        let resp = hub
+            .client
+            .post(format!("{}/faucet", hub.base_url))
+            .header("x-forwarded-for", client_ip)
+            .json(&envelope(&agent, "/faucet", payload))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "the grant could not be funded, so this is the 503 path"
+        );
+
+        let body: Value = resp.json().await.unwrap();
+        let replacement = &body["challenge"];
+        assert!(
+            !replacement.is_null(),
+            "a spent challenge must come back with a fresh one: {body}"
+        );
+        assert_eq!(
+            replacement["target"].as_str().unwrap(),
+            priced_target,
+            "the replacement must cost what the spent one cost, not the base price"
+        );
+        assert_ne!(
+            replacement["challenge_id"].as_str().unwrap(),
+            challenge["challenge_id"].as_str().unwrap(),
+            "it is a fresh challenge, not the spent one handed back"
+        );
+
+        // The half that actually costs money, asserted through behaviour
+        // rather than by reading the challenge store: redeem the
+        // replacement against a wallet that now has funds, and the grant
+        // must be counted against the network it came from.
+        //
+        // A grant redeemed from a prefix-less challenge is recorded
+        // against nobody, so the doubling curve never sees it and the
+        // next key behind that network is quoted the base price again --
+        // which is the whole of what H1 was fixed to prevent.
+        // The wallet that lost the race is refilled -- the burst passed.
+        fake_node.fund(operator_public, 100_000_000).await;
+        let solved = handlers::FaucetClaimPayload {
+            challenge_id: replacement["challenge_id"].as_str().unwrap().parse().unwrap(),
+            solution: solve_faucet_challenge(replacement),
+        };
+        let paid = hub
+            .client
+            .post(format!("{}/faucet", hub.base_url))
+            .header("x-forwarded-for", client_ip)
+            .json(&envelope(&agent, "/faucet", solved))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(paid.status(), reqwest::StatusCode::OK, "the replacement must be redeemable");
+
+        let counted = hub
+            .state
+            .board
+            .read()
+            .await
+            .faucet_granted_from_prefix_since(&prefix, 0);
+        assert_eq!(
+            counted, 1,
+            "the grant must count against {prefix}; recorded against no network, the doubling \
+             curve never engages and the next key from there is quoted the base price again"
+        );
+    }
+
     /// The happy path, end to end over HTTP: ask, solve, get paid.
     #[tokio::test]
     async fn a_solved_challenge_earns_the_faucet_grant() {

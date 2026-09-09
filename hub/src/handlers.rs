@@ -3103,7 +3103,11 @@ pub async fn faucet_claim(
         &state.operator_public_key).await {
         Ok(tx) => tx,
         Err(e) if is_insufficient_funds(&e) => return Err(grant_unfunded(&state, &pubkey,
-            GrantUnfunded::AfterRedemption(e.to_string())).await),
+            GrantUnfunded::AfterRedemption {
+                cause: e.to_string(),
+                prefix: redeemed.prefix.clone(),
+                target: redeemed.target,
+            }).await),
         Err(e) => return Err(ApiError::Internal(format!("faucet not sent: {e}"))),
     };
     let payment = crate::payments::Payment::new(crate::payments::Purpose::Faucet,
@@ -3249,7 +3253,24 @@ enum GrantUnfunded {
     /// taken in between, which is what a burst looks like. The
     /// challenge is spent and cannot be unspent, so a fresh one is the
     /// only thing left to give back.
-    AfterRedemption(String),
+    ///
+    /// Carries what the spent challenge was priced at, because the
+    /// replacement has to be priced the same. Issuing it at the base
+    /// target with no prefix -- which is what it did until 2026-09-09 --
+    /// hands back something cheaper than what was taken, and the grant it
+    /// eventually yields is recorded against no network at all, so the
+    /// doubling curve H1 was fixed to engage never sees it. A farm can
+    /// manufacture this condition on purpose by firing claims
+    /// concurrently at the operator's ready outputs: every claim that
+    /// loses the race comes back with a base-price challenge and a grant
+    /// that counts against nobody.
+    AfterRedemption {
+        cause: String,
+        /// The network the spent challenge was priced for.
+        prefix: Option<String>,
+        /// The difficulty it was priced at.
+        target: btclib::U256,
+    },
 }
 
 /// The answer to "the faucet cannot pay you at this instant": a 503 with
@@ -3276,8 +3297,9 @@ async fn grant_unfunded(
     let message = match when {
         GrantUnfunded::BeforeRedemption =>
             "the faucet cannot fund a grant at this instant; nothing was spent, so present the same solution again after the retry interval".to_string(),
-        GrantUnfunded::AfterRedemption(cause) => {
-            match state.faucet_challenges.issue(pubkey, Utc::now()) {
+        GrantUnfunded::AfterRedemption { cause, prefix, target } => {
+            // Same prefix, same target: a replacement, not a discount.
+            match state.faucet_challenges.issue_at_target(pubkey, target, prefix, Utc::now()) {
                 Ok(challenge) => {
                     extra.insert(
                         "challenge".into(),
