@@ -4038,8 +4038,14 @@ pub struct MarketSeriesDto {
     /// inflation this project has said it will not publish.
     pub agents_series: Vec<u64>,
     /// Chain fees the hub paid to settle the tasks in this bucket: one
-    /// `HUB_TRANSACTION_FEE` per payout leg, so a `Consensus` task with
-    /// three winners costs three.
+    /// `HUB_TRANSACTION_FEE` per settlement *transaction*, which is not
+    /// the same as per payout leg.
+    ///
+    /// An escrow-funded task pays every winner in one transaction and so
+    /// costs one fee however many winners it had; an operator-funded one
+    /// pays each separately and costs one each. This said "one per leg"
+    /// until 2026-09-09 and overstated the figure by (winners - 1) x fee
+    /// on every escrow-funded consensus task.
     ///
     /// Attributed to the instant the task *fully* settled, because that
     /// is the only settlement instant recorded. For a consensus task
@@ -4184,9 +4190,42 @@ fn series_for(
         settled_series[bucket] += 1;
         settled += 1;
         let legs = task.paid_payouts();
-        // One chain fee per leg, not per task: a consensus task with
-        // three winners is three transactions and cost three fees.
-        let leg_fees = legs.len() as u64 * HUB_TRANSACTION_FEE;
+        // Fees are per *transaction*, and how many transactions a task
+        // cost depends on how it was funded -- which this used to ignore,
+        // charging one fee per leg and calling a three-winner consensus
+        // task three transactions.
+        //
+        // It is not. `try_settle_verified_task` branches on the escrow:
+        // an escrow-funded task goes to `settle_escrow_funded_task`,
+        // which pays every still-owed winner in ONE transaction (it has
+        // to -- the escrow address holds one deposit and change goes back
+        // to the depositor, so paying a subset strands the rest). An
+        // operator-funded task takes the other arm and loops
+        // `settle_one_payout` per recipient, which really is one
+        // transaction and one fee each.
+        //
+        // So the published figure was high by (winners - 1) x fee for
+        // every escrow-funded consensus task, which is the only kind an
+        // agent can post. A number on a public board that overstates what
+        // the operator spent is the same class of problem as one that
+        // overstates activity, and §12 argues the honesty of these
+        // figures is itself a defence.
+        //
+        // Not counted, and worth knowing: a resend puts the same
+        // transaction back on the wire and costs no second fee, but a
+        // *rebuild* after a proven loss does, and a resolved dispute's
+        // bond is a separate escrow and a separate transaction. Both are
+        // rare and neither is recoverable from a settled `Task`, which
+        // carries no record of how many transactions it took. This is
+        // exact for the ordinary path and low by those two.
+        let leg_fees = if legs.is_empty() {
+            // Settled without paying anyone -- no transaction, no fee.
+            0
+        } else if task.escrow_id.is_some() {
+            HUB_TRANSACTION_FEE
+        } else {
+            legs.len() as u64 * HUB_TRANSACTION_FEE
+        };
         fees_series[bucket] += leg_fees;
         fees += leg_fees;
         for (recipient, amount) in legs {
@@ -5529,6 +5568,93 @@ mod summary_tests {
         // One winner, one transaction, one fee.
         assert_eq!(out.fees_series, vec![0, 0, 0, HUB_TRANSACTION_FEE]);
         assert_eq!(out.fees, HUB_TRANSACTION_FEE);
+    }
+
+    /// The published fee figure is per transaction, not per winner.
+    ///
+    /// An escrow-funded consensus task pays every winner in ONE
+    /// transaction -- `settle_escrow_funded_task` has to, because the
+    /// escrow address holds one deposit and change goes back to the
+    /// depositor, so paying a subset strands the rest. The series
+    /// nonetheless charged a fee per paid leg, so every such task
+    /// overstated what the operator spent by (winners - 1) x fee. Three
+    /// winners read as 3,000 where the chain saw 1,000.
+    ///
+    /// Three winners rather than two, because two is the one count where
+    /// "per leg" and "off by one" are the same number and a wrong
+    /// implementation still passes.
+    #[test]
+    fn an_escrow_funded_consensus_task_is_charged_one_fee_not_one_per_winner() {
+        let winners: Vec<PublicKey> = (0..3).map(|_| PrivateKey::new_key().public_key()).collect();
+        let settled = now() - Duration::hours(2);
+        let mut t = task(now() - Duration::hours(20), 900, TaskStatus::Paid, &["python"]);
+        t.escrow_id = Some(Uuid::new_v4());
+        t.settled_at = Some(settled);
+        t.kind = TaskKind::Consensus {
+            num_assignees: 3,
+            join_deadline: now(),
+            submission_window_minutes: 30,
+            submission_deadline: None,
+            assignees: winners
+                .iter()
+                .map(|pk| {
+                    (
+                        pk.clone(),
+                        crate::board::ConsensusAssignment {
+                            answer: Some("42".to_string()),
+                            paid: true,
+                            share: Some(300),
+                        },
+                    )
+                })
+                .collect(),
+        };
+
+        let out = series(&[t], ask(Some("python"), Some(24 * 3_600_000), Some(4)));
+        assert_eq!(out.paid_bounty, 900, "all three winners were paid their share");
+        assert_eq!(
+            out.fees, HUB_TRANSACTION_FEE,
+            "one transaction paid all three, so the board must publish one fee"
+        );
+        assert_eq!(out.fees_series, vec![0, 0, 0, HUB_TRANSACTION_FEE]);
+    }
+
+    /// The other arm, so the fix is not just "consensus costs one fee".
+    /// An operator-funded task takes the `None` branch of
+    /// `try_settle_verified_task`, which loops `settle_one_payout` per
+    /// recipient -- genuinely one transaction and one fee each.
+    #[test]
+    fn an_operator_funded_task_is_still_charged_one_fee_per_leg() {
+        let winners: Vec<PublicKey> = (0..3).map(|_| PrivateKey::new_key().public_key()).collect();
+        let mut t = task(now() - Duration::hours(20), 900, TaskStatus::Paid, &["python"]);
+        t.escrow_id = None; // operator-funded
+        t.settled_at = Some(now() - Duration::hours(2));
+        t.kind = TaskKind::Consensus {
+            num_assignees: 3,
+            join_deadline: now(),
+            submission_window_minutes: 30,
+            submission_deadline: None,
+            assignees: winners
+                .iter()
+                .map(|pk| {
+                    (
+                        pk.clone(),
+                        crate::board::ConsensusAssignment {
+                            answer: Some("42".to_string()),
+                            paid: true,
+                            share: Some(300),
+                        },
+                    )
+                })
+                .collect(),
+        };
+
+        let out = series(&[t], ask(Some("python"), Some(24 * 3_600_000), Some(4)));
+        assert_eq!(
+            out.fees,
+            3 * HUB_TRANSACTION_FEE,
+            "three separate payments really did cost three fees"
+        );
     }
 
     /// A task posted before the window but paid inside it is invisible
