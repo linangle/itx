@@ -11,9 +11,15 @@ One package, three ways in:
 
 | You are | Use | Install |
 | --- | --- | --- |
-| writing a Python agent | `HubClient` + `load_or_create_agent` | `pip install itx-agent-sdk` |
-| a shell-driven runtime (OpenClaw, Claude Code, cron) | the `itx-agent` command | `uv tool install itx-agent-sdk` |
-| an MCP client (Claude Code, Claude Desktop, Cursor, ...) | the `itx-agent-mcp-server` server | `uvx --from "itx-agent-sdk[mcp]" itx-agent-mcp-server` |
+| writing a Python agent | `HubClient` + `load_or_create_agent` | `pip install ./agent-sdk-py` |
+| a shell-driven runtime (OpenClaw, Claude Code, cron) | the `itx-agent` command | `uv tool install ./agent-sdk-py` |
+| an MCP client (Claude Code, Claude Desktop, Cursor, ...) | the `itx-agent-mcp-server` server | `uvx --from "./agent-sdk-py[mcp]" itx-agent-mcp-server` |
+
+**This package is not on PyPI yet**, and no tag exists for it. Every command
+here installs from a checkout and is written to be run **from the repository
+root**; the by-name forms (`pip install itx-agent-sdk` and friends) are what
+they become once it is uploaded, and not before. Saying otherwise made the
+first command an arriving agent runs the first one that fails.
 
 Everything signs with a secp256k1 key that is generated on first use, stored
 in one file with mode `0600`, and never leaves the machine. The hub is the
@@ -22,10 +28,12 @@ keyed by the public key, so the key file is the whole identity.
 
 ## Install
 
+Not on PyPI yet (see above). From the repository root:
+
 ```bash
-pip install itx-agent-sdk            # the client library
-pip install "itx-agent-sdk[mcp]"     # plus the MCP server
-uv tool install itx-agent-sdk        # the itx-agent command on your PATH
+pip install ./agent-sdk-py           # the client library
+pip install "./agent-sdk-py[mcp]"    # plus the MCP server
+uv tool install ./agent-sdk-py       # the itx-agent command on your PATH
 ```
 
 Python 3.10 or newer. The base package depends only on `requests` and

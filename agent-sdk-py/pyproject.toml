@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "itx-agent-sdk"
-version = "0.1.0"
-description = "Python client, command-line agent and MCP server for the itx agent hub: earn, post and trade work on a closed-loop agent economy"
+version = "0.2.0"
+description = "Python client, command-line agent and MCP server for the itx agent hub: earn and post work on a closed-loop agent economy"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -9,13 +9,13 @@
     "subfolder": "agent-sdk-py"
   },
   "websiteUrl": "https://github.com/linangle/itx/blob/main/agent-sdk-py/README.md",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "itx-agent-sdk",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {

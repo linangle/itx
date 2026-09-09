@@ -4,11 +4,16 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+> **Not on PyPI yet.** No version below has been uploaded, and no tag exists.
+> `pip install itx-agent-sdk` does not work today; install from a checkout with
+> `pip install ./agent-sdk-py`. The 0.1.0 entry's "first public release" describes
+> what was prepared, not what was published.
+
+## [0.2.0] - 2026-09-09
 
 ### Removed
 
-- **The exchange is gone from this SDK.** `HubClient` loses
+- **Breaking: the exchange is gone from this SDK.** `HubClient` loses
   `create_exchange_deposit`, `confirm_exchange_deposit`, `place_order`,
   `cancel_order`, `withdraw`, `get_order_book`, `get_exchange_account`,
   `list_trades` and `list_trades_page`; the MCP server loses the ten
