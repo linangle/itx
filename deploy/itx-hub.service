@@ -58,6 +58,25 @@ ExecStart=/usr/local/bin/itx-hub \
 Restart=always
 RestartSec=5s
 
+# systemd's default stop timeout is 90s and its default is to SIGKILL
+# after it. The drain above is bounded by whatever the slowest in-flight
+# handler is waiting on, and a handler waiting on a wedged node can sit
+# for the node client's own timeouts -- so a restart at exactly the wrong
+# moment kills the drain and burns the envelopes it was protecting, which
+# is the one thing the drain exists to prevent. Generous rather than
+# tight: a stop that takes two minutes is an inconvenience, a stop that
+# SIGKILLs a treasury process mid-write is not.
+TimeoutStopSec=120
+
+# systemd gives a service 1024 file descriptors by default, and the hub
+# is a server. Every kept-alive upstream connection from the proxy, the
+# node pool, and redb's own handles come out of the same budget, and the
+# thousand-agent load test was run on macOS by hand -- never under
+# systemd, so this ceiling has never been met in a measurement. `accept`
+# returning EMFILE presents as a hub that has stopped answering while
+# looking perfectly healthy in every metric it reports about itself.
+LimitNOFILE=65536
+
 Environment=RUST_LOG=info
 # tracing-subscriber's fmt layer turns ANSI colours on whenever the
 # `ansi` feature is compiled in -- it does not check for a terminal -- so

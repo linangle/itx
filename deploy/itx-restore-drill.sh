@@ -263,9 +263,26 @@ fi
 step "6. confirming the restored keys are the right keys"
 RESTORED_OPERATOR=$(grep -A1 'hub operator address' "$WORK/hub.log" | tail -1 | tr -d '\r')
 echo "restored operator address: $RESTORED_OPERATOR"
+
+# Keeps the last whitespace-separated field, so a value pasted from
+# `journalctl` still compares.
+#
+# This drill failed on every correct archive until 2026-09-08, and the
+# reason was here. §7.4 told the operator to derive the expected address
+# with `journalctl -u itx-hub -b --no-pager`, whose default format
+# prefixes every line with a timestamp, a hostname and `itx-hub[pid]:` --
+# so `EXPECT_OPERATOR` arrived as that whole line and the byte-for-byte
+# comparison below could never match. The documented recipe now passes
+# `-o cat`, and this normalises anyway: the failure mode of an argument
+# that always fails is that people stop passing it, and this is the
+# argument that separates "a working hub" from "our hub".
+bare_address() { echo "${1##* }"; }
+EXPECT_OPERATOR=$(bare_address "$EXPECT_OPERATOR")
+RESTORED_OPERATOR=$(bare_address "$RESTORED_OPERATOR")
+
 if [[ -n "$EXPECT_OPERATOR" ]]; then
     [[ "$RESTORED_OPERATOR" == "$EXPECT_OPERATOR" ]] \
-        || fail "restored operator address does not match the live one"
+        || fail "restored operator address $RESTORED_OPERATOR does not match the expected $EXPECT_OPERATOR"
     echo "matches the live operator address"
 else
     echo "WARNING: no --expect-operator given. Compare the line above against"

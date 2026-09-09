@@ -70,6 +70,21 @@ itx.example.com {
 		file_server
 	}
 
+	# `/metrics` is not for the internet. It carries the custody balance,
+	# the exchange's liabilities, the faucet budget's remaining headroom
+	# and the reconciliation disagreement counters -- an operational
+	# picture of the treasury, unauthenticated, on a route the hub does
+	# not gate because inside the box it does not need to be.
+	#
+	# Shipped blocked rather than left to the operator. The runbook has
+	# said to add this since the metrics endpoint landed, and neither
+	# shipped config contained it, so the documented state and the
+	# shipped state disagreed -- which is the same as not documenting it.
+	# Scrape from the box (`curl -s localhost:9100/metrics`), or replace
+	# the 404 with a `remote_ip` matcher for the monitoring host.
+	@metrics path /metrics
+	respond @metrics 404
+
 	handle {
 		# The path reaches the hub byte-for-byte as the client sent it,
 		# and that is a correctness requirement, not a preference. Since

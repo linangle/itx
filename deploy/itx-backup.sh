@@ -74,12 +74,20 @@ STOPPED=()
 # path, including the error ones, or a failed backup leaves a
 # world-invisible-but-still-plaintext copy behind. Same for anything we
 # stopped: a backup that dies half way must not leave the hub down.
+# Starts whatever this run stopped, and forgets it, so the EXIT trap
+# does not try again. Called as soon as the copies are done rather than
+# left to the trap: the hub has to be down for `hub.redb`, and for
+# nothing else this script does.
+restart_stopped() {
+    [[ ${#STOPPED[@]} -gt 0 ]] || return 0
+    systemctl start "${STOPPED[@]}" \
+        || echo "WARNING: could not restart ${STOPPED[*]} -- start them by hand" >&2
+    STOPPED=()
+}
+
 cleanup() {
     [[ -z "$PARTIAL" ]] || rm -f -- "$PARTIAL"
-    if [[ ${#STOPPED[@]} -gt 0 ]]; then
-        systemctl start "${STOPPED[@]}" \
-            || echo "WARNING: could not restart ${STOPPED[*]} -- start them by hand" >&2
-    fi
+    restart_stopped
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -138,7 +146,7 @@ fi
 if [[ $STOP_HUB -eq 1 ]]; then
     STOPPED=(itx-hub)
     [[ $STOP_NODE -eq 0 ]] || STOPPED=(itx-node itx-hub)
-    echo "stopping ${STOPPED[*]} for the length of the copy"
+    echo "stopping ${STOPPED[*]} for the length of the copy -- seconds, not the run"
     # Started in the reverse order by cleanup()'s single `systemctl
     # start`, which systemd orders by the units' own After= anyway.
     systemctl stop "${STOPPED[@]}"
@@ -170,6 +178,18 @@ mkdir -p "$WORK/itx"
 cp -a "$STATE_DIR/secrets" "$WORK/itx/secrets"
 snapshot_copy "$STATE_DIR/hub.redb"        "$WORK/itx/hub.redb"
 snapshot_copy "$STATE_DIR/blockchain.redb" "$WORK/itx/blockchain.redb"
+
+# Back up the moment the bytes are staged, which is what "stopped for the
+# length of the copy" was always supposed to mean.
+#
+# It used to mean nothing of the kind. The only restart was in the EXIT
+# trap, so the hub stayed down for the checksum walk, the tar, the gzip
+# and the encryption of the entire chain as well -- work proportional to
+# how much chain there is, run nightly. At a few gigabytes that is
+# minutes of refused connections every night, growing, on a schedule.
+# Nothing below this line reads the live state directory, so nothing
+# below it needs the hub stopped.
+restart_stopped
 
 # The miner key. `miner.pub.pem` is the address block rewards pay to and
 # is genuinely public; `miner.priv.cbor`, which key_gen writes beside it,

@@ -570,6 +570,88 @@ this after an ordinary crash, or on a cold start, or once while it settles: a
 hub whose replay log is readable and empty prints `restored 0 …` and carries on.
 Seeing it at all means the store could not be read. §9.5 has what to do.
 
+### 5.1 Upgrading, and the fact that you cannot simply roll back
+
+**Back up before you install. Every time.** Not because upgrades usually go
+wrong, but because of what the store does when one does.
+
+`HubStore::open_or_create` stamps a schema version into `hub.redb`, and the
+stamp is a one-way door. A newer binary opening an older store **restamps it**
+and commits, and it does so as the very first thing the hub does after loading
+its keys — before the board is deserialised, before the faucet challenge book is
+restored, before the port is bound. So a new build that fails at *any* later
+step has already made the store unreadable to the build you were running a
+minute ago:
+
+```
+store was created by schema version 6, this build expects 5
+```
+
+The old binary refuses, `Restart=always` retries it every five seconds, and the
+only way out is a backup. That is not a bug: the fence exists because an older
+binary opening a newer store silently ignored every table it did not know, which
+made in-flight payouts invisible and redeemed faucet challenges replayable (plan
+§6.5c). It is a deliberate trade, and this is the half of it you pay.
+
+**The procedure.**
+
+```bash
+# 1. Take a backup and know it is good. This is the rollback plan; there
+#    is no other one.
+sudo /usr/local/bin/itx-backup.sh --recipient age1...
+ls -lt /var/backups/itx | head -3
+
+# 2. Stop the hub. The node and miner keep running -- the chain is not
+#    what is being upgraded, and stopping the node discards its mempool
+#    (§7.2).
+sudo systemctl stop itx-hub
+
+# 3. Install. Keep the outgoing binary: it is what you would roll back
+#    to, and only for a release that did not move the schema stamp.
+sudo cp /usr/local/bin/itx-hub /usr/local/bin/itx-hub.previous
+sudo install -m 0755 target/release/hub /usr/local/bin/itx-hub
+
+# 4. Start it and read the banner, which is where a bad upgrade shows.
+sudo systemctl start itx-hub
+sudo journalctl -o cat -u itx-hub -b | tail -40
+```
+
+Then verify, in this order, because each answers a different question:
+
+```bash
+curl -s localhost:9100/health                      # is it serving
+curl -s 'localhost:9100/tasks?status=submitted'    # is money in flight visible
+curl -s localhost:9100/metrics | grep -E 'reconciliation_disagreements|payments_needs_review'
+```
+
+The banner must show the same operator, custody and escrow addresses as before
+the upgrade. If it shows different ones, stop and read §9.5: the hub has come up
+against key material that is not yours, and nothing else it says is meaningful.
+
+**Rolling back.** There are two cases and only one of them is easy.
+
+- **The new build did not move the schema stamp.** Stop the hub, put
+  `itx-hub.previous` back, start it. Nothing is lost. You can tell which release
+  this is because the release notes say so — that is what the draft release
+  exists for, and it is written by a person for exactly this reason.
+- **The new build moved the stamp.** The old binary cannot open the store any
+  more, and no flag makes it. Rolling back means restoring the pre-upgrade
+  backup, and **everything written since that backup is gone**: tasks posted,
+  work submitted, payments recorded, reputation earned. Before you do it, decide
+  what that costs, because some of it is money in flight. `GET /payments` and
+  `?status=submitted` on the *running* new build tell you what you are about to
+  discard, and it is worth capturing both to a file first even if you are sure.
+
+This is why step 1 is not optional and why "I will take one if it looks wrong"
+does not work: by the time it looks wrong, the store has already been restamped.
+
+### 5.2 What an upgrade does not touch
+
+The chain and the keys. `blockchain.redb` is the node's and has its own format;
+the three secrets in `secrets/` are files the hub reads and never rewrites. A
+hub upgrade that goes badly costs you `hub.redb` and nothing else, which is why
+the backup in step 1 is worth taking even when the release is trivial.
+
 ---
 
 ## 6. Keys and secrets
@@ -965,7 +1047,7 @@ either.
 /usr/local/bin/itx-restore-drill.sh \
     --archive /var/backups/itx/itx-20260905T030000Z.tar.gz.age \
     --identity ~/itx-restore-key.txt \
-    --expect-operator "$(sudo journalctl -u itx-hub -b --no-pager \
+    --expect-operator "$(sudo journalctl -o cat -u itx-hub -b \
                           | grep -A1 'hub operator address' | tail -1)" \
     --expect-escrow-sha256 3f1a...
 ```
@@ -1477,6 +1559,24 @@ Read the banner first; it usually says which.
   refusing to start rather than derive escrow addresses from a truncated or
   wrong file. This is the good failure. Restore the secret (§7.4); do not
   "fix" the file's length.
+- **`store was created by schema version N, this build expects M`** — this
+  binary is *older* than the store. Almost always a rollback: someone put the
+  previous binary back after an upgrade that moved the stamp, and the newer
+  build restamped `hub.redb` the moment it opened it. The old binary will never
+  open that store, no flag changes it, and `Restart=always` will retry it every
+  five seconds until someone intervenes.
+
+  Two ways out, and the first is usually right:
+
+  1. **Put the newer binary back.** If the upgrade itself was fine and the
+     rollback was precautionary, this ends the incident with nothing lost.
+  2. **Restore the pre-upgrade backup** (§7.4, §9.7), accepting that everything
+     written since it is gone. Read §5.1 before doing this: some of what you are
+     discarding is money in flight, and the running newer binary can tell you
+     how much.
+
+  If no upgrade happened, then the store is not the one this box was running —
+  check whether a restore put an archive from a newer deployment in place.
 - **Store won't open** — likely a torn copy (§7.2) or a second process holding
   it. `fuser /var/lib/itx/hub.redb` before concluding it is corrupt.
 
@@ -1886,8 +1986,16 @@ done on macOS:
   `Environment=NO_COLOR=1`, neither of which has been exercised.
 - `itx-backup.sh`'s service stop/start path. The drill was run with `--no-stop`,
   since there is no systemd on the test machine, so the `systemctl stop` branch
-  and its restart-on-exit trap are untested. Exercise them once on the real
-  host.
+  is untested. Exercise it once on the real host, and time it: as of
+  2026-09-08 the hub is restarted the moment the two stores are staged rather
+  than in the exit trap, so the downtime should be seconds and independent of
+  how large the chain has grown. If it is not, that is the bug returning.
+- **§5.1's upgrade and rollback procedure has never been performed.** It is
+  written from the code -- the restamp in `HubStore::open_or_create` and the
+  refusal it produces are both pinned by tests -- but no one has yet upgraded a
+  running deployment, and nobody has restored a pre-upgrade backup to roll one
+  back. Do the first upgrade on a throwaway stack, deliberately, before doing
+  it on the box holding the treasury.
 - `cp --reflink=always` in `itx-backup.sh` — macOS `cp` has no such flag, so
   only the fallback path has ever run. On the real host, check the archive's
   `MANIFEST.txt` for `redb copy method: reflink` to see which branch you got.
