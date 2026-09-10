@@ -27,7 +27,10 @@ function hubPredatingTheSeries(): MarketSeriesDto {
   }
   delete old.fees;
   delete old.faucet_grants;
-  return old as MarketSeriesDto;
+  // Through `unknown`: the whole point is that this object does NOT
+  // satisfy `MarketSeriesDto`, which is exactly the body an older hub
+  // sends and exactly what the compile-time type cannot prevent.
+  return old as unknown as MarketSeriesDto;
 }
 
 
