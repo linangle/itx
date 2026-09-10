@@ -8252,6 +8252,70 @@ mod tests {
     /// about a population, because keygen is free. Proof of work prices a
     /// grant; it does not cap how many can be bought. This does.
     ///
+    /// An agent refused for budget keeps the work it already did.
+    ///
+    /// Refusing at `/faucet/challenge` covers the agent that has not
+    /// started yet. It cannot cover the one already holding a solved
+    /// challenge when the budget closes underneath it -- issuance does
+    /// not consume budget, so a challenge handed out while there was room
+    /// can be presented after there is none.
+    ///
+    /// That agent used to lose its proof of work: the budget check ran
+    /// after the redemption, under `payout_lock`, beneath a comment
+    /// claiming it ran before. The solution was spent and the answer was
+    /// "not today". Now the refusal comes first and the challenge is
+    /// still redeemable when the window rolls.
+    #[tokio::test]
+    async fn a_budget_refusal_does_not_spend_the_work_the_agent_already_did() {
+        let operator_key = PrivateKey::new_key();
+        let operator_public = operator_key.public_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub_with_faucet_budget(operator_key, fake_node.addr.clone(), 1).await;
+
+        // Issued while there is still room, and solved.
+        let latecomer = PrivateKey::new_key();
+        let challenge = request_faucet_challenge(&hub, &latecomer).await;
+
+        // Someone else takes the only grant of the day.
+        let winner = PrivateKey::new_key();
+        let winners_challenge = request_faucet_challenge(&hub, &winner).await;
+        assert_eq!(
+            redeem_faucet_challenge(&hub, &winner, &winners_challenge).await.status(),
+            reqwest::StatusCode::OK,
+            "the first arrival takes the budget"
+        );
+
+        // Top the operator back up, so the wallet pre-flight passes and
+        // the refusal under test is the *budget* one. Without this the
+        // hub refuses for an empty wallet first -- also without spending
+        // the work, but a different branch than this test is about.
+        fake_node.fund(operator_public, 100_000_000).await;
+
+        // The latecomer presents work that is now unfundable.
+        let refused = redeem_faucet_challenge(&hub, &latecomer, &challenge).await;
+        assert_eq!(refused.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = refused.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("grants"),
+            "refused for budget, not for anything about the challenge: {body}"
+        );
+
+        // The assertion that matters: the same solution still works.
+        // A spent challenge would fail differently -- and that difference
+        // is the agent's minute of proof of work.
+        let again = redeem_faucet_challenge(&hub, &latecomer, &challenge).await;
+        assert_eq!(
+            again.status(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "the challenge must still be live; a spent one is refused as spent, not as unfunded"
+        );
+        let body: Value = again.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("grants"),
+            "still the budget refusal, so the work survived it: {body}"
+        );
+    }
+
     /// Asserted at both ends deliberately: refusing at `/faucet/challenge`
     /// is what stops an agent spending a minute of proof of work only to
     /// be told no, and that courtesy is easy to remove by accident.

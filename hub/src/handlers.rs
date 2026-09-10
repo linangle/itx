@@ -3077,6 +3077,35 @@ pub async fn faucet_claim(
         return Err(grant_unfunded(&state, &pubkey, GrantUnfunded::BeforeRedemption).await);
     }
 
+    // The other two refusals, on the same terms and for the same reason.
+    //
+    // These used to run *after* the redemption below, under
+    // `payout_lock`, and the comment beside the budget one claimed it
+    // ran before the challenge was spent. It did not. An agent that had
+    // just finished the proof of work and arrived one grant after the
+    // daily budget closed lost that work and was told to come back --
+    // which is precisely the outcome the wallet check above exists to
+    // avoid, applied to a condition that is far more predictable than a
+    // momentarily empty wallet. The faucet's whole promise is that the
+    // work buys a grant; spending it to be told "not today" breaks that
+    // for the agent least able to argue about it.
+    //
+    // Advisory, like the wallet read: both conditions are re-checked
+    // under the lock after redemption, because between here and there
+    // another claim can take the last slot. What this removes is the
+    // common case, not the race. An agent can still lose its work to a
+    // genuine photo-finish, and nothing short of reserving budget across
+    // an agent's whole redemption would change that -- which is the
+    // queue the fan-out exists to prevent.
+    if !state.board.read().await.can_claim_faucet(&pubkey) {
+        return Err(ApiError::Conflict(
+            "this pubkey already has a faucet grant or pending payment".into(),
+        ));
+    }
+    if let Some(refusal) = faucet_budget_exhausted(&state).await {
+        return Err(refusal);
+    }
+
     // Spend the challenge first, and durably. Everything after this
     // point can fail and be retried; this cannot, because a solution the
     // hub forgets is a solution that can be presented again. See
@@ -3093,8 +3122,12 @@ pub async fn faucet_claim(
     if !state.board.read().await.can_claim_faucet(&pubkey) {
         return Err(ApiError::Conflict("this pubkey already has a faucet grant or pending payment".into()));
     }
-    // Before the challenge is spent, so an agent refused here keeps the
-    // work it has already done and can present it when the window rolls.
+    // The authoritative pair, under the lock. The reads above are the
+    // ones that save an honest agent's work; these are the ones that
+    // decide, because only here is the answer stable -- the advisory
+    // read outside the lock can be overtaken by a claim that takes the
+    // last slot in between. Reaching either of these means losing the
+    // work to a genuine race rather than to the ordering of two checks.
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
