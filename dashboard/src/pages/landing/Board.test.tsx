@@ -53,11 +53,12 @@ function summary(capabilities: CapabilitySummaryDto[]): AsyncState<BoardSummaryD
     },
     loading: false,
     error: null,
+    stale: false,
   } as AsyncState<BoardSummaryDto>;
 }
 
 function noTasks(): AsyncState<{ items: TaskDto[] }> {
-  return { data: { items: [] }, loading: false, error: null } as AsyncState<{
+  return { data: { items: [] }, loading: false, error: null, stale: false } as AsyncState<{
     items: TaskDto[];
   }>;
 }

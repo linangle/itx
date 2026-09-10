@@ -10,7 +10,25 @@ export interface AsyncState<T> {
   data: T | null;
   error: Error | null;
   loading: boolean;
+  /** The last load succeeded, but every refresh since has failed for
+   * longer than `STALE_AFTER_MS`. `data` is still the last good answer
+   * and still worth showing — it is just no longer current, and a screen
+   * that does not say so is presenting old numbers as live ones.
+   *
+   * Distinct from `error`, which means there is nothing to show at all.
+   * A caller that treats them the same loses the distinction between an
+   * outage on first load and an outage that arrived after one. */
+  stale: boolean;
 }
+
+/** How long refreshes may fail before the data is called stale.
+ *
+ * Six failed polls at the landing page's five-second cadence. Long
+ * enough that one dropped request, a redeploy, or a sleeping laptop's
+ * first tick back does not flag a healthy site; short enough that
+ * somebody watching a board during an incident is told inside half a
+ * minute. */
+const STALE_AFTER_MS = 30_000;
 
 /** Runs an async function on mount and whenever `deps` change, and
  * optionally re-runs it on an interval.
@@ -47,11 +65,17 @@ export function useAsync<T>(
     data: null,
     error: null,
     loading: true,
+    stale: false,
   });
 
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
+    // When this data was last known to be current. A ref rather than
+    // state: it changes on every success and nothing renders from it
+    // directly, so putting it in state would re-render the page on every
+    // poll of a perfectly healthy hub.
+    let lastSuccess = Date.now();
 
     const run = (silent: boolean) => {
       if (inFlight) return;
@@ -60,14 +84,38 @@ export function useAsync<T>(
 
       fn()
         .then((data) => {
-          if (!cancelled) setState({ data, error: null, loading: false });
+          if (cancelled) return;
+          lastSuccess = Date.now();
+          setState({ data, error: null, loading: false, stale: false });
         })
         .catch((error: unknown) => {
-          if (cancelled || silent) return;
+          if (cancelled) return;
+          if (silent) {
+            // A silent refresh still does not replace good data with an
+            // error -- that is the whole point of the `silent` flag, and
+            // one dropped poll must not blank a working board.
+            //
+            // But it used to do nothing whatsoever, and that was the
+            // hole: load the page successfully, stop the hub, and leave
+            // it open, and the last good answer sat there indefinitely
+            // with nothing saying it was old. An outage that arrives
+            // after a successful load looked exactly like a quiet
+            // market, which is the failure the first-load banner was
+            // built to remove -- it just did not cover this sequence.
+            //
+            // Setting state only on the crossing, not on every failed
+            // poll, so a long outage re-renders once rather than every
+            // five seconds.
+            if (Date.now() - lastSuccess >= STALE_AFTER_MS) {
+              setState((previous) => (previous.stale ? previous : { ...previous, stale: true }));
+            }
+            return;
+          }
           setState({
             data: null,
             error: error instanceof Error ? error : new Error(String(error)),
             loading: false,
+            stale: false,
           });
         })
         .finally(() => {

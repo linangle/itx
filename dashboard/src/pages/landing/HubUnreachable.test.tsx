@@ -130,3 +130,96 @@ describe("a hub the site cannot reach", () => {
     expect(screen.queryByText(/can't reach its hub/i)).not.toBeInTheDocument();
   });
 });
+
+/** The outage that arrives *after* a good load.
+ *
+ * `useAsync` deliberately does not replace good data with an error on a
+ * silent refresh -- one dropped poll must not blank a working board.
+ * But it used to do nothing at all, so loading the page, stopping the
+ * hub and leaving it open left old figures sitting there indefinitely,
+ * presented as though they were arriving. The first-load banner never
+ * covered this sequence; the hook documented the trade and nothing
+ * closed it.
+ */
+describe("a hub that goes away after a successful load", () => {
+  const board = {
+    window_ms: 7 * 24 * 3_600_000,
+    buckets: 24,
+    capabilities: [],
+    open: 0,
+    open_bounty: 0,
+    posted: 0,
+    settled: 0,
+    paid_bounty: 0,
+    agents: 0,
+    first_task_at: null,
+  } as unknown as Awaited<ReturnType<typeof hub.getBoardSummary>>;
+
+  function healthyThen(afterFirst: () => void) {
+    let calls = 0;
+    mocked.getBoardSummary.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(board);
+      afterFirst();
+      return Promise.reject(new Error("Failed to fetch"));
+    });
+    mocked.listLatestTasks.mockResolvedValue([]);
+    mocked.getLeaderboard.mockResolvedValue({ items: [], total: 0 });
+    mocked.getNames.mockResolvedValue(new Map());
+    mocked.getMarketSeries.mockRejectedValue(new Error("not under test"));
+  }
+
+  it("says the board is the last it received, not what is happening now", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      healthyThen(() => {});
+      renderLanding();
+
+      // A good first load shows no banner at all.
+      await waitFor(() => expect(document.querySelector(".itx-hero")).not.toBeNull());
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+      // Past the grace period, with every refresh failing.
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      const banner = await screen.findByRole("status");
+      expect(banner).toHaveTextContent(/lost contact with its hub/i);
+      expect(banner).toHaveTextContent(/last it received/i);
+      // Not the first-load wording: the board below is real.
+      expect(banner).not.toHaveTextContent(/nothing below is live/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the notice when the hub comes back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let healthy = true;
+      mocked.getBoardSummary.mockImplementation(() =>
+        healthy ? Promise.resolve(board) : Promise.reject(new Error("Failed to fetch")),
+      );
+      mocked.listLatestTasks.mockResolvedValue([]);
+      mocked.getLeaderboard.mockResolvedValue({ items: [], total: 0 });
+      mocked.getNames.mockResolvedValue(new Map());
+      mocked.getMarketSeries.mockRejectedValue(new Error("not under test"));
+
+      renderLanding();
+      await waitFor(() => expect(document.querySelector(".itx-hero")).not.toBeNull());
+
+      healthy = false;
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(await screen.findByRole("status")).toHaveTextContent(/lost contact/i);
+
+      // Recovery. A notice that never clears is one an operator learns
+      // to ignore.
+      healthy = true;
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitFor(() => {
+        expect(screen.queryByText(/lost contact/i)).not.toBeInTheDocument();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

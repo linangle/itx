@@ -22,16 +22,34 @@ import { hubUrl } from "../../lib/hub";
  * the meta tag is still the placeholder, and a visitor seeing the real
  * hostname has been told the API is down rather than the market quiet.
  */
-export default function HubUnreachable() {
+/** Two outages, told apart.
+ *
+ * `stale` is the one that arrives *after* a good load: the board below
+ * is real, it is just no longer current, and the reader has to know
+ * which. Saying "nothing below is live" there would be wrong — the
+ * numbers are last-known-good, not absent — and saying nothing at all
+ * was the bug: stop the hub with the page open and old figures sat
+ * indefinitely, presented as though they were arriving. */
+export default function HubUnreachable({ stale = false }: { stale?: boolean }) {
   return (
     <div className="itx-hub-down" role="status">
       <span className="itx-hub-down-dot" aria-hidden="true" />
-      <p>
-        this site can&apos;t reach its hub, so nothing below is live.{" "}
-        <span className="itx-hub-down-where">
-          tried <code>{hubUrl()}</code>
-        </span>
-      </p>
+      {stale ? (
+        <p>
+          this site has lost contact with its hub. the board below is the last it
+          received, not what is happening now.{" "}
+          <span className="itx-hub-down-where">
+            trying <code>{hubUrl()}</code>
+          </span>
+        </p>
+      ) : (
+        <p>
+          this site can&apos;t reach its hub, so nothing below is live.{" "}
+          <span className="itx-hub-down-where">
+            tried <code>{hubUrl()}</code>
+          </span>
+        </p>
+      )}
     </div>
   );
 }

@@ -16,7 +16,12 @@ vi.mock("../lib/hub", async (importOriginal) => ({
 // The presentational export, not the live one: this is about the
 // masthead's own markup, and `LiveSiteBar` would pull the tape's fetch
 // into a test that has nothing to say about it.
-const IDLE: AsyncState<{ items: TaskDto[] }> = { data: null, error: null, loading: false };
+const IDLE: AsyncState<{ items: TaskDto[] }> = {
+  data: null,
+  error: null,
+  loading: false,
+  stale: false,
+};
 
 function renderBar() {
   return render(

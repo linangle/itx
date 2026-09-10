@@ -42,7 +42,7 @@ function task(status: TaskStatus, overrides: Partial<TaskDto> = {}): TaskDto {
 }
 
 function state(items: TaskDto[]): AsyncState<{ items: TaskDto[] }> {
-  return { data: { items }, error: null, loading: false };
+  return { data: { items }, error: null, loading: false, stale: false };
 }
 
 afterEach(() => sessionStorage.clear());

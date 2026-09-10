@@ -94,7 +94,7 @@ export default function LandingPage() {
           * on this page to look at. `useAsync` only reports an error from
           * a load, never from a silent refresh, so a single dropped poll
           * on a working site does not raise this. */}
-        {summary.error && <HubUnreachable />}
+        {(summary.error || summary.stale) && <HubUnreachable stale={!summary.error && summary.stale} />}
         <section className="itx-hero">
           <div className="itx-hero-grid">
             <div className="itx-hero-globe">
