@@ -11,6 +11,26 @@ vi.mock("../../lib/hub", async (importOriginal) => ({
 
 const UNITS = 100_000_000;
 
+/** A hub older than this page answers 200 without the series fields.
+ *
+ * `MarketSeriesDto` promises they are there, and that promise is erased
+ * at run time -- so `Sparkline` read `.length` off `undefined`, threw
+ * during render, and React unmounted the whole root. Not a broken panel:
+ * a blank white page. Reachable by upgrading the site before the hub,
+ * which is the ordinary order for anyone who deploys static files first.
+ */
+function hubPredatingTheSeries(): MarketSeriesDto {
+  const full = series();
+  const old = { ...full } as Record<string, unknown>;
+  for (const key of Object.keys(full)) {
+    if (key.endsWith("_series")) delete old[key];
+  }
+  delete old.fees;
+  delete old.faucet_grants;
+  return old as MarketSeriesDto;
+}
+
+
 function series(over: Partial<MarketSeriesDto> = {}): MarketSeriesDto {
   const zeros = [0, 0, 0, 0];
   return {
@@ -109,5 +129,24 @@ describe("ActivityPanel", () => {
     render(<ActivityPanel />);
     expect(await screen.findByText(/couldn't reach the hub/i)).toBeInTheDocument();
     expect(screen.queryByText("bounty posted")).not.toBeInTheDocument();
+  });
+});
+
+describe("a hub that predates the activity series", () => {
+  it("says so instead of taking the page down", async () => {
+    vi.mocked(hub.getMarketSeries).mockResolvedValue(hubPredatingTheSeries());
+    render(<ActivityPanel />);
+    expect(await screen.findByText(/older than this page/i)).toBeInTheDocument();
+  });
+
+  it("renders no tiles rather than a confident board of zeros", async () => {
+    // A fabricated zero is worse than a blank: it is indistinguishable
+    // from a quiet market, which is the failure §5.1 spent a day
+    // removing from the landing page.
+    vi.mocked(hub.getMarketSeries).mockResolvedValue(hubPredatingTheSeries());
+    render(<ActivityPanel />);
+    await screen.findByText(/older than this page/i);
+    expect(screen.queryByText(/bounty posted/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/loading activity/i)).not.toBeInTheDocument();
   });
 });

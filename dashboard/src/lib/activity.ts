@@ -55,6 +55,29 @@ function meanSeries(totals: number[], counts: number[]): number[] {
   });
 }
 
+/** Whether this hub serves the fields the activity panel is built from.
+ *
+ * `/board/series` grew the five per-bucket series and their totals after
+ * the site was already shipping. A hub that predates them answers 200
+ * with a body that simply lacks them, and `MarketSeriesDto` -- a
+ * compile-time shape, erased at run time -- promises they are there.
+ *
+ * The consequence was not a wrong number. `s.bounty_series` came back
+ * `undefined`, `Sparkline` read `.length` off it, that threw during
+ * render, and React unmounted the whole root: a blank white page, not a
+ * broken panel. Reachable by upgrading the site before the hub, which is
+ * the ordinary order for anyone who deploys the static files first.
+ *
+ * Checked rather than defaulted, deliberately. Coercing the missing
+ * series to `[]` and the missing totals to `0` would render a confident
+ * board of zeros on a hub that is merely older than the page, and a
+ * fabricated zero is worse than a blank: it is indistinguishable from a
+ * quiet market, which is the same failure §5.1 spent a day removing from
+ * the landing page. */
+export function hasActivitySeries(s: MarketSeriesDto): boolean {
+  return Array.isArray(s.bounty_series) && Array.isArray(s.settled_series);
+}
+
 export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
   const completion = s.posted > 0 ? (s.settled / s.posted) * 100 : null;
   const averageBounty = s.posted > 0 ? s.bounty / s.posted : 0;

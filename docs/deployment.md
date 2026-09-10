@@ -685,6 +685,19 @@ tarball carries a built site under `site/` for exactly this reason
 
 ### 5.2 Upgrading, and the fact that you cannot simply roll back
 
+**Upgrade the hub before the site.** They are two artifacts out of one tarball
+and it is natural to install the static files first, because they are the easy
+half. Do not: the site is written against the routes of the hub it shipped with,
+and a hub that predates them answers `200` with a body that simply lacks the
+new fields.
+
+Until 2026-09-10 that combination took the whole page down — the activity panel
+read a missing series, threw during render, and React unmounted the root, so a
+visitor got a blank white document rather than a degraded board. The panel now
+says the hub is older than the page instead. That is a better failure, not an
+excuse for the order: everything else on the site is written against the same
+assumption, and only this panel has been made to check it.
+
 **Back up before you install. Every time.** Not because upgrades usually go
 wrong, but because of what the store does when one does.
 

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import Sparkline from "../../components/Sparkline";
 import { useAsync } from "../../hooks/useAsync";
 import { getMarketSeries } from "../../lib/hub";
-import { activityTiles, type ActivityTile } from "../../lib/activity";
+import { activityTiles, hasActivitySeries, type ActivityTile } from "../../lib/activity";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 
 const REFRESH_MS = 5000;
@@ -22,8 +22,13 @@ const BUCKETS = 48;
  */
 export default function ActivityPanel() {
   const series = useAsync(() => getMarketSeries({ buckets: BUCKETS }), [], REFRESH_MS);
+  // Three states, not two. A hub older than this page answers 200 with a
+  // body that lacks the series, and reading them unguarded threw during
+  // render and took the whole React root down with it -- a blank page,
+  // reachable by upgrading the site before the hub.
+  const stale = series.data ? !hasActivitySeries(series.data) : false;
   const tiles = useMemo(
-    () => (series.data ? activityTiles(series.data) : null),
+    () => (series.data && hasActivitySeries(series.data) ? activityTiles(series.data) : null),
     [series.data],
   );
 
@@ -39,7 +44,17 @@ export default function ActivityPanel() {
       </div>
       <div className="itx-board-panel itx-activity-panel" id="itx-board-activity">
         {series.error && <div className="itx-activity-empty">couldn&apos;t reach the hub.</div>}
-        {!series.error && !tiles && <div className="itx-activity-empty">loading activity…</div>}
+        {/* Named rather than blank: an operator seeing this has upgraded
+            the site ahead of the hub, and the fix is to upgrade the hub.
+            §5.2 states that order. */}
+        {!series.error && stale && (
+          <div className="itx-activity-empty">
+            this hub is older than this page, and doesn&apos;t serve activity yet.
+          </div>
+        )}
+        {!series.error && !stale && !tiles && (
+          <div className="itx-activity-empty">loading activity…</div>
+        )}
         {tiles && (
           <ul className="itx-activity-grid">
             {tiles.map((tile) => (

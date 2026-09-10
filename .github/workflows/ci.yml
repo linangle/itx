@@ -190,6 +190,42 @@ jobs:
           } > /tmp/nginx-itx.conf
           sudo nginx -t -c /tmp/nginx-itx.conf
 
+          # `nginx -t` cannot catch this one, because the broken version
+          # was valid: `add_header` does not accumulate, so a location
+          # that sets ANY add_header inherits NONE from its server block.
+          # Both site locations set Cache-Control, and from that moment
+          # the site stopped sending HSTS, nosniff and the referrer policy
+          # entirely -- while the three directives sat in the server block
+          # looking correct, and this job passed.
+          #
+          # So the rule, not the instance: any location that sets an
+          # add_header must set the security headers too.
+          python3 - <<'PYCHECK'
+          import re, sys
+          lines = open('deploy/nginx.conf').read().split('\n')
+          loc, depth, sets, hsts, bad = None, 0, False, False, []
+          for ln in lines:
+              m = re.match(r'\s*location\s+(.+?)\s*\{', ln)
+              if m and depth == 0:
+                  loc, depth, sets, hsts = m.group(1), 1, False, False
+                  continue
+              if loc:
+                  depth += ln.count('{') - ln.count('}')
+                  if re.match(r'\s*add_header', ln):
+                      sets = True
+                  if 'Strict-Transport-Security' in ln:
+                      hsts = True
+                  if depth <= 0:
+                      if sets and not hsts:
+                          bad.append(loc)
+                      loc = None
+          if bad:
+              print('::error file=deploy/nginx.conf::these locations set add_header and so '
+                    'inherit no security headers: ' + ', '.join(bad))
+              sys.exit(1)
+          print('every location that sets add_header also sets the security headers')
+          PYCHECK
+
       - name: caddy
         # The preferred proxy, and until now the unvalidated one -- the
         # job checked nginx and left the config the docs actually
