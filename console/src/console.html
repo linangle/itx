@@ -171,6 +171,16 @@ function render(d) {
     stat(m.solvent ? "yes" : "NO", "solvent", m.solvent ? "ok" : "") +
     stat(num(m.payments_pending), "payments pending") +
     stat(num(m.payments_needs_review), "need review") +
+    // Task payouts are a different queue from the three above, which are
+    // the payments journal -- grants, withdrawals, escrow. Reading only
+    // those left a stalled miner invisible here: earned bounties waiting
+    // and every number on this panel calm.
+    stat(num(m.task_payouts_outstanding), "task payouts on the wire") +
+    stat(
+      m.task_payouts_oldest_seconds > 0 ? num(m.task_payouts_oldest_seconds) + "s" : "-",
+      "oldest waiting",
+      m.task_payouts_oldest_seconds > 900 ? "" : "ok",
+    ) +
     stat(num(m.operator_ready_outputs), "operator outputs");
 
   const i = d.integrity;

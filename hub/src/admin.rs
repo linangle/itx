@@ -139,6 +139,17 @@ pub struct Money {
     pub payments_pending: u64,
     pub payments_needs_review: u64,
     pub payments_oldest_pending_seconds: u64,
+    /// Task bounties on the wire and not yet confirmed, and how long the
+    /// oldest has been waiting.
+    ///
+    /// Distinct from the three `payments_*` fields above, which cover the
+    /// payments journal -- faucet grants, withdrawals, escrow
+    /// disbursements -- and explicitly **not** task payouts. This console
+    /// read only those, so a stalled miner left earned bounties waiting
+    /// with nothing here saying so: `payments_oldest_pending_seconds`
+    /// stays at zero throughout, because no journal payment is involved.
+    pub task_payouts_outstanding: u64,
+    pub task_payouts_oldest_seconds: u64,
     pub operator_ready_outputs: u64,
     pub custody_ready_outputs: u64,
 }
@@ -226,6 +237,8 @@ pub async fn overview(state: &AppState, now: DateTime<Utc>) -> Overview {
         payments_pending: m.payments_pending.load(Ordering::Relaxed),
         payments_needs_review: m.payments_needs_review.load(Ordering::Relaxed),
         payments_oldest_pending_seconds: m.payments_oldest_pending_seconds.load(Ordering::Relaxed),
+        task_payouts_outstanding: m.board_outstanding_payouts.load(Ordering::Relaxed),
+        task_payouts_oldest_seconds: m.board_oldest_payout_attempt_seconds.load(Ordering::Relaxed),
         operator_ready_outputs: m.operator_ready_outputs.load(Ordering::Relaxed),
         custody_ready_outputs: m.custody_ready_outputs.load(Ordering::Relaxed),
     };
@@ -384,6 +397,14 @@ fn alerts_for(o: &Overview) -> Vec<Alert> {
                 .into(),
         );
     }
+    if o.work.payout_failed > 0 {
+        critical(
+            "payout_failed",
+            format!("{} task(s) owe a bounty the hub gave up on", o.work.payout_failed),
+            "Every submission was proven never to have reached the chain, so the hub stopped              trying. The work was done and the money is still owed -- nothing further happens              automatically, and the agent has no way to ask. Resolve by hand:              `GET /tasks?status=payoutfailed` (deployment.md §9.10). Counted here since the              console shipped and never alerted."
+                .into(),
+        );
+    }
     if o.money.payments_needs_review > 0 {
         critical(
             "payments_need_review",
@@ -464,6 +485,17 @@ fn alerts_for(o: &Overview) -> Vec<Alert> {
                 .into(),
         );
     }
+    if o.money.task_payouts_oldest_seconds > 900 {
+        warn(
+            "task_payout_stuck",
+            format!(
+                "A task payout has been waiting {}s ({} outstanding)",
+                o.money.task_payouts_oldest_seconds, o.money.task_payouts_outstanding
+            ),
+            "An agent has done the work and the bounty is on the wire unconfirmed. The count              beside it cannot show this: a steady three is a healthy hub paying three agents and              a stalled miner burning three submission budgets, identically. Left alone the node              evicts at ten minutes, the hub resends, and about forty minutes later the budget is              spent and the task is PayoutFailed. Check the miner is producing blocks, then              `GET /tasks?status=submitted` for which tasks (deployment.md §9.10)."
+                .into(),
+        );
+    }
     if o.money.payments_oldest_pending_seconds > 900 {
         warn(
             "payment_stuck",
@@ -513,4 +545,148 @@ fn alerts_for(o: &Overview) -> Vec<Alert> {
     }
 
     alerts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hub with nothing wrong: no alert should fire from this.
+    fn healthy() -> Overview {
+        Overview {
+            generated_at: "2026-09-10T00:00:00Z".into(),
+            window_hours: 24,
+            chain_height: 100,
+            chain_observation_age_seconds: 5,
+            alerts: vec![],
+            agents: Agents {
+                known: 3,
+                funded_by_faucet: 3,
+                with_completed_work: 2,
+                with_failed_work: 0,
+                holding_balance: 3,
+            },
+            work: Work {
+                open: 1,
+                claimed: 1,
+                awaiting_settlement: 1,
+                paid: 5,
+                closed: 0,
+                payout_failed: 0,
+                consensus_exposure: 0,
+                consensus_exposure_ceiling: 0,
+            },
+            faucet: Faucet {
+                granted_all_time: 3,
+                granted_in_window: 3,
+                granted_units_all_time: 300,
+                window_budget: 200,
+                window_remaining: 197,
+                free_grants_per_network: 2,
+                doubling_grants: 2,
+            },
+            money: Money {
+                custody_balance: 0,
+                exchange_liabilities: 0,
+                solvent: true,
+                payments_pending: 0,
+                payments_needs_review: 0,
+                payments_oldest_pending_seconds: 0,
+                task_payouts_outstanding: 0,
+                task_payouts_oldest_seconds: 0,
+                operator_ready_outputs: 8,
+                custody_ready_outputs: 8,
+            },
+            networks: vec![],
+            integrity: Integrity {
+                replays_rejected: 0,
+                burned_envelopes: 0,
+                replay_guard_degraded: false,
+                rate_limited_by_tier: vec![],
+                rate_limited_per_key: 0,
+                store_disagreements: vec![],
+                ledger_store_divergences: 0,
+            },
+        }
+    }
+
+    fn kinds(o: &Overview) -> Vec<&'static str> {
+        alerts_for(o).into_iter().map(|a| a.kind).collect()
+    }
+
+    #[test]
+    fn a_healthy_hub_raises_nothing() {
+        assert!(kinds(&healthy()).is_empty(), "{:?}", kinds(&healthy()));
+    }
+
+    /// The console's blind spot, and why it was invisible.
+    ///
+    /// The three `payments_*` figures are the payments journal -- faucet
+    /// grants, withdrawals, escrow disbursements -- and explicitly not
+    /// task payouts. A stalled miner leaves earned bounties on the wire
+    /// while every one of those stays at zero, so the overview read calm
+    /// and an agent waited. The pair asserted together is the point: the
+    /// journal is healthy in this scenario, and that is exactly what
+    /// made it hard to see.
+    #[test]
+    fn a_stalled_task_payout_alerts_even_though_the_payments_journal_is_healthy() {
+        let mut o = healthy();
+        o.money.task_payouts_outstanding = 3;
+        o.money.task_payouts_oldest_seconds = 2_400;
+        assert_eq!(o.money.payments_oldest_pending_seconds, 0, "the journal is healthy here");
+
+        let raised = kinds(&o);
+        assert!(raised.contains(&"task_payout_stuck"), "{raised:?}");
+        assert!(!raised.contains(&"payment_stuck"), "the journal alert must stay quiet: {raised:?}");
+    }
+
+    /// The runbook's threshold, honoured at both ends.
+    #[test]
+    fn the_task_payout_alert_tracks_the_runbooks_900_seconds() {
+        let mut o = healthy();
+        o.money.task_payouts_outstanding = 1;
+
+        o.money.task_payouts_oldest_seconds = 900;
+        assert!(!kinds(&o).contains(&"task_payout_stuck"), "at the threshold, not past it");
+
+        o.money.task_payouts_oldest_seconds = 901;
+        assert!(kinds(&o).contains(&"task_payout_stuck"));
+    }
+
+    /// Recovery has to clear it, or an operator learns to ignore it.
+    #[test]
+    fn settling_the_backlog_clears_the_age_alert() {
+        let mut o = healthy();
+        o.money.task_payouts_outstanding = 3;
+        o.money.task_payouts_oldest_seconds = 3_600;
+        assert!(kinds(&o).contains(&"task_payout_stuck"));
+
+        // The miner catches up: the sweep confirms them and the gauge
+        // goes back to zero because nothing is in flight.
+        o.money.task_payouts_outstanding = 0;
+        o.money.task_payouts_oldest_seconds = 0;
+        assert!(kinds(&o).is_empty(), "{:?}", kinds(&o));
+    }
+
+    /// `payout_failed` was counted and rendered since the console
+    /// shipped, and never alerted. It is the terminal state of the
+    /// stall above: work done, money owed, nothing further happening
+    /// automatically, and the agent with no way to ask.
+    #[test]
+    fn a_task_the_hub_gave_up_paying_is_critical_and_says_where_to_look() {
+        let mut o = healthy();
+        o.work.payout_failed = 2;
+
+        let alerts = alerts_for(&o);
+        let alert = alerts
+            .iter()
+            .find(|a| a.kind == "payout_failed")
+            .expect("a bounty the hub abandoned must raise something");
+        assert!(matches!(alert.severity, Severity::Critical), "{:?}", alert.severity);
+        assert!(
+            alert.detail.contains("payoutfailed"),
+            "an alert an operator cannot act on is decoration: {}",
+            alert.detail
+        );
+    }
 }
