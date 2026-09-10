@@ -4043,6 +4043,26 @@ const DEFAULT_SERIES_BUCKETS: usize = 96;
 /// wrong so much as useless, and this keeps the axis labellable.
 const MIN_SERIES_WINDOW_MS: u64 = 60_000;
 
+/// Longest window a series may cover: ten years in milliseconds.
+///
+/// There was a floor and no ceiling, and the value is cast to `i64` a few
+/// lines below to be subtracted from a millisecond timestamp. `u64` above
+/// `i64::MAX` changes sign in that cast, so `window_ms=18446744073709551615`
+/// became `-1` and the computed start landed *after* the end -- a window
+/// running backwards, from which every bucket index is nonsense.
+/// `9223372036854775808` is worse: it makes the subtraction itself
+/// overflow, which panics in a debug build and wraps in release.
+///
+/// Clamped rather than rejected, to match the floor immediately above and
+/// because `u64::MAX` is a reasonable way for a client to say "all of
+/// it". The response echoes the window it actually used, so a caller that
+/// asked for more can see what it got.
+///
+/// Ten years is arbitrary in the way any ceiling is, and it is chosen to
+/// be far past the useful life of a testnet board while leaving the cast
+/// nowhere near its limit: ~3.2e11 against an `i64` ceiling of ~9.2e18.
+const MAX_SERIES_WINDOW_MS: u64 = 10 * 365 * 24 * 60 * 60 * 1_000;
+
 #[derive(Deserialize)]
 pub struct SeriesQuery {
     /// Which market. Omitted means the whole board, which is what the
@@ -4177,7 +4197,7 @@ fn series_for(
     let first_task_at = matching.iter().map(|t| t.created_at).min();
 
     let window_ms = match query.window_ms {
-        Some(requested) => requested.max(MIN_SERIES_WINDOW_MS),
+        Some(requested) => requested.clamp(MIN_SERIES_WINDOW_MS, MAX_SERIES_WINDOW_MS),
         None => match first_task_at {
             None => SUMMARY_DEFAULT_WINDOW_MS,
             Some(oldest) => {
@@ -5623,6 +5643,55 @@ mod summary_tests {
         // One winner, one transaction, one fee.
         assert_eq!(out.fees_series, vec![0, 0, 0, HUB_TRANSACTION_FEE]);
         assert_eq!(out.fees, HUB_TRANSACTION_FEE);
+    }
+
+    /// The boundary drill the original audit kept asking for, on the one
+    /// public route that takes a number.
+    ///
+    /// `window_ms` had a floor and no ceiling, and is cast to `i64` to be
+    /// subtracted from a millisecond timestamp. Above `i64::MAX` that
+    /// cast changes sign: `u64::MAX` becomes `-1`, so the start lands
+    /// *after* the end and every bucket index is computed from a window
+    /// running backwards. `i64::MAX + 1` is worse -- the subtraction
+    /// itself overflows, which panics in debug and wraps in release, and
+    /// this test runs in debug.
+    #[test]
+    fn a_series_window_at_the_edges_of_u64_does_not_run_backwards() {
+        let winner = PrivateKey::new_key().public_key();
+        let tasks = [settled_task(
+            now() - Duration::hours(20),
+            now() - Duration::hours(2),
+            700,
+            &winner,
+            &["python"],
+        )];
+
+        for requested in [0u64, 1, u64::MAX, i64::MAX as u64 + 1, i64::MAX as u64] {
+            let out = series(&tasks, ask(Some("python"), Some(requested), Some(4)));
+            assert!(
+                out.window_ms >= MIN_SERIES_WINDOW_MS,
+                "window {requested} must be floored, got {}",
+                out.window_ms
+            );
+            assert!(
+                out.window_ms <= MAX_SERIES_WINDOW_MS,
+                "window {requested} must be capped, got {}",
+                out.window_ms
+            );
+            // The property that actually matters, and the one the sign
+            // flip broke: the window has to run forwards.
+            assert!(
+                out.start_ms < out.end_ms,
+                "window {requested} produced a window running backwards: {} .. {}",
+                out.start_ms,
+                out.end_ms
+            );
+            assert_eq!(
+                out.buckets,
+                out.posted_series.len(),
+                "window {requested} must still bucket coherently"
+            );
+        }
     }
 
     /// The published fee figure is per transaction, not per winner.

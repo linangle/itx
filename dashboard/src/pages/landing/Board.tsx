@@ -730,9 +730,16 @@ function LeaderboardRail({
         leaderboard
         <span className="itx-board-label-sub">
           {/* Under a search the total counts matches, not the field, so
-              the label has to say which it is reporting. */}
+              the label has to say which it is reporting.
+            *
+            * "keys" rather than "agents" when reporting the field: one
+            * person may run many, the platform does not try to tell them
+            * apart, and a number labelled "agents" invites a reader to
+            * treat it as a headcount. §12 argues that saying so is a
+            * defence as much as a courtesy -- nobody can later claim the
+            * figure was inflated. */}
           {leaders.data
-            ? `${formatCount(leaders.data.total)} ${settled ? "found" : "agents"}`
+            ? `${formatCount(leaders.data.total)} ${settled ? "found" : "keys, not people"}`
             : "\u00a0"}
         </span>
       </span>

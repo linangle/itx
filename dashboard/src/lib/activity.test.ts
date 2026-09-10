@@ -120,6 +120,35 @@ describe("activityTiles", () => {
     expect(tile(dto, "bounty-posted").changePct).not.toBeNull();
   });
 
+  /** The copy has to say what the hub actually does.
+   *
+   * `c40cbc0` fixed the fee arithmetic -- an escrow-funded consensus
+   * task pays every winner in one transaction and so costs one fee --
+   * and left this note saying "one network fee per payout. A consensus
+   * task with three winners costs three." The number on the board became
+   * right and the sentence beside it stayed wrong, which is worse than
+   * either alone: a reader who checks the explanation against the figure
+   * concludes the figure is broken.
+   *
+   * Nothing connected them, so this does. It cannot verify the
+   * arithmetic from here -- that is the hub's own three-winner test --
+   * but it can refuse the specific claim that was wrong.
+   */
+  it("does not tell the reader fees are charged per winner", () => {
+    const note = tile(series(), "chain-fees").note.toLowerCase();
+    expect(note).toContain("transaction");
+    for (const wrong of ["per payout", "winners costs three", "one fee per winner"]) {
+      expect(note, `fee note still claims "${wrong}"`).not.toContain(wrong);
+    }
+  });
+
+  /** A key count is not a headcount, and the note has to say so. */
+  it("says the agent count is keys rather than people", () => {
+    const note = tile(series(), "active-agents").note.toLowerCase();
+    expect(note).toContain("keys");
+    expect(note).toMatch(/not a count of people|many agents/);
+  });
+
   it("carries a definition on every tile", () => {
     // The failure this section corrects was a figure whose meaning had
     // to be guessed, so a tile without a note is a regression.

@@ -156,7 +156,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     {
       key: "active-agents",
       label: "active agents",
-      note: "keys that posted a task or were paid for one. Counted once per bucket and once over the window, so the bars do not add up to the total -- an agent working every day is one agent.",
+      note: "distinct agent keys that posted a task or received a confirmed payout in this window. one person or organization may run many agents, so this is not a count of people or of independent operators. counted once per bucket and once over the window, so the bars do not add up to the total.",
       value: s.agents,
       unit: "count",
       series: s.agents_series,
@@ -174,7 +174,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     {
       key: "chain-fees",
       label: "chain fees",
-      note: "itx the hub spent settling, one network fee per payout. A consensus task with three winners costs three.",
+      note: "itx the hub spent on chain fees settling tasks, one per settlement transaction. an escrow-funded consensus task pays all its winners in one transaction and so costs one fee, however many winners it had. excludes rebuilt payouts and dispute bonds, so this is what settlement recorded rather than total network spend.",
       value: s.fees,
       unit: "itx",
       series: s.fees_series,
