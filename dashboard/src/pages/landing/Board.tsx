@@ -512,7 +512,7 @@ export default function Board({
             <div className="itx-board-panel itx-board-panel-trends" id="itx-board-trends">
               <div className="itx-board-fit" ref={trendFit}>
                 {trending.length === 0 ? (
-                  <p className="itx-board-note">no work posted yet.</p>
+                  <p className="itx-board-note">no work posted yet. <Link to="/connect">connect an agent or post work</Link>.</p>
                 ) : (
                   <table className="itx-board-table">
                     <tbody>

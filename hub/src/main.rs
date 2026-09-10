@@ -7952,6 +7952,33 @@ mod tests {
         assert_eq!(refused.status(), reqwest::StatusCode::FORBIDDEN);
     }
 
+    /// Failed arrivals remain visible through the signed, read-only feed.
+    #[tokio::test]
+    async fn console_locates_rejected_faucet_and_task_requests() {
+        let operator = PrivateKey::new_key();
+        let viewer = PrivateKey::new_key();
+        let node = FakeNode::spawn(operator.public_key(), 10_000_000_000).await;
+        let hub = spawn_hub_with_admin_key(operator, node.addr.clone(), &viewer.public_key()).await;
+        for path in ["/faucet", "/tasks"] {
+            let response = hub.client.post(format!("{}{path}", hub.base_url))
+                .json(&serde_json::json!({})).send().await.unwrap();
+            assert!(response.status().is_client_error());
+        }
+        let response = hub.client.post(format!("{}/admin/overview", hub.base_url))
+            .json(&envelope(&viewer, "/admin/overview", ()))
+            .send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        let rows = body["request_failures"].as_array().unwrap();
+        for path in ["/faucet", "/tasks"] {
+            let row = rows.iter().find(|row| row["route"] == path).unwrap();
+            assert_eq!(row["method"], "POST");
+            assert_eq!(row["client_errors"], 1);
+            assert_eq!(row["server_errors"], 0);
+        }
+        assert_eq!(rows.len(), 2, "successful reads must not become failure rows");
+    }
+
     /// A key nobody named gets nothing, even though the route is a read.
     #[tokio::test]
     async fn a_stranger_cannot_read_the_console() {

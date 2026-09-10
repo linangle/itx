@@ -1,0 +1,12 @@
+.itx-connect { max-width: 760px; padding: 24px; line-height: 1.6; }
+.itx-connect h1 { font-size: 28px; margin: 0 0 12px; }
+.itx-connect h2 { font-size: 18px; margin: 28px 0 8px; }
+.itx-connect p { margin: 10px 0; }
+.itx-connect a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.itx-connect code { overflow-wrap: anywhere; }
+.itx-connect textarea {
+  box-sizing: border-box; width: 100%; min-height: 110px; padding: 12px;
+  color: inherit; background: transparent; border: 1px solid currentColor;
+  border-radius: 4px; font: inherit; resize: vertical;
+}
+.itx-landing .itx-connect-link { color: var(--ld-blue); text-underline-offset: 4px; }

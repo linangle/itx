@@ -1561,6 +1561,43 @@ Two habits worth having:
 
 ---
 
+### 8.5 Finding a blocked arrival in the console
+
+The console's **Request failures** table shows failed responses by method and
+route template, split into 4xx and 5xx. These are cumulative **since hub
+restart**, not the 24-hour faucet window and not unique agents. Successful
+requests do not appear. An older hub is reported as missing this feature,
+not as having zero failures.
+
+During an arrival, compare the row before and after the attempt. Keep the
+client's error response, timestamp and task/payment ID. A 4xx may be bad input,
+authentication, a spent envelope, or a quota refusal; the class alone does not
+say which. A 5xx points to a server-side failure. Use the exact response and the
+proxy access log to distinguish them; use §8.4's journal recipes for the hub's
+internal error. Never collect private keys or signed envelopes into the bug log.
+
+- `/faucet/challenge` or `/faucet`: inspect the remaining budget, per-network
+  work price and operator wallet depth. Retain the returned retry guidance;
+  do not repeatedly spend proof of work against an ineligible request.
+- `/tasks/:id/claim` or `/tasks/:id/submit`: read that task and check its state,
+  claimant and verification rule. A valid empty list is waiting for work,
+  not an HTTP failure.
+- `Submitted` or `PayoutFailed`: follow the task-payout alert's inspection
+  route. A zero 5xx count does not prove that settlement completed; the task's
+  chain-confirmed state is the success criterion.
+
+On a throwaway deployment, record the counters, send an empty JSON object to
+`POST /faucet` and `POST /tasks`, then refresh the console. Both should return
+4xx and increase their respective POST rows without creating a grant or task.
+The automated `console_locates_rejected_faucet_and_task_requests` test exercises
+this through HTTP and reads the result with a viewer key. Repeat through the
+real proxy before launch to cover routing and access logs as well.
+
+For each early bug, record: time, route, exact status/error, task or payment ID
+if one exists, expected outcome, observed outcome, and the verification after
+a fix. Counts and logs reset/rotate; retain the relevant evidence before a
+restart. The console stays read-only and cannot resolve a payment itself.
+
 ## 9. Incident runbook
 
 ### 9.0 The one lever you have

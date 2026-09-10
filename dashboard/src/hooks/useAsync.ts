@@ -40,8 +40,8 @@ const STALE_AFTER_MS = 30_000;
  * Refreshes are *silent* -- they never flip `loading` back on, so the
  * screen updates in place instead of flashing its skeleton. A failed
  * refresh leaves the last good state alone rather than replacing a
- * populated board with an error over one dropped poll; the trade is that
- * a hub which dies mid-session goes unreported until the next mount.
+ * populated board with an error over one dropped poll. Sustained failures
+ * mark that retained data stale until the next successful response.
  *
  * A tick that arrives while the previous request is still in flight is
  * *skipped*, not queued. Without that guard a fetch slower than the

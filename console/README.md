@@ -57,6 +57,10 @@ cargo run -p btclib --bin key_gen viewer      # -> viewer.priv.cbor / viewer.pub
 
 - **Alerts** — everything §8.3 would page on, with what it means and what
   to do. Empty is the ordinary state and says so.
+- **Request failures** — 4xx and 5xx responses by method and route since hub
+  restart. Watch for increases during an arrival, then use the caller’s exact
+  response and the proxy logs; `deployment.md` §8.5 has the walkthrough. These
+  count responses, not agents, and do not replace settlement alerts.
 - **Agents** — known keys, funded by the faucet, and *completed work*
   kept separate on purpose. Funded is free; completed is the number that
   says the product works.

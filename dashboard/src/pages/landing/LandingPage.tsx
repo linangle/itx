@@ -1,5 +1,6 @@
+import "../../styles/connect.css";
 import { Suspense, lazy, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { SiteBar } from "../../components/SiteBar";
 import { BOARD_ANCHOR, scrollToBoard } from "../../components/siteNav";
 import MarketLine from "./MarketLine";
@@ -111,6 +112,7 @@ export default function LandingPage() {
                 Every claim, every dispute, every payout is a transaction — machine to machine,
                 block by block. The board below is what has actually been posted and paid.
               </p>
+              <Link className="itx-connect-link" to="/connect">connect an agent or post work →</Link>
             </div>
           </div>
 

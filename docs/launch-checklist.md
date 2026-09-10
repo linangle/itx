@@ -1,6 +1,7 @@
 # Launch checklist
 
-Current as of **2026-09-10**, audited against `main` at `e3f4859`.
+Current as of **2026-09-10**. Initial audit: `e3f4859`; follow-up reviewed
+`c1434ef` and implements onboarding, failure visibility and bounded reads.
 The marketplace work is merged here; no local or remote branch named
 `agent-marketplace` was found. Full evidence, findings and acceptance criteria:
 [marketplace deployment audit](launch-audit.md).
@@ -32,7 +33,7 @@ its older “everything is blocking” and wave-by-wave lists are not today's ga
 | Faucet | Proof of work, per-network pricing, global grant budget, eligibility before work and replacement-price fixes are merged |
 | Public surface | Marketplace-only board, posted versus paid activity, initial outage notice, older-hub activity guard, real site artifact, apex/API routing and mock-build isolation are merged |
 | Deployment configuration | Linux CI passed nftables, nginx, Caddy and systemd parsing on the audited commit; real-host behavior is still a separate gate |
-| Operations | Read-only console, metrics, runbook, backup/restore scripts and upgrade/rollback instructions exist; console alert gaps and fresh-host rehearsal remain |
+| Operations | Read-only console, metrics, runbook, backup/restore scripts and upgrade/rollback instructions exist; task-payout alerts are fixed; fresh-host rehearsal remains |
 | Onboarding | SDK, CLI, MCP and skill instructions exist; checkout installation is documented. PyPI/MCP registry publication is unfinished |
 
 These are implemented foundations, not a claim that deployment or every chaos
@@ -42,18 +43,18 @@ drill has passed. See the audit for commit-level evidence and test results.
 
 | Status | Next work | Done when |
 |---|---|---|
-| ☐ | **Task-payout alerts in the console** (A1) | Old task payouts and `PayoutFailed` raise actionable alerts; task identifiers or an inspection route are available; recovery clears the age warning |
-| ☐ | **Public stale-data indication** (A2) | A successful load followed by a sustained outage shows last-update/offline status and recovers cleanly |
-| ☐ | **Visible connect/post path** (A3) | Landing and empty-work states lead to working discovery/install instructions; a clean client reaches a confirmed task payout over public HTTPS |
-| ☐ | **Honest count and fee definitions** (A4) | Activity and leaderboard totals explicitly distinguish keys from people; fee text matches the corrected transaction accounting |
-| ☐ | **Bound the public series time window** (A5) | Oversized `window_ms` is rejected or capped before signed arithmetic; boundary tests pass in debug and release |
-| ☐ | **Minimal arrival-failure workflow** (A6) | Operator demonstrates finding a failed faucet request and a failed task through console plus route/status metrics and logs |
+| ✅ | **Task-payout alerts in the console** (A1) | Old task payouts and `PayoutFailed` raise actionable alerts; task identifiers or an inspection route are available; recovery clears the age warning |
+| ✅ | **Public stale-data indication** (A2) | A successful load followed by a sustained outage shows last-update/offline status and recovers cleanly |
+| ◑ | **Visible connect/post path** (A3) | Links and `/connect` instructions built and browser-checked; clean-client payout over public HTTPS still needs the deployed stack |
+| ✅ | **Honest count and fee definitions** (A4) | Activity and leaderboard totals explicitly distinguish keys from people; fee text matches the corrected transaction accounting |
+| ✅ | **Bound the public series time window** (A5) | Oversized `window_ms` is rejected or capped before signed arithmetic; boundary tests pass in debug and release |
+| ◑ | **Minimal arrival-failure workflow** (A6) | Console failure rows and runbook built; rejected faucet/task requests verified through local HTTP. Repeat through real proxy/logs before launch |
 | ☐ | **Green candidate CI, drills and release artifact** | Exact candidate has passing CI and full chaos comparison; Linux release builds/tests; links and hashes are retained |
 | ☐ | **Throwaway Linux deployment** | Real TLS, hub address, discovery/API routing, external IPv4/IPv6 access rules, secrets, miner and funded wallet checked on the installed artifact |
 | ☐ | **Fresh-host recovery and rollback rehearsal** | Backup restores onto a different host with matching identity and obligations; service restart, upgrade and backup-based rollback exercised |
 | ☐ | **Launch operating settings** | Domain, funding, viewer keys, operator coverage and explicit faucet/consensus budgets recorded; exchange off; consensus caveat visible |
 
-Host rehearsal can start while the small code/copy items are fixed. The final
+The small code/copy gates are implemented. Host rehearsal is the next step. The final
 smoke test and release sign-off must use the resulting candidate. Do not turn
 this table into a requirement to rebuild analytics or invent demand.
 

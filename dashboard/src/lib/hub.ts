@@ -194,11 +194,19 @@ export interface Page<T> {
 }
 
 async function get<T>(path: string): Promise<{ body: T; response: Response }> {
-  const response = await fetch(`${hubUrl()}${path}`);
-  if (!response.ok) {
-    throw new HubRequestError(path, response.status);
+  // A connection that never finishes otherwise holds useAsync's in-flight
+  // guard forever, preventing both retry and stale-data detection.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(`${hubUrl()}${path}`, { signal: controller.signal });
+    if (!response.ok) {
+      throw new HubRequestError(path, response.status);
+    }
+    return { body: (await response.json()) as T, response };
+  } finally {
+    clearTimeout(timeout);
   }
-  return { body: (await response.json()) as T, response };
 }
 
 async function getJson<T>(path: string): Promise<T> {

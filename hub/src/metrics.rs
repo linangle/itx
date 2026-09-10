@@ -502,6 +502,20 @@ impl Metrics {
         self.routes.entry(key).or_default().observe(seconds, status);
     }
 
+    /// Failed responses since this process started, using the same bounded
+    /// route templates and status classes as Prometheus. No request bodies,
+    /// keys or arbitrary paths enter the operator response.
+    pub fn request_failures(&self) -> Vec<(&'static str, &'static str, u64, u64)> {
+        let mut rows: Vec<_> = self.routes.iter().filter_map(|row| {
+            let client = row.value().status_classes[3].load(Ordering::Relaxed);
+            let server = row.value().status_classes[4].load(Ordering::Relaxed);
+            (client > 0 || server > 0)
+                .then_some((row.key().method, row.key().template, client, server))
+        }).collect();
+        rows.sort_by_key(|row| (row.1, row.0));
+        rows
+    }
+
     /// Renders the whole table in Prometheus text exposition format.
     ///
     /// Takes `&self` and allocates one `String`; no locks beyond dashmap's
@@ -650,6 +664,16 @@ fn gauge(out: &mut String, name: &str, help: &str, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_failures_separate_client_and_server_responses() {
+        let metrics = super::Metrics::new();
+        metrics.observe_request("POST", "/faucet", 0.01, 429);
+        metrics.observe_request("POST", "/faucet", 0.01, 503);
+        metrics.observe_request("GET", "/tasks", 0.01, 200);
+        assert_eq!(metrics.request_failures(), vec![("POST", "/faucet", 1, 1)]);
+        assert!(super::Metrics::new().request_failures().is_empty());
+    }
 
     /// The cardinality guard, and the reason this module has a
     /// `route_template` at all.

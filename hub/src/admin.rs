@@ -177,6 +177,14 @@ pub struct Integrity {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RequestFailures {
+    pub method: &'static str,
+    pub route: &'static str,
+    pub client_errors: u64,
+    pub server_errors: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Overview {
     pub generated_at: String,
     pub window_hours: i64,
@@ -189,6 +197,8 @@ pub struct Overview {
     pub money: Money,
     pub networks: Vec<NetworkRow>,
     pub integrity: Integrity,
+    /// Cumulative since process start, not the 24-hour faucet window.
+    pub request_failures: Vec<RequestFailures>,
 }
 
 /// Builds the whole picture under one read lock.
@@ -269,6 +279,10 @@ pub async fn overview(state: &AppState, now: DateTime<Utc>) -> Overview {
             if observed == 0 { 0 } else { (now.timestamp() as u64).saturating_sub(observed) }
         },
         alerts: Vec::new(),
+        request_failures: m.request_failures().into_iter()
+            .map(|(method, route, client_errors, server_errors)| RequestFailures {
+                method, route, client_errors, server_errors,
+            }).collect(),
         agents,
         work,
         faucet,
@@ -597,6 +611,7 @@ mod tests {
                 operator_ready_outputs: 8,
                 custody_ready_outputs: 8,
             },
+            request_failures: vec![],
             networks: vec![],
             integrity: Integrity {
                 replays_rejected: 0,

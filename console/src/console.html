@@ -66,6 +66,16 @@
     <div id="alerts"></div>
   </section>
 
+  <section class="panel">
+    <h2>Request failures — since hub restart</h2>
+    <p class="muted">4xx includes rejected input, authentication and rate limits; 5xx means the hub could not serve the request. Counts are responses, not agents. Watch for increases during an arrival.</p>
+    <table>
+      <thead><tr><th>method</th><th>route</th><th class="n">4xx</th><th class="n">5xx</th></tr></thead>
+      <tbody id="request-failures"></tbody>
+    </table>
+    <p class="muted">Keep the caller’s response and task or payment ID. For faucet failures, check the budget and wallet below. For task failures, inspect the task and its settlement status. Use the proxy access log for the exact status and time; deployment.md §8.5 has the walkthrough. Counts reset when the hub restarts.</p>
+  </section>
+
   <div class="row2">
     <section class="panel">
       <h2>Agents</h2>
@@ -135,6 +145,28 @@ function render(d) {
     stat(num(a.with_completed_work), "completed work", a.with_completed_work ? "ok" : "") +
     stat(num(a.with_failed_work), "failed work") +
     stat(num(a.holding_balance), "holding balance");
+
+  // Render as text even though these fields contain server-owned templates.
+  const failures = $("request-failures");
+  failures.replaceChildren();
+  if (!Array.isArray(d.request_failures)) {
+    const row = failures.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 4;
+    cell.textContent = "This hub does not yet report request failures.";
+  } else if (d.request_failures.length === 0) {
+    const row = failures.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 4;
+    cell.textContent = "No failed responses recorded since hub restart.";
+  } else {
+    for (const f of d.request_failures) {
+      const row = failures.insertRow();
+      for (const value of [f.method, f.route, num(f.client_errors), num(f.server_errors)]) {
+        row.insertCell().textContent = value;
+      }
+    }
+  }
 
   const w = d.work;
   $("work").innerHTML =

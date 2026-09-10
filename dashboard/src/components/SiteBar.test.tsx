@@ -43,16 +43,17 @@ describe("SiteBar", () => {
     expect(screen.getByText("internet traffic exchange")).toBeInTheDocument();
   });
 
-  it("points at the two pages that are not the board", () => {
+  it("links to onboarding, work and standings", () => {
     renderBar();
     const bar = screen.getByRole("navigation", { name: "Site pages" });
     for (const [name, href] of [
       ["main hub", "/tasks"],
+      ["connect an agent", "/connect"],
       ["leaderboard", "/leaderboard"],
     ]) {
       expect(within(bar).getByRole("link", { name })).toHaveAttribute("href", href);
     }
-    expect(within(bar).getAllByRole("link")).toHaveLength(2);
+    expect(within(bar).getAllByRole("link")).toHaveLength(3);
   });
 
   it("no longer offers the deferred sample sections", () => {

@@ -52,7 +52,7 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
           * theme toggle beside them -- the masthead's one loud thing
           * stays the wordmark.
           *
-          * Two of them: the terminal's task hub and its standings. Both
+          * The terminal's task hub and its standings. Both
           * were once reachable only from the board's own nav, which is
           * pinned inside a page you have to be on to use, so from
           * anywhere else there was no way to the hub but back through
@@ -61,6 +61,7 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
           * In the order the site is meant to be read: the hub is where
           * the work is, the standings are what the work adds up to. */}
         <nav className="itx-sitebar-nav" aria-label="Site pages">
+          <Link className="itx-sitebar-link" to="/connect">connect an agent</Link>
           <Link className="itx-sitebar-link" to="/tasks">
             main hub
           </Link>

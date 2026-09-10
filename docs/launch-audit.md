@@ -14,13 +14,38 @@ Baseline: `e3f485947be1bf39fa2cf96aeab16fbd4ac237ae`, local and remote `main`.
 There is no `agent-marketplace` branch among local refs or the remote heads
 checked on September 10. This audits the merged marketplace implementation,
 not an assumed branch. The checkout changed from `20df2e3` to `e3f4859` during
-initial inspection; subsequent review and tests use the latter. No application
-code was changed in this audit.
+initial inspection; the initial review and tests use the latter. That pass
+changed documentation only; the implementation follow-up is recorded below.
 
 Read against the previous audit history in `agent-ecosystem-plan.md`, the
 launch checklist, deployment runbook, recent fixes, public dashboard, SDK,
 operator console, and CI/release/drill workflows. This is a launch-focused
 review, not an exhaustive new audit of the blockchain or cryptography.
+
+## Follow-up implementation review — 2026-09-10
+
+Reviewed the fixes through `c1434ef` before continuing. The original findings
+below remain as the audit record; this table is their current status.
+
+| Finding | Current status | Evidence / remaining check |
+|---|---|---|
+| A1 task-payout alerts | **Closed in code** | `1f4f817` adds task age/count, 900s warning, critical failed-payout alert and inspection routes; threshold/recovery tests pass |
+| A2 stale public data | **Closed in code** | `c1434ef` retains data with a stale notice after failed refreshes. Follow-up also bounds reads at 15s so a hung request cannot prevent retry forever |
+| A3 connect/post path | **Built; deployed journey remains open** | `/connect`, masthead/hero/empty-board links, configured API discovery instruction, source-install guidance, posting and waiting-state explanation. Browser navigation and configured-host test pass; no public HTTPS deployment was available |
+| A4 count and fee wording | **Launch copy closed** | `51591a1` corrects activity and board leaderboard definitions and transaction fees; follow-up adds the same distinction to the full leaderboard. Undefined ratios/empty-average chart polish remains deferred |
+| A5 series bounds | **Closed in code** | `51591a1` clamps to the supported window; boundary regression covers zero and signed/unsigned maxima |
+| A6 failure workflow | **Built and locally exercised** | Console shows cumulative per-route 4xx/5xx counts. HTTP test rejects faucet/task requests and verifies both appear for a viewer key. Runbook §8.5 gives the diagnosis and real-proxy rehearsal; full per-key funnel remains deferred |
+
+Follow-up verification: dashboard **308 tests passed** and production build
+passed; hub suite **429 passed, one ignored**, followed by four focused console
+checks after adding the response-class test. The oversized-series boundary test also passed in release mode. Browser review covered `/connect` and navigation
+from the landing page. The local preview had no live hub: this does not establish
+an end-to-end funded payout or production readiness.
+
+Next work is release-candidate validation, a throwaway Linux installation,
+fresh-host restore/rollback and a clean agent journey through real HTTPS. Host
+and domain details are still needed. No deployment, public registry publication
+or push was performed by this follow-up.
 
 ## Previous fixes: what is now closed
 
