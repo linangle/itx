@@ -5,4 +5,17 @@
 *.priv.cbor
 *.redb
 
+# The hub's default key paths are relative (`./hub_operator.priv.cbor`,
+# `./hub_exchange_custody.priv.cbor`, `./hub_escrow_secret.bin`), so the
+# README's own quickstart -- `./target/release/hub ... --generate-keys`
+# run from here -- writes all three into this directory. The two
+# `.priv.cbor` ones are covered above. The escrow master secret was not,
+# and it is the one docs/deployment.md §6.1 calls the one people
+# underestimate: read it and you derive every escrow key ever handed
+# out, which is what stopped a stolen `hub.redb` from being a stolen
+# treasury. This repository is public.
+hub_escrow_secret.bin
+*.escrow_secret.bin
+secrets/
+
 .DS_Store
