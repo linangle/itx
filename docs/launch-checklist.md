@@ -85,7 +85,12 @@ store. Ask posters whether results were useful and whether they would post again
   accuracy is not obtained by blocking legitimate multi-agent operators.
 - PyPI and MCP registry publication. Required before promoting those installation
   commands, not before deploying with a proven source/discovery rail.
-- Public status page and unattended alert delivery as operating coverage grows.
+- An **off-box** status page, and unattended alert delivery, as operating
+  coverage grows. The on-box half shipped 2026-09-11: `/status`, a `503` with
+  `Retry-After` on every surface when the hub is down, and a maintenance flag
+  that tells a planned stop from a failure (deployment §4.8). It reports on the
+  hub only — a dead host or proxy is a page that does not load — so the part
+  still owed is somewhere that survives this box.
 - Undefined ratio/empty-average chart presentation (A4), naming/wordmark changes.
 
 The internal interface enables learning after launch. It does not replace

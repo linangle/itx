@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico?v=3" sizes="32x32" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3" />
+    <title>itx status</title>
+
+    <!--
+      The public status page, and the one page on this site that is
+      deliberately NOT part of the app.
+
+      It lives in `public/` so Vite copies it through verbatim: no
+      bundle, no router, no `src/lib/hub.ts`, no fonts fetched, no
+      stylesheet, no asset with a content hash in its name. That is the
+      whole point of it. A status page built out of the same pieces as
+      the thing it reports on fails in the same ways as the thing it
+      reports on, and the deployment failure §5.1 warns about -- a
+      bundle asking for an asset hash that no longer exists after a
+      half-finished upgrade -- would take the outage page down in the
+      middle of the outage. This file only needs the HTTP server.
+
+      It is also the body the proxy serves as the 503 during a planned
+      maintenance window (deploy/Caddyfile, deploy/nginx.conf, and
+      docs/deployment.md §4.8), so it has to stand on its own at a
+      moment when nothing else on the box is answering.
+
+      What it CANNOT tell you: whether the box is up. It is served from
+      the same host as everything else, so a dead box, a dead proxy or a
+      lapsed certificate is a page that never loads rather than a page
+      that says "down". That is the honest limit of a self-hosted status
+      page and it is stated on the page itself rather than hidden.
+    -->
+    <style>
+      /* The landing surface's palette, by value rather than by import --
+         see the comment above for why this file pulls in nothing. Kept
+         in the same order as dashboard/src/styles/landing.css so a
+         change there is easy to mirror here. */
+      :root {
+        --ld-red: #d8402d;
+        --ld-green: #63ba6c;
+        --ld-blue: #91c4f2;
+        --ld-dark: #161418;
+        --ld-light: #e9f2ed;
+        --ld-sub: #b3b4bf;
+
+        --ground: var(--ld-dark);
+        --ink: var(--ld-light);
+        --sub: var(--ld-sub);
+      }
+
+      /* The app carries a theme toggle and remembers it; this page has
+         no storage and no toggle, so it follows the browser. Roles swap,
+         literals do not: --ground and --ink hold each other's values. */
+      @media (prefers-color-scheme: light) {
+        :root {
+          --ground: var(--ld-light);
+          --ink: var(--ld-dark);
+          --sub: #5c5a63;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      /* `hidden` is an attribute whose whole effect is `display: none`
+         from the user-agent stylesheet, so ANY `display` rule of ours
+         beats it -- and `.facts li` sets `display: flex`. Without this
+         line the chain-height row stays on screen, empty, in every state
+         that has no height to report. */
+      [hidden] {
+        display: none !important;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 40px 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--ground);
+        color: var(--ink);
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 16px;
+        line-height: 1.5;
+        /* House style: every word on this site is lower case, and it is
+           written that way rather than transformed -- a CSS transform
+           cannot tell an acronym from a sentence. */
+      }
+
+      main {
+        width: 100%;
+        max-width: 640px;
+      }
+
+      .brand {
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        color: var(--sub);
+        margin: 0 0 32px;
+      }
+
+      .headline {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        margin: 0 0 8px;
+      }
+
+      .dot {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        margin-top: 9px;
+        border-radius: 50%;
+        background: var(--sub);
+      }
+
+      /* The four states, and the colour is the first thing read. Green
+         is the only one that means "nothing to do". Blue rather than
+         amber for degraded: the palette has no amber, and blue is
+         already the landing's third voice. */
+      [data-state="up"] .dot { background: var(--ld-green); }
+      [data-state="degraded"] .dot { background: var(--ld-blue); }
+      [data-state="maintenance"] .dot { background: var(--ld-blue); }
+      [data-state="down"] .dot { background: var(--ld-red); }
+
+      /* Checking is a transient the reader should not have to interpret,
+         so it pulses rather than picking a colour that would be a lie
+         for however long the request takes. */
+      [data-state="checking"] .dot {
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        [data-state="checking"] .dot { animation: none; }
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 32px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+
+      .detail {
+        margin: 0 0 32px 32px;
+        color: var(--ink);
+      }
+
+      .facts {
+        margin: 0 0 32px 32px;
+        padding: 0;
+        list-style: none;
+        color: var(--sub);
+        font-size: 14px;
+      }
+
+      .facts li {
+        display: flex;
+        gap: 12px;
+        padding: 6px 0;
+        border-bottom: 1px solid color-mix(in srgb, var(--sub) 25%, transparent);
+      }
+
+      .facts dfn {
+        flex: none;
+        width: 140px;
+        font-style: normal;
+      }
+
+      .facts span {
+        color: var(--ink);
+      }
+
+      .foot {
+        margin: 0 0 0 32px;
+        color: var(--sub);
+        font-size: 13px;
+      }
+
+      .foot a {
+        color: inherit;
+      }
+
+      code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 0.92em;
+        color: var(--ink);
+        overflow-wrap: anywhere;
+      }
+
+      @media (max-width: 560px) {
+        h1 { font-size: 26px; }
+        .detail,
+        .facts,
+        .foot { margin-left: 0; }
+        .facts li { display: block; }
+        .facts dfn { width: auto; display: block; }
+      }
+    </style>
+  </head>
+
+  <body data-state="checking">
+    <main>
+      <p class="brand">internet traffic exchange</p>
+
+      <div class="headline">
+        <span class="dot" aria-hidden="true"></span>
+        <h1 id="headline">checking the hub…</h1>
+      </div>
+
+      <!-- role="status" on the region that changes, so a screen reader
+           hears the new state without the page having to steal focus. -->
+      <p class="detail" id="detail" role="status">asking this site's hub whether it is answering.</p>
+
+      <ul class="facts" id="facts" hidden>
+        <li id="fact-height" hidden><dfn>chain height</dfn><span id="height"></span></li>
+        <li><dfn>last checked</dfn><span id="checked">—</span></li>
+        <li><dfn>checked by</dfn><span id="probe"></span></li>
+      </ul>
+
+      <p class="foot">
+        this page is served from the same host as the site, so it can only
+        report on the hub. if the host or the proxy is down you get no page
+        at all rather than a red one.
+        <span id="home-line"><a href="/">back to the board</a></span>
+      </p>
+
+      <noscript>
+        <p class="foot">
+          this page checks the hub with javascript, which is off. run
+          <code>curl -s /health</code> against this host instead: it answers
+          <code>{"status":"ok"}</code>, <code>{"status":"degraded"}</code>,
+          <code>{"status":"maintenance"}</code> or
+          <code>{"status":"unavailable"}</code>.
+        </p>
+      </noscript>
+    </main>
+
+    <script>
+      (function () {
+        "use strict";
+
+        // Same origin, always. `/health` on the apex is forwarded to the
+        // hub by the proxy (deploy/Caddyfile), which is what lets this
+        // page avoid `hubUrl()` and the meta tag it reads -- the one
+        // deploy-time edit §5.1 says operators forget. A status page that
+        // could be pointed at the wrong hub by a missed edit would be
+        // worse than no status page.
+        var PROBE = "/health";
+
+        // Long enough to outlast a hub that is busy rather than dead, and
+        // well inside the poll interval so two probes never overlap.
+        var TIMEOUT_MS = 8000;
+        var POLL_MS = 15000;
+
+        var body = document.body;
+        var headline = document.getElementById("headline");
+        var detail = document.getElementById("detail");
+        var facts = document.getElementById("facts");
+        var factHeight = document.getElementById("fact-height");
+        var height = document.getElementById("height");
+        var checked = document.getElementById("checked");
+
+        document.getElementById("probe").textContent =
+          window.location.origin + PROBE;
+
+        // Every state the page can be in, in one table rather than spread
+        // through the branches below. `status` is what the body claims;
+        // the distinction that matters to a reader is not up/down but
+        // "can my work settle", so each line says that rather than
+        // restating the colour.
+        var STATES = {
+          up: {
+            headline: "the hub is up",
+            detail:
+              "tasks can be posted, claimed and settled. the chain is confirming.",
+          },
+          degraded: {
+            headline: "the hub is up, the chain is not",
+            detail:
+              "reads work and the board is current, but no payout can confirm while " +
+              "the node is unreachable. work submitted now settles when it comes back.",
+          },
+          maintenance: {
+            headline: "down for planned maintenance",
+            detail:
+              "the hub was stopped on purpose and will be back shortly. signed " +
+              "requests are refused at the socket while it is down, so an envelope " +
+              "is never spent — the same one can be retried when this page goes green.",
+          },
+          down: {
+            headline: "the hub is not answering",
+            detail:
+              "the site is up and this page loaded, but the hub behind it did not " +
+              "respond. nothing can be posted, claimed or settled until it does.",
+          },
+        };
+
+        function render(state, extra) {
+          var copy = STATES[state];
+          body.setAttribute("data-state", state);
+          headline.textContent = copy.headline;
+          detail.textContent = copy.detail;
+
+          facts.hidden = false;
+
+          if (extra && typeof extra.chain_height === "number") {
+            height.textContent = String(extra.chain_height);
+            factHeight.hidden = false;
+          } else {
+            factHeight.hidden = true;
+          }
+
+          // Machine-built, so lower-casing the whole string is safe here
+          // -- there is no acronym in it to flatten. Same exception
+          // `formatTimestamp` takes in dashboard/src/lib/format.ts.
+          checked.textContent = new Date().toLocaleTimeString().toLowerCase();
+        }
+
+        function check() {
+          // AbortController rather than a bare fetch: a connection that
+          // opens and never answers would otherwise leave the page saying
+          // "checking…" forever, which reads as a broken page rather than
+          // as a hub that is not answering -- and "not answering" is
+          // exactly the finding.
+          var controller = new AbortController();
+          var timer = setTimeout(function () {
+            controller.abort();
+          }, TIMEOUT_MS);
+
+          fetch(PROBE, { cache: "no-store", signal: controller.signal })
+            .then(function (response) {
+              return response
+                .json()
+                .catch(function () {
+                  // A proxy that has not been given §4.8's error handling
+                  // answers a dead hub with its own plain-text 502. That
+                  // is not JSON and not a hub response, and it means the
+                  // hub is down -- the same finding, reached the ugly way.
+                  return null;
+                })
+                .then(function (payload) {
+                  if (response.ok && payload && payload.status === "ok") {
+                    render("up", payload);
+                    return;
+                  }
+                  if (payload && STATES[payload.status]) {
+                    render(payload.status, payload);
+                    return;
+                  }
+                  if (payload && payload.status === "unavailable") {
+                    render("down", payload);
+                    return;
+                  }
+                  render("down");
+                });
+            })
+            .catch(function () {
+              // Network error, abort, or a certificate the browser
+              // refused: from here they are one thing, "no answer".
+              render("down");
+            })
+            .then(function () {
+              clearTimeout(timer);
+            });
+        }
+
+        check();
+        setInterval(check, POLL_MS);
+
+        // The board is worth linking to from an outage page only when
+        // there is something to go back to. During a maintenance window
+        // the proxy answers every other path with this same page, so the
+        // link would be a loop -- and a link that reloads the page you
+        // are already on is how a reader concludes the site is broken.
+        var home = document.getElementById("home-line");
+        var homeShown = function () {
+          home.hidden = body.getAttribute("data-state") === "maintenance";
+        };
+        new MutationObserver(homeShown).observe(body, {
+          attributes: true,
+          attributeFilter: ["data-state"],
+        });
+      })();
+    </script>
+  </body>
+</html>

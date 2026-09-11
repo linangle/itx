@@ -65,12 +65,12 @@ itx.example.com {
 	encode zstd gzip
 	root * /var/www/itx
 
-	# Three paths that are NOT the single-page app, handled before it.
+	# Four paths that are NOT the single-page app, handled before it.
 	#
 	# The SPA fallback below answers every unknown path with index.html
 	# and a 200, which is right for a route the router owns and wrong for
 	# a file the outside world was told to fetch. Until 2026-09-09 that
-	# swallowed all three of these: `/llms.txt` returned a page of HTML to
+	# swallowed three of these: `/llms.txt` returned a page of HTML to
 	# an agent expecting the manual, `/.well-known/security.txt` returned
 	# HTML to a researcher and to every scanner that looks for it, and
 	# `/health` returned 200 with the hub dead -- which is what §3's
@@ -79,7 +79,21 @@ itx.example.com {
 	# means nothing.
 	#
 	# `handle` blocks are mutually exclusive and evaluated in the order
-	# written, so these three win and everything else falls to the app.
+	# written, so these four win and everything else falls to the app.
+
+	# The public status page. First, because it is the one path that must
+	# answer during a maintenance window -- the `@maintenance` block below
+	# serves this same file as the body of a 503 for everything else, and
+	# a reader sent here from that page must get a 200 rather than the
+	# window's own 503 again.
+	#
+	# Static, self-contained, and served by the file server rather than
+	# proxied: it reports on the hub, so it must not need the hub. See the
+	# comment at the top of the file itself.
+	handle /status {
+		rewrite * /status.html
+		file_server
+	}
 
 	# The agent manual, served by the hub itself so it cannot drift from
 	# the running constants. Forwarded rather than copied for that reason,
@@ -114,12 +128,123 @@ itx.example.com {
 		file_server
 	}
 
+	# Planned maintenance, declared by a file rather than by editing this
+	# config: the operator touches it before stopping the hub and removes
+	# it afterwards, and nothing here has to be reloaded either way.
+	#
+	#     sudo touch /var/www/itx/maintenance.flag    # window opens
+	#     sudo rm    /var/www/itx/maintenance.flag    # window closes
+	#
+	# Deliberately BELOW `/llms.txt` and `/health`: while the flag is up
+	# and the hub is still running, monitoring and §3's off-box check must
+	# still reach the real hub and get the real answer. The flag changes
+	# what a *human* is told, and -- through `handle_errors` below -- the
+	# wording the machine paths get once the hub actually stops. It never
+	# changes what is measured.
+	#
+	# Why the whole board goes behind it rather than staying up with a
+	# banner: with the hub stopped the app renders `HubUnreachable` over
+	# an empty board, which is the right answer to an *unplanned* outage
+	# and the wrong one to a scheduled window -- it says something is
+	# broken when nothing is. Leaving the flag off is the supported way to
+	# get the banner instead; that is the choice the window is for.
+	@maintenance file {
+		try_files /maintenance.flag
+	}
+	handle @maintenance {
+		rewrite * /status.html
+		# 503 rather than 200, and it is the status code that does the
+		# work: a crawler must not index the maintenance page as the
+		# site's content, and `Retry-After` is what tells it to come
+		# back rather than drop the URL.
+		header Retry-After 300
+		file_server {
+			status 503
+		}
+	}
+
 	# Single-page app: unknown paths are routes the router owns, not
 	# missing files, so they get index.html and React decides. A real
 	# 404 for /nothing-here would break every deep link on the site.
 	handle {
 		try_files {path} /index.html
 		file_server
+	}
+
+	# What the two proxied paths above answer when the hub is not there.
+	#
+	# Without this, a stopped hub makes `/health` and `/llms.txt` return
+	# Caddy's own plain-text 502 -- which is the same mistake §4.6's
+	# comment block fixed from the other direction. `/health` is curled by
+	# monitoring (§8.2) and by §3's off-box check, and `/llms.txt` is read
+	# by an arriving agent; both parse what comes back, and neither can do
+	# anything with `502 Bad Gateway` in text/plain.
+	#
+	# This fires only on errors Caddy itself produces -- a failed dial, a
+	# timeout. An upstream that *answers* 503 has been proxied
+	# successfully, so the hub's own `{"status":"degraded"}` (node
+	# unreachable, hub fine) passes through untouched and is not rewritten
+	# into "unavailable" here. Those two are different findings and §8.2
+	# alerts on them differently.
+	#
+	# `route` rather than a bare list, because Caddy sorts directives into
+	# its own order inside a block and these must run in the order
+	# written: the most specific path first, the page last.
+	handle_errors {
+		route {
+			@flag file {
+				try_files /maintenance.flag
+			}
+			@health path /health
+			@llms path /llms.txt
+
+			header Retry-After 120
+			header Cache-Control "no-store"
+
+			# Same shape as the hub's own /health body -- one field,
+			# `status`, that a monitor can switch on. `maintenance` and
+			# `unavailable` are new values alongside the hub's `ok` and
+			# `degraded`, and the whole point of having two is that an
+			# alert can stay quiet for the one you scheduled.
+			# The inner `route` is not decoration either, and this is the
+			# way it fails without one. Caddy sorts a `handle` block's
+			# directives into its own order, in which `rewrite` runs
+			# *before* `respond`; the rewrite to /status.html then
+			# replaces the path, `@health` and `@llms` no longer match
+			# the request they were written for, and both machine paths
+			# are served the HTML page under a JSON content type. That is
+			# worse than no error handling at all, and it validates and
+			# adapts perfectly -- it was caught by curling it.
+			handle @flag {
+				route {
+					header @health Content-Type "application/json"
+					respond @health `{"status":"maintenance","error":"planned maintenance: the hub is stopped"}` 503
+
+					header @llms Content-Type "text/plain; charset=utf-8"
+					respond @llms "itx is down for planned maintenance. this file is served by the hub, which is stopped. retry shortly; nothing you signed has been spent." 503
+
+					rewrite * /status.html
+					file_server {
+						status 503
+					}
+				}
+			}
+
+			handle {
+				route {
+					header @health Content-Type "application/json"
+					respond @health `{"status":"unavailable","error":"the hub did not answer this proxy"}` 503
+
+					header @llms Content-Type "text/plain; charset=utf-8"
+					respond @llms "itx is not answering. this file is served by the hub, which is down. retry shortly." 503
+
+					rewrite * /status.html
+					file_server {
+						status 503
+					}
+				}
+			}
+		}
 	}
 
 	header {
@@ -276,6 +401,40 @@ hub.itx.example.com {
 	# Accept-Encoding upstream, so adding encode here would at best do
 	# nothing and at worst cost a decompress/recompress cycle on the
 	# largest responses.
+
+	# What the API answers when the hub is not there.
+	#
+	# Everything reaching this hostname is a program: the SDK, the MCP
+	# server, an agent's own client. So this is JSON on every path, with
+	# no HTML anywhere in it -- the status page is a human surface and
+	# lives on the apex. `Retry-After` is the part a well-written client
+	# actually uses.
+	#
+	# It matters that this is 503 and not 502. A 502 says the gateway got
+	# a bad answer; 503 says the service is unavailable and names a time
+	# to come back, which is what is true and what a retrying client
+	# should see. The hub's own 503 (`degraded`, node unreachable) still
+	# passes through untouched -- see the apex block's `handle_errors` for
+	# why a proxied answer never reaches here.
+	handle_errors {
+		route {
+			# The same flag file as the apex, and it has to be named with
+			# an explicit root: this block serves no files, so it has no
+			# `root` of its own for the matcher to resolve against. The
+			# path must match the site root the apex sets above.
+			@flag file {
+				root /var/www/itx
+				try_files /maintenance.flag
+			}
+
+			header Content-Type "application/json"
+			header Retry-After 120
+			header Cache-Control "no-store"
+
+			respond @flag `{"status":"maintenance","error":"planned maintenance: the hub is stopped. retry shortly; a signed envelope refused here was not spent."}` 503
+			respond `{"status":"unavailable","error":"the hub did not answer this proxy"}` 503
+		}
+	}
 
 	log {
 		output file /var/log/caddy/itx-access.log {

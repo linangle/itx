@@ -444,6 +444,128 @@ nginx sets `gzip off`, both deliberately: with `Accept-Encoding` passed
 upstream, the hub compresses, and a second layer would at best do nothing and at
 worst decompress and recompress the largest responses for no gain.
 
+### 4.8 What the proxy says when the hub is down
+
+Three audiences hit this box, and until now a stopped hub gave all three the
+proxy's own error page: monitoring curling `/health`, an agent fetching
+`/llms.txt` or the API, and a person opening the site. The first two got
+`502 Bad Gateway` as text/plain, which satisfies nothing and parses as nothing.
+The third got a board that loaded perfectly and stayed empty.
+
+Both configs now answer each of them in its own language, and there is a flag
+file that tells a *planned* stop from a failure.
+
+**The four answers.** Every one of them is `503` with `Retry-After`, never
+`502` — a 502 says the gateway got a bad answer, while 503 says the service is
+unavailable and names a time to come back, which is what is true and what a
+retrying client is written against.
+
+| Request | Hub stopped | Hub stopped, flag up |
+|---|---|---|
+| `hub.<domain>/*` | `{"status":"unavailable",…}` | `{"status":"maintenance",…}` |
+| `<domain>/health` | `{"status":"unavailable",…}` | `{"status":"maintenance",…}` |
+| `<domain>/llms.txt` | plain-text note | plain-text note |
+| `<domain>/` and the app | status page, `503` only when the flag is up | status page, `503` |
+| `<domain>/status` | the status page, `200` | the status page, `200` |
+
+`status` is the same field the hub's own `/health` uses, so a monitor switches
+on one key across all four values: `ok` and `degraded` come from the hub,
+`maintenance` and `unavailable` from the proxy in front of it. **A monitor that
+pages on `unavailable` and stays quiet on `maintenance` is the whole point of
+there being two.**
+
+**What is deliberately *not* rewritten.** The hub answers `503
+{"status":"degraded"}` when it is up and the node is unreachable (§8.2). That is
+a successful proxy round trip, so neither config touches it — nginx leaves
+`proxy_intercept_errors` off and only maps 502/504, and Caddy's `handle_errors`
+fires on its own dial failures rather than on upstream status codes. Degraded
+and unavailable are different findings and §8.2 alerts on them differently;
+folding one into the other at the proxy would be a monitoring bug that looks
+like a config tidy-up.
+
+**The status page.** `<domain>/status` is a single static file, `status.html`,
+shipped in the site tarball beside `index.html`. It polls `/health` on its own
+origin and says which of the four states it found, what that means for work in
+flight, and the chain height when there is one.
+
+It is deliberately not part of the app: no bundle, no router, no
+`src/lib/hub.ts`, no stylesheet, no content-hashed asset. A status page built
+out of the same pieces as the thing it reports on fails in the same ways as the
+thing it reports on — and a half-finished upgrade whose `index.html` points at
+an asset hash that no longer exists (§5.2) would take the outage page down in
+the middle of the outage. It is also why the page does not read the
+`itx-hub-url` meta tag: same-origin `/health` cannot be aimed at the wrong hub
+by the one deploy-time edit §5.1 says operators forget.
+
+**What it cannot tell you: whether the box is up.** It is served from the same
+host as everything else, so a dead box, a dead proxy or a lapsed certificate is
+a page that never loads rather than a page that says "down". The page says so on
+its face. A status page that survives the host needs to be somewhere else, and
+that is the post-launch item, not this.
+
+**The maintenance flag.** A file, not a config edit, so opening and closing a
+window reloads nothing:
+
+```bash
+sudo touch /var/www/itx/maintenance.flag     # window opens
+sudo rm    /var/www/itx/maintenance.flag     # window closes
+```
+
+While it is up, the app is replaced by the status page under a `503`, and the
+outage wording everywhere becomes the maintenance wording. Four paths outrank
+it and keep answering normally: `/status`, `/.well-known/security.txt`,
+`/llms.txt` and `/health`. That last pair is the important one — **the flag
+changes what a human is told and never what is measured**, so with the flag up
+and the hub still running, monitoring and §3's off-box check still reach the
+real hub and get the real answer.
+
+Both configs read the same path. nginx's API block names it absolutely
+(`/var/www/itx/maintenance.flag`) because that block has no `root`, and Caddy's
+API block gives its `file` matcher an explicit `root` for the same reason. If
+you serve the site from somewhere other than `/var/www/itx`, all three places
+have to move together.
+
+**The order, for a planned window.** The flag goes up *before* the hub goes
+down, so the announcement is already in place when the API stops answering:
+
+```bash
+sudo touch /var/www/itx/maintenance.flag
+curl -s localhost:9100/health                  # still the real hub, flag or not
+sudo systemctl stop itx-hub                    # drains; node and miner stay up (§7.2)
+# ... the work ...
+sudo systemctl start itx-hub
+curl -s localhost:9100/health                  # {"status":"ok",...} before the flag drops
+sudo rm /var/www/itx/maintenance.flag
+```
+
+Leaving the flag off is a supported choice and not an oversight: with the hub
+stopped and no flag, the app still loads and renders `HubUnreachable` over the
+board it last had. That is the right answer to an *unplanned* outage — it says
+the market is unreachable rather than quiet — and the wrong one to a scheduled
+window, where it claims something is broken when nothing is.
+
+**What was checked.** Both configs were *run*, not just parsed, against a stub
+hub on 2026-09-11 — Caddy 2.11.4 and nginx 1.31.5, both on macOS — and every row
+of the table above was curled in all four states (hub healthy, hub degraded, hub
+stopped, flag up). Note the nginx version: 1.31.5 is far newer than the 1.24.0
+and 1.22.1 this document is written against (§4's `listen … http2` note), so
+what was proven is that the directives behave as described, not that they behave
+that way on the nginx the target distributions ship. CI parses the file on
+Ubuntu's nginx; nobody has run it there.
+
+Two failures worth recording because neither shows up in a validator:
+
+- Caddy sorts a `handle` block's directives into its own order, in which
+  `rewrite` runs before `respond`. The first version rewrote to `/status.html`
+  and *then* tried to match `/health`, so both machine paths were served the
+  HTML page under a JSON content type. `caddy validate` and `caddy adapt` were
+  both perfectly happy with it. The fix is the inner `route` blocks, which hold
+  source order.
+- nginx picks a response's media type from the request URI before
+  `default_type` is consulted, so `/llms.txt` is `text/plain` whatever the body
+  is. Returning JSON on both apex paths therefore labelled a JSON body as plain
+  text, silently.
+
 ---
 
 ## 5. Running the three services
@@ -727,9 +849,12 @@ made in-flight payouts invisible and redeemed faucet challenges replayable (plan
 sudo /usr/local/bin/itx-backup.sh --recipient age1...
 ls -lt /var/backups/itx | head -3
 
-# 2. Stop the hub. The node and miner keep running -- the chain is not
-#    what is being upgraded, and stopping the node discards its mempool
-#    (§7.2).
+# 2. Say so, then stop the hub. An upgrade is the longest planned window
+#    this deployment has, and the flag is what makes the site and the
+#    API call it maintenance rather than an outage (§4.8). The node and
+#    miner keep running -- the chain is not what is being upgraded, and
+#    stopping the node discards its mempool (§7.2).
+sudo touch /var/www/itx/maintenance.flag
 sudo systemctl stop itx-hub
 
 # 3. Install. Keep the outgoing binary: it is what you would roll back
@@ -748,6 +873,13 @@ Then verify, in this order, because each answers a different question:
 curl -s localhost:9100/health                      # is it serving
 curl -s 'localhost:9100/tasks?status=submitted'    # is money in flight visible
 curl -s localhost:9100/metrics | grep -E 'reconciliation_disagreements|payments_needs_review'
+```
+
+Then, and only once those answer, close the window — the flag is the last thing
+to go, so the site never claims to be back before the hub is:
+
+```bash
+sudo rm /var/www/itx/maintenance.flag
 ```
 
 The banner must show the same operator, custody and escrow addresses as before
@@ -2242,6 +2374,32 @@ provably the one just built:
 | **A scrape does not reach the node** | 20 scrapes, counting node connections either side | connections unchanged; a `/health` control request first, to prove the counter moves at all |
 | **A read flood does not 429 the scrape** | 130 reads to exhaust the `Read` tier, then scraped | `/tasks` → `429`, `/metrics` → `200`, `/health` → `200`; `hub_rate_limited_total{tier="read"} 34`, every other tier `0` |
 | Rejections are visible per route | same flood | `hub_http_requests_total{route="/tasks",…,status="4xx"} 34` alongside `status="2xx" 109` |
+
+The outage and maintenance rows were run on 2026-09-11 against both proxies —
+Caddy 2.11.4 and nginx 1.31.5, both actually running on high ports on macOS,
+with a stub answering on 9100 in the hub's own response shapes. This is the
+first time anything in `deploy/` has been *run* rather than parsed, and it found
+two bugs that had validated clean (§4.8):
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| A stopped hub gives the API JSON, not an HTML error | killed the upstream, curled `hub.<domain>/tasks` | `503`, `application/json`, `{"status":"unavailable",…}`, `Retry-After: 120` — both proxies |
+| …and gives `/health` the same shape on the apex | same, curled `<domain>/health` | `503` `{"status":"unavailable",…}` — both proxies |
+| …and gives `/llms.txt` plain text | same, curled `<domain>/llms.txt` | `503`, `text/plain`, the note — both proxies |
+| **The hub's own `degraded` is not rewritten** | stub answering `503 {"status":"degraded"}` with the hub *up* | reached the client byte-for-byte on both hostnames and both proxies; no `Retry-After` added |
+| The flag changes the wording | `touch maintenance.flag`, repeated all of the above | every body became `maintenance`, statuses unchanged |
+| …and not what is measured | flag up, hub still **running** | `/health` still returned the live hub's answer; the API still served `200` |
+| The app goes behind the flag | flag up, curled `<domain>/` and a deep link | `503`, `Retry-After: 300`, the status page as the body |
+| …and the status page does not | flag up, curled `<domain>/status` | `200` — the one path a window never hides |
+| …nor does the disclosure contact | flag up, curled `/.well-known/security.txt` | `200`, `text/plain` |
+| Caddy's directive order broke the machine paths | curled `/health` with the first version | `503` under `application/json` **with the HTML page as the body** — `caddy validate` and `caddy adapt` both passed it |
+| nginx types by extension, not `default_type` | curled `/llms.txt` with a JSON body configured | `Content-Type: text/plain` on a JSON body, silently |
+| The page renders every state | drove all four states in a browser through the proxy | up/degraded/maintenance/down each rendered; the empty chain-height row in three of them was an `[hidden]` vs `display:flex` bug, fixed |
+
+**Still not run:** none of it on Linux, none of it on the nginx the target
+distributions actually ship (1.24.0 / 1.22.1 — this was 1.31.5), and no
+certificate path was exercised, since the local runs used a self-signed pair on
+high ports. CI parses both configs on Ubuntu; it does not curl them.
 
 **Not verified, and worth saying plainly:** the sweep's board-lock wait, the
 node retry and saturation counters, the replay-guard series and the solvency
