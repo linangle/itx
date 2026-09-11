@@ -149,8 +149,8 @@ async fn main() -> Result<()> {
 
 fn run_compare(args: CompareArgs) -> Result<()> {
     let read = |path: &PathBuf| -> Result<serde_json::Value> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Ok(serde_json::from_str(&text)?)
     };
     let (rendered, worse) = harness::report::compare(&read(&args.baseline)?, &read(&args.against)?);
@@ -177,7 +177,10 @@ async fn run_stack(args: StackArgs) -> Result<()> {
 
     println!("hub          {}", stack.hub_url());
     println!("node         {}", stack.node_address());
-    println!("operator key {}", stack.work_dir().join("operator.priv.cbor").display());
+    println!(
+        "operator key {}",
+        stack.work_dir().join("operator.priv.cbor").display()
+    );
     println!("logs         {}", stack.work_dir().join("logs").display());
     println!("\nrunning; ctrl-c to stop");
 

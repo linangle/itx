@@ -234,7 +234,11 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     // `FUNDING_TARGET` -- this is a budget, and a run that spends it is
     // measuring the budget.
     let funded = chain
-        .wait_for_balance(&operator.public_key(), FUNDING_TARGET, Duration::from_secs(600))
+        .wait_for_balance(
+            &operator.public_key(),
+            FUNDING_TARGET,
+            Duration::from_secs(600),
+        )
         .await?;
     anyhow::ensure!(
         funded >= FUNDING_TARGET,
@@ -257,8 +261,13 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
 
     let restarted_at = chain.height().await?;
     harness.stack.start_hub().await?;
-    let fan_out =
-        wait_for_fan_out(&chain, &operator.public_key(), restarted_at, FAN_OUT_TIMEOUT).await?;
+    let fan_out = wait_for_fan_out(
+        &chain,
+        &operator.public_key(),
+        restarted_at,
+        FAN_OUT_TIMEOUT,
+    )
+    .await?;
 
     let mut samples = Vec::new();
     let mut per_height: BTreeMap<u32, usize> = BTreeMap::new();
@@ -279,7 +288,12 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         // drill was given rather than how many payouts the wallet can
         // make. Reported either way, because "it ran out" is itself
         // worth knowing.
-        if chain.total_balance(&operator.public_key()).await.unwrap_or(u64::MAX) < GRANT + FEE {
+        if chain
+            .total_balance(&operator.public_key())
+            .await
+            .unwrap_or(u64::MAX)
+            < GRANT + FEE
+        {
             exhausted = true;
             break;
         }
@@ -344,7 +358,10 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .fact("payouts_granted", granted)
         .fact("refused_for_balance", refused_for_balance)
         .fact("blocks_elapsed", blocks)
-        .fact("attempts_per_block", (offered_per_block * 100.0).round() / 100.0)
+        .fact(
+            "attempts_per_block",
+            (offered_per_block * 100.0).round() / 100.0,
+        )
         .fact("payouts_per_block", (per_block * 100.0).round() / 100.0)
         .fact("grants_per_minute", (per_minute * 10.0).round() / 10.0)
         .fact("busiest_single_block", busiest_block)

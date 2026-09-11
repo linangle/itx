@@ -159,14 +159,8 @@ impl ChainView {
             .into_iter()
             .map(|(output, marked)| (marked, output))
             .collect();
-        let transaction = build_payment(
-            &available,
-            from,
-            to.clone(),
-            amount,
-            fee,
-            from.public_key(),
-        )?;
+        let transaction =
+            build_payment(&available, from, to.clone(), amount, fee, from.public_key())?;
         self.submit(transaction.clone()).await?;
         Ok(transaction)
     }

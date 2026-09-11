@@ -25,7 +25,11 @@ const WRITE_FLOOD: usize = 100;
 
 /// Fires `count` reads and returns how many were served and how many were
 /// refused with 429.
-async fn flood_reads(hub: &HubClient, count: usize, samples: &mut Vec<Sample>) -> Result<(usize, usize)> {
+async fn flood_reads(
+    hub: &HubClient,
+    count: usize,
+    samples: &mut Vec<Sample>,
+) -> Result<(usize, usize)> {
     let (mut served, mut refused) = (0, 0);
     for _ in 0..count {
         let reply = hub.get("/tasks?limit=1").await?;
@@ -39,7 +43,11 @@ async fn flood_reads(hub: &HubClient, count: usize, samples: &mut Vec<Sample>) -
     Ok((served, refused))
 }
 
-async fn flood_writes(hub: &HubClient, count: usize, samples: &mut Vec<Sample>) -> Result<(usize, usize)> {
+async fn flood_writes(
+    hub: &HubClient,
+    count: usize,
+    samples: &mut Vec<Sample>,
+) -> Result<(usize, usize)> {
     let (mut served, mut refused) = (0, 0);
     for _ in 0..count {
         // A fresh key each time so the per-pubkey quota, which is a
@@ -82,7 +90,10 @@ async fn prepare_chain_probe(hub: &HubClient) -> Result<ChainProbe> {
         reply.status,
         reply.error_text()
     );
-    Ok(ChainProbe { key, challenge: reply.body })
+    Ok(ChainProbe {
+        key,
+        challenge: reply.body,
+    })
 }
 
 /// Probes the three tiers the flood is not aimed at. Returns whether each

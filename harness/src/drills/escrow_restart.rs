@@ -196,8 +196,13 @@ async fn phase(
     let mut escrows = Vec::new();
     for index in 0..BATCH {
         escrows.push(
-            reserve_and_fund(&hub, &chain, poster, format!("escrow-restart {label} {index}"))
-                .await?,
+            reserve_and_fund(
+                &hub,
+                &chain,
+                poster,
+                format!("escrow-restart {label} {index}"),
+            )
+            .await?,
         );
     }
 
@@ -305,7 +310,10 @@ async fn phase(
     ))
     .plan_item("§6.5b")
     .fact("confirmations_in_flight", BATCH)
-    .fact("handler_latency_ms", control_reply.latency.as_secs_f64() * 1000.0)
+    .fact(
+        "handler_latency_ms",
+        control_reply.latency.as_secs_f64() * 1000.0,
+    )
     .fact("answered_success", answered_ok)
     .fact("answered_error", answered_error)
     .fact("never_answered", never_answered)
@@ -317,26 +325,22 @@ async fn phase(
     .latency(summarize(samples, None));
 
     if duplicated > 0 {
-        section = section
-            .verdict(Verdict::Refuted)
-            .finding(format!(
-                "{duplicated} escrow deposit(s) funded a second task after a hub restart. \
+        section = section.verdict(Verdict::Refuted).finding(format!(
+            "{duplicated} escrow deposit(s) funded a second task after a hub restart. \
                  This is supposed to be unreachable: since 2026-09-07 the task and the deposit's \
                  `Consumed` status are staged in ONE redb write transaction \
                  (`HubStore::save_task_and_deposit`), so a crash leaves both records or neither. \
                  Seeing a task on disk beside a deposit that still reads `Reserved` means that \
                  guarantee has been broken -- someone split the commit again, or the write \
                  transaction is not doing what its name says. One deposit, two bounties."
-            ));
+        ));
     } else if stranded > 0 {
-        section = section
-            .verdict(Verdict::Refuted)
-            .finding(format!(
-                "{stranded} escrow deposit(s) were left funded at their derived address with no \
+        section = section.verdict(Verdict::Refuted).finding(format!(
+            "{stranded} escrow deposit(s) were left funded at their derived address with no \
                  task and no way to retry the confirmation. The coin is recoverable by the \
                  operator, who holds the escrow secret, but the depositor cannot reach it and \
                  nothing tells them so."
-            ));
+        ));
     } else if hard && never_answered == 0 {
         // The kill landed after every handler had already replied, so
         // nothing was interrupted and the two zeros above are about a
@@ -438,7 +442,9 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     // fifty coins per block, so being generous here costs nothing and
     // being exact costs a six-minute run.
     let needed = (BOUNTY + FEE) * (BATCH as u64 + 1) * 2 * 10;
-    chain.pay(&operator, &poster.public_key(), needed, FEE).await?;
+    chain
+        .pay(&operator, &poster.public_key(), needed, FEE)
+        .await?;
     let funded = chain
         .wait_for_balance(&poster.public_key(), needed, Duration::from_secs(180))
         .await?;
@@ -462,8 +468,12 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
 mod tests {
     #[test]
     fn phase_labels_make_descriptions_unique_across_phases() {
-        let sigterm: Vec<String> = (0..3).map(|i| format!("escrow-restart sigterm {i}")).collect();
-        let sigkill: Vec<String> = (0..3).map(|i| format!("escrow-restart sigkill {i}")).collect();
+        let sigterm: Vec<String> = (0..3)
+            .map(|i| format!("escrow-restart sigterm {i}"))
+            .collect();
+        let sigkill: Vec<String> = (0..3)
+            .map(|i| format!("escrow-restart sigkill {i}"))
+            .collect();
         for description in &sigterm {
             assert!(!sigkill.contains(description));
         }

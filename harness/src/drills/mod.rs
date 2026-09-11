@@ -144,12 +144,7 @@ pub const RETIRED: &[(&str, &str)] = &[(
 )];
 
 /// Runs one drill by name.
-pub async fn run(
-    name: &str,
-    repo: &Path,
-    bin_dir: &Path,
-    work_root: &Path,
-) -> Result<Report> {
+pub async fn run(name: &str, repo: &Path, bin_dir: &Path, work_root: &Path) -> Result<Report> {
     let work_dir = work_root.join(name);
     match name {
         "node-crash" => node_crash::run(repo, bin_dir, work_dir).await,
@@ -225,7 +220,10 @@ mod tests {
             .await
             .expect_err("a retired drill must not run");
         let message = format!("{err:#}");
-        assert!(message.contains("retired"), "should say it is retired: {message}");
+        assert!(
+            message.contains("retired"),
+            "should say it is retired: {message}"
+        );
         assert!(
             message.contains("compute"),
             "should say what it needs and no longer has: {message}"

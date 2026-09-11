@@ -279,7 +279,9 @@ pub fn solve_faucet_challenge(challenge: &Value) -> Result<u64> {
         .as_str()
         .context("the challenge carries no preimage_template")?;
     let target = btclib::U256::from_str_radix(
-        challenge["target"].as_str().context("the challenge carries no target")?,
+        challenge["target"]
+            .as_str()
+            .context("the challenge carries no target")?,
         16,
     )
     .context("the challenge's target is not hex")?;

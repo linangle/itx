@@ -180,7 +180,9 @@ async fn open_orders(hub: &HubClient) -> Result<BTreeMap<String, Value>> {
 fn locks_implied_by(orders: &BTreeMap<String, Value>) -> BTreeMap<String, (u64, u64)> {
     let mut implied: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for order in orders.values() {
-        let Some(owner) = order["owner"].as_str() else { continue };
+        let Some(owner) = order["owner"].as_str() else {
+            continue;
+        };
         let price = order["price"].as_u64().unwrap_or(0);
         let quantity = order["quantity"].as_u64().unwrap_or(0);
         let filled = order["filled"].as_u64().unwrap_or(0);
@@ -214,12 +216,20 @@ async fn fund_exchange_account(
     // `required_amount` here is a floor rather than a target, so paying
     // more is credited rather than refused -- the load profile learned
     // that the expensive way, having funded every maker with one unit.
-    let required = reserved.body["required_amount"].as_u64().unwrap_or(DEPOSIT).max(DEPOSIT);
+    let required = reserved.body["required_amount"]
+        .as_u64()
+        .unwrap_or(DEPOSIT)
+        .max(DEPOSIT);
     let deposit_pubkey = PublicKey::from_sec1_bytes(&hex::decode(address)?)?;
 
     chain.pay(funder, &deposit_pubkey, required, FEE).await?;
-    let landed = chain.wait_for_balance(&deposit_pubkey, required, Duration::from_secs(180)).await?;
-    anyhow::ensure!(landed >= required, "an exchange deposit did not confirm: {landed} of {required}");
+    let landed = chain
+        .wait_for_balance(&deposit_pubkey, required, Duration::from_secs(180))
+        .await?;
+    anyhow::ensure!(
+        landed >= required,
+        "an exchange deposit did not confirm: {landed} of {required}"
+    );
 
     let confirmed = hub
         .post_signed(
@@ -228,7 +238,11 @@ async fn fund_exchange_account(
             ConfirmEscrowPayload { escrow_id },
         )
         .await?;
-    anyhow::ensure!(confirmed.ok(), "confirming an exchange deposit failed: {:?}", confirmed.body);
+    anyhow::ensure!(
+        confirmed.ok(),
+        "confirming an exchange deposit failed: {:?}",
+        confirmed.body
+    );
     Ok(())
 }
 
@@ -256,7 +270,11 @@ async fn issue_compute_to(
             },
         )
         .await?;
-    anyhow::ensure!(posted.ok(), "could not post the compute task: {:?}", posted.body);
+    anyhow::ensure!(
+        posted.ok(),
+        "could not post the compute task: {:?}",
+        posted.body
+    );
     let task_id = posted.body["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no id on the posted task"))?
@@ -266,19 +284,32 @@ async fn issue_compute_to(
         .post_signed(
             worker,
             &format!("/tasks/{task_id}/claim"),
-            ClaimPayload { task_id: task_id.clone() },
+            ClaimPayload {
+                task_id: task_id.clone(),
+            },
         )
         .await?;
-    anyhow::ensure!(claimed.ok(), "could not claim the compute task: {:?}", claimed.body);
+    anyhow::ensure!(
+        claimed.ok(),
+        "could not claim the compute task: {:?}",
+        claimed.body
+    );
 
     let submitted = hub
         .post_signed(
             worker,
             &format!("/tasks/{task_id}/submit"),
-            SubmitPayload { task_id: task_id.clone(), output: CORRECT_ANSWER.to_string() },
+            SubmitPayload {
+                task_id: task_id.clone(),
+                output: CORRECT_ANSWER.to_string(),
+            },
         )
         .await?;
-    anyhow::ensure!(submitted.ok(), "could not submit the compute task: {:?}", submitted.body);
+    anyhow::ensure!(
+        submitted.ok(),
+        "could not submit the compute task: {:?}",
+        submitted.body
+    );
 
     // The compute credit lands with the payout's confirmation, which is
     // an operator payment and therefore paced by the chain, not the hub.
@@ -359,8 +390,18 @@ async fn snapshot(hub: &HubClient, watched: &[(String, PublicKey)]) -> Result<Sn
         let _ = label;
         accounts.insert(pubkey.to_string(), balances(hub, pubkey).await?);
     }
-    let trades = hub.get("/exchange/trades").await?.body.as_array().map(Vec::len).unwrap_or(0);
-    Ok(Snapshot { accounts, orders: open_orders(hub).await?, trades })
+    let trades = hub
+        .get("/exchange/trades")
+        .await?
+        .body
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    Ok(Snapshot {
+        accounts,
+        orders: open_orders(hub).await?,
+        trades,
+    })
 }
 
 /// How many crossing bids the kill phase puts in flight. Each one is a
@@ -434,7 +475,11 @@ async fn sigkill_phase(
             .post_signed(
                 seller,
                 "/exchange/orders",
-                PlaceOrderPayload { side: "sell", price: LOT_PRICE, quantity: LOT },
+                PlaceOrderPayload {
+                    side: "sell",
+                    price: LOT_PRICE,
+                    quantity: LOT,
+                },
             )
             .await?;
         if placed.ok() {
@@ -456,7 +501,11 @@ async fn sigkill_phase(
         .post_signed(
             buyer,
             "/exchange/orders",
-            PlaceOrderPayload { side: "buy", price: LOT_PRICE, quantity: LOT },
+            PlaceOrderPayload {
+                side: "buy",
+                price: LOT_PRICE,
+                quantity: LOT,
+            },
         )
         .await?;
     let handler_takes = control_started.elapsed().max(Duration::from_millis(5));
@@ -473,7 +522,11 @@ async fn sigkill_phase(
             hub.post_signed(
                 &buyer,
                 "/exchange/orders",
-                PlaceOrderPayload { side: "buy", price: LOT_PRICE, quantity: SWEEP },
+                PlaceOrderPayload {
+                    side: "buy",
+                    price: LOT_PRICE,
+                    quantity: SWEEP,
+                },
             )
             .await
         });
@@ -576,14 +629,21 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
 
     // Enough confirmed operator outputs to fund two deposits and pay a
     // bounty without queueing behind the payout ceiling (§6.4b).
-    chain.wait_for_utxo_count(&operator.public_key(), 3, Duration::from_secs(300)).await?;
+    chain
+        .wait_for_utxo_count(&operator.public_key(), 3, Duration::from_secs(300))
+        .await?;
     let needed = (DEPOSIT + FEE) * 2;
     for who in [&seller, &buyer] {
         chain.pay(&operator, &who.public_key(), needed, FEE).await?;
     }
     for who in [&seller, &buyer] {
-        let funded = chain.wait_for_balance(&who.public_key(), needed, Duration::from_secs(180)).await?;
-        anyhow::ensure!(funded >= needed, "could not fund one of the drill's traders on chain");
+        let funded = chain
+            .wait_for_balance(&who.public_key(), needed, Duration::from_secs(180))
+            .await?;
+        anyhow::ensure!(
+            funded >= needed,
+            "could not fund one of the drill's traders on chain"
+        );
     }
 
     let hub = harness.stack.hub_client()?;
@@ -600,7 +660,11 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .post_signed(
             &seller,
             "/exchange/orders",
-            PlaceOrderPayload { side: "sell", price: 10, quantity: compute_issued.min(50) },
+            PlaceOrderPayload {
+                side: "sell",
+                price: 10,
+                quantity: compute_issued.min(50),
+            },
         )
         .await?;
     anyhow::ensure!(ask.ok(), "the resting ask was refused: {:?}", ask.body);
@@ -609,29 +673,67 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         .post_signed(
             &buyer,
             "/exchange/orders",
-            PlaceOrderPayload { side: "buy", price: 10, quantity: compute_issued.min(50) },
+            PlaceOrderPayload {
+                side: "buy",
+                price: 10,
+                quantity: compute_issued.min(50),
+            },
         )
         .await?;
-    anyhow::ensure!(crossing.ok(), "the crossing bid was refused: {:?}", crossing.body);
+    anyhow::ensure!(
+        crossing.ok(),
+        "the crossing bid was refused: {:?}",
+        crossing.body
+    );
 
     let resting = hub
-        .post_signed(&buyer, "/exchange/orders", PlaceOrderPayload { side: "buy", price: 4, quantity: 25 })
+        .post_signed(
+            &buyer,
+            "/exchange/orders",
+            PlaceOrderPayload {
+                side: "buy",
+                price: 4,
+                quantity: 25,
+            },
+        )
         .await?;
-    anyhow::ensure!(resting.ok(), "the resting bid was refused: {:?}", resting.body);
+    anyhow::ensure!(
+        resting.ok(),
+        "the resting bid was refused: {:?}",
+        resting.body
+    );
 
     let doomed = hub
-        .post_signed(&buyer, "/exchange/orders", PlaceOrderPayload { side: "buy", price: 3, quantity: 10 })
+        .post_signed(
+            &buyer,
+            "/exchange/orders",
+            PlaceOrderPayload {
+                side: "buy",
+                price: 3,
+                quantity: 10,
+            },
+        )
         .await?;
-    anyhow::ensure!(doomed.ok(), "the bid that was going to be cancelled was refused: {:?}", doomed.body);
+    anyhow::ensure!(
+        doomed.ok(),
+        "the bid that was going to be cancelled was refused: {:?}",
+        doomed.body
+    );
     let doomed_id = doomed.body["id"].as_str().unwrap_or_default().to_string();
     let cancelled = hub
         .post_signed(
             &buyer,
             &format!("/exchange/orders/{doomed_id}/cancel"),
-            CancelOrderPayload { order_id: doomed_id.clone() },
+            CancelOrderPayload {
+                order_id: doomed_id.clone(),
+            },
         )
         .await?;
-    anyhow::ensure!(cancelled.ok(), "cancelling an order failed: {:?}", cancelled.body);
+    anyhow::ensure!(
+        cancelled.ok(),
+        "cancelling an order failed: {:?}",
+        cancelled.body
+    );
 
     let watched = vec![
         ("seller".to_string(), seller.public_key()),
@@ -735,7 +837,11 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         && compute_after == compute_before
         && after.trades == before.trades
         && after.orders.len() == before.orders.len();
-    section = section.verdict(if healthy { Verdict::Confirmed } else { Verdict::Refuted });
+    section = section.verdict(if healthy {
+        Verdict::Confirmed
+    } else {
+        Verdict::Refuted
+    });
 
     // The phase that can actually see the bug. Runs on the same stack,
     // after the clean-restart verdict has been taken, because it ends by

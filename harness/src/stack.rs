@@ -206,7 +206,11 @@ impl Stack {
     /// erase why the previous instance died -- which is usually the thing
     /// worth reading.
     fn log(&self, role: &str) -> Result<std::fs::File> {
-        let path = self.config.work_dir.join("logs").join(format!("{role}.log"));
+        let path = self
+            .config
+            .work_dir
+            .join("logs")
+            .join(format!("{role}.log"));
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -443,7 +447,10 @@ async fn terminate(child: &mut Option<Child>) -> Result<()> {
     // to SIGKILL rather than waiting forever.
     match tokio::time::timeout(Duration::from_secs(20), process.wait()).await {
         Ok(_) => Ok(()),
-        Err(_) => process.kill().await.context("SIGKILL after SIGTERM timed out"),
+        Err(_) => process
+            .kill()
+            .await
+            .context("SIGKILL after SIGTERM timed out"),
     }
 }
 

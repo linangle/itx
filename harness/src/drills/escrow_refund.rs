@@ -136,8 +136,8 @@ async fn fund_reservation(
 /// log, so this is a first-party observation, not log-scraping a stranger.
 fn bond_resettlements(work_dir: &Path) -> Result<usize> {
     let path = work_dir.join("logs").join("hub.log");
-    let log = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let log =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     Ok(log
         .lines()
         .filter(|line| line.contains("retried and settled dispute bond"))
@@ -176,13 +176,19 @@ async fn wait_for_paid(hub: &HubClient, task_id: &str) -> Result<String> {
 /// observables this drill already went through.
 async fn sweep_passes(hub: &HubClient) -> Result<u64> {
     let reply = hub.get("/metrics").await?;
-    let text = reply.body.as_str().map(|s| s.to_string()).unwrap_or_else(|| reply.body.to_string());
+    let text = reply
+        .body
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| reply.body.to_string());
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("hub_sweep_passes_total ") {
             return Ok(value.trim().parse().unwrap_or(0));
         }
     }
-    anyhow::bail!("hub_sweep_passes_total is missing from /metrics; this drill needs it to know a sweep ran")
+    anyhow::bail!(
+        "hub_sweep_passes_total is missing from /metrics; this drill needs it to know a sweep ran"
+    )
 }
 
 async fn total_earned(hub: &HubClient, pubkey: &PublicKey) -> Result<u64> {
@@ -221,17 +227,27 @@ async fn settle_a_forfeited_bond(
             },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "reserving the task escrow failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "reserving the task escrow failed: {}",
+        reply.error_text()
+    );
     let task_escrow = fund_reservation(&chain, poster, &reply.body).await?;
 
     let reply = hub
         .post_signed(
             poster,
             &format!("/tasks/escrow/{}/confirm", task_escrow.id),
-            ConfirmEscrowPayload { escrow_id: task_escrow.id.clone() },
+            ConfirmEscrowPayload {
+                escrow_id: task_escrow.id.clone(),
+            },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "confirming the task escrow failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "confirming the task escrow failed: {}",
+        reply.error_text()
+    );
     let task_id = reply.body["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no task id in the confirmation"))?
@@ -242,18 +258,31 @@ async fn settle_a_forfeited_bond(
         .post_signed(
             assignee,
             &format!("/tasks/{task_id}/claim"),
-            ClaimPayload { task_id: task_id.clone() },
+            ClaimPayload {
+                task_id: task_id.clone(),
+            },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "claiming the task failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "claiming the task failed: {}",
+        reply.error_text()
+    );
     let reply = hub
         .post_signed(
             assignee,
             &format!("/tasks/{task_id}/submit"),
-            SubmitPayload { task_id: task_id.clone(), output: ANSWER.to_string() },
+            SubmitPayload {
+                task_id: task_id.clone(),
+                output: ANSWER.to_string(),
+            },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "submitting the answer failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "submitting the answer failed: {}",
+        reply.error_text()
+    );
 
     // A challenger puts up a bond against that answer.
     let reply = hub
@@ -266,7 +295,11 @@ async fn settle_a_forfeited_bond(
             },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "reserving the bond escrow failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "reserving the bond escrow failed: {}",
+        reply.error_text()
+    );
     let bond = fund_reservation(&chain, challenger, &reply.body).await?;
 
     let reply = hub
@@ -279,7 +312,11 @@ async fn settle_a_forfeited_bond(
             },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "confirming the bond failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "confirming the bond failed: {}",
+        reply.error_text()
+    );
 
     // The operator finds for the assignee, so the bond is forfeited
     // forward and credited as earned.
@@ -293,7 +330,11 @@ async fn settle_a_forfeited_bond(
             },
         )
         .await?;
-    anyhow::ensure!(reply.ok(), "resolving the dispute failed: {}", reply.error_text());
+    anyhow::ensure!(
+        reply.ok(),
+        "resolving the dispute failed: {}",
+        reply.error_text()
+    );
 
     // Wait for the bond to actually leave its address before restarting:
     // the settlement is a fire-and-forget submit, and a restart while the

@@ -224,7 +224,11 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
         let on_chain = chain.confirmed_balance(&agent.public_key()).await?;
         landed_after_sweep += on_chain;
         let task = hub.get(&format!("/tasks/{task_id}")).await?;
-        let status = task.body.get("status").and_then(Value::as_str).unwrap_or("?");
+        let status = task
+            .body
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
         if on_chain >= BOUNTY {
             continue;
         }

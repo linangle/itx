@@ -36,8 +36,8 @@
 
 use crate::chain::ChainView;
 use crate::client::{
-    claim_faucet, CancelOrderPayload, ClaimPayload, CreateTaskPayload, HubClient, PlaceOrderPayload,
-    SubmitPayload,
+    claim_faucet, CancelOrderPayload, ClaimPayload, CreateTaskPayload, HubClient,
+    PlaceOrderPayload, SubmitPayload,
 };
 use crate::report::{Report, Section};
 use crate::stats::{summarize, Sample};
@@ -523,11 +523,7 @@ pub async fn run(config: &LoadConfig) -> Result<Section> {
     let mut funded_makers = 0;
     if let (Some(funder), Some(node)) = (funder.as_ref(), config.node_address.as_ref()) {
         let chain = ChainView::new(node);
-        let makers: Vec<&PrivateKey> = agents
-            .iter()
-            .filter(|a| a.trades)
-            .map(|a| &a.key)
-            .collect();
+        let makers: Vec<&PrivateKey> = agents.iter().filter(|a| a.trades).map(|a| &a.key).collect();
         funded_makers = fund_makers(&base, &chain, funder, &makers, 1_000_000)
             .await
             .context("funding exchange makers")?;

@@ -315,7 +315,11 @@ impl Report {
             "{}  commit {}{}  {} build  {}  {} cpus\n",
             self.started_at.format("%Y-%m-%d %H:%M:%SZ"),
             &self.environment.commit.chars().take(12).collect::<String>(),
-            if self.environment.dirty { " (dirty)" } else { "" },
+            if self.environment.dirty {
+                " (dirty)"
+            } else {
+                ""
+            },
             self.environment.profile,
             self.environment.host,
             self.environment.cpus,
@@ -394,9 +398,7 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
     let by_title = |report: &serde_json::Value| -> BTreeMap<String, Value> {
         sections(report)
             .into_iter()
-            .filter_map(|section| {
-                Some((section.get("title")?.as_str()?.to_string(), section))
-            })
+            .filter_map(|section| Some((section.get("title")?.as_str()?.to_string(), section)))
             .collect()
     };
 
@@ -411,12 +413,18 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
             .pointer("/environment/commit")
             .and_then(Value::as_str)
             .unwrap_or("?"),
-        baseline.get("started_at").and_then(Value::as_str).unwrap_or("?"),
+        baseline
+            .get("started_at")
+            .and_then(Value::as_str)
+            .unwrap_or("?"),
         current
             .pointer("/environment/commit")
             .and_then(Value::as_str)
             .unwrap_or("?"),
-        current.get("started_at").and_then(Value::as_str).unwrap_or("?"),
+        current
+            .get("started_at")
+            .and_then(Value::as_str)
+            .unwrap_or("?"),
     ));
 
     for (title, new_section) in &after {
@@ -440,8 +448,9 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
             .unwrap_or("confirmed");
         // `inconclusive` is not a bad answer, it is the absence of one --
         // see `Section::verdict_needs_attention`.
-        let is_a_problem =
-            |verdict: Option<&str>| !matches!(verdict, None | Some("inconclusive")) && verdict != Some(healthy);
+        let is_a_problem = |verdict: Option<&str>| {
+            !matches!(verdict, None | Some("inconclusive")) && verdict != Some(healthy)
+        };
         // Whether a section is delivering the answer it exists to give.
         let reaches_healthy = |verdict: Option<&str>| verdict == Some(healthy);
         if old_verdict != new_verdict {
@@ -493,9 +502,7 @@ pub fn compare(baseline: &serde_json::Value, current: &serde_json::Value) -> (St
         for (key, new_value) in facts(new_section) {
             match old_facts.get(&key) {
                 Some(old_value) if old_value == &new_value => {}
-                Some(old_value) => {
-                    out.push_str(&format!("  {key}: {old_value} -> {new_value}\n"))
-                }
+                Some(old_value) => out.push_str(&format!("  {key}: {old_value} -> {new_value}\n")),
                 None => out.push_str(&format!("  {key}: (new) {new_value}\n")),
             }
         }
@@ -548,12 +555,7 @@ mod tests {
     /// see `Section::healthy_verdict`. Deliberately no `accepted` key on
     /// either, so these also stand in for a baseline written before that
     /// field existed.
-    fn report_healthy_when(
-        healthy: &str,
-        verdict: &str,
-        findings: Vec<&str>,
-        count: i64,
-    ) -> Value {
+    fn report_healthy_when(healthy: &str, verdict: &str, findings: Vec<&str>, count: i64) -> Value {
         json!({
             "environment": {"commit": "abc"},
             "started_at": "2026-09-06T00:00:00Z",
@@ -601,7 +603,10 @@ mod tests {
             &report_healthy_when("refuted", "refuted", vec![], 0),
             &report_healthy_when("refuted", "confirmed", vec![], 6_000_000),
         );
-        assert!(worse, "the plan's predicted failure happening again is the regression");
+        assert!(
+            worse,
+            "the plan's predicted failure happening again is the regression"
+        );
         assert!(rendered.contains("verdict: refuted -> confirmed"));
 
         // And the fix landing must not fail: the same drill going the
@@ -629,7 +634,10 @@ mod tests {
             &report("inconclusive", vec![], 0),
             &report("refuted", vec![], 1),
         );
-        assert!(worse, "and the bug returning must fail, which refuted-to-refuted never could");
+        assert!(
+            worse,
+            "and the bug returning must fail, which refuted-to-refuted never could"
+        );
         assert!(rendered.contains("verdict: inconclusive -> refuted"));
     }
 
@@ -641,14 +649,20 @@ mod tests {
         let mut current = report("confirmed", vec![], 0);
         current["sections"][0]["accepted"] = json!(["known drain variance"]);
         let (rendered, worse) = compare(&report("confirmed", vec![], 0), &current);
-        assert!(!worse, "accepting a known observation must not fail a comparison");
+        assert!(
+            !worse,
+            "accepting a known observation must not fail a comparison"
+        );
         assert!(!rendered.contains("NEW FINDING"));
 
         // But a real finding alongside an accepted one still fails.
         let mut current = report("confirmed", vec!["money vanished"], 0);
         current["sections"][0]["accepted"] = json!(["known drain variance"]);
         let (_, worse) = compare(&report("confirmed", vec![], 0), &current);
-        assert!(worse, "accepting one thing must not silence everything else");
+        assert!(
+            worse,
+            "accepting one thing must not silence everything else"
+        );
     }
 
     /// The gap that let a drill stop covering something in silence.
@@ -664,7 +678,10 @@ mod tests {
             &report("confirmed", vec![], 0),
             &report("inconclusive", vec![], 0),
         );
-        assert!(worse, "a section that used to confirm and now cannot decide has regressed");
+        assert!(
+            worse,
+            "a section that used to confirm and now cannot decide has regressed"
+        );
         assert!(rendered.contains("verdict: confirmed -> inconclusive"));
     }
 
@@ -677,7 +694,10 @@ mod tests {
             &report_healthy_when("refuted", "refuted", vec![], 0),
             &report_healthy_when("refuted", "inconclusive", vec![], 0),
         );
-        assert!(worse, "node-crash going undecided is the same loss of coverage");
+        assert!(
+            worse,
+            "node-crash going undecided is the same loss of coverage"
+        );
     }
 
     /// And the improving direction must stay quiet, or every drill that
@@ -688,13 +708,19 @@ mod tests {
             &report("inconclusive", vec![], 0),
             &report("confirmed", vec![], 0),
         );
-        assert!(!worse, "inconclusive -> confirmed is the fix landing, not a regression");
+        assert!(
+            !worse,
+            "inconclusive -> confirmed is the fix landing, not a regression"
+        );
         assert!(rendered.contains("verdict: inconclusive -> confirmed"));
     }
 
     #[test]
     fn confirmed_turning_into_refuted_is_a_regression() {
-        let (_, worse) = compare(&report("confirmed", vec![], 0), &report("refuted", vec![], 0));
+        let (_, worse) = compare(
+            &report("confirmed", vec![], 0),
+            &report("refuted", vec![], 0),
+        );
         assert!(worse);
     }
 
