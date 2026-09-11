@@ -1,8 +1,8 @@
 {
   "name": "drill: signed-write-cost",
-  "started_at": "2026-09-11T09:01:10.015124493Z",
+  "started_at": "2026-09-11T16:20:54.427693402Z",
   "environment": {
-    "commit": "1caf45a1736c748ec992849d89187de1dd1991bd",
+    "commit": "bc6903121647c43e551b22b16b057646b7792fed",
     "dirty": false,
     "profile": "release",
     "host": "Linux x86_64",
@@ -17,22 +17,21 @@
     {
       "title": "Where a signed write's time actually goes",
       "plan_item": "§6.3",
-      "verdict": "refuted",
+      "verdict": "inconclusive",
       "facts": {
-        "claim_to_verify_ratio": 1.27,
-        "durable_claim_p50_ms": 0.34,
+        "claim_to_verify_ratio": 0.76,
+        "durable_claim_p50_ms": 0.2,
         "rounds": 40,
-        "unauthenticated_read_p50_ms": 0.14,
+        "unauthenticated_read_p50_ms": 0.13,
         "verify_and_quota_p50_ms": 0.27,
-        "verify_plus_durable_claim_p50_ms": 0.61
+        "verify_plus_durable_claim_p50_ms": 0.47
       },
       "notes": [
-        "The two signed measurements are the same envelope on the same route from the same key. They differ by exactly one step: the first is claimed and fsynced before the handler refuses it, the second is caught by the in-memory replay set at the claim and never written."
+        "The two signed measurements are the same envelope on the same route from the same key. They differ by exactly one step: the first is claimed and fsynced before the handler refuses it, the second is caught by the in-memory replay set at the claim and never written.",
+        "Verification and the quota charge cost 0.27ms against 0.20ms for the durable replay claim -- within 3x of each other, so neither dominates and this run supports no claim about the ordering. Storage whose fsync is nearly free (a CI runner, a cached virtual disk) reads like this, and the ordering flips between runs on the same machine. Read this drill on hardware with the durability characteristics you intend to deploy on; §6.3's conclusion was drawn where the claim costs about 23x the verify."
       ],
       "findings": [],
-      "accepted": [
-        "§6 item 3 names signature-verify CPU as the third thing to break, but verification and the quota charge together cost 0.27ms while the durable replay claim behind them costs 0.34ms -- 1x more. Signed writes are bounded by one fsync per request, not by ECDSA. That also means the write path does not scale with cores, and that batching or group-committing the replay guard's writes is worth more than anything done to the verify."
-      ],
+      "accepted": [],
       "healthy_verdict": "refuted",
       "latency": [
         {
@@ -42,10 +41,10 @@
           "by_status": {
             "200": 40
           },
-          "p50_ms": 0.138204,
-          "p90_ms": 0.17043,
-          "p99_ms": 0.756101,
-          "max_ms": 0.756101,
+          "p50_ms": 0.133862,
+          "p90_ms": 0.15082800000000002,
+          "p99_ms": 0.6648999999999999,
+          "max_ms": 0.6648999999999999,
           "per_second": null
         },
         {
@@ -55,10 +54,10 @@
           "by_status": {
             "403": 40
           },
-          "p50_ms": 0.6069479999999999,
-          "p90_ms": 30.164724,
-          "p99_ms": 101.35244999999999,
-          "max_ms": 101.35244999999999,
+          "p50_ms": 0.468018,
+          "p90_ms": 0.7511249999999999,
+          "p99_ms": 4.333181000000001,
+          "max_ms": 4.333181000000001,
           "per_second": null
         },
         {
@@ -68,10 +67,10 @@
           "by_status": {
             "401": 40
           },
-          "p50_ms": 0.267416,
-          "p90_ms": 0.424303,
-          "p99_ms": 0.498752,
-          "max_ms": 0.498752,
+          "p50_ms": 0.26596200000000003,
+          "p90_ms": 0.280399,
+          "p99_ms": 0.298321,
+          "max_ms": 0.298321,
           "per_second": null
         }
       ]

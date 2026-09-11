@@ -209,6 +209,20 @@ nightly and copy it in whole, rather than editing numbers by hand.
 > more at once. Until then this drill gates nothing on CI; read it on a
 > developer machine, where it does work.
 
+> **`signed-write-cost`'s baseline says `inconclusive` for the same kind of
+> reason.** Its healthy verdict is `refuted` — the durable replay claim costs
+> about 23x the verify on real storage, which is what §6.3 was corrected on. A
+> CI runner's fsync is nearly free, so the two land within a factor of two and
+> the ordering reverses between runs; the drill now refuses to call anything
+> under 3x a verdict. Read it on hardware with the durability characteristics
+> you intend to deploy on.
+>
+> Both of these baseline on the *undecided* verdict deliberately. For a drill
+> whose result varies on the gate's hardware it is the only stable choice:
+> `inconclusive -> refuted` reads as an improvement and passes, where a
+> `refuted` baseline would fail every run that came up undecided. The healthy
+> verdict is unchanged in both, so a real regression still fails.
+
 **Baseline every drill on a run of the code you want to keep** — its healthy
 run — rather than on the pre-fix run that first found the bug. That is the
 opposite of the convention through 2026-09-06 and the reason is the
