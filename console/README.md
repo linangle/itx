@@ -49,9 +49,13 @@ key on two laptops.
 
 ```bash
 cargo run -p btclib --bin key_gen viewer      # -> viewer.priv.cbor / viewer.pub.pem
-# hand viewer.priv.cbor to the collaborator, and add its hex pubkey to
-# the hub's --admin-keys
 ```
+
+Better still, have them run that on their own machine and send you only
+the `signing as <hex>` line this binary prints at startup: the private
+key then never travels, and that line is exactly what `--admin-keys`
+wants. `docs/deployment.md` §8.6 is the whole procedure, including the
+upgrade that silently revokes them.
 
 ## What is on the page
 

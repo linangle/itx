@@ -1598,6 +1598,89 @@ if one exists, expected outcome, observed outcome, and the verification after
 a fix. Counts and logs reset/rotate; retain the relevant evidence before a
 restart. The console stays read-only and cannot resolve a payment itself.
 
+### 8.6 Who can open the console, and how a second person gets in
+
+The console (`console/README.md`) is a local binary, not a page the hub
+serves. Each operator runs their own copy on their own machine: it holds
+a private key in its process, signs one read against `POST
+/admin/overview`, and serves a page on loopback that carries no
+credential at all. The browser never sees a key and never talks to the
+hub. That is why there is no login on it — the 127.0.0.1 bind is the
+boundary, and it is not configurable.
+
+```bash
+cargo run --release -p console --bin itx-console -- \
+    --hub https://hub.itx.example.com \
+    --key-file /path/to/viewer.priv.cbor
+# then open http://127.0.0.1:8787
+```
+
+`/admin/overview` is reachable through the proxy, unlike `/metrics`
+(§4's Caddyfile answers 404 to that one). Neither operator needs shell on
+the box to watch the hub, and nothing is weakened by that: the route
+takes a signed envelope, so reaching it and being admitted to it are
+different questions.
+
+**The operator needs no configuration.** `require_admin` admits the
+operator key unconditionally, so a single-operator deployment works the
+moment the binary is built.
+
+**A second person gets their own viewer key.** The operator key moves
+money; watching the hub should not require holding it, and a key copied
+so someone can read a dashboard is a treasury key on two laptops. Every
+route under `/admin/*` is a read, so a viewer key observes everything on
+the console and changes nothing — no payout, no cancellation, no dispute.
+
+Generate it on *their* machine, so the private key never travels:
+
+```bash
+cargo run --release -p btclib --bin key_gen -- viewer
+```
+
+They start the console with `--key-file viewer.priv.cbor`. It prints
+`signing as <hex>` before it serves anything, whether or not the key is
+admitted yet, and that line is exactly the string `--admin-keys` wants.
+They send you the hex. They do not send you `viewer.priv.cbor`, and you
+do not ask for it.
+
+On the box, add it to the installed unit — comma-separated for more than
+one — and restart:
+
+```bash
+sudo systemctl edit --full itx-hub    # --admin-keys "<hex>,<hex>"
+sudo systemctl restart itx-hub
+```
+
+§9.9 covers what a restart costs the requests in flight. It is a drain,
+not a kill, but it is not free.
+
+**Three things that go wrong here, in the order you will meet them.**
+
+- **403 on the console** — that key is not on `--admin-keys`. Check for a
+  truncated paste before regenerating anything; the hex is 66 characters.
+- **401 on the console** — nine times in ten the local clock has drifted
+  outside the envelope's 120-second window, not a bad key. Check the
+  clock on the machine running the console, not on the hub.
+- **A collaborator silently loses access after an upgrade** — §5 installs
+  units with `sudo cp deploy/itx-*.service /etc/systemd/system/`, which
+  overwrites the edit above with the repo's empty `--admin-keys`. The
+  symptom is a 403 on a key that worked yesterday and a console that
+  stopped updating during the one window where watching mattered. Re-add
+  it after any upgrade that copies the units, or keep the hex in your
+  own deployment notes so re-adding does not depend on remembering the
+  value.
+
+**Do not commit a real pubkey to the repository.** The flag itself is
+documented in `console/README.md` and in the unit, and that is
+deliberate — a flag name is not a secret, and the allowlist holds public
+keys, which are public by construction. Neither the operator's nor a
+viewer's pubkey grants anything on its own: `/admin/overview` verifies a
+signature, so an attacker holding the hex still needs the private key,
+and even then reaches only reads. What a committed pubkey does give away
+is a target worth phishing and a standing record of who watches this
+hub, which is why the repo's copy of the unit ships empty and the real
+value lives on the box.
+
 ## 9. Incident runbook
 
 ### 9.0 The one lever you have

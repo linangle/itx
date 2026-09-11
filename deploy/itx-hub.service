@@ -33,6 +33,30 @@ WorkingDirectory=/var/lib/itx
 StateDirectory=itx itx/secrets
 StateDirectoryMode=0700
 
+# --admin-keys is the comma-separated list of hex pubkeys allowed to read
+# /admin/overview, which is everything the operators' console renders:
+# alerts, faucet clustering by network, custody against liabilities, the
+# integrity counters. The operator key is always admitted, so a
+# single-operator box needs nothing here.
+#
+# It ships present and empty rather than absent, because the two are not
+# the same to a reader: an empty string says the knob exists and nobody
+# else is admitted yet, while no line at all says nothing and is why a
+# collaborator's key used to 403 with no clue where to look.
+#
+# Put a collaborator's *viewer* pubkey here -- never their private key,
+# and never the operator key. /admin/* is read-only (hub/src/admin.rs),
+# so a viewer key observes everything and moves nothing, whereas an
+# operator key handed over so someone can read a dashboard is a treasury
+# key on a second laptop.
+#
+# The repo's copy stays empty on purpose: a real pubkey committed here is
+# published to anyone who can read the repository. Edit the installed
+# copy at /etc/systemd/system/itx-hub.service instead -- and note that
+# §5's `sudo cp deploy/itx-*.service /etc/systemd/system/` overwrites it,
+# so an upgrade silently revokes whoever you added. docs/deployment.md
+# §8.6 has the whole procedure.
+#
 # --generate-keys is explicit first-boot authority. It is safe to leave in
 # the unit: if the store exists, the hub refuses to replace any missing key.
 ExecStart=/usr/local/bin/itx-hub \
@@ -44,7 +68,8 @@ ExecStart=/usr/local/bin/itx-hub \
     --operator-key-file /var/lib/itx/secrets/hub_operator.priv.cbor \
     --exchange-custody-key-file /var/lib/itx/secrets/hub_exchange_custody.priv.cbor \
     --escrow-secret-file /var/lib/itx/secrets/hub_escrow_secret.bin \
-    --trusted-proxies 127.0.0.1,::1
+    --trusted-proxies 127.0.0.1,::1 \
+    --admin-keys ""
 
 # A restart is not free to clients, but it is no longer destructive.
 # hub/src/auth.rs claims and fsyncs an envelope's signature BEFORE the
