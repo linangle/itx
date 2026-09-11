@@ -71,6 +71,34 @@ const MEASURE_FOR: Duration = Duration::from_secs(150);
 /// payouts per block before it is asking a question the wallet could
 /// fail.
 const ATTEMPT_EVERY: Duration = Duration::from_millis(100);
+
+/// How many claims to keep in flight at once.
+///
+/// The offer rate has to beat the ceiling per *block*, and until
+/// 2026-09-11 this drill offered them one at a time: claim, wait for the
+/// whole challenge-solve-redeem round trip, sleep, repeat. On a
+/// developer's machine one attempt costs about 26ms and that produced
+/// ~40 offers a block, comfortably past the two dozen outputs the wallet
+/// holds.
+///
+/// On the two-core runner the nightly uses it does not. The same attempt
+/// costs about 1.5 seconds there -- the node, the miner and the hub are
+/// all competing for the same two cores, and the proof of work is on top
+/// -- so the run offered 2.91 payouts a block, granted every one of them,
+/// and was refused for balance exactly zero times. It never reached any
+/// ceiling, correctly reported `inconclusive`, and told us nothing on the
+/// one machine the gate actually runs on.
+///
+/// `ATTEMPT_EVERY` cannot fix that: the sleep was never the bottleneck,
+/// the round trip was. Eight in flight multiplies the offer rate by
+/// roughly eight on a slow box and costs nothing on a fast one, where the
+/// limiting factor stays the sleep.
+///
+/// Eight rather than more because this is still meant to be a wallet
+/// measurement rather than a load test: enough to beat two dozen outputs
+/// per block, few enough that the hub is not queueing on its own
+/// accept loop and reporting that instead.
+const CONCURRENT_ATTEMPTS: usize = 8;
 /// How much confirmed operator coin to accumulate before collapsing.
 ///
 /// A *balance*, not an output count, and both halves of that are lessons
@@ -233,56 +261,116 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let fan_out =
         wait_for_fan_out(&chain, &operator.public_key(), restarted_at, FAN_OUT_TIMEOUT).await?;
 
-    let mut samples = Vec::new();
-    let mut per_height: BTreeMap<u32, usize> = BTreeMap::new();
-    let mut attempts = 0usize;
-    let mut granted = 0usize;
-    let mut refused_for_balance = 0usize;
     let start_height = chain.height().await?;
 
     let measuring_from = Instant::now();
     let deadline = measuring_from + MEASURE_FOR;
-    let mut index = 0usize;
-    let mut exhausted = false;
-    while Instant::now() < deadline {
-        // Stop when the operator can no longer fund a grant from
-        // anything it holds, confirmed or not. Past that point every
-        // further block grants nothing and drags the per-block average
-        // down, and the resulting number describes how much coin the
-        // drill was given rather than how many payouts the wallet can
-        // make. Reported either way, because "it ran out" is itself
-        // worth knowing.
-        if chain.total_balance(&operator.public_key()).await.unwrap_or(u64::MAX) < GRANT + FEE {
-            exhausted = true;
-            break;
-        }
-        let key = PrivateKey::new_key();
-        // Its own source address per attempt: the faucet is chain-tier at
-        // twenty a minute per address, and this drill offers far more than
-        // that on purpose. Being throttled by the limiter instead of by
-        // the wallet would answer a different question.
-        let client = hub.from_source(&format!("10.5.{}.{}", index / 250, index % 250));
-        index += 1;
+    let exhausted;
 
-        let reply = claim_faucet(&client, &key).await?;
-        samples.push(Sample::new("POST /faucet", reply.status, reply.latency));
-        attempts += 1;
-
-        if reply.ok() {
-            granted += 1;
-            let height = chain.height().await.unwrap_or(start_height);
-            *per_height.entry(height).or_default() += 1;
-        } else if reply.status == 503 {
-            // The shape of this refusal changed with the fix. It used to
-            // be a 500 whose text carried "insufficient", which is what
-            // this counted; the hub now answers a grant it cannot fund
-            // with a 503 and a `Retry-After`, and matching the status is
-            // both narrower and stable against the wording.
-            refused_for_balance += 1;
-        }
-        tokio::time::sleep(ATTEMPT_EVERY).await;
+    // `CONCURRENT_ATTEMPTS` workers offering claims until the deadline,
+    // rather than one attempt at a time. See the constant for why: the
+    // round trip, not the sleep, is what set the offer rate, and on the
+    // runner the nightly uses it set it far too low to reach any ceiling.
+    //
+    // Shared state behind one mutex rather than per-worker tallies
+    // merged at the end, so `per_height` stays a single ordering of what
+    // actually happened. The lock is held only for the counter update --
+    // never across an await on the hub -- so it cannot become the thing
+    // being measured.
+    struct Tally {
+        samples: Vec<Sample>,
+        per_height: BTreeMap<u32, usize>,
+        attempts: usize,
+        granted: usize,
+        refused_for_balance: usize,
+        index: usize,
+        exhausted: bool,
     }
+    let tally = std::sync::Arc::new(tokio::sync::Mutex::new(Tally {
+        samples: Vec::new(),
+        per_height: BTreeMap::new(),
+        attempts: 0,
+        granted: 0,
+        refused_for_balance: 0,
+        index: 0,
+        exhausted: false,
+    }));
+
+    let mut workers = Vec::with_capacity(CONCURRENT_ATTEMPTS);
+    for _ in 0..CONCURRENT_ATTEMPTS {
+        let tally = tally.clone();
+        let hub = hub.clone();
+        let chain = chain.clone();
+        let operator_pubkey = operator.public_key();
+        workers.push(tokio::spawn(async move {
+            while Instant::now() < deadline {
+                // Stop when the operator can no longer fund a grant from
+                // anything it holds, confirmed or not. Past that point
+                // every further block grants nothing and drags the
+                // per-block average down, and the resulting number
+                // describes how much coin the drill was given rather than
+                // how many payouts the wallet can make. Reported either
+                // way, because "it ran out" is itself worth knowing.
+                if chain.total_balance(&operator_pubkey).await.unwrap_or(u64::MAX) < GRANT + FEE {
+                    tally.lock().await.exhausted = true;
+                    return Ok::<(), anyhow::Error>(());
+                }
+                if tally.lock().await.exhausted {
+                    return Ok(());
+                }
+
+                let key = PrivateKey::new_key();
+                // Its own source address per attempt: the faucet is
+                // chain-tier at twenty a minute per address, and this
+                // drill offers far more than that on purpose. Being
+                // throttled by the limiter instead of by the wallet would
+                // answer a different question. Taken under the lock so two
+                // workers cannot draw the same address.
+                let index = {
+                    let mut t = tally.lock().await;
+                    let i = t.index;
+                    t.index += 1;
+                    i
+                };
+                let client = hub.from_source(&format!("10.5.{}.{}", index / 250, index % 250));
+
+                let reply = claim_faucet(&client, &key).await?;
+                let height = if reply.ok() { chain.height().await.ok() } else { None };
+
+                let mut t = tally.lock().await;
+                t.samples.push(Sample::new("POST /faucet", reply.status, reply.latency));
+                t.attempts += 1;
+                if reply.ok() {
+                    t.granted += 1;
+                    *t.per_height.entry(height.unwrap_or(start_height)).or_default() += 1;
+                } else if reply.status == 503 {
+                    // The shape of this refusal changed with the fix. It
+                    // used to be a 500 whose text carried "insufficient",
+                    // which is what this counted; the hub now answers a
+                    // grant it cannot fund with a 503 and a `Retry-After`,
+                    // and matching the status is both narrower and stable
+                    // against the wording.
+                    t.refused_for_balance += 1;
+                }
+                drop(t);
+
+                tokio::time::sleep(ATTEMPT_EVERY).await;
+            }
+            Ok(())
+        }));
+    }
+    for worker in workers {
+        worker.await??;
+    }
+
     let measured_for = measuring_from.elapsed();
+    let (samples, per_height, attempts, granted, refused_for_balance) = {
+        let t = std::sync::Arc::try_unwrap(tally)
+            .map_err(|_| anyhow::anyhow!("a worker outlived the measurement"))?
+            .into_inner();
+        exhausted = t.exhausted;
+        (t.samples, t.per_height, t.attempts, t.granted, t.refused_for_balance)
+    };
 
     let end_height = chain.height().await?;
     let blocks = (end_height - start_height).max(1);
