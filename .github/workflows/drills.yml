@@ -72,6 +72,20 @@ jobs:
       - name: compare against the checked-in baselines
         # The gate. A verdict that turned into a refutation, or a finding
         # that was not there before, exits non-zero here.
+        #
+        # `if: always()` because without it this step is skipped exactly
+        # when it is needed. `harness drill` exits non-zero whenever any
+        # drill needs attention, a failing step skips the rest of the
+        # job, and so the one run where a verdict actually moved was the
+        # one run that never got compared. Every scheduled run in this
+        # workflow's life has skipped this step -- first because the
+        # batch aborted on a retired drill (see N21), then, once that was
+        # fixed, because a drill flagged. The gate had never executed.
+        #
+        # The step does its own comparison and exits non-zero on a real
+        # regression, so the job still fails; this only stops the
+        # comparison being thrown away on the way there.
+        if: always()
         run: |
           set -euo pipefail
           # Without this an empty reports/ makes the loop run once on the
