@@ -33,7 +33,7 @@ its older “everything is blocking” and wave-by-wave lists are not today's ga
 | Faucet | Proof of work, per-network pricing, global grant budget, eligibility before work and replacement-price fixes are merged |
 | Public surface | Marketplace-only board, posted versus paid activity, initial outage notice, older-hub activity guard, real site artifact, apex/API routing and mock-build isolation are merged |
 | Deployment configuration | Linux CI passed nftables, nginx, Caddy and systemd parsing on the audited commit; real-host behavior is still a separate gate |
-| Operations | Read-only console, metrics, runbook, backup/restore scripts and upgrade/rollback instructions exist; task-payout alerts are fixed; fresh-host rehearsal remains |
+| Operations | Read-only console, metrics, runbook, backup/restore scripts and upgrade/rollback instructions exist; task-payout alerts are fixed; fresh-host recovery is rehearsed and scripted (`deploy/itx-recover.sh`, deployment §7.6), the upgrade/rollback rehearsal remains |
 | Onboarding | SDK, CLI, MCP and skill instructions exist; checkout installation is documented. PyPI/MCP registry publication is unfinished |
 
 These are implemented foundations, not a claim that deployment or every chaos
@@ -51,7 +51,7 @@ drill has passed. See the audit for commit-level evidence and test results.
 | ◑ | **Minimal arrival-failure workflow** (A6) | Console failure rows and runbook built; rejected faucet/task requests verified through local HTTP. Repeat through real proxy/logs before launch |
 | ☐ | **Green candidate CI, drills and release artifact** | Exact candidate has passing CI and full chaos comparison; Linux release builds/tests; links and hashes are retained |
 | ☐ | **Throwaway Linux deployment** | Real TLS, hub address, discovery/API routing, external IPv4/IPv6 access rules, secrets, miner and funded wallet checked on the installed artifact |
-| ☐ | **Fresh-host recovery and rollback rehearsal** | Backup restores onto a different host with matching identity and obligations; service restart, upgrade and backup-based rollback exercised |
+| ◑ | **Fresh-host recovery and rollback rehearsal** | Backup restores onto a different host with matching identity and obligations; service restart, upgrade and backup-based rollback exercised. **Recovery half done 2026-09-11** (deployment §7.6): restored onto boxes that had never seen the deployment, operator address and board state identical, units start/stop/restart under a real systemd, backup's service-stop branch measured at ~0.2s of downtime, and `deploy/itx-recover.sh` is the rehearsed procedure. **Still owed:** the upgrade and its backup-based rollback, x86_64, a real host rather than a container, and a cutover with the old box actually stopped |
 | ☐ | **Launch operating settings** | Domain, funding, viewer keys, operator coverage and explicit faucet/consensus budgets recorded; exchange off; consensus caveat visible |
 
 The small code/copy gates are implemented. Host rehearsal is the next step. The final

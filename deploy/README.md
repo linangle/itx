@@ -16,7 +16,8 @@ this directory is the artifacts, not the explanation.
 | `itx-hub.service` | hub unit — the process holding all three secrets |
 | `itx-miner.service` | miner unit |
 | `itx-backup.sh` | encrypted backup, to a public key the box cannot read back |
-| `itx-restore-drill.sh` | restores a backup into a scratch dir and proves it is the right one |
+| `itx-restore-drill.sh` | restores a backup into a scratch dir and proves it is the right one. The Tuesday check — nothing live is touched |
+| `itx-recover.sh` | brings the deployment back on a box that has never seen it: installs the release, restores into `/var/lib/itx`, starts the units in an order that works, proves the operator address matches. The incident script. Rehearsed end to end — §7.6 |
 | `security.txt` | RFC 9116 disclosure contact, served by the proxy |
 
 Four things in here are security controls rather than tuning, and each is

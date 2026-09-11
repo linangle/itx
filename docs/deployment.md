@@ -1381,8 +1381,9 @@ archive whose internal layout had drifted from the unit's would pass this drill
 every night and fail on the one box you are restoring onto during an incident.
 
 **It does not tell you the restore works on a fresh host.** It removes one way
-that restore can fail while every check beforehand said it would work. The
-rehearsal is still owed.
+that restore can fail while every check beforehand said it would work. That
+rehearsal has since been run — §7.6 — and the warning below stopped being a
+warning and became a measurement.
 
 > **Restore before you enable the unit.** `itx-hub.service` passes
 > `--generate-keys`, which is safe as written — the hub refuses to replace a
@@ -1398,6 +1399,152 @@ Note the ordering constraint when you do: redb is single-process, so the live
 hub must be stopped before anything else opens `hub.redb`. That is the same
 property that blocks horizontal scaling (plan §3.3, §11), showing up in
 operations.
+
+### 7.6 The fresh-host recovery, and what it actually costs
+
+Run on 2026-09-11. Four Debian 12 boxes with a real systemd, one of them the
+"production" box and the others each seeing this deployment for the first time.
+The whole loop was exercised: install by §5, run a real stack, drive real work
+through it, `itx-backup.sh` to an age recipient whose private half was never on
+the box, then recover onto a machine that had never seen any of it.
+
+**The procedure is a script now: [`deploy/itx-recover.sh`](../deploy/itx-recover.sh).**
+`itx-restore-drill.sh` proves an archive restores *somewhere* — a scratch
+directory, throwaway ports, nothing live touched. This one does the real thing,
+and it is the one to run during an incident:
+
+```bash
+sudo ./itx-recover.sh \
+    --archive  /mnt/usb/itx-20260911T234630Z.tar.gz.age \
+    --identity /mnt/usb/itx-restore-key.txt \
+    --release-dir ./itx-v0.1.0-x86_64-linux \
+    --expect-operator 0248970c...
+```
+
+#### The number
+
+**Two seconds**, from an empty box with the files in hand to `/health` `200` on
+a hub whose operator address matched. Do not carry that number into a plan. It
+is the mechanical part only, on 22 blocks of chain and a 40 KB archive, and
+three things that are not in it are what a real recovery is actually made of:
+
+- **Finding the archive and the identity file.** The drill has always said this
+  is the half people fail, and it is the half a script cannot time.
+- **The node's chain replay.** The node prints `found N blocks in the local
+  store, loading...` and only binds afterwards. 22 blocks took **329 ms**; this
+  term grows with the chain and nothing else here does.
+- **Everything after the hub answers.** DNS, the proxy config, TLS, the site and
+  its `itx-hub-url` meta tag, and the firewall — which has to be in place
+  *before* the node is reachable from outside. The script prints that list
+  rather than pretending it finished the job.
+
+So: the data path is seconds and stays seconds. Budget the recovery on the
+human and DNS legs, and re-measure the replay once the chain is large.
+
+#### What it proved
+
+The recovered box was the same deployment, not merely a working one. Operator
+address and escrow fingerprint identical; `hub.redb` came back with the same
+task at the same status (`Paid`, `bounty_confirmed: 1000000`, same claimant),
+the same reputation record, the same assigned agent name, the same faucet grant,
+and the same chain height. A hub that starts proves the files are well-formed;
+the address and the fingerprint are what prove they are yours.
+
+Two claims in this document were being taken on trust and are now measured:
+
+- **`itx-backup.sh`'s `systemctl stop/start` branch had never run.** §11 said so.
+  It ran: the hub was down for **~0.2 s** — two failed probes at a 100 ms
+  cadence — and the whole backup was under a second. That is the "seconds, and
+  independent of how large the chain has grown" the script's comment claims,
+  now with a number against it. It is the *hub* that stops; the node keeps its
+  mempool throughout.
+- **The systemd units had never been loaded by a running systemd.** CI only ran
+  `systemd-analyze verify`. All three now install, enable, start, stop and
+  restart on a real one.
+
+#### What it found
+
+**Enabling the units before restoring mints a treasury, and nothing says so.**
+§7.5 warned about this; here is what it looks like. The hub creates a new
+operator key, a new custody key and a new escrow secret, answers `/health` with
+`200`, and `systemctl is-active` says `active`. The board is empty and the
+operator address is one you have never seen. The only tell is a line in the
+journal:
+
+```
+creating missing operator private key at /var/lib/itx/secrets/hub_operator.priv.cbor because --generate-keys was supplied
+```
+
+`itx-recover.sh` now refuses to start when a store or a key is already present,
+which makes the mistake hard rather than merely documented. Climbing out took
+**2 s** once the whole state directory was removed — and it has to be the whole
+directory. A minted escrow secret left beside a restored store derives a
+different address for every deposit ever handed out, silently, and the hub does
+not notice.
+
+**`After=itx-node.service` does not wait for the node's socket, and a recovery
+is where that shows.** systemd started the node and the hub 2 ms apart; the node
+bound 329 ms later; the hub ran its boot-time wallet maintenance in between and
+could not reach anything. A box brought up with `systemctl enable --now itx-node
+itx-hub itx-miner` came back with `hub_operator_fan_out_failures_total 2` and
+`hub_custody_fan_out_failures_total 2`. The same box started node-first read `0`
+and `0`.
+
+It is not breakage: `maintain_operator_outputs` runs on every sweep pass as well
+as at boot, so a wallet that genuinely needed splitting is fixed within sixty
+seconds. It matters for two reasons anyway. §5 tells an operator to read that
+counter when payouts look wrong, and a freshly recovered box will have a
+non-zero one for reasons that have nothing to do with the problem being chased.
+And the race widens with the chain, because the node's replay is the side that
+grows. `itx-recover.sh` starts the node, waits for `Listening on`, and only then
+starts the hub.
+
+**`systemctl is-active` is not a health check.** A `Type=simple` unit is active
+the instant its process forks, which is before the hub has bound its port. A
+`curl` fired straight after a start — or straight after the nightly backup's
+restart — gets a connection refused from a service systemd calls healthy. Poll
+the port; the first version of the rehearsal failed on exactly this.
+
+**The replay guard restores by wall clock, not by archive.** Recovering minutes
+after the backup restored 9 replay-guard signatures; recovering from the same
+archive later restored 0. Both are correct — only signatures still inside the
+drift window are worth keeping, and the rest are unreplayable on the clock
+anyway — but `restored 0 replay-guard signature(s)` on a cold recovery is
+expected rather than a sign the store is thin.
+
+#### What it did not cover
+
+- **The rollback half.** The checklist pairs this rehearsal with exercising a
+  backup-based rollback of an upgrade (§5.2). That was not done: no upgrade was
+  performed, no schema stamp was moved, and no pre-upgrade backup was restored
+  over a newer store. §5.2's procedure is still written from the code.
+- **Architecture.** Built and run on `aarch64`. The release artifact is
+  `x86_64`. Nothing here is architecture-sensitive in an interesting way, but
+  nobody has run the x86_64 binaries either.
+- **Containers, not hosts.** Each "box" was a privileged container with its own
+  systemd, PID namespace and state directory, which is a fair model of a fresh
+  host for everything above and not a model of one for anything involving real
+  disks, real network interfaces, or the firewall.
+- **A real cutover.** The old box was left running throughout. Two hubs on one
+  chain will both pay out and neither knows about the other; deciding the order
+  of "stop the old one" and "start the new one" is a step this rehearsal skipped
+  and a real recovery cannot.
+- **`--reflink`.** The archive was copied sequentially, because container
+  overlayfs has no reflink support. The point-in-time-clone path §7.2 describes
+  is still unexercised.
+
+#### Repeating it
+
+The apparatus is four containers and about a hundred lines of shell; what makes
+it a rehearsal rather than a test is that the recovery step is the same script
+you would run for real. Any fresh Debian 12 box with systemd will do:
+
+```bash
+docker run -d --name fresh --privileged --cgroupns=host \
+    -v /sys/fs/cgroup:/sys/fs/cgroup:rw debian-with-systemd
+# then, inside it, with the release, the archive and the identity in hand:
+./itx-recover.sh --archive ... --identity ... --release-dir ... --expect-operator ...
+```
 
 ---
 
@@ -2001,10 +2148,26 @@ template interval), so alert at ~5 minutes of no movement, not one.
 
 ### 9.7 Restoring from backup
 
-Full procedure in §7.4. The ordering constraint that bites under pressure: **stop
-the hub before anything else opens `hub.redb`.** redb is single-process, and the
-drill script's scratch-directory approach exists precisely so you can rehearse
-without tripping over that.
+Two different jobs, and reaching for the wrong script costs time you do not have.
+
+**Recovering onto a new box** — the host is gone, or you are cutting over:
+`deploy/itx-recover.sh`, and §7.6 for what it does and what it leaves you. It
+installs the release, restores into `/var/lib/itx`, starts the units in an order
+that works, and refuses to run if the box already holds a store. Rehearsed
+end to end; the mechanical part is seconds.
+
+```bash
+sudo ./itx-recover.sh --archive <archive> --identity <key> \
+                      --release-dir <unpacked release> --expect-operator <pubkey>
+```
+
+**Checking an archive is good** — nothing is wrong, it is Tuesday:
+`deploy/itx-restore-drill.sh`, §7.4. Scratch directory, throwaway ports, nothing
+live touched.
+
+The ordering constraint that bites under pressure, in both cases: **stop the hub
+before anything else opens `hub.redb`.** redb is single-process. `itx-recover.sh`
+checks this for you and stops rather than corrupting anything.
 
 ### 9.8 Disclosure inbox
 
@@ -2400,6 +2563,29 @@ two bugs that had validated clean (§4.8):
 distributions actually ship (1.24.0 / 1.22.1 — this was 1.31.5), and no
 certificate path was exercised, since the local runs used a self-signed pair on
 high ports. CI parses both configs on Ubuntu; it does not curl them.
+
+The recovery rows were run on 2026-09-11 across four Debian 12 boxes with a real
+systemd — one "production", three that had never seen the deployment. Full write
+-up, including the five findings and what it did not cover, is §7.6:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| The units load and run under a real systemd | installed and `enable --now` on Debian 12 | all three start, stop, restart and survive `daemon-reload`; §11 previously had only `systemd-analyze verify` from CI |
+| **`itx-backup.sh`'s `systemctl` branch works** | ran it on a live box, polling `/health` at 100 ms throughout | hub down **~0.2 s**, whole backup under 1 s, node never stopped — the branch §11 called untested |
+| **An archive restores onto a box that has never seen this deployment** | fresh container, release + archive + identity and nothing else | `/health` `200`, operator address and escrow fingerprint identical |
+| …and brings the state, not just a working hub | compared `GET /tasks?status=all` and `/leaderboard` on both boxes | byte-identical: same task id, `Paid`, `bounty_confirmed 1000000`, same claimant, same reputation, same assigned name `KindFog` |
+| **The RTO of the mechanical part** | clock from empty box to `/health` 200 | **2 s** on 22 blocks and a 40 KB archive — see §7.6 before using that number |
+| The node's replay is the term that grows | journal timestamps, node start to `Listening on` | **329 ms** for 22 blocks |
+| **Enabling the units before restoring mints a treasury** | did it on purpose on a fresh box | `200` healthy, `active`, empty board, an operator address nobody has ever seen; the only tell is one journal line |
+| …and the script now refuses to let you | ran `itx-recover.sh` over an existing store, and with units running | refused both, exit 1 |
+| …and climbing out works | stopped units, removed the whole state dir, restored | correct operator address back, **+2 s** |
+| **`After=` does not wait for the node's socket** | compared fan-out counters after both start orders | `enable --now` all three → `hub_operator_fan_out_failures_total 2`, custody 2. Node-first → `0` and `0` |
+| `systemctl is-active` is not a health check | curled immediately after a `Type=simple` start | connection refused from a unit systemd reported `active` |
+
+**Not covered by that run, and each is a real gap:** the backup-based *rollback*
+of an upgrade (§5.2 is still written from the code alone), x86_64 (this was
+aarch64), a real host rather than a privileged container, a real cutover with
+the old box stopped, and the `--reflink` copy path.
 
 **Not verified, and worth saying plainly:** the sweep's board-lock wait, the
 node retry and saturation counters, the replay-guard series and the solvency
