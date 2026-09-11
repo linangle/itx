@@ -90,12 +90,17 @@ function renderBoard(
   };
 }
 
-/** A board with markets in four sectors, shared by the blocks below. */
+/** A board with markets in three sectors, shared by the blocks below.
+ *
+ * The sector names here are not registered anywhere and this build has
+ * never heard of them: they exist because these four tags do. Picked to
+ * look like tags a real agent would write rather than like categories a
+ * product would ship. */
 const capabilitiesFixture = [
-  market("python", 5000),
-  market("web-dev", 3000),
-  market("image-generation", 900),
-  market("therapy", 100),
+  market("software/python", 5000),
+  market("software/web-dev", 3000),
+  market("media/image-generation", 900),
+  market("customer-operations/billing-support", 100),
 ];
 
 describe("Board", () => {
@@ -107,13 +112,13 @@ describe("Board", () => {
     // The sector is the panel; the markets inside it are the rows. Read
     // through the panel rather than the document, so a stray "python"
     // elsewhere on the board can't satisfy this.
-    const coding = (await screen.findAllByRole("table")).find((t) =>
+    const software = (await screen.findAllByRole("table")).find((t) =>
       within(t).queryByRole("button", { name: "python" }),
     );
-    expect(coding).toBeDefined();
-    expect(within(coding!).getByRole("button", { name: "web-dev" })).toBeInTheDocument();
+    expect(software).toBeDefined();
+    expect(within(software!).getByRole("button", { name: "web-dev" })).toBeInTheDocument();
     // Biggest market first, as the carousel orders sectors.
-    const rows = within(coding!).getAllByRole("row").slice(1);
+    const rows = within(software!).getAllByRole("row").slice(1);
     expect(rows.map((r) => r.textContent?.match(/^[a-z-]+/)?.[0])).toEqual(["python", "web-dev"]);
   });
 
@@ -203,7 +208,7 @@ describe("Board", () => {
     const user = userEvent.setup();
     const { carousel } = renderBoard(capabilities);
     await user.click(await carousel.findByRole("button", { name: "python" }));
-    expect(screen.getByTestId("search").textContent).toContain("market=python");
+    expect(screen.getByTestId("search").textContent).toContain("market=software%2Fpython");
   });
 
   it("goes back to the carousel from the chart", async () => {
@@ -228,7 +233,7 @@ describe("Board", () => {
     const sectors = within(nav)
       .getAllByRole("button")
       .map((b) => b.textContent);
-    expect(sectors).toEqual(["coding", "creative", "conversation"]);
+    expect(sectors).toEqual(["software", "media", "customer-operations"]);
   });
 
   it("nests the sectors inside the overview's own entry", async () => {
@@ -242,7 +247,7 @@ describe("Board", () => {
     // of its own -- which would make "sectors" and the "breakdown" link
     // read as two names for the same thing.
     const item = overview.closest("li")!;
-    expect(within(item).getByRole("button", { name: "coding" })).toBeInTheDocument();
+    expect(within(item).getByRole("button", { name: "software" })).toBeInTheDocument();
     expect(overview).toHaveAttribute("aria-expanded", "true");
   });
 
@@ -251,7 +256,7 @@ describe("Board", () => {
     // "hash match" et al describe how a task is verified, not what kind
     // of work it is, and no longer head the board.
     expect(screen.queryByText(/hash match/i)).not.toBeInTheDocument();
-    expect(screen.getAllByText("coding").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("software").length).toBeGreaterThan(0);
   });
 
   it("files a tag the taxonomy doesn't know under other, rather than dropping it", async () => {
@@ -428,7 +433,7 @@ describe("Board leaderboard", () => {
 describe("Board sorting", () => {
   /** Three coding markets whose value and change orders disagree, so a
    * test cannot pass by accident on a table sorted the other way. */
-  function codingMarkets(): CapabilitySummaryDto[] {
+  function softwareMarkets(): CapabilitySummaryDto[] {
     const at = (early: number, late: number) => {
       const s = new Array(BUCKETS).fill(0);
       s[2] = early;
@@ -437,11 +442,11 @@ describe("Board sorting", () => {
     };
     return [
       // value 400, change +300%
-      { ...market("python", 1), bounty_series: at(100, 300), posted_series: at(1, 3) },
+      { ...market("software/python", 1), bounty_series: at(100, 300), posted_series: at(1, 3) },
       // value 900, change +12.5%
-      { ...market("rust", 1), bounty_series: at(400, 450), posted_series: at(1, 1) },
+      { ...market("software/rust", 1), bounty_series: at(400, 450), posted_series: at(1, 1) },
       // value 250, change -50%
-      { ...market("sql", 1), bounty_series: at(200, 100), posted_series: at(2, 1) },
+      { ...market("software/sql", 1), bounty_series: at(200, 100), posted_series: at(2, 1) },
     ];
   }
 
@@ -451,74 +456,74 @@ describe("Board sorting", () => {
       .slice(1)
       .map((r) => r.textContent?.match(/^[a-z-]+/)?.[0]);
 
-  function codingPanel(container: HTMLElement) {
+  function softwarePanel(container: HTMLElement) {
     return within(container.querySelector("#itx-board-markets") as HTMLElement).getAllByRole(
       "table",
     )[0];
   }
 
   it("quotes each market's value beside its change", () => {
-    const { container } = renderBoard(codingMarkets());
-    const row = within(codingPanel(container)).getAllByRole("row")[1];
+    const { container } = renderBoard(softwareMarkets());
+    const row = within(softwarePanel(container)).getAllByRole("row")[1];
     // Biggest value first by default, so this is rust: 850 base units.
     expect(row.textContent).toContain("rust");
     expect(row.textContent).toMatch(/\+12\.50%/);
   });
 
   it("orders by value, largest first, before anyone touches a header", () => {
-    const { container } = renderBoard(codingMarkets());
-    expect(names(codingPanel(container))).toEqual(["rust", "python", "sql"]);
+    const { container } = renderBoard(softwareMarkets());
+    expect(names(softwarePanel(container))).toEqual(["rust", "python", "sql"]);
   });
 
   it("flips direction when the active column is clicked again", async () => {
     const user = userEvent.setup();
-    const { container } = renderBoard(codingMarkets());
-    const panel = codingPanel(container);
+    const { container } = renderBoard(softwareMarkets());
+    const panel = softwarePanel(container);
 
     await user.click(within(panel).getByRole("button", { name: /value/i }));
-    expect(names(codingPanel(container))).toEqual(["sql", "python", "rust"]);
+    expect(names(softwarePanel(container))).toEqual(["sql", "python", "rust"]);
 
-    await user.click(within(codingPanel(container)).getByRole("button", { name: /value/i }));
-    expect(names(codingPanel(container))).toEqual(["rust", "python", "sql"]);
+    await user.click(within(softwarePanel(container)).getByRole("button", { name: /value/i }));
+    expect(names(softwarePanel(container))).toEqual(["rust", "python", "sql"]);
   });
 
   it("takes over at largest-first when the other column is clicked", async () => {
     const user = userEvent.setup();
-    const { container } = renderBoard(codingMarkets());
+    const { container } = renderBoard(softwareMarkets());
 
-    await user.click(within(codingPanel(container)).getByRole("button", { name: /change/i }));
+    await user.click(within(softwarePanel(container)).getByRole("button", { name: /change/i }));
     // Change order disagrees with value order, which is the point.
-    expect(names(codingPanel(container))).toEqual(["python", "rust", "sql"]);
+    expect(names(softwarePanel(container))).toEqual(["python", "rust", "sql"]);
 
-    await user.click(within(codingPanel(container)).getByRole("button", { name: /change/i }));
-    expect(names(codingPanel(container))).toEqual(["sql", "rust", "python"]);
+    await user.click(within(softwarePanel(container)).getByRole("button", { name: /change/i }));
+    expect(names(softwarePanel(container))).toEqual(["sql", "rust", "python"]);
   });
 
   it("marks which column is sorting the table, and which way", async () => {
     const user = userEvent.setup();
-    const { container } = renderBoard(codingMarkets());
+    const { container } = renderBoard(softwareMarkets());
     // By name rather than position: the sparkline's heading is
     // aria-hidden (it labels no figure of its own), so the columns and
     // the accessible headers are deliberately not one-to-one.
     const header = (name: RegExp) =>
-      within(codingPanel(container)).getByRole("columnheader", { name });
+      within(softwarePanel(container)).getByRole("columnheader", { name });
 
     expect(header(/value/i)).toHaveAttribute("aria-sort", "descending");
     expect(header(/change/i)).toHaveAttribute("aria-sort", "none");
 
-    await user.click(within(codingPanel(container)).getByRole("button", { name: /change/i }));
+    await user.click(within(softwarePanel(container)).getByRole("button", { name: /change/i }));
     expect(header(/value/i)).toHaveAttribute("aria-sort", "none");
     expect(header(/change/i)).toHaveAttribute("aria-sort", "descending");
   });
 
   it("sorts every sector's panel together, so the board stays comparable", async () => {
     const user = userEvent.setup();
-    const { container } = renderBoard([...codingMarkets(), market("therapy", 100)]);
+    const { container } = renderBoard([...softwareMarkets(), market("customer-operations/billing-support", 100)]);
     const panels = () =>
       within(container.querySelector("#itx-board-markets") as HTMLElement).getAllByRole("table");
 
     await user.click(within(panels()[0]).getByRole("button", { name: /change/i }));
-    // The conversation panel's own header reflects the same ordering,
+    // The other sector's panel reflects the same ordering,
     // rather than each panel keeping its own.
     expect(
       within(panels()[1]).getByRole("columnheader", { name: /change/i }),

@@ -473,6 +473,14 @@ class HubClient:
             "min_reputation": min_reputation,
             "capabilities": sorted(set(capabilities or [])),
         }
+        # `capabilities`: one to three lowercase tags describing the work,
+        # in the form `<sector>/<market>` (e.g. `software/rust`). There is
+        # no approved list -- a tag exists because a task carries it, and
+        # the board derives its sector from the part before the first `/`.
+        # Invent an accurate slug when no existing one fits; reuse one only
+        # when it means the same work. Discovery only: tags change nothing
+        # about price, eligibility, verification, settlement or reputation.
+        # The same applies to every posting method below.
         return self._signed_post("/tasks", operator, payload)
 
     def create_consensus_task(

@@ -161,21 +161,29 @@ describe("summarizeBySector", () => {
   const at = (hoursAgo: number) => new Date(NOW - hoursAgo * HOUR).toISOString();
 
   it("groups markets under their sectors, biggest open bounty first at both levels", () => {
+    // Sector names come from the tags and from nowhere else. These two
+    // are not registered anywhere; they exist because these three tasks
+    // were posted.
     const summary = summarizeBySector(
       [
-        task({ created_at: at(1), capabilities: ["python"], bounty: 100, status: "Open" }),
-        task({ created_at: at(1), capabilities: ["rust"], bounty: 900, status: "Open" }),
-        task({ created_at: at(1), capabilities: ["ocr"], bounty: 5000, status: "Open" }),
+        task({ created_at: at(1), capabilities: ["software/python"], bounty: 100, status: "Open" }),
+        task({ created_at: at(1), capabilities: ["software/rust"], bounty: 900, status: "Open" }),
+        task({ created_at: at(1), capabilities: ["media/ocr"], bounty: 5000, status: "Open" }),
       ],
       opts,
     );
-    expect(summary.map((s) => s.name)).toEqual(["data", "coding"]);
-    expect(summary[1].markets.map((m) => m.capability)).toEqual(["rust", "python"]);
+    expect(summary.map((s) => s.name)).toEqual(["media", "software"]);
+    expect(summary[1].markets.map((m) => m.capability)).toEqual([
+      "software/rust",
+      "software/python",
+    ]);
     expect(summary[1].open).toBe(2);
     expect(summary[1].openBounty).toBe(1000);
   });
 
-  it("files an unknown tag under the other sector", () => {
+  it("files an unnamespaced tag under the other sector", () => {
+    // A legacy tag, or one an agent wrote without a namespace. It stays
+    // visible and keeps its own market; no sector is invented for it.
     const summary = summarizeBySector(
       [task({ created_at: at(1), capabilities: ["haruspicy"] })],
       opts,
@@ -194,16 +202,21 @@ describe("summarizeBySector", () => {
     // both.
     const twice = task({
       created_at: at(1),
-      capabilities: ["python", "rust", "ocr"],
+      capabilities: ["software/python", "software/rust", "media/ocr"],
       status: "Open",
       bounty: 100,
     });
     const summary = summarizeBySector([twice], opts);
-    const coding = summary.find((s) => s.name === "coding");
-    const data = summary.find((s) => s.name === "data");
-    expect(coding?.posted).toBe(1);
-    expect(coding?.openBounty).toBe(100);
-    expect(data?.posted).toBe(1);
+    const software = summary.find((s) => s.name === "software");
+    const media = summary.find((s) => s.name === "media");
+    expect(software?.posted).toBe(1);
+    expect(software?.openBounty).toBe(100);
+    // ...and once in each exact market inside it.
+    expect(software?.markets.map((m) => m.capability)).toEqual([
+      "software/python",
+      "software/rust",
+    ]);
+    expect(media?.posted).toBe(1);
   });
 
   it("counts a task once when it carries the same tag twice", () => {
@@ -387,12 +400,35 @@ describe("from the hub's board summary", () => {
   });
 
   it("groups the hub's per-tag rows into sectors, biggest first at both levels", () => {
+    // Sectors are read off the hub's own aggregate rows -- the site adds
+    // no rows of its own and knows no sector names in advance.
     const sectors = sectorsFromSummary(
-      summary([capability("python", 100), capability("ocr", 5000), capability("rust", 900)]),
+      summary([
+        capability("software/python", 100),
+        capability("media/ocr", 5000),
+        capability("software/rust", 900),
+      ]),
     );
-    expect(sectors.map((s) => s.name)).toEqual(["data", "coding"]);
-    expect(sectors[1].markets.map((m) => m.capability)).toEqual(["rust", "python"]);
+    expect(sectors.map((s) => s.name)).toEqual(["media", "software"]);
+    expect(sectors[1].markets.map((m) => m.capability)).toEqual([
+      "software/rust",
+      "software/python",
+    ]);
     expect(sectors[1].openBounty).toBe(1000);
+  });
+
+  it("shows a sector the first time the hub reports a tag in it", () => {
+    // The acceptance criterion at the aggregate level: no code change,
+    // no registration, no list to add it to.
+    const sectors = sectorsFromSummary(summary([capability("new-field/new-specialty", 10)]));
+    expect(sectors.map((s) => s.name)).toEqual(["new-field"]);
+    expect(sectors[0].markets.map((m) => m.capability)).toEqual(["new-field/new-specialty"]);
+  });
+
+  it("shows nothing at all when the hub reports no tagged work", () => {
+    // An empty board is an empty board. It must not fall back to a
+    // sample of sectors that would read as a market with activity in it.
+    expect(sectorsFromSummary(summary([]))).toEqual([]);
   });
 
   it("draws a market's curve cumulatively but reads its change per bucket", () => {

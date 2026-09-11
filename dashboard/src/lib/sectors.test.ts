@@ -1,100 +1,68 @@
 import { describe, expect, it } from "vitest";
-import { OTHER_SECTOR, SECTORS, marketLabel, sectorOf } from "./sectors";
+import { OTHER_SECTOR, marketLabel, sectorOf } from "./sectors";
 
+/** The whole rule: a sector is what an agent wrote before the first `/`.
+ *
+ * These cases are examples of the *syntax*, not a list of sectors the
+ * board knows. Nothing here is registered anywhere, and that is the
+ * property being tested -- picking deliberately unlikely names, because a
+ * test full of plausible ones would pass just as well against a
+ * hard-coded table and tell us nothing. */
 describe("sectorOf", () => {
-  it("files a known tag into its sector", () => {
-    expect(sectorOf("python")).toBe("coding");
-    expect(sectorOf("image-generation")).toBe("creative");
-    expect(sectorOf("therapy")).toBe("conversation");
-    expect(sectorOf("ocr")).toBe("data");
+  it("takes the sector from the namespace, whatever it is", () => {
+    expect(sectorOf("software/rust")).toBe("software");
+    expect(sectorOf("scientific-research/literature-review")).toBe("scientific-research");
+    expect(sectorOf("customer-operations/billing-support")).toBe("customer-operations");
+    expect(sectorOf("media/audio-transcription")).toBe("media");
   });
 
-  it("files an unknown tag into the other sector rather than nowhere", () => {
-    // A real hub accepts any string as a tag; the board must never make
-    // a task invisible because the taxonomy hasn't heard of its tag.
-    expect(sectorOf("underwater-basket-weaving")).toBe(OTHER_SECTOR);
+  it("accepts a sector nobody has ever used before, with no code change", () => {
+    // The acceptance criterion, stated as a test: a tag invented right
+    // now works exactly as well as one that shipped with the site.
+    expect(sectorOf("new-field/new-specialty")).toBe("new-field");
+    expect(marketLabel("new-field/new-specialty")).toBe("new-specialty");
+    expect(sectorOf("metallurgy/alloy-selection")).toBe("metallurgy");
+    expect(sectorOf("underwater-basket-weaving/reed-sourcing")).toBe("underwater-basket-weaving");
   });
 
-  it("matches the wire string exactly, as the hub's own filter does", () => {
-    expect(sectorOf("Python")).toBe(OTHER_SECTOR);
-    expect(sectorOf(" python")).toBe(OTHER_SECTOR);
+  it("keeps only the first separator, so an agent may nest further", () => {
+    expect(sectorOf("software/python/asyncio")).toBe("software");
+    expect(marketLabel("software/python/asyncio")).toBe("python/asyncio");
   });
 
-  it("maps every tag the seeded fixture has ever used", () => {
-    // The original mock's twelve tags, pinned so a hub seeded before the
-    // taxonomy existed still files entirely into named sectors.
-    const legacy = [
-      "python",
-      "rust",
-      "translation",
-      "ocr",
-      "scraping",
-      "summarization",
-      "geocoding",
-      "labeling",
-      "transcription",
-      "vision",
-      "sql",
-      "prover",
-    ];
-    for (const tag of legacy) expect(sectorOf(tag)).not.toBe(OTHER_SECTOR);
-  });
-
-  describe("tags that name their own sector", () => {
-    it("takes the sector from the tag, whatever it is", () => {
-      // The path that matters: an agent inventing a sector gets it on
-      // the board with no change to this file.
-      expect(sectorOf("logistics/route-planning")).toBe("logistics");
-      expect(sectorOf("bioinformatics/protein-folding")).toBe("bioinformatics");
-      expect(marketLabel("logistics/route-planning")).toBe("route-planning");
-    });
-
-    it("splits on the first separator only, so agents may nest further", () => {
-      expect(sectorOf("coding/python/asyncio")).toBe("coding");
-      expect(marketLabel("coding/python/asyncio")).toBe("python/asyncio");
-    });
-
-    it("overrides the seed list rather than deferring to it", () => {
-      // `ocr` seeds to data; `vision/ocr` says otherwise and wins.
-      expect(sectorOf("ocr")).toBe("data");
-      expect(sectorOf("vision/ocr")).toBe("vision");
-    });
-
-    it("lands a bare tag and its namespaced twin in the same sector", () => {
-      // They are two *markets* -- different strings on the wire, and the
-      // task list filters on the exact tag -- but the same kind of work,
-      // and the board should shelve them together rather than inventing
-      // a second coding sector for one of them.
-      expect(sectorOf("coding/python")).toBe(sectorOf("python"));
-      // Still separately labelled, because they are separately traded.
-      expect(marketLabel("coding/python")).toBe("python");
-      expect(marketLabel("python")).toBe("python");
-    });
-
-    it("needs something before the separator to count as a sector", () => {
-      // Nothing in front of the slash names nothing.
-      expect(sectorOf("/orphan")).toBe(OTHER_SECTOR);
-      // Something in front of it does, even with nothing after -- the
-      // agent said which sector, and that is the part being read.
-      expect(sectorOf("trailing/")).toBe("trailing");
-      // The label falls back to the whole tag rather than emptying out.
-      expect(marketLabel("trailing/")).toBe("trailing/");
-    });
-  });
-
-  it("assigns no tag to two sectors", () => {
-    const seen = new Set<string>();
-    for (const sector of SECTORS) {
-      for (const tag of sector.capabilities) {
-        expect(seen.has(tag), `${tag} appears twice`).toBe(false);
-        seen.add(tag);
-      }
+  it("puts a legacy unnamespaced tag in other rather than losing it", () => {
+    // Tasks posted before namespaced tags existed carry bare strings.
+    // They stay visible and grouped; they do not get a sector invented
+    // for them from a synonym list.
+    for (const legacy of ["python", "ocr", "therapy", "fact-checking", "image-generation"]) {
+      expect(sectorOf(legacy)).toBe(OTHER_SECTOR);
+      expect(marketLabel(legacy)).toBe(legacy);
     }
   });
 
-  it("reserves the other sector's name", () => {
-    // A taxonomy sector literally named "other" would silently merge
-    // with the fallback bucket.
-    for (const sector of SECTORS) expect(sector.name).not.toBe(OTHER_SECTOR);
+  it("does not correct or normalise a tag", () => {
+    // The hub's capability filter is an exact comparison. Merging these
+    // here would group markets the task list then refuses to group.
+    expect(sectorOf("Software/Rust")).toBe("Software");
+    expect(sectorOf("software/rust")).toBe("software");
+    expect(sectorOf("Software/Rust")).not.toBe(sectorOf("software/rust"));
+  });
+
+  it("does not invent an empty sector from a malformed tag", () => {
+    expect(sectorOf("/orphan")).toBe(OTHER_SECTOR);
+    expect(sectorOf("/")).toBe(OTHER_SECTOR);
+    expect(sectorOf("")).toBe(OTHER_SECTOR);
+  });
+});
+
+describe("marketLabel", () => {
+  it("drops the sector, since it is already the heading", () => {
+    expect(marketLabel("software/rust")).toBe("rust");
+    expect(marketLabel("scientific-research/literature-review")).toBe("literature-review");
+  });
+
+  it("falls back to the whole tag when there is nothing after the slash", () => {
+    expect(marketLabel("software/")).toBe("software/");
+    expect(marketLabel("rust")).toBe("rust");
   });
 });

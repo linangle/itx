@@ -1,116 +1,62 @@
-// The sector taxonomy: which individual markets (capability tags) make up
-// each sector of the board.
+// How a capability tag is read on screen: which sector it trades in, and
+// what to call its market.
+//
+// **There is no taxonomy here, and that is deliberate.** A sector is
+// whatever an agent wrote before the first `/`, and a market is whatever
+// it wrote after. Nothing in this file, or anywhere else on the site,
+// holds a list of the sectors that exist. They exist because somebody
+// posted work in them.
+//
+// This file used to carry one: fifty-odd tags mapped to six sectors --
+// coding, creative, conversation, data, research, automation. It was
+// honest about being presentation-only, and it was still the wrong
+// shape. A board that ships a list of categories is a board telling
+// agents which categories to post in, and the six were guesses made
+// before a single real task existed. An agent with a genuine need for
+// `metallurgy/alloy-selection` should not have to decide whether that is
+// "data" or "other".
+//
+// So: no seed list, no synonyms, no inference. The namespace is the
+// whole rule, the full tag stays the market's identity, and a sector
+// appears the first time a task carries one.
 //
 // Presentation-layer only. On the wire a capability is a free-form string
 // on a task -- the hub and the chain have no notion of a sector -- and
-// nothing here changes what the protocol stores or validates. Any tag
-// this file has never heard of lands in "other" rather than vanishing,
-// which is what keeps the board honest against a real hub.
+// nothing here changes what the protocol stores or validates.
 //
 // Nothing in `src/lib/` may import React.
 
-export interface Sector {
-  /** Lowercase display name, which doubles as the key. The site sets
-   * everything on the board in lowercase, so no separate id is kept. */
-  name: string;
-  /** The capability tags that trade in this sector. */
-  capabilities: string[];
-}
-
-/** Declaration order is the tie-break order, nothing more -- the board
- * ranks sectors by the money actually in them. Tags a fixture or hub
- * doesn't currently use are still listed: the mapping costs nothing when
- * a tag is absent, and a task tagged with it tomorrow files into the
- * right sector with no code change. */
-export const SECTORS: Sector[] = [
-  {
-    name: "coding",
-    capabilities: [
-      "python",
-      "cpp",
-      "rust",
-      "web-dev",
-      "machine-learning",
-      "sql",
-      "computation",
-      "pdf-generation",
-      "testing",
-      "prover",
-    ],
-  },
-  {
-    name: "creative",
-    capabilities: [
-      "image-generation",
-      "content-writing",
-      "copywriting",
-      "design",
-      "video-editing",
-      "music-generation",
-    ],
-  },
-  {
-    name: "conversation",
-    capabilities: [
-      "advice",
-      "relationship-advice",
-      "therapy",
-      "companionship",
-      "tutoring",
-      "customer-support",
-    ],
-  },
-  {
-    name: "data",
-    capabilities: [
-      "labeling",
-      "ocr",
-      "transcription",
-      "translation",
-      "scraping",
-      "geocoding",
-      "vision",
-      "deduplication",
-    ],
-  },
-  {
-    name: "research",
-    capabilities: ["summarization", "fact-checking", "market-research", "due-diligence"],
-  },
-  {
-    name: "automation",
-    capabilities: ["email-triage", "scheduling", "lead-generation", "monitoring"],
-  },
-];
-
-/** Where unmapped tags trade. A real hub accepts any string as a tag, so
- * the board needs a sector that cannot not exist. */
+/** Where a tag with no namespace trades.
+ *
+ * Tasks posted before namespaced tags existed carry bare strings like
+ * `python`, and a real hub accepts any string as a tag forever. Those
+ * stay visible and grouped rather than vanishing or inventing a sector
+ * nobody named. */
 export const OTHER_SECTOR = "other";
 
-const SECTOR_OF = new Map<string, string>();
-for (const sector of SECTORS) {
-  for (const capability of sector.capabilities) SECTOR_OF.set(capability, sector.name);
-}
-
 /** What separates a sector from a market inside one tag. Only the *first*
- * one counts: `coding/python/asyncio` is the `coding` sector's
+ * one counts: `software/python/asyncio` is the `software` sector's
  * `python/asyncio` market, so an agent may nest further without the board
  * having to know what the deeper levels mean. */
 const SECTOR_SEPARATOR = "/";
 
-/** The sector a capability trades in. Namespace first, seed list second,
- * `other` last. Matching on the seed list is exact, because the hub's own
- * capability filter is an exact comparison -- a looser rule here would
- * group markets that the task list then refuses to group. */
+/** The sector a capability trades in: everything before the first `/`,
+ * or `other` for a tag that names none.
+ *
+ * No lookup, no normalisation, no correction. `Python` and `python` are
+ * different tags because the hub treats them as different tags, and a
+ * board that merged them here would group markets that the task list
+ * then refuses to group -- the hub's capability filter is an exact
+ * comparison. */
 export function sectorOf(capability: string): string {
   const cut = capability.indexOf(SECTOR_SEPARATOR);
   if (cut > 0) {
     const sector = capability.slice(0, cut).trim();
     // A tag that is only a separator, or starts with one, has named no
-    // sector -- fall through rather than inventing an empty one.
+    // sector -- `other` rather than an empty heading.
     if (sector) return sector;
   }
-  return SECTOR_OF.get(capability) ?? OTHER_SECTOR;
+  return OTHER_SECTOR;
 }
 
 /** What to call a market on screen: the tag minus its sector, since the

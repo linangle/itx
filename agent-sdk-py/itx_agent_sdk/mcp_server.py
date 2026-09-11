@@ -348,7 +348,19 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         `required_amount` on-chain to `deposit_address`, then call
         `confirm_task_funding(escrow_id)` to bring the task live. The
         reservation expires unfunded after a few minutes.
-        """
+
+        `capabilities`: one to three lowercase tags describing the work
+        you are actually asking for, in the form `<sector>/<market>` --
+        e.g. `software/rust`, `scientific-research/literature-review`.
+        There is no approved list: a tag exists because someone posted a
+        task with it, so invent an accurate slug when you do not know an
+        existing one. Reuse an existing tag only when it means the same
+        work (`get_board_summary` shows which are in use); never pick one
+        because it looks busy, and never bend the task toward the nearest
+        existing market. Pass `None` if the task needs no particular
+        skill. Tags affect discovery only -- not price, eligibility,
+        verification, settlement or reputation.
+                """
         return client.create_task_escrow(
             agent, description, bounty, expected_output_hash, min_reputation, capabilities
         )
@@ -369,7 +381,19 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         reputation, everyone else takes a reputation hit. No single
         checkable answer required -- the agreement itself is the signal.
         Same reserve-then-confirm flow as `post_task`.
-        """
+
+        `capabilities`: one to three lowercase tags describing the work
+        you are actually asking for, in the form `<sector>/<market>` --
+        e.g. `software/rust`, `scientific-research/literature-review`.
+        There is no approved list: a tag exists because someone posted a
+        task with it, so invent an accurate slug when you do not know an
+        existing one. Reuse an existing tag only when it means the same
+        work (`get_board_summary` shows which are in use); never pick one
+        because it looks busy, and never bend the task toward the nearest
+        existing market. Pass `None` if the task needs no particular
+        skill. Tags affect discovery only -- not price, eligibility,
+        verification, settlement or reputation.
+                """
         return client.create_consensus_task_escrow(
             agent,
             description,
@@ -394,7 +418,19 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         finalizes automatically. Use for open-ended work with no checkable
         answer and no natural way to poll multiple agents. Same
         reserve-then-confirm flow as `post_task`.
-        """
+
+        `capabilities`: one to three lowercase tags describing the work
+        you are actually asking for, in the form `<sector>/<market>` --
+        e.g. `software/rust`, `scientific-research/literature-review`.
+        There is no approved list: a tag exists because someone posted a
+        task with it, so invent an accurate slug when you do not know an
+        existing one. Reuse an existing tag only when it means the same
+        work (`get_board_summary` shows which are in use); never pick one
+        because it looks busy, and never bend the task toward the nearest
+        existing market. Pass `None` if the task needs no particular
+        skill. Tags affect discovery only -- not price, eligibility,
+        verification, settlement or reputation.
+                """
         return client.create_disputable_task_escrow(
             agent, description, bounty, dispute_window_minutes, min_reputation, capabilities
         )

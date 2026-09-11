@@ -20,7 +20,7 @@ function task(overrides: Partial<hub.TaskDto> = {}): hub.TaskDto {
     failed_attempts: 0,
     min_reputation: 0,
     close_reason: null,
-    capabilities: ["transcription"],
+    capabilities: ["media/transcription"],
     created_at: new Date().toISOString(),
     kind: "hash_match",
     ...overrides,
@@ -75,7 +75,7 @@ describe("terminal TasksPage", () => {
         posted_series: [],
       },
       kinds: [],
-      capabilities: ["transcription", "python", "coding/rust"].map((capability) => ({
+      capabilities: ["media/transcription", "legacy-tag", "software/rust"].map((capability) => ({
         capability,
         open: 1,
         open_bounty: 1,
@@ -87,16 +87,16 @@ describe("terminal TasksPage", () => {
   });
 
   it("shows a task's sector beside its market", async () => {
-    show([task({ capabilities: ["transcription"] })]);
+    show([task({ capabilities: ["media/transcription"] })]);
 
-    expect(await rows()).toEqual([expect.arrayContaining(["data", "transcription"])]);
+    expect(await rows()).toEqual([expect.arrayContaining(["media", "transcription"])]);
   });
 
   it("reads a namespaced tag as its own sector and drops the prefix from the market", async () => {
-    show([task({ capabilities: ["coding/rust"] })]);
+    show([task({ capabilities: ["software/rust"] })]);
 
     const [cells] = await rows();
-    expect(cells).toContain("coding");
+    expect(cells).toContain("software");
     // The label loses the sector it already sits next to; the full tag
     // is still what the hub would be asked to filter on.
     expect(cells).toContain("rust");
@@ -106,10 +106,10 @@ describe("terminal TasksPage", () => {
   it("filters the table by sector", async () => {
     show(
       [
-        task({ id: "a", description: "Transcribe", capabilities: ["transcription"] }),
-        task({ id: "b", description: "Port a crate", capabilities: ["rust"] }),
+        task({ id: "a", description: "Transcribe", capabilities: ["media/transcription"] }),
+        task({ id: "b", description: "Port a crate", capabilities: ["software/rust"] }),
       ],
-      "/tasks?sector=coding",
+      "/tasks?sector=software",
     );
 
     const table = await screen.findByRole("table");
@@ -148,15 +148,17 @@ describe("terminal TasksPage", () => {
     await user.click(screen.getByRole("button", { name: "Show Filter by market options" }));
     const list = screen.getByRole("listbox", { name: "Filter by market" });
     // Sourced from `/board/summary`, so it offers markets no task on
-    // this page carries.
-    expect(within(list).getByRole("option", { name: "python" })).toBeInTheDocument();
+    // this page carries -- including an unnamespaced legacy tag, which
+    // is still a market and still filterable.
+    expect(within(list).getByRole("option", { name: "legacy-tag" })).toBeInTheDocument();
 
-    await user.click(within(list).getByRole("option", { name: "python" }));
-    // Committing a market re-requests the board with it applied.
+    await user.click(within(list).getByRole("option", { name: "legacy-tag" }));
+    // Committing a market re-requests the board with it applied. The
+    // full tag is the identity the hub filters on, label or not.
     await waitFor(() =>
       expect(vi.mocked(hub.listAllTasks)).toHaveBeenLastCalledWith({
         status: "all",
-        capability: "python",
+        capability: "legacy-tag",
       }),
     );
   });
@@ -205,7 +207,7 @@ describe("terminal TasksPage", () => {
 
   it("narrows the market picker to the chosen sector", async () => {
     const user = userEvent.setup();
-    show([task({ capabilities: ["cpp"] })], "/tasks?sector=coding");
+    show([task({ capabilities: ["software/cpp"] })], "/tasks?sector=software");
     await screen.findByRole("table");
 
     await user.click(screen.getByRole("button", { name: "Show Filter by market options" }));
@@ -303,11 +305,11 @@ describe("terminal TasksPage", () => {
   it("still offers the tags in hand when the hub has no /board/summary", async () => {
     const user = userEvent.setup();
     vi.mocked(hub.getBoardSummary).mockRejectedValue(new Error("/board/summary -> HTTP 404"));
-    show([task({ capabilities: ["ocr"] })]);
+    show([task({ capabilities: ["media/ocr"] })]);
     await screen.findByRole("table");
 
     await user.click(screen.getByRole("button", { name: "Show Filter by sector options" }));
     const list = screen.getByRole("listbox", { name: "Filter by sector" });
-    expect(within(list).getByRole("option", { name: "data" })).toBeInTheDocument();
+    expect(within(list).getByRole("option", { name: "media" })).toBeInTheDocument();
   });
 });
