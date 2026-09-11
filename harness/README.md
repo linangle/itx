@@ -188,6 +188,27 @@ exits non-zero if a verdict got worse or a finding appeared. Which run belongs
 in `baselines/` is not the same answer for every drill, and getting it wrong
 makes the comparison useless rather than wrong-looking:
 
+**Baseline on a CI run, not on your laptop.** The nightly gate runs on a
+two-core GitHub runner and compares against what is checked in here, so a
+baseline captured on a developer machine compares two different computers and
+reports the hardware as a regression. The baselines in this directory were
+recaptured from [run 34580840671](https://github.com/linangle/itx/actions/runs/34580840671)
+on 2026-09-11, which ran `1caf45a` — the same commit they are checked in
+against. Recapture them the same way: take `drill-reports` off a green-`run`
+nightly and copy it in whole, rather than editing numbers by hand.
+
+> **`payout-ceiling`'s baseline says `inconclusive`, and that is a known
+> limitation rather than a verdict.** Its healthy verdict is `refuted` and it
+> reaches it on a developer machine. On two shared cores one faucet claim costs
+> about 1.5s against ~26ms locally — the proof of work dominates — so the drill
+> offers ~2.9 payouts a block, never reaches the wallet's two dozen outputs, and
+> honestly reports that it cannot tell one ceiling from another. Running eight
+> claims concurrently was tried (`3aa25b4`) and reverted (`1caf45a`): the hub
+> timed out and the drill stopped producing a report at all, which is worse than
+> an honest shrug. The real lever is making one attempt cheaper, not running
+> more at once. Until then this drill gates nothing on CI; read it on a
+> developer machine, where it does work.
+
 **Baseline every drill on a run of the code you want to keep** — its healthy
 run — rather than on the pre-fix run that first found the bug. That is the
 opposite of the convention through 2026-09-06 and the reason is the

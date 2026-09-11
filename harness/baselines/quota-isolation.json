@@ -1,16 +1,16 @@
 {
   "name": "drill: quota-isolation",
-  "started_at": "2026-09-06T10:06:10.514494Z",
+  "started_at": "2026-09-11T08:57:00.980089219Z",
   "environment": {
-    "commit": "540b6dd389d2f00fc15d19cbbe89fce12327e4f0",
+    "commit": "1caf45a1736c748ec992849d89187de1dd1991bd",
     "dirty": false,
     "profile": "release",
-    "host": "Darwin arm64",
-    "cpus": 10,
+    "host": "Linux x86_64",
+    "cpus": 4,
     "binaries": {
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/hub": "7790131b70ea210a686a9670c83e47451138f455fea566e570c09de0dd89ee4e",
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/private/tmp/claude-501/-Users-angelinale-itx/f444370f-93e3-4791-bf61-1c63a59eead9/scratchpad/hruns/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/tmp/itx-harness/bin/hub": "f25ab85124315145741c519247a942c82f62305ae900d5acb25f2356fef31685",
+      "/tmp/itx-harness/bin/miner": "4a8ba54c18723e2d476c3891c7a7540c7f6ca40721baacf28dfc7951d3864f23",
+      "/tmp/itx-harness/bin/node": "6c927b8b87a55bed41beb4f1a3cc478468edd16a0a41e9a8c303565947a8f8eb"
     }
   },
   "sections": [
@@ -33,6 +33,8 @@
         "The greedy key was served 60 times and refused 15, while a second key -- sending from the very same addresses -- was served all 10 of its requests afterwards. The quota is charged to the identity and nothing else."
       ],
       "findings": [],
+      "accepted": [],
+      "healthy_verdict": "confirmed",
       "latency": [
         {
           "label": "bystander (after)",
@@ -41,10 +43,10 @@
           "by_status": {
             "200": 10
           },
-          "p50_ms": 6.996834000000001,
-          "p90_ms": 7.549125,
-          "p99_ms": 7.806833,
-          "max_ms": 7.806833,
+          "p50_ms": 0.959095,
+          "p90_ms": 1.366089,
+          "p99_ms": 1.9537589999999998,
+          "max_ms": 1.9537589999999998,
           "per_second": null
         },
         {
@@ -54,10 +56,10 @@
           "by_status": {
             "200": 2
           },
-          "p50_ms": 8.155042,
-          "p90_ms": 8.867041,
-          "p99_ms": 8.867041,
-          "max_ms": 8.867041,
+          "p50_ms": 3.305794,
+          "p90_ms": 43.880486000000005,
+          "p99_ms": 43.880486000000005,
+          "max_ms": 43.880486000000005,
           "per_second": null
         },
         {
@@ -68,10 +70,10 @@
             "200": 60,
             "429": 15
           },
-          "p50_ms": 6.728959,
-          "p90_ms": 7.965458,
-          "p99_ms": 17.092,
-          "max_ms": 17.092,
+          "p50_ms": 0.85025,
+          "p90_ms": 1.300098,
+          "p99_ms": 63.353308,
+          "max_ms": 63.353308,
           "per_second": null
         }
       ]

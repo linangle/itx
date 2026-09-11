@@ -1,16 +1,16 @@
 {
   "name": "drill: escrow-restart",
-  "started_at": "2026-09-09T21:56:47.976853Z",
+  "started_at": "2026-09-11T08:55:48.244559729Z",
   "environment": {
-    "commit": "e6154d717de54cb683912362b62a3025005d08d4",
-    "dirty": true,
+    "commit": "1caf45a1736c748ec992849d89187de1dd1991bd",
+    "dirty": false,
     "profile": "release",
-    "host": "Darwin arm64",
-    "cpus": 10,
+    "host": "Linux x86_64",
+    "cpus": 4,
     "binaries": {
-      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/hub": "c7477baa59d1f7ed10c0dfc8af8abcc9a883fd475f00034c5ed266081c108447",
-      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/miner": "a6c720e9095d6b330e23a3642c3b95cb78a4ba9051eb9bf922e6c3e878aebbad",
-      "/var/folders/pq/yk9b45kn0pj_sr6rgxq3y5f40000gn/T/itx-harness/bin/node": "c1c3f936701adc7521cff6646760f3461aa5354f683479ebb24e88cb9f030cff"
+      "/tmp/itx-harness/bin/hub": "f25ab85124315145741c519247a942c82f62305ae900d5acb25f2356fef31685",
+      "/tmp/itx-harness/bin/miner": "4a8ba54c18723e2d476c3891c7a7540c7f6ca40721baacf28dfc7951d3864f23",
+      "/tmp/itx-harness/bin/node": "6c927b8b87a55bed41beb4f1a3cc478468edd16a0a41e9a8c303565947a8f8eb"
     }
   },
   "sections": [
@@ -20,21 +20,23 @@
       "verdict": "confirmed",
       "facts": {
         "answered_error": 0,
-        "answered_success": 12,
+        "answered_success": 11,
         "confirmations_in_flight": 12,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 6.7045,
-        "never_answered": 0,
-        "recovered_by_retry": 0,
+        "handler_latency_ms": 45.992623,
+        "never_answered": 1,
+        "recovered_by_retry": 1,
         "tasks_before": 1,
-        "tasks_that_survived_the_restart": 12
+        "tasks_that_survived_the_restart": 11
       },
       "notes": [
         "Every interrupted confirmation ended in a state a client can act on: either the task exists, or the escrow is still confirmable with a fresh envelope. No deposit funded two tasks and none was stranded."
       ],
       "findings": [],
-      "accepted": [],
+      "accepted": [
+        "1 confirmation(s) were dropped without an answer on SIGTERM, which the hub is supposed to drain rather than drop. Known pre-existing drain variance, measured against a pre-fix control at the same rate (§6.5b); the escrow is not consumed and the retry recovers it."
+      ],
       "healthy_verdict": "confirmed",
       "latency": [
         {
@@ -44,36 +46,37 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 6.7045,
-          "p90_ms": 6.7045,
-          "p99_ms": 6.7045,
-          "max_ms": 6.7045,
+          "p50_ms": 45.992623,
+          "p90_ms": 45.992623,
+          "p99_ms": 45.992623,
+          "max_ms": 45.992623,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (interrupted)",
-          "requests": 12,
+          "requests": 11,
           "success_rate": 1.0,
           "by_status": {
-            "200": 12
+            "200": 11
           },
-          "p50_ms": 66.826208,
-          "p90_ms": 82.6465,
-          "p99_ms": 84.360708,
-          "max_ms": 84.360708,
+          "p50_ms": 314.488826,
+          "p90_ms": 332.64282099999997,
+          "p99_ms": 336.3603,
+          "max_ms": 336.3603,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (retry)",
           "requests": 12,
-          "success_rate": 0.0,
+          "success_rate": 0.08333333333333333,
           "by_status": {
-            "409": 12
+            "200": 1,
+            "409": 11
           },
-          "p50_ms": 4.050875,
-          "p90_ms": 4.9034580000000005,
-          "p99_ms": 4.940416000000001,
-          "max_ms": 4.940416000000001,
+          "p50_ms": 82.967613,
+          "p90_ms": 116.067222,
+          "p99_ms": 280.910362,
+          "max_ms": 280.910362,
           "per_second": null
         }
       ]
@@ -84,18 +87,18 @@
       "verdict": "confirmed",
       "facts": {
         "answered_error": 0,
-        "answered_success": 1,
+        "answered_success": 0,
         "confirmations_in_flight": 12,
         "deposits_funding_two_tasks": 0,
         "deposits_stranded": 0,
-        "handler_latency_ms": 8.807792,
-        "never_answered": 11,
-        "recovered_by_retry": 11,
+        "handler_latency_ms": 50.883976999999994,
+        "never_answered": 12,
+        "recovered_by_retry": 12,
         "tasks_before": 14,
-        "tasks_that_survived_the_restart": 1
+        "tasks_that_survived_the_restart": 0
       },
       "notes": [
-        "11 of 12 confirmations were killed in flight and 1 had committed a task by then. No deposit funded two tasks and none was stranded, which with a single write transaction is the atomicity holding rather than a failure to reproduce: `save_task_and_deposit` stages the task and the deposit's `Consumed` status together, so a crash leaves both or neither. Splitting those commits again would show up here as a refutation. See plan §6.5b for the two-commit version this replaced."
+        "12 of 12 confirmations were killed in flight and 0 had committed a task by then. No deposit funded two tasks and none was stranded, which with a single write transaction is the atomicity holding rather than a failure to reproduce: `save_task_and_deposit` stages the task and the deposit's `Consumed` status together, so a crash leaves both or neither. Splitting those commits again would show up here as a refutation. See plan §6.5b for the two-commit version this replaced."
       ],
       "findings": [],
       "accepted": [],
@@ -108,37 +111,23 @@
           "by_status": {
             "200": 1
           },
-          "p50_ms": 8.807792,
-          "p90_ms": 8.807792,
-          "p99_ms": 8.807792,
-          "max_ms": 8.807792,
-          "per_second": null
-        },
-        {
-          "label": "POST /tasks/escrow/:id/confirm (interrupted)",
-          "requests": 1,
-          "success_rate": 1.0,
-          "by_status": {
-            "200": 1
-          },
-          "p50_ms": 8.224125,
-          "p90_ms": 8.224125,
-          "p99_ms": 8.224125,
-          "max_ms": 8.224125,
+          "p50_ms": 50.883976999999994,
+          "p90_ms": 50.883976999999994,
+          "p99_ms": 50.883976999999994,
+          "max_ms": 50.883976999999994,
           "per_second": null
         },
         {
           "label": "POST /tasks/escrow/:id/confirm (retry)",
           "requests": 12,
-          "success_rate": 0.9166666666666666,
+          "success_rate": 1.0,
           "by_status": {
-            "200": 11,
-            "409": 1
+            "200": 12
           },
-          "p50_ms": 8.2495,
-          "p90_ms": 12.640792,
-          "p99_ms": 16.776667,
-          "max_ms": 16.776667,
+          "p50_ms": 83.544264,
+          "p90_ms": 207.937826,
+          "p99_ms": 275.409433,
+          "max_ms": 275.409433,
           "per_second": null
         }
       ]

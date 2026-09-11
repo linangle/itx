@@ -1,16 +1,16 @@
 {
   "name": "drill: signed-write-cost",
-  "started_at": "2026-09-07T08:07:44.134129Z",
+  "started_at": "2026-09-11T09:01:10.015124493Z",
   "environment": {
-    "commit": "44fef477fa7d325508d80fb6887b3d113d3d39ba",
-    "dirty": true,
+    "commit": "1caf45a1736c748ec992849d89187de1dd1991bd",
+    "dirty": false,
     "profile": "release",
-    "host": "Darwin arm64",
-    "cpus": 10,
+    "host": "Linux x86_64",
+    "cpus": 4,
     "binaries": {
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/hub": "69afd36a4b7dd5552727e8521ea1c2e57a899474abfd8ac43f4c574a0cd463cc",
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/pass/work/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/tmp/itx-harness/bin/hub": "f25ab85124315145741c519247a942c82f62305ae900d5acb25f2356fef31685",
+      "/tmp/itx-harness/bin/miner": "4a8ba54c18723e2d476c3891c7a7540c7f6ca40721baacf28dfc7951d3864f23",
+      "/tmp/itx-harness/bin/node": "6c927b8b87a55bed41beb4f1a3cc478468edd16a0a41e9a8c303565947a8f8eb"
     }
   },
   "sections": [
@@ -19,19 +19,19 @@
       "plan_item": "§6.3",
       "verdict": "refuted",
       "facts": {
-        "claim_to_verify_ratio": 7.25,
-        "durable_claim_p50_ms": 4.55,
+        "claim_to_verify_ratio": 1.27,
+        "durable_claim_p50_ms": 0.34,
         "rounds": 40,
-        "unauthenticated_read_p50_ms": 0.3,
-        "verify_and_quota_p50_ms": 0.63,
-        "verify_plus_durable_claim_p50_ms": 5.18
+        "unauthenticated_read_p50_ms": 0.14,
+        "verify_and_quota_p50_ms": 0.27,
+        "verify_plus_durable_claim_p50_ms": 0.61
       },
       "notes": [
         "The two signed measurements are the same envelope on the same route from the same key. They differ by exactly one step: the first is claimed and fsynced before the handler refuses it, the second is caught by the in-memory replay set at the claim and never written."
       ],
       "findings": [],
       "accepted": [
-        "§6 item 3 names signature-verify CPU as the third thing to break, but verification and the quota charge together cost 0.63ms while the durable replay claim behind them costs 4.55ms -- 7x more. Signed writes are bounded by one fsync per request, not by ECDSA. That also means the write path does not scale with cores, and that batching or group-committing the replay guard's writes is worth more than anything done to the verify."
+        "§6 item 3 names signature-verify CPU as the third thing to break, but verification and the quota charge together cost 0.27ms while the durable replay claim behind them costs 0.34ms -- 1x more. Signed writes are bounded by one fsync per request, not by ECDSA. That also means the write path does not scale with cores, and that batching or group-committing the replay guard's writes is worth more than anything done to the verify."
       ],
       "healthy_verdict": "refuted",
       "latency": [
@@ -42,10 +42,10 @@
           "by_status": {
             "200": 40
           },
-          "p50_ms": 0.299083,
-          "p90_ms": 0.37074999999999997,
-          "p99_ms": 1.234125,
-          "max_ms": 1.234125,
+          "p50_ms": 0.138204,
+          "p90_ms": 0.17043,
+          "p99_ms": 0.756101,
+          "max_ms": 0.756101,
           "per_second": null
         },
         {
@@ -55,10 +55,10 @@
           "by_status": {
             "403": 40
           },
-          "p50_ms": 5.1755,
-          "p90_ms": 6.522666,
-          "p99_ms": 9.424750000000001,
-          "max_ms": 9.424750000000001,
+          "p50_ms": 0.6069479999999999,
+          "p90_ms": 30.164724,
+          "p99_ms": 101.35244999999999,
+          "max_ms": 101.35244999999999,
           "per_second": null
         },
         {
@@ -68,10 +68,10 @@
           "by_status": {
             "401": 40
           },
-          "p50_ms": 0.6275000000000001,
-          "p90_ms": 0.8943329999999999,
-          "p99_ms": 1.397375,
-          "max_ms": 1.397375,
+          "p50_ms": 0.267416,
+          "p90_ms": 0.424303,
+          "p99_ms": 0.498752,
+          "max_ms": 0.498752,
           "per_second": null
         }
       ]

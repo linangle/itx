@@ -1,16 +1,16 @@
 {
   "name": "drill: escrow-refund",
-  "started_at": "2026-09-07T07:35:17.121881Z",
+  "started_at": "2026-09-11T08:56:51.273319428Z",
   "environment": {
-    "commit": "1e6bc3597ea951552297e0ff64dfe679a2943bb5",
-    "dirty": true,
+    "commit": "1caf45a1736c748ec992849d89187de1dd1991bd",
+    "dirty": false,
     "profile": "release",
-    "host": "Darwin arm64",
-    "cpus": 10,
+    "host": "Linux x86_64",
+    "cpus": 4,
     "binaries": {
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/drillwork/bin/hub": "69afd36a4b7dd5552727e8521ea1c2e57a899474abfd8ac43f4c574a0cd463cc",
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/drillwork/bin/miner": "e8cc29990e3484e48a8530dfa777dd81c4fddec0df8654f14668bf43c9293362",
-      "/private/tmp/claude-501/-Users-angelinale-itx/cc211763-ec51-4c81-8b48-5c591fc3285c/scratchpad/drillwork/bin/node": "39a4905acfc103086237f2e5097070eb2fc7897c673db26be80b75a43e2113f8"
+      "/tmp/itx-harness/bin/hub": "f25ab85124315145741c519247a942c82f62305ae900d5acb25f2356fef31685",
+      "/tmp/itx-harness/bin/miner": "4a8ba54c18723e2d476c3891c7a7540c7f6ca40721baacf28dfc7951d3864f23",
+      "/tmp/itx-harness/bin/node": "6c927b8b87a55bed41beb4f1a3cc478468edd16a0a41e9a8c303565947a8f8eb"
     }
   },
   "sections": [
@@ -29,10 +29,12 @@
         "total_earned_before_restart": 2000000
       },
       "notes": [
-        "task under test: f5c9b609-1793-44e3-a4a8-43f4fe29ce33",
+        "task under test: 96e14aa4-9db9-43f9-95f3-e9c1c4d8bf6b",
         "The bond's `Refunded` status survived the restart: 1 sweep pass(es) ran and the dispute-bond pass did not select it again, and `total_earned` stayed at 2000000. A verdict, not a sample -- a status either persists or it does not, on every restart."
       ],
       "findings": [],
+      "accepted": [],
+      "healthy_verdict": "confirmed",
       "latency": []
     }
   ]
