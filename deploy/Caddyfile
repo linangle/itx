@@ -5,8 +5,18 @@
 # timeouts below are the only tuning this deployment needs.
 #
 # Copy to /etc/caddy/Caddyfile, replace itx.example.com and the email,
-# then:  sudo caddy validate --config /etc/caddy/Caddyfile
+# then:  sudo -u caddy caddy validate --config /etc/caddy/Caddyfile
 #        sudo systemctl reload caddy
+#
+# `-u caddy` on the validate, and it is not fussiness. `caddy validate`
+# PROVISIONS every module in the config, and provisioning the `log`
+# directive at the bottom of this file opens its output file. Run as
+# root on a box that has never started this config, it therefore creates
+# /var/log/caddy/itx-access.log owned root:root mode 0600 -- and the
+# service runs as `caddy`, which then cannot open it. `validate` prints
+# "Valid configuration", the following `systemctl start` fails, and the
+# only explanation is a permission error about a log file in the
+# journal. Measured on a first deployment; see docs/deployment.md §4.9.
 #
 # See docs/deployment.md §4 for why X-Forwarded-For is set the way it is.
 # It is the one line here that is a security control rather than tuning.
@@ -315,8 +325,27 @@ hub.itx.example.com {
 	# shipped state disagreed -- which is the same as not documenting it.
 	# Scrape from the box (`curl -s localhost:9100/metrics`), or replace
 	# the 404 with a `remote_ip` matcher for the monitoring host.
-	@metrics path /metrics
-	respond @metrics 404
+	# `handle`, not a bare `respond`. This block shipped for weeks as
+	#
+	#     @metrics path /metrics
+	#     respond @metrics 404
+	#
+	# which does nothing at all: Caddy sorts a site's directives into its
+	# own order, `handle` sorts before `respond`, and the catch-all
+	# `handle` below matches every path -- so it terminated the chain and
+	# the 404 was never reached. `/metrics` was proxied straight through
+	# to the hub, on the internet, for anyone who asked. `caddy validate`
+	# and `caddy adapt` both accept it; the route order in the adapted
+	# JSON is the only place it shows. Found by deploying it and curling
+	# from off-box (§11).
+	#
+	# A `handle` joins the same mutually-exclusive group as the catch-all
+	# and is written before it, so it wins. nginx never had this bug --
+	# `location = /metrics` is an exact match and outranks the prefix
+	# `location /` regardless of order.
+	handle /metrics {
+		respond 404
+	}
 
 	handle {
 		# The path reaches the hub byte-for-byte as the client sent it,

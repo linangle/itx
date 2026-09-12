@@ -141,6 +141,20 @@ sudo nft -c -f /etc/nftables.conf   # check syntax before committing to it
 sudo systemctl enable --now nftables
 ```
 
+If that check fails with
+
+```
+Error: Could not resolve protocol name
+        meta l4proto ipv6-icmp icmpv6 type { ... }
+                     ^^^^^^^^^
+```
+
+the ruleset is fine and `/etc/protocols` is missing: `nft` resolves
+`ipv6-icmp` through it, and it comes from the `netbase` package. Any ordinary
+Debian or Ubuntu install has it; minimal container and appliance images often do
+not. `apt-get install netbase` and re-run. The error names the rule rather than
+the missing file, which is why it is written down here.
+
 The `-c` dry run is not optional politeness: a syntax error in a ruleset applied
 without it can leave you with a default-deny chain and no SSH rule, locked out
 of a box holding the treasury.
@@ -566,6 +580,78 @@ Two failures worth recording because neither shows up in a validator:
   is. Returning JSON on both apex paths therefore labelled a JSON body as plain
   text, silently.
 
+### 4.9 Two ways installing the proxy goes wrong
+
+Both found by installing it on a Debian 12 box rather than by reading it
+(§11), and both are the same shape: the config is correct, a checking command
+says so, and the thing still does not work.
+
+**`sudo caddy validate` breaks the first `systemctl start caddy`.** `validate`
+does not merely parse — it *provisions* every module in the adapted config, and
+provisioning the `log` directive in the API block opens its output file. Run as
+root on a box that has never started this config, it creates
+
+```
+-rw------- 1 root root 0 /var/log/caddy/itx-access.log
+```
+
+and the service runs as `caddy`, which cannot open it. The sequence in
+`deploy/Caddyfile`'s own header therefore used to defeat itself:
+
+```
+$ sudo caddy validate --config /etc/caddy/Caddyfile
+Valid configuration
+$ sudo systemctl start caddy          # prints nothing
+$ systemctl is-active caddy
+failed
+```
+
+`systemctl start` says nothing at all; the reason is a permission error about a
+log file, in the journal. Validate as the service user instead —
+`sudo -u caddy caddy validate --config /etc/caddy/Caddyfile` — which leaves the
+file owned by `caddy` and lets the start succeed. If you have already done it
+the other way, `rm /var/log/caddy/itx-access.log` and start again.
+
+The repo's CI met the mirror image of this and fixed it in the wrong place: the
+`caddy` job does `install -d -o "$(id -un)" /var/log/caddy` so that `validate`
+running as the runner can create the directory. That makes CI pass and says
+nothing about the box.
+
+**`/metrics` was not actually blocked, and had never been.** The API block
+carried
+
+```
+@metrics path /metrics
+respond @metrics 404
+```
+
+which does nothing. Caddy sorts a site's directives into its own order,
+`handle` sorts before `respond`, and the catch-all `handle` that proxies
+everything matches every path — so it terminated the chain and the 404 was
+never reached. Curled from another machine, `https://hub.<domain>/metrics`
+answered **200** with the custody balance, the exchange's liabilities, the
+faucet budget's remaining headroom and the reconciliation counters: an
+unauthenticated operational picture of the treasury, on the internet.
+
+`caddy validate` and `caddy adapt` both accept it. The only place it shows is
+the route order in the adapted JSON:
+
+```bash
+caddy adapt --config /etc/caddy/Caddyfile \
+  | jq -r '.apps.http.servers.srv0.routes[].handle[0].routes[]?
+           | "\(.match // "catch-all") -> \(.handle[0].handler)"'
+```
+
+A `handle /metrics { respond 404 }` joins the same mutually-exclusive group as
+the catch-all and is written before it, so it wins. That is what the file ships
+now, and off-box it answers `404` while `curl localhost:9100/metrics` on the box
+still answers `200`. **nginx never had this bug** — `location = /metrics` is an
+exact match and outranks the prefix `location /` regardless of where it appears.
+
+The general lesson is the one §4.8 already paid for once: in a Caddy site block,
+anything that must beat the catch-all has to be a `handle`, because source order
+is not what decides.
+
 ---
 
 ## 5. Running the three services
@@ -743,8 +829,16 @@ cd dashboard
 ls .env.local && echo "MOVE THIS FIRST"   # see below
 npm ci
 npm run build                              # -> dashboard/dist
-grep -rc '127\.0\.0\.1:910' dist/assets/*.js   # every count must be 0
+grep -rc '127\.0\.0\.1:9101' dist/assets/*.js  # every count must be 0
 ```
+
+**`:9101`, not `:910`.** This check read `'127\.0\.0\.1:910'` until
+2026-09-11, which also matches `127.0.0.1:9100` — and that string is
+`DEFAULT_HUB_URL` in `src/lib/hub.ts`, compiled into every build on purpose as
+the fallback when the meta tag is unset. So the check could never pass on a
+correct build, and an operator following it would conclude a clean artifact was
+contaminated. The value actually worth hunting is the dev fixture's port, which
+is what `.env.local` carries.
 
 `dashboard/.env.local` is a developer's file naming which hub the dev server
 talks to, usually the mock fixture on `127.0.0.1:9101`. Vite reads it during
@@ -2760,6 +2854,50 @@ real board, against three builds of the hub from this tree: A (`SCHEMA_VERSION`
 **Not covered:** a data migration — `HubStore` has none by design, and
 `BlockStore`'s migration functions were not touched. Same environment caveats as
 above.
+
+### The throwaway deployment
+
+Run on 2026-09-11. A Debian 12 box with a real systemd, the **release tarball**
+installed per §5 (checksums verified from `SHA256SUMS`), `deploy/nftables.conf`
+actually applied, Caddy serving both hostnames over TLS, and a second machine on
+the same network doing every check from off-box. The certificates come from
+Caddy's internal CA rather than Let's Encrypt — ACME issuance needs a publicly
+resolvable name — so the handshake, SNI, HTTP/2, the two hostnames, the
+firewall and the off-box probing are real and the *chain* is private.
+
+This is the first time anything in `deploy/` has been run as a deployment
+rather than parsed, and it found four things:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| **`/metrics` is blocked from the internet** | curled `https://hub.<domain>/metrics` from another machine | **200 — it was never blocked.** `respond` loses to the catch-all `handle`; see §4.9. Fixed and re-checked: `404` off-box, `200` on the box |
+| **The documented proxy install works** | `sudo caddy validate` then `systemctl start caddy`, in that order, on a fresh box | **the unit failed** — validate had created the access log as root. §4.9 |
+| **`nft -c -f` accepts the ruleset** | ran it, for the first time ever | failed on a minimal image for want of `/etc/protocols`; passes with `netbase`. The file is correct; §3 now says so |
+| **§5.1's bundle check can pass** | ran it on a clean build | it cannot: `:910` matches `DEFAULT_HUB_URL`, which is compiled in on purpose. Now `:9101` |
+
+And confirmed the following, none of which had been observed outside a laptop:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| The release artifact installs as §5 describes | `sha256sum -c SHA256SUMS`, then the §5 sequence | all four binaries verified; `systemd-analyze verify` clean on all three installed units |
+| The ruleset replaces only its own table | applied it on a box already running docker | `table ip nat` (docker's) survived untouched — the atomic-replace idiom, confirmed against another daemon's rules |
+| **The internal ports are unreachable from off-box** | probed 9100 and 9000 from another machine, IPv4 and IPv6 | blocked on both families; the drop rules counted **8 packets each**, while 22, 80 and 443 answered |
+| **…and the node never sees the probes** | read the node's journal after them | **zero bans.** §8.1's self-ban cannot be triggered by an outside scanner while the firewall is up — the two sections' claims, together |
+| §3's off-box check reaches the hub | `curl https://<domain>/health` from the other machine | `{"status":"ok","chain_height":37}`, `200`, HTTP/2, `ssl_verify_result=0` |
+| TLS covers both names | `openssl s_client` per hostname | real handshake, `DNS:itx.test` in the SAN, chain verified by the client |
+| **§4.2's stripping holds through the real proxy** | 130 reads from off-box, each claiming a different `X-Forwarded-For`, plus `X-Real-IP` and `Forwarded` | 120 × `200`, 10 × `429`, and `hub_rate_limited_total{tier="read"} 10` — one shared bucket, spoofing gained nothing |
+| **§4.6's path passthrough survives a real proxy** | a full agent journey from the other machine over HTTPS: faucet, post, claim, submit, payout | every signed write `200`, **zero 401s**, `paid: true`, and the bounty confirmed `Paid` by the sweep |
+| The site can actually reach its hub from a browser | `Origin:` header on a cross-origin GET | `access-control-allow-origin: *` and `access-control-expose-headers: x-total-count` — the pagination total the board reads is exposed |
+| `security.txt` answers on both names | curled both | `200 text/plain` each |
+| §4.8's outage and maintenance answers | stopped the hub, then raised the flag, checking every surface from off-box over TLS | identical to the local run: JSON for the machine paths, the status page at `200` throughout, `Retry-After` on all of it |
+
+**What is still owed, and it is the half that needs somebody's account:** a
+publicly resolvable domain, Let's Encrypt issuance over the real ACME HTTP-01
+challenge (nothing here exercised `certbot`, the renewal timer, or nginx's
+`/.well-known/acme-challenge/` location), a real public IP with real inbound
+traffic, and x86_64. The boxes were privileged containers sharing a host kernel,
+so the firewall was exercised as a ruleset rather than against a hostile
+internet.
 
 **Not verified, and worth saying plainly:** the sweep's board-lock wait, the
 node retry and saturation counters, the replay-guard series and the solvency
