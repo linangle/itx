@@ -1,4 +1,5 @@
 mod core;
+mod pay;
 mod tasks;
 mod ui;
 mod util;
@@ -30,19 +31,89 @@ enum Commands {
         #[arg(short, long, value_name = "FILE", default_value_os_t = PathBuf::from("wallet_config.toml"))]
         output: PathBuf,
     },
+    /// Pay one address from one key, once, without the TUI.
+    ///
+    /// For `docs/deployment.md` §9.10: a task reached `PayoutFailed`, the
+    /// hub proved the money never moved, and a worker is owed a bounty
+    /// nothing will re-drive. It refuses to run while a hub is listening
+    /// -- see the module comment in `pay.rs` for why that is a refusal
+    /// rather than a warning.
+    Pay {
+        /// Recipient's public key, hex, as `GET /tasks` reports it.
+        #[arg(long, value_name = "PUBKEY_HEX")]
+        to: String,
+        /// Amount in the chain's smallest unit.
+        #[arg(long)]
+        amount: u64,
+        /// Private key to spend from -- for a bounty, the operator's:
+        /// /var/lib/itx/secrets/hub_operator.priv.cbor
+        #[arg(long, value_name = "FILE")]
+        from: PathBuf,
+        /// The node to talk to.
+        ///
+        /// Its own flag rather than the global `--node`, which clap
+        /// requires *before* the subcommand. `wallet --node X pay ...`
+        /// is not the order anyone types under pressure, and the node
+        /// address is the single most likely thing to need setting here.
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:9000")]
+        node: String,
+        /// Must match the hub's flat fee; see `pay::DEFAULT_FEE`.
+        #[arg(long, default_value_t = pay::DEFAULT_FEE)]
+        fee: u64,
+        /// Where the hub would be listening. Checked, not used: if
+        /// anything answers here, this command refuses to run.
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:9100")]
+        hub_addr: String,
+        /// Seconds to watch the chain for the payment to be mined.
+        /// 0 reports the mempool state and exits.
+        #[arg(long, default_value_t = pay::DEFAULT_WAIT_SECONDS)]
+        wait: u64,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Pay even though a hub is listening. Read pay.rs first.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    setup_tracing()?;
-    setup_panic_hook();
-    info!("Starting wallet application");
-
+    // Parsed before tracing is set up, because `setup_tracing` creates a
+    // `logs/` directory in the working directory for the TUI's rolling
+    // file. `pay` is a one-shot command that reports on stdout and is
+    // typically run from somewhere like /root during an incident; it has
+    // no business leaving a log directory behind there.
     let cli = Cli::parse();
-    match &cli.command {
-        Some(Commands::GenerateConfig { output }) => {
+    if let Some(Commands::Pay { .. }) = cli.command {
+        // fall through to the dispatch below without touching tracing
+    } else {
+        setup_tracing()?;
+        setup_panic_hook();
+        info!("Starting wallet application");
+    }
+
+    match cli.command {
+        Some(Commands::GenerateConfig { ref output }) => {
             debug!("Generating dummy config at: {:?}", output);
             return generate_dummy_config(output);
+        }
+        Some(Commands::Pay { to, amount, from, node, fee, hub_addr, wait, yes, force }) => {
+            return pay::run(pay::PayArgs {
+                // The global `--node` still wins if someone passed it
+                // before the subcommand, so both orders do what they look
+                // like they do.
+                node: cli.node.clone().unwrap_or(node),
+                from,
+                to,
+                amount,
+                fee,
+                hub_addr,
+                wait_seconds: wait,
+                yes,
+                force,
+            })
+            .await;
         }
         None => (),
     }

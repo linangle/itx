@@ -97,6 +97,13 @@ jobs:
           cp target/release/miner   "dist/${out}/itx-miner"
           cp target/release/hub     "dist/${out}/itx-hub"
           cp target/release/itx-console "dist/${out}/itx-console"
+          # The wallet, for one job: §9.10's manual payout, when a task
+          # reaches PayoutFailed and a worker is owed a bounty nothing
+          # will re-drive. It was not packaged until 2026-09-11, which
+          # made that runbook step unperformable on a deployed box --
+          # §5.1's argument against a build toolchain beside the treasury
+          # means "build it from a checkout" is not an answer there.
+          cp target/release/wallet  "dist/${out}/itx-wallet"
           cp -r deploy "dist/${out}/deploy"
           # Under `site/`, so `cp -r site/. /var/www/itx/` is the whole
           # install step and nothing collides with the binaries.

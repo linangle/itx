@@ -2494,12 +2494,15 @@ curl -s localhost:9100/reputation/<claimant> | jq '{net_worth, total_earned, com
 ```
 
 That line used to read `itx-wallet balance --pubkey <claimant>`, and no such
-thing exists. The release tarball packages four binaries — `itx-node`,
-`itx-hub`, `itx-miner`, `itx-console` — and a wallet is not one of them; the
-workspace's `wallet` crate builds a binary called `wallet`, not `itx-wallet`;
-and that binary is an interactive TUI whose only subcommand is
-`generate-config`. There is no `balance`, and no `--pubkey`. `/reputation/` is
-what actually answers the question, and it answers it from the chain.
+thing existed: the release packaged four binaries and a wallet was not one of
+them, the `wallet` crate builds a binary called `wallet`, and that binary was an
+interactive TUI whose only subcommand was `generate-config` — no `balance`, no
+`--pubkey`. `/reputation/` is what answers the question, and it answers it from
+the chain, which is why it is the check even now that a wallet ships.
+
+A wallet *does* ship as of 2026-09-11, installed as `itx-wallet`, and it has
+exactly one non-interactive subcommand: `pay`. It is there for step 3 below and
+for nothing else.
 
 If the recipient's balance shows the bounty, the payout landed and the hub
 simply missed the window; nothing to do but note it. Persistent cases across
@@ -2519,22 +2522,67 @@ the work.
 2. **Confirm the money really is where the hub says.** `curl -s
    localhost:9100/tasks?status=payoutfailed | jq` gives `bounty_pending` per
    task; check the recipient's balance against it before paying anything.
-3. **Pay it from the operator wallet by hand**, once. There is no re-drive
-   endpoint and the terminal state is deliberately not automatically
-   recoverable — an automatic exit would be a guess, which is the thing the
-   state exists to refuse.
+3. **Pay it from the operator wallet by hand**, once, with the hub stopped.
+   There is no re-drive endpoint and the terminal state is deliberately not
+   automatically recoverable — an automatic exit would be a guess, which is the
+   thing the state exists to refuse.
 
-   **There is also no shipped tool that does this, and you should know that
-   before you need it.** The `wallet` crate is an interactive TUI, it is not in
-   the release tarball, and it has no send-to-address subcommand; the hub will
-   not re-drive a `PayoutFailed`; and §5.1's argument against a build toolchain
-   on the treasury box applies to `cargo` as much as to `node`. So the honest
-   state of this step today is: the money is owed, the amount is known
-   (`bounty_pending`), and the mechanism for moving it is a gap. If you are
-   deploying before that is closed, keep a machine with a checkout and the
-   operator key's *address* on hand, decide in advance how you would pay a
-   worker, and write it down — do not discover the shape of this during an
-   incident.
+   > ### ⚠ Stop the hub first. Paying around a running hub can ban your box.
+   >
+   > This is not a tidiness rule and the failure is silent, so it is worth the
+   > space.
+   >
+   > The hub serialises every payout it makes behind `AppState::payout_lock`,
+   > an in-process mutex that nothing outside the hub can take. Two spenders
+   > against the operator's key is exactly what that lock exists to prevent:
+   > both read the same unspent output, both spend it, and because every
+   > hub-issued payment carries the same flat `HUB_TRANSACTION_FEE`, the node's
+   > replace-by-strictly-higher-fee never lets the second one in.
+   >
+   > What the node does with the loser is the problem
+   > (`node/src/handler.rs`, `SubmitTransaction`): it answers **nothing** — the
+   > connection is closed with no reply — and it records a **strike** against
+   > the submitting address. **Three strikes inside ten minutes is a one-hour
+   > ban** (`node/src/ban.rs`), the ban is persisted to `blockchain.redb` so a
+   > restart does not clear it (§9.2), and the address being banned is
+   > `127.0.0.1` — which is also the hub and the miner.
+   >
+   > So the shape of getting this wrong is: pay, nothing says it failed, retry,
+   > retry, and the box bans itself in the middle of the incident you were
+   > resolving. Stopping the hub costs seconds and is the same trade
+   > `itx-backup.sh` and §5.2's upgrade already make. The node and miner stay
+   > up throughout.
+
+   ```bash
+   # what is owed, and to whom
+   curl -s localhost:9100/tasks?status=payoutfailed \
+     | jq '.[] | {id, bounty_pending, claimant}'
+
+   sudo systemctl stop itx-hub
+   sudo -u itx itx-wallet pay \
+       --to <claimant pubkey> \
+       --amount <bounty_pending> \
+       --from /var/lib/itx/secrets/hub_operator.priv.cbor \
+       --node 127.0.0.1:9000
+   sudo systemctl start itx-hub
+   ```
+
+   `itx-wallet pay` **refuses to run while anything is listening on the hub's
+   port**, which is what makes the warning above a property rather than a hope;
+   `--force` exists and the refusal explains why you should not use it. It
+   prints what it is about to do and asks before sending, reports a rejection
+   as an error instead of exiting `0` on a payment that never happened — the
+   node's silence *is* the acknowledgement, and a closed connection *is* the
+   rejection — and then watches the chain until the recipient's balance
+   actually moves. `--yes` skips the prompt, `--wait 0` skips the watching.
+
+   Two things it does not do, on purpose. It does not touch `hub.redb`, so the
+   task stays `PayoutFailed`: the hub's record is that the hub never paid,
+   which remains true, and the settlement you just made by hand is yours to
+   note. And it will not tell you the bounty is owed — read
+   `bounty_pending` and check the recipient's balance against it (step 2)
+   before sending anything, because this is the one payment on the box that
+   nothing reconciles afterwards.
 4. **Fix the cause before restarting the hub**, or the next payout takes the
    same path.
 
