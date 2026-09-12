@@ -3,12 +3,36 @@
 The operators' own window onto a running hub. Two people, one page, no
 credential in a browser.
 
+Install it once:
+
+```bash
+cargo install --path console        # -> itx-console on your PATH
+```
+
+Then this, whenever you want to look, and the page opens itself:
+
+```bash
+itx-console --hub https://hub.itx.example.com --key-file ~/.itx/viewer.priv.cbor --open
+```
+
+Worth an alias, since the two arguments never change:
+
+```bash
+alias itxc='itx-console --hub https://hub.itx.example.com --key-file ~/.itx/viewer.priv.cbor --open'
+```
+
+`--open` is opt-in, not the default: the other time this binary gets run
+is over ssh during an incident, and spawning a browser on a box someone
+is holding together by hand is not help. Without it, the URL is printed
+and you click it.
+
+From a checkout, without installing:
+
 ```bash
 cargo run -p console --bin itx-console -- \
-  --hub https://itx.example \
+  --hub https://hub.itx.example.com \
   --key-file ~/.itx/viewer.priv.cbor \
-  --port 8787
-# then open http://127.0.0.1:8787
+  --port 8787 --open
 ```
 
 ## How it is put together, and why

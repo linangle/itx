@@ -47,6 +47,13 @@ struct Args {
     #[argh(option, default = "8787")]
     /// loopback port to serve the console on.
     port: u16,
+    #[argh(switch)]
+    /// open the console in the default browser once it is listening.
+    ///
+    /// Opt-in rather than the default: the other time this binary gets
+    /// run is over ssh during an incident, and spawning a browser on a
+    /// box someone is holding together by hand is not help.
+    open: bool,
 }
 
 struct Console {
@@ -82,8 +89,32 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("itx console watching {} -- open http://{addr}", console.hub);
     println!("signing as {}", console.key.public_key());
+    if args.open {
+        open_in_browser(&format!("http://{addr}"));
+    }
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Hands the URL to the platform's opener, and shrugs if that fails.
+///
+/// Never fatal. The page is already being served by the time this runs
+/// and the line above it says where -- so a missing `xdg-open` should
+/// cost a manual click, not the console the operator was trying to
+/// reach. Spawned rather than waited on: `open` returns immediately,
+/// but `xdg-open` can block for as long as the browser it started.
+fn open_in_browser(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    match std::process::Command::new(opener).arg(url).spawn() {
+        Ok(_) => {}
+        Err(e) => println!("could not open a browser ({e}) -- open {url} yourself"),
+    }
 }
 
 /// Signs one read and hands back whatever the hub said, verbatim.
