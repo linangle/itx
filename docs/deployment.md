@@ -893,12 +893,47 @@ against key material that is not yours, and nothing else it says is meaningful.
   this is because the release notes say so — that is what the draft release
   exists for, and it is written by a person for exactly this reason.
 - **The new build moved the stamp.** The old binary cannot open the store any
-  more, and no flag makes it. Rolling back means restoring the pre-upgrade
-  backup, and **everything written since that backup is gone**: tasks posted,
-  work submitted, payments recorded, reputation earned. Before you do it, decide
-  what that costs, because some of it is money in flight. `GET /payments` and
-  `?status=submitted` on the *running* new build tell you what you are about to
-  discard, and it is worth capturing both to a file first even if you are sure.
+  more, and no flag makes it. Rolling back means restoring `hub.redb` from the
+  pre-upgrade backup, and **everything written since that backup is gone**:
+  tasks posted, work submitted, payments recorded, reputation earned.
+
+  **`hub.redb`, and nothing else out of the archive.** This used to say "the
+  pre-upgrade backup", which under pressure reads as the whole thing — and the
+  whole thing includes `blockchain.redb`. Restoring that would throw away every
+  block mined since the backup, on a deployment with no peer to re-fetch them
+  from, to fix a problem §5.3 says the chain never had. The secrets are in there
+  too and an upgrade does not touch those either.
+
+  ```bash
+  sudo systemctl stop itx-hub
+  age --decrypt --identity ~/itx-restore-key.txt <archive> | tar -C /tmp/rb -xzf -
+  ( cd /tmp/rb/itx && sha256sum -c --quiet MANIFEST.sha256 )   # before you trust it
+  sudo install -o itx -g itx -m 600 /tmp/rb/itx/hub.redb /var/lib/itx/hub.redb
+  sudo cp /usr/local/bin/itx-hub.previous /usr/local/bin/itx-hub
+  sudo systemctl start itx-hub
+  ```
+
+  Before you do it, decide what that costs. Capture the board first, even if
+  you are sure:
+
+  ```bash
+  curl -s 'localhost:9100/tasks?status=all'       > /root/pre-rollback-board.json
+  curl -s 'localhost:9100/tasks?status=submitted' > /root/pre-rollback-inflight.json
+  ```
+
+  Not `GET /payments`, which this document used to recommend here and which
+  answers `400 Failed to deserialize query string: missing field recipient`:
+  the route filters by recipient and there is no list-everything form of it
+  (`handlers::list_payments`). `?status=all` is the capture that works, and
+  the hub's own startup line — `loaded N task(s), N reputation record(s), …` —
+  is the cheapest way to read the delta afterwards.
+
+  **Money in flight is the part that sounds worst and is not.** Rolling the
+  store back across a payout that was sent-but-unconfirmed at backup time, and
+  confirmed by rollback time, does **not** pay it twice: the restored store
+  loads it as an unconfirmed payout, the sweep asks the chain what became of it,
+  finds the recipient's output already there, and marks it `Paid` without
+  re-sending. Measured — §5.4.
 
 This is why step 1 is not optional and why "I will take one if it looks wrong"
 does not work: by the time it looks wrong, the store has already been restamped.
@@ -909,6 +944,124 @@ The chain and the keys. `blockchain.redb` is the node's and has its own format;
 the three secrets in `secrets/` are files the hub reads and never rewrites. A
 hub upgrade that goes badly costs you `hub.redb` and nothing else, which is why
 the backup in step 1 is worth taking even when the release is trivial.
+
+Confirmed by doing it (§5.4): the chain ran from height 63 to 67 across an
+upgrade, a rollback, a second upgrade, a refused rollback and a restore, and
+noticed none of it.
+
+### 5.4 The upgrade and rollback, rehearsed
+
+Run on 2026-09-11, on a Debian 12 box with a real systemd carrying a real
+board. §11 said this procedure "has never been performed… Do the first upgrade
+on a throwaway stack, deliberately, before doing it on the box holding the
+treasury." This was that throwaway stack.
+
+Three builds of the hub, all from this tree, which is what makes the two cases
+separable:
+
+| | `SCHEMA_VERSION` | what it is |
+|---|---|---|
+| **A** | 5 | the running release |
+| **B** | 5 | a release that does **not** move the stamp — one printed line differs |
+| **C** | 6 | a release that **does** move the stamp |
+
+#### Case 1: the release that does not move the stamp
+
+Upgrade **2 s**, rollback **1 s**, both measured from `systemctl stop` to
+`/health` answering `200`. The board was byte-identical before the upgrade and
+after the rollback, and the operator and custody addresses were identical across
+both builds — which is §5.2's banner check doing its job rather than a
+formality. No schema line appeared in the journal at all, which is how you
+confirm from the box that you are in this case and not the other one.
+
+"Nothing is lost" is exact. Use it.
+
+#### Case 2: the release that moves the stamp
+
+The restamp is announced, and the warning is worth quoting because it is the
+last moment the easy rollback is available:
+
+```
+WARN hub::store: store was written by schema version 5; upgrading the stamp to 6.
+This is one-way: a build expecting version 5 will refuse this store from now on,
+deliberately, because it cannot see the tables this one writes.
+```
+
+**Putting the old binary back does exactly what §5.2 says it does.** Done on
+purpose: the hub refuses, `Restart=always` retries it, and twelve seconds later
+`systemctl show itx-hub -p NRestarts` read **2** with three refusals in the
+journal:
+
+```
+Error: store was created by schema version 6, this build expects 5
+```
+
+`systemctl is-active` reports `activating`, not `failed` — the unit never
+settles long enough to be called failed, so a check that looks for `failed` sees
+nothing wrong while the hub is down. `/health` answers nothing at all.
+
+**The real rollback took 1 s** and cost exactly what it should: a task posted,
+claimed, worked and paid after the backup was simply gone from the board, along
+with its reputation record and the agent name that had been assigned. The hub's
+own startup line is the receipt — `loaded 2 task(s)…` before, `loaded 1 task(s)…`
+after.
+
+#### What it found
+
+**The capture step in §5.2 did not work.** The document told you, at the most
+expensive moment in it, to run `GET /payments` to see what you were about to
+discard. That route filters by recipient and has no list-everything form, so it
+answers `400 Failed to deserialize query string: missing field recipient`. §5.2
+now says `?status=all` instead, which works.
+
+**"Restore the pre-upgrade backup" was ambiguous in the direction that costs
+blocks.** The archive holds `blockchain.redb` and the secrets as well, and
+restoring all of it would roll the chain back to fix a store problem — on a
+deployment with exactly one node and no peer to re-fetch from. §5.2 now names
+the one file.
+
+**A payout in flight across a rollback is not paid twice.** The case was
+constructed rather than waited for: the miner was stopped to hold a payout at
+`Submitted` (`bounty_pending: 1000000`, `bounty_confirmed: 0`), a backup was
+taken in that state, the miner was restarted so the chain confirmed it and the
+worker's `total_earned` went to `1000000` — and then the store was rolled back
+to the in-flight moment. The hub loaded `1 unconfirmed payout(s) from store`,
+the sweep resolved it against the chain, and logged:
+
+```
+payout for task dd96c4d4… confirmed on chain after 1 submission(s)
+```
+
+`total_earned` stayed at `1000000` across three sweep passes. The confirmation
+design in plan §6.5 covers the rollback case as well as the node-crash case it
+was written for, and neither the task nor the worker ended up double-counted.
+
+**A rollback past a task's creation forgets it completely, and that is safer
+than it sounds.** A task that did not exist at backup time is not "unpaid" after
+the rollback — it is absent, so nothing re-drives it. The money is on the chain
+and the board has no record of it. That is a reconciliation problem for a human,
+not a double-spend risk for the hub.
+
+#### What is deliberately not scripted
+
+`itx-recover.sh` exists because a fresh-host recovery is a long mechanical
+sequence where the hazard is doing it in the wrong order. A rollback is three
+commands where the hazard is doing it *at all* — the cost is the state you
+discard, and only a person can weigh that. §5.2's block is the procedure;
+there is no `itx-rollback.sh` on purpose.
+
+#### What it did not cover
+
+The same environment caveats as §7.6: a privileged container rather than a real
+host, `aarch64` rather than the release's `x86_64`, and a store small enough that
+every timing above is dominated by process start rather than by data. Build B's
+difference from A was one printed line, so what was exercised is the schema
+stamp and the refusal it produces, not a data migration — and `HubStore` has no
+migration mechanism to exercise: it creates the tables the running build knows
+about, leaves unknown ones non-existent, and moves the stamp. That is the whole
+design (the tables arrive empty; see `store.rs`), and it is why an upgrade is
+fast and a rollback is fatal. `BlockStore` in `lib/src/store.rs` is the one with
+real migration functions, and nothing here touched those.
 
 ---
 
@@ -2582,10 +2735,31 @@ systemd — one "production", three that had never seen the deployment. Full wri
 | **`After=` does not wait for the node's socket** | compared fan-out counters after both start orders | `enable --now` all three → `hub_operator_fan_out_failures_total 2`, custody 2. Node-first → `0` and `0` |
 | `systemctl is-active` is not a health check | curled immediately after a `Type=simple` start | connection refused from a unit systemd reported `active` |
 
-**Not covered by that run, and each is a real gap:** the backup-based *rollback*
-of an upgrade (§5.2 is still written from the code alone), x86_64 (this was
-aarch64), a real host rather than a privileged container, a real cutover with
-the old box stopped, and the `--reflink` copy path.
+**Not covered by that run:** x86_64 (this was aarch64), a real host rather than a
+privileged container, a real cutover with the old box stopped, and the
+`--reflink` copy path.
+
+The upgrade and rollback rows were run the same day, on a Debian 12 box with a
+real board, against three builds of the hub from this tree: A (`SCHEMA_VERSION`
+5), B (5, one printed line different) and C (6). Write-up and findings in §5.4:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| §5.2's procedure works at all | ran it: stop, keep `.previous`, install, start, read the banner | upgrade **2 s**, rollback **1 s**, hub healthy either side |
+| A release that does not move the stamp rolls back free | upgraded A→B, then put `.previous` back | board byte-identical to before the upgrade; **nothing lost**, exactly as claimed |
+| The banner check catches a wrong-key start | compared the operator and custody addresses across both builds | identical — the check works and is not a formality |
+| **Moving the stamp is announced and one-way** | upgraded to C, read the journal | `store was written by schema version 5; upgrading the stamp to 6. This is one-way…` |
+| **The old binary then refuses, in a restart loop** | put A back over a version-6 store | `Error: store was created by schema version 6, this build expects 5`, three times; `NRestarts` **2** in 12 s |
+| …and the unit never reads as `failed` | `systemctl is-active` during the loop | `activating` — a check looking for `failed` sees nothing wrong while the hub is down |
+| The real rollback costs exactly the stated window | restored `hub.redb` from the pre-upgrade backup | **1 s**; the task posted, worked and paid after the backup was gone, with its reputation record and agent name |
+| **A payout in flight is not paid twice** | held a payout at `Submitted` by stopping the miner, backed up, let the chain confirm it, then rolled back to the in-flight state | `loaded 1 unconfirmed payout(s)`, sweep logged `confirmed on chain after 1 submission(s)`, `total_earned` unchanged across three passes |
+| A rollback past a task's creation forgets it entirely | watched the board and the claimant for three sweeps | the task is absent rather than unpaid; nothing re-drives it |
+| An upgrade does not touch the chain (§5.3) | chain height across the whole exercise | 63 → 67, unaffected by two upgrades, two rollbacks and a refusal |
+| **`GET /payments` cannot be captured as §5.2 said** | ran the documented command | `400 Failed to deserialize query string: missing field recipient` — the route filters by recipient and has no list-all form. §5.2 now says `?status=all` |
+
+**Not covered:** a data migration — `HubStore` has none by design, and
+`BlockStore`'s migration functions were not touched. Same environment caveats as
+above.
 
 **Not verified, and worth saying plainly:** the sweep's board-lock wait, the
 node retry and saturation counters, the replay-guard series and the solvency
@@ -2609,22 +2783,23 @@ done on macOS:
   here. The `listen 443 ssl http2` form, the removal of `ssl_stapling`, the
   `charset utf-8` on the `security.txt` location and the `256k` body cap are all
   reasoned from the directive documentation, not from a parse.
-- The systemd units — syntax and directives are conventional, but they have not
-  been loaded by a running systemd. Check `systemd-analyze verify` on the host.
-  This now includes `StateDirectory=itx itx/secrets` and
-  `Environment=NO_COLOR=1`, neither of which has been exercised.
-- `itx-backup.sh`'s service stop/start path. The drill was run with `--no-stop`,
-  since there is no systemd on the test machine, so the `systemctl stop` branch
-  is untested. Exercise it once on the real host, and time it: as of
-  2026-09-08 the hub is restarted the moment the two stores are staged rather
-  than in the exit trap, so the downtime should be seconds and independent of
-  how large the chain has grown. If it is not, that is the bug returning.
-- **§5.2's upgrade and rollback procedure has never been performed.** It is
-  written from the code -- the restamp in `HubStore::open_or_create` and the
-  refusal it produces are both pinned by tests -- but no one has yet upgraded a
-  running deployment, and nobody has restored a pre-upgrade backup to roll one
-  back. Do the first upgrade on a throwaway stack, deliberately, before doing
-  it on the box holding the treasury.
+- ~~The systemd units have not been loaded by a running systemd.~~ **Done**
+  2026-09-11 (§7.6): all three install, enable, start, stop and restart on
+  Debian 12, including `StateDirectory=itx itx/secrets` and
+  `Environment=NO_COLOR=1`. Still worth `systemd-analyze verify` on the real
+  host, which is a different distribution's systemd from the one used there.
+- ~~`itx-backup.sh`'s service stop/start path is untested.~~ **Done**
+  2026-09-11 (§7.6): the `systemctl stop` branch ran, and the hub was down for
+  **~0.2 s** while the node kept its mempool. That is the "seconds, and
+  independent of how large the chain has grown" the 2026-09-08 change was for,
+  now with a number. Re-time it on the real host once the chain is large — the
+  claim is that the number does not move, and that is the part still reasoned.
+- ~~§5.2's upgrade and rollback procedure has never been performed.~~ **Done**
+  2026-09-11 on a throwaway stack, which is what this entry asked for (§5.4).
+  Both cases ran, the restart loop and its refusal were reproduced, and doing it
+  found two bugs in §5.2's own instructions. What is still reasoned is a release
+  that migrates data: `HubStore` has no migration mechanism, so nothing
+  exercised one.
 - `cp --reflink=always` in `itx-backup.sh` — macOS `cp` has no such flag, so
   only the fallback path has ever run. On the real host, check the archive's
   `MANIFEST.txt` for `redb copy method: reflink` to see which branch you got.
