@@ -2489,9 +2489,17 @@ transaction), so check before acting:
 # What the hub is waiting on, with how much of each bounty it has seen land
 curl -s localhost:9100/tasks?status=submitted | jq '.[] | {id, bounty, bounty_confirmed, bounty_pending, claimant}'
 
-# Did the money actually arrive? Ask the chain about the recipient
-itx-wallet balance --pubkey <claimant>   # or GET /reputation/<pubkey> for net_worth
+# Did the money actually arrive? Ask the hub what the chain says about them
+curl -s localhost:9100/reputation/<claimant> | jq '{net_worth, total_earned, completed}'
 ```
+
+That line used to read `itx-wallet balance --pubkey <claimant>`, and no such
+thing exists. The release tarball packages four binaries — `itx-node`,
+`itx-hub`, `itx-miner`, `itx-console` — and a wallet is not one of them; the
+workspace's `wallet` crate builds a binary called `wallet`, not `itx-wallet`;
+and that binary is an interactive TUI whose only subcommand is
+`generate-config`. There is no `balance`, and no `--pubkey`. `/reputation/` is
+what actually answers the question, and it answers it from the chain.
 
 If the recipient's balance shows the bounty, the payout landed and the hub
 simply missed the window; nothing to do but note it. Persistent cases across
@@ -2515,6 +2523,18 @@ the work.
    endpoint and the terminal state is deliberately not automatically
    recoverable — an automatic exit would be a guess, which is the thing the
    state exists to refuse.
+
+   **There is also no shipped tool that does this, and you should know that
+   before you need it.** The `wallet` crate is an interactive TUI, it is not in
+   the release tarball, and it has no send-to-address subcommand; the hub will
+   not re-drive a `PayoutFailed`; and §5.1's argument against a build toolchain
+   on the treasury box applies to `cargo` as much as to `node`. So the honest
+   state of this step today is: the money is owed, the amount is known
+   (`bounty_pending`), and the mechanism for moving it is a gap. If you are
+   deploying before that is closed, keep a machine with a checkout and the
+   operator key's *address* on hand, decide in advance how you would pay a
+   worker, and write it down — do not discover the shape of this during an
+   incident.
 4. **Fix the cause before restarting the hub**, or the next payout takes the
    same path.
 
@@ -2898,6 +2918,11 @@ challenge (nothing here exercised `certbot`, the renewal timer, or nginx's
 traffic, and x86_64. The boxes were privileged containers sharing a host kernel,
 so the firewall was exercised as a ruleset rather than against a hostile
 internet.
+
+The sequence for closing that half is written out step by step in
+[`public-rehearsal.md`](public-rehearsal.md), including which gate each step is
+and what to record. It is deliberately a separate document: this one is the
+reference you read while operating, and that one is a thing you do once.
 
 **Not verified, and worth saying plainly:** the sweep's board-lock wait, the
 node retry and saturation counters, the replay-guard series and the solvency
