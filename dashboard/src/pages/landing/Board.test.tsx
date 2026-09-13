@@ -142,6 +142,14 @@ describe("Board", () => {
       .map((r) => r.textContent?.match(/^[a-z-]+/)?.[0]);
   }
 
+  it("counts a sector's markets in the singular when there is one", () => {
+    // `other` had exactly one market the moment the fixture was
+    // namespaced, and read "1 markets".
+    const { carousel } = renderBoard([market("compute", 800)]);
+    expect(carousel.getByText(/^1 market ·/)).toBeInTheDocument();
+    expect(carousel.queryByText(/1 markets/)).toBeNull();
+  });
+
   it("shows twelve of a sector's markets at a time", () => {
     const { carousel } = renderBoard(wideSector(14));
     expect(marketRows(carousel).length).toBe(12);

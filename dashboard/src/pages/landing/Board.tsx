@@ -405,7 +405,8 @@ export default function Board({
                   <span className="itx-board-label">
                     {s.name}
                     <span className="itx-board-label-sub">
-                      {formatCount(s.markets.length)} markets ·{" "}
+                      {formatCount(s.markets.length)}{" "}
+                      {s.markets.length === 1 ? "market" : "markets"} ·{" "}
                       {formatCompactItx(s.openBounty)} itx
                     </span>
                   </span>
