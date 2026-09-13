@@ -7,8 +7,10 @@ interface Props {
    * a value curve, not a bar chart of activity. */
   values: number[];
   /** The bars under it, one per bucket: how much happened *in* that
-   * bucket rather than by the end of it. */
-  volume: number[];
+   * bucket rather than by the end of it. Optional: the activity tiles
+   * chart one series each and have no second one to draw as bars, and a
+   * chart with no volume gives the strip's height back to the plot. */
+  volume?: number[];
   startMs: number;
   endMs: number;
   width: number;
@@ -23,6 +25,12 @@ interface Props {
   valueNoun?: string;
   /** What one volume bar counts, for the tooltip. */
   volumeNoun?: string;
+  /** How the hovered value reads out, and how the value axis is
+   * labelled. The chart was written for bounty and printed everything as
+   * itx; a chart of task counts or agents needs to say so, and a count
+   * run through `formatCompactItx` is a fraction of one itx. */
+  formatValue?: (value: number) => string;
+  formatTick?: (value: number) => string;
 }
 
 /** Chart geometry. The gutters are where the axes live, and they are
@@ -58,16 +66,19 @@ export default function TimeSeriesChart({
   direction,
   valueNoun = "Bounty posted",
   volumeNoun = "tasks",
+  formatValue = (value) => `${formatCompactItx(value)} itx`,
+  formatTick = formatCompactItx,
 }: Props) {
   const gradientId = useId();
   const [hover, setHover] = useState<number | null>(null);
 
   const plotW = Math.max(0, width - PAD_LEFT - PAD_RIGHT);
-  const plotH = Math.max(0, height - PAD_TOP - AXIS_H - VOLUME_H - VOLUME_GAP);
+  const strip = volume ? VOLUME_H + VOLUME_GAP : 0;
+  const plotH = Math.max(0, height - PAD_TOP - AXIS_H - strip);
 
   const scale = useMemo(() => valueScale(values), [values]);
   const ticks = useMemo(() => timeTicks(startMs, endMs), [startMs, endMs]);
-  const peakVolume = useMemo(() => Math.max(1, ...volume), [volume]);
+  const peakVolume = useMemo(() => Math.max(1, ...(volume ?? [])), [volume]);
 
   const geometry = useMemo(() => {
     if (values.length === 0 || plotW <= 0 || plotH <= 0) return null;
@@ -96,7 +107,7 @@ export default function TimeSeriesChart({
   const volumeTop = PAD_TOP + plotH + AXIS_H + VOLUME_GAP;
   // Bars sit in the slot between adjacent points, with a hairline of air
   // so a dense series reads as bars and not as a solid block.
-  const barW = Math.max(1, plotW / Math.max(1, volume.length) - 1);
+  const barW = Math.max(1, plotW / Math.max(1, volume?.length ?? 0) - 1);
 
   const active = hover ?? values.length - 1;
 
@@ -137,7 +148,7 @@ export default function TimeSeriesChart({
             y2={yFor(tick)}
           />
           <text className="itx-chart-ylabel" x={PAD_LEFT + plotW + 8} y={yFor(tick) + 3.5}>
-            {formatCompactItx(tick)}
+            {formatTick(tick)}
           </text>
         </g>
       ))}
@@ -164,7 +175,7 @@ export default function TimeSeriesChart({
         );
       })}
 
-      {volume.map((v, i) => {
+      {volume?.map((v, i) => {
         const h = (v / peakVolume) * VOLUME_H;
         return (
           <rect
@@ -188,17 +199,19 @@ export default function TimeSeriesChart({
             x1={geometry.xs[hover]}
             x2={geometry.xs[hover]}
             y1={PAD_TOP}
-            y2={volumeTop + VOLUME_H}
+            y2={volume ? volumeTop + VOLUME_H : geometry.base}
           />
           <circle className="itx-chart-dot" cx={geometry.xs[hover]} cy={geometry.ys[hover]} r={3.5} />
         </>
       )}
 
       <text className="itx-chart-readout" x={PAD_LEFT} y={PAD_TOP - 1}>
-        <tspan className="itx-chart-readout-value">{formatCompactItx(values[active])} itx</tspan>
-        <tspan className="itx-chart-readout-meta" dx="10">
-          {formatCount(volume[active] ?? 0)} {volumeNoun}
-        </tspan>
+        <tspan className="itx-chart-readout-value">{formatValue(values[active])}</tspan>
+        {volume && (
+          <tspan className="itx-chart-readout-meta" dx="10">
+            {formatCount(volume[active] ?? 0)} {volumeNoun}
+          </tspan>
+        )}
         <tspan className="itx-chart-readout-meta" dx="10">
           {new Date(bucketTime(active, startMs, endMs, values.length))
             .toLocaleString("en-US", {

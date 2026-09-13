@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import ActivityPanel from "./ActivityPanel";
 import * as hub from "../../lib/hub";
@@ -108,7 +109,7 @@ describe("ActivityPanel", () => {
     expect(within(tileNamed("completion rate")).getByText("75.0%")).toBeInTheDocument();
   });
 
-  it("gives every figure a definition on the tile itself", async () => {
+  it("gives every figure a definition on the tile itself, on its back", async () => {
     vi.mocked(hub.getMarketSeries).mockResolvedValue(series());
     render(<ActivityPanel />);
     await screen.findByText("bounty posted");
@@ -122,6 +123,72 @@ describe("ActivityPanel", () => {
     expect(
       within(tileNamed("active agents")).getByText(/the bars do not add up to the total/i),
     ).toBeInTheDocument();
+  });
+
+  it("flips a tile over to its definition, and back", async () => {
+    vi.mocked(hub.getMarketSeries).mockResolvedValue(series());
+    render(<ActivityPanel />);
+    await waitFor(() => expect(screen.getByText("bounty paid")).toBeInTheDocument());
+    const user = userEvent.setup();
+    const tile = tileNamed("bounty paid");
+    const back = tile.querySelector(".itx-activity-back");
+    if (!back) throw new Error("no back face");
+
+    // At rest the figure faces out and the definition is turned away --
+    // from sight and from assistive tech both, or a screen reader would
+    // read the note under every number as though it were a caption still.
+    expect(tile).not.toHaveClass("is-flipped");
+    expect(back).toHaveAttribute("aria-hidden", "true");
+
+    await user.click(within(tile).getByRole("button", { name: /what bounty paid counts/i }));
+    expect(tile).toHaveClass("is-flipped");
+    expect(back).not.toHaveAttribute("aria-hidden");
+    expect(within(back as HTMLElement).getByText(/counted when the chain confirmed/i)).toBeInTheDocument();
+
+    // The same button turns it back, and says so.
+    await user.click(within(tile).getByRole("button", { name: /back to the bounty paid figure/i }));
+    expect(tile).not.toHaveClass("is-flipped");
+    expect(back).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("charts each series in the market chart's own style, in its own unit", async () => {
+    // jsdom lays nothing out, so `useElementWidth` measures 0 and the
+    // charts never draw -- which is why the count-formatting test above
+    // could pass without the chart's readout ever being in the tile. Give
+    // every element a width for the length of this test and the charts
+    // appear, readouts and axes included.
+    const widths = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 400 });
+    try {
+      vi.mocked(hub.getMarketSeries).mockResolvedValue(series());
+      const { container } = render(<ActivityPanel />);
+      // Waited for the charts rather than the labels: the tiles appear
+      // in one commit and their charts in the next, once the width has
+      // been measured, and a suite under load can land between the two.
+      //
+      // Eight of the ten tiles have a series; the two that would be a lie
+      // (open bounty, completion rate) draw nothing and say so in their
+      // notes.
+      await waitFor(() => expect(container.querySelectorAll("svg.itx-chart")).toHaveLength(8));
+      expect(tileNamed("open bounty").querySelector("svg")).toBeNull();
+      expect(tileNamed("completion rate").querySelector("svg")).toBeNull();
+
+      // The chart was written for bounty and printed everything as itx.
+      // A count tile's readout and axis are counts.
+      const posted = tileNamed("tasks posted");
+      expect(posted.querySelector(".itx-chart-readout-value")?.textContent).toMatch(/^\d+$/);
+      for (const tick of posted.querySelectorAll(".itx-chart-ylabel")) {
+        expect(tick.textContent).toMatch(/^[\d,]+$/);
+      }
+      expect(posted.textContent).not.toMatch(/\d\s*itx/);
+      // And an itx tile's still reads as itx.
+      expect(
+        tileNamed("bounty posted").querySelector(".itx-chart-readout-value")?.textContent,
+      ).toMatch(/ itx$/);
+    } finally {
+      if (widths) Object.defineProperty(HTMLElement.prototype, "clientWidth", widths);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+    }
   });
 
   it("says it could not reach the hub rather than showing zeroes", async () => {

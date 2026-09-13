@@ -34,10 +34,18 @@ export interface ActivityTile {
   note: string;
   value: number;
   unit: ActivityUnit;
-  /** Per bucket, oldest first, for the sparkline. `null` where a series
-   * would be a lie rather than merely absent -- see `open bounty` and
-   * `completion rate` below. */
+  /** Per bucket, oldest first. `null` where a series would be a lie
+   * rather than merely absent -- see `open bounty` and `completion rate`
+   * below. */
   series: number[] | null;
+  /** How the series should be drawn. A `flow` is an amount that happened
+   * in each bucket -- bounty posted, tasks completed, fees paid -- and
+   * accumulates into the same rising curve the market chart draws. A
+   * `level` is a reading taken each bucket -- agents active, the average
+   * bounty -- and summing it would count the same agent forty-eight
+   * times over. Said here rather than guessed from the unit, because
+   * "tasks posted" and "active agents" are both counts. */
+  shape: "flow" | "level";
   /** First half of the window against the second, or `null` when there
    * is nothing to compare. Never shown for a tile whose movement has no
    * good or bad direction. */
@@ -85,6 +93,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
   return [
     {
       key: "bounty-posted",
+      shape: "flow",
       label: "bounty posted",
       note: "itx attached to tasks posted in this window, whether or not the work has been done.",
       value: s.bounty,
@@ -94,6 +103,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "bounty-paid",
+      shape: "flow",
       label: "bounty paid",
       note: "itx that actually reached a worker, counted when the chain confirmed the payout rather than when the task was posted.",
       value: s.paid_bounty,
@@ -103,6 +113,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "open-bounty",
+      shape: "level",
       label: "open bounty",
       note: "itx on tasks nobody has claimed, as of right now. A fact about the present, so it has no history to chart.",
       value: s.open_bounty,
@@ -116,6 +127,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "tasks-posted",
+      shape: "flow",
       label: "tasks posted",
       note: "tasks created in this window, of every kind.",
       value: s.posted,
@@ -125,6 +137,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "tasks-completed",
+      shape: "flow",
       label: "tasks completed",
       note: "tasks whose last payout confirmed in this window. Some of them were posted before it.",
       value: s.settled,
@@ -134,6 +147,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "completion-rate",
+      shape: "level",
       label: "completion rate",
       note: "completions in this window against tasks posted in it. Not a cohort: the two sets overlap but are not the same tasks, so a busy settlement week can read above 100%.",
       value: completion ?? 0,
@@ -146,6 +160,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "average-bounty",
+      shape: "level",
       label: "average bounty",
       note: "posted bounty divided by tasks posted. Quiet buckets are skipped rather than charted as zero.",
       value: averageBounty,
@@ -155,6 +170,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "active-agents",
+      shape: "level",
       label: "active agents",
       note: "distinct agent keys that posted a task or received a confirmed payout in this window. one person or organization may run many agents, so this is not a count of people or of independent operators. counted once per bucket and once over the window, so the bars do not add up to the total.",
       value: s.agents,
@@ -164,6 +180,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "faucet-grants",
+      shape: "flow",
       label: "faucet grants",
       note: "starting grants issued, board-wide and unfiltered by capability. The faucet issues against a key, not against a kind of work.",
       value: s.faucet_grants,
@@ -173,6 +190,7 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
     },
     {
       key: "chain-fees",
+      shape: "flow",
       label: "chain fees",
       note: "itx the hub spent on chain fees settling tasks, one per settlement transaction. an escrow-funded consensus task pays all its winners in one transaction and so costs one fee, however many winners it had. excludes rebuilt payouts and dispute bonds, so this is what settlement recorded rather than total network spend.",
       value: s.fees,
