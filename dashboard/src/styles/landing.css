@@ -553,7 +553,7 @@ body.itx-landing-body[data-theme="light"] {
   /* The board's fixed side columns, named here because two rows resolve
      against them: the columns themselves, and the heading line above,
      whose title and pager start and end where the carousel does. */
-  --col-nav: 172px;
+  --col-nav: 232px;
   --col-rail: 232px;
 
   /* Establishes a block formatting context so the quote strip's negative
@@ -1244,18 +1244,23 @@ body.itx-col-resizing {
   flex-direction: column;
 }
 
-.itx-stats {
+/* `itx-rail-*`, not `itx-stat-*`: the terminal pages have a stat strip
+   of that name in their own stylesheet, and both are loaded here. */
+.itx-rail-stats {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.itx-stat {
+/* One figure: its label over its value and change on the left, and its
+   graph on the right with the entry's whole height. An entry and a half
+   of `--row-h`, so the graph has room to be a graph rather than a line
+   of text's worth of pixels. */
+.itx-rail-stat {
   box-sizing: border-box;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
+  align-items: center;
+  gap: var(--sp-4);
   width: 100%;
   height: calc(var(--row-h) * 1.5);
   margin: 0;
@@ -1267,31 +1272,29 @@ body.itx-col-resizing {
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: color 130ms ease;
 }
-.itx-stats li:last-child .itx-stat {
+.itx-rail-stats li:last-child .itx-rail-stat {
   border-bottom: 0;
 }
-.itx-stat:hover .itx-stat-label,
-.itx-stat:focus-visible .itx-stat-label,
-.itx-stat.is-active .itx-stat-label {
+.itx-rail-stat:hover .itx-rail-stat-label,
+.itx-rail-stat:focus-visible .itx-rail-stat-label,
+.itx-rail-stat.is-active .itx-rail-stat-label {
   color: var(--ld-light);
 }
-.itx-stat:focus-visible {
+.itx-rail-stat:focus-visible {
   outline: none;
 }
 
-.itx-stat-head,
-.itx-stat-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
+.itx-rail-stat-text {
+  flex: 1 1 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.itx-stat-label {
-  font-size: var(--fs-meta);
+.itx-rail-stat-label {
+  font-size: var(--fs-micro);
   color: var(--ld-sub);
   white-space: nowrap;
   overflow: hidden;
@@ -1299,21 +1302,52 @@ body.itx-col-resizing {
   transition: color 130ms ease;
 }
 
-.itx-stat-nochart {
-  flex: 0 0 44px;
+.itx-rail-stat-figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  white-space: nowrap;
 }
 
-.itx-stat-value {
+/* The figure at the body size and the body weight: it is one of ten in
+   a rail, not a headline. */
+.itx-rail-stat-value {
   font-size: var(--fs-body);
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
   color: var(--ld-light);
-  white-space: nowrap;
 }
 
-.itx-stat-change {
+.itx-rail-stat-change {
   font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+}
+
+/* The graph's column. It gives way before the figures do -- down to the
+   trends rail's width -- when the rail is dragged narrow, and the
+   sparkline inside stretches its one viewBox to whatever is left. */
+.itx-rail-stat-spark {
+  flex: 0 3 76px;
+  min-width: 44px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+}
+.itx-rail-stat-spark .itx-spark {
+  display: block;
+  width: 100%;
+  height: 24px;
+}
+
+/* Below the stacking breakpoint the rail is the page's width, and ten
+   entries in one column would be a screen of them; they flow into as
+   many columns as fit instead. */
+@media (max-width: 1080px) {
+  .itx-rail-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    column-gap: var(--sp-8);
+  }
 }
 
 .itx-board-panel-trends {

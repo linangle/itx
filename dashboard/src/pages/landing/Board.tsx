@@ -73,7 +73,10 @@ const REFRESH_MS = 5000;
  * the first paint after a reload. The floors are what the columns'
  * contents need; below them there is no narrower column to offer, so that
  * is where dragging further shuts it instead. */
-const NAV_WIDTH = { initial: 172, min: 132, max: 320 };
+// The same widths either side: the left column is a rail of figures
+// now, like the right, and at the nav's old 172px the figures' labels
+// all truncated. Two constants rather than one so either can move.
+const STATS_WIDTH = { initial: 232, min: 190, max: 420 };
 const RAIL_WIDTH = { initial: 232, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
@@ -189,13 +192,14 @@ export default function Board({
     host: innerRef,
     property: "--col-nav",
     attribute: "data-nav-shut",
-    // The stored key predates the rail: the nav this column held before
-    // was resized to the same widths, and a rename would reset everyone's.
-    storageKey: "itx-board-nav-w",
+    // A new key, deliberately: the nav this column held before was
+    // dragged to widths that suit a list of links, and a rail of figures
+    // inherits them as a rail whose every label is cut short.
+    storageKey: "itx-board-stats-w",
     side: "left",
     label: "the stats rail",
     controls: "itx-board-stats",
-    ...NAV_WIDTH,
+    ...STATS_WIDTH,
   });
   const rail = useColumnWidth({
     host: innerRef,

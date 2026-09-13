@@ -45,10 +45,13 @@ export default function StatsRail({
   return (
     <>
       {/* Two lines, like the leaderboard's label across the board, which
-          is what keeps the panel below level with the market panels. */}
+          is what keeps the panel below level with the market panels -- the
+          second held open by a non-breaking space rather than a caption. */}
       <span className="itx-board-label">
         stats
-        <span className="itx-board-label-sub">the whole board</span>
+        <span className="itx-board-label-sub" aria-hidden="true">
+          {"\u00a0"}
+        </span>
       </span>
       <div className="itx-board-panel itx-board-panel-stats">
         {series.error && <p className="itx-board-note">couldn&apos;t reach the hub.</p>}
@@ -59,7 +62,11 @@ export default function StatsRail({
         )}
         {!series.error && !stale && !tiles && <p className="itx-board-note">loading stats…</p>}
         {tiles && (
-          <ul className="itx-stats">
+          /* `itx-rail-*` rather than `itx-stat-*`: the terminal pages have a
+             stat strip of that name in their own stylesheet, and both
+             stylesheets are loaded here, so the rail's figures came out at
+             the strip's 16px bold and on its grid. */
+          <ul className="itx-rail-stats">
             {tiles.map((tile) => {
               const direction = directionOf(tile.changePct);
               const active = tile.key === open;
@@ -67,19 +74,39 @@ export default function StatsRail({
                 <li key={tile.key}>
                   {/* The whole entry is the control, and its name is its
                       contents: the label first, so a screen reader hears
-                      "bounty posted" before the figure. */}
+                      "bounty posted" before the figure. The figures on the
+                      left, the graph on the right with the entry's whole
+                      height -- a line of text is not enough room for a
+                      line of data. */}
                   <button
                     type="button"
-                    className={active ? "itx-stat is-active" : "itx-stat"}
+                    className={active ? "itx-rail-stat is-active" : "itx-rail-stat"}
                     aria-pressed={active}
                     onClick={() => onOpen(tile.key)}
                   >
-                    <span className="itx-stat-head">
-                      <span className="itx-stat-label">{tile.label}</span>
+                    <span className="itx-rail-stat-text">
+                      <span className="itx-rail-stat-label">{tile.label}</span>
+                      <span className="itx-rail-stat-figures">
+                        <span className="itx-rail-stat-value">
+                          {formatStatValue(tile.unit, tile.value)}
+                        </span>
+                        {tile.changePct !== null && (
+                          <span className={`itx-rail-stat-change ${direction}`}>
+                            {formatPct(tile.changePct)}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                    <span className="itx-rail-stat-spark">
                       {tile.curve ? (
+                        /* Sized by the stylesheet, not by these: the
+                           sparkline stretches its one viewBox to whatever
+                           the column gives it, so the width here only sets
+                           the aspect it is drawn at. */
                         <Sparkline
                           values={tile.curve}
-                          width={44}
+                          width={76}
+                          height={24}
                           direction={direction}
                           label={`${tile.label} over the window`}
                         />
@@ -87,13 +114,7 @@ export default function StatsRail({
                         /* No curve is a deliberate answer, not a loading
                            state -- a hub that does not serve what it needs,
                            see `ActivityTile.curve`. */
-                        <span className="itx-stat-nochart" aria-hidden="true" />
-                      )}
-                    </span>
-                    <span className="itx-stat-foot">
-                      <span className="itx-stat-value">{formatStatValue(tile.unit, tile.value)}</span>
-                      {tile.changePct !== null && (
-                        <span className={`itx-stat-change ${direction}`}>{formatPct(tile.changePct)}</span>
+                        <span aria-hidden="true" />
                       )}
                     </span>
                   </button>

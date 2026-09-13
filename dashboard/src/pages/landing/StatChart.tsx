@@ -41,7 +41,12 @@ export default function StatChart({ statKey, range, onRange, onClose }: Props) {
             named the tile. */}
         <h3 className="itx-board-label itx-chart-label">
           {tile?.label ?? statKey.replace(/-/g, " ")}
-          <span className="itx-board-label-sub">the whole board</span>
+          {/* The second line held open, not captioned: a market's chart
+              names its sector here, and a board-wide figure has no such
+              parent to name. */}
+          <span className="itx-board-label-sub" aria-hidden="true">
+            {"\u00a0"}
+          </span>
         </h3>
         <button type="button" className="itx-chart-close" onClick={onClose} aria-label="Close the chart">
           ×
