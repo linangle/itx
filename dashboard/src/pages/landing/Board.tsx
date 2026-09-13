@@ -76,18 +76,18 @@ const REFRESH_MS = 5000;
 // The same widths either side: the left column is a rail of figures
 // now, like the right, and at the nav's old 172px the figures' labels
 // all truncated. Two constants rather than one so either can move.
-// Sized to what each holds, and measured rather than guessed: the right
-// rail is the narrowest width at which nothing in it truncates. Stepped
-// in eights against a full field of fifty names, with the rails' tables
-// at the meta size and each trend's change stacked under its sparkline,
-// a fifteen-character name beside its four-decimal score fits from 256
-// (two names cut at 248, seventeen at 232) and no trend label truncates
-// at any width tried. What holds the floor at 256 is the score: at two
-// decimals it would be about 232. The stats rail needs less -- a label
-// over a figure, and a graph that takes whatever is left -- so it starts
-// narrower and gives the middle the difference.
+// The right rail at the width the owner dragged it to and asked for as
+// the default: about 232, with the stats rail at 240. Measured against
+// a full field of fifty names at the rails' meta size, 232 is below the
+// width at which every fifteen-character name fits beside its
+// four-decimal score (that is 256; seventeen of fifty are cut at 232),
+// so the longest names end in an ellipsis and carry the full name on
+// their title. No trend label truncates at any width tried. What holds
+// the fit-everything width at 256 is the score's decimals: at two it
+// would be about 232, this width. The stats rail needs less -- a label
+// over a figure, and a graph that takes whatever is left.
 const STATS_WIDTH = { initial: 240, min: 190, max: 420 };
-const RAIL_WIDTH = { initial: 256, min: 190, max: 420 };
+const RAIL_WIDTH = { initial: 232, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
 function ago(iso: string): string {

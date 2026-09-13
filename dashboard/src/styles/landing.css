@@ -554,7 +554,7 @@ body.itx-landing-body[data-theme="light"] {
      against them: the columns themselves, and the heading line above,
      whose title and pager start and end where the carousel does. */
   --col-nav: 240px;
-  --col-rail: 256px;
+  --col-rail: 232px;
 
   /* Establishes a block formatting context so the quote strip's negative
    * top margin cannot collapse out through here and drag the whole board
