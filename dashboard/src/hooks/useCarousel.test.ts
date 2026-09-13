@@ -48,13 +48,12 @@ describe("snapTarget", () => {
   });
 });
 
-/** Builds a row of `items` panels with real geometry, mounts the hook on
- * it, and reports how many times the caller re-rendered.
+/** A row of `items` panels with real geometry, as a plain element.
  *
  * jsdom lays nothing out, so the widths the hook reads back are stubbed
  * onto the element. `scrollLeft` is writable but setting it fires no
- * scroll event, so the test dispatches its own. */
-function mountRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}) {
+ * scroll event, so `scrollTo` dispatches its own. */
+function buildRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}) {
   const stride = panel + gap;
   const el = document.createElement("div");
   for (let i = 0; i < items; i++) el.appendChild(document.createElement("div"));
@@ -78,17 +77,6 @@ function mountRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}
   }
   document.body.appendChild(el);
 
-  let renders = 0;
-  const { result } = renderHook(() => {
-    renders++;
-    const [ref, carousel] = useCarousel<HTMLDivElement>(items);
-    // The row is a plain element rather than something React rendered, so
-    // the ref is attached by hand -- during render, before the hook's
-    // effects run and go looking for it.
-    ref.current = el as HTMLDivElement;
-    return carousel;
-  });
-
   const scrollTo = (left: number) => {
     act(() => {
       el.scrollLeft = left;
@@ -96,7 +84,26 @@ function mountRow(items: number, { panel = 440, gap = 20, viewport = 1380 } = {}
     });
   };
 
-  return { el, stride, result, scrollTo, renders: () => renders };
+  return { el, stride, scrollTo };
+}
+
+/** Mounts the hook on a built row and reports how many times the caller
+ * re-rendered. The row is handed over the way React hands a node to a
+ * callback ref, inside `act` because attaching is a state change. */
+function mountRow(items: number, options = {}) {
+  const row = buildRow(items, options);
+
+  let renders = 0;
+  let attach: (el: HTMLDivElement | null) => void = () => {};
+  const { result } = renderHook(() => {
+    renders++;
+    const [ref, carousel] = useCarousel<HTMLDivElement>(items);
+    attach = ref;
+    return carousel;
+  });
+  act(() => attach(row.el as HTMLDivElement));
+
+  return { ...row, result, attach: (el: HTMLDivElement) => act(() => attach(el)), renders: () => renders };
 }
 
 describe("useCarousel scroll handling", () => {
@@ -117,6 +124,31 @@ describe("useCarousel scroll handling", () => {
 
     row.scrollTo(row.el.scrollWidth - row.el.clientWidth);
     expect(row.result.current.atEnd).toBe(true);
+  });
+
+  it("follows a replacement row, as when a market chart opens and closes", () => {
+    // The board swaps the carousel out for the chart and back again, so
+    // the element the hook is watching is a new one -- and the old one
+    // no longer says anything about where the row is. Before this, the
+    // arrows still moved the new row (they drive the DOM directly) but
+    // the ends were frozen at whatever they were when the chart opened,
+    // which left the back arrow disabled on the eighth sector.
+    const row = mountRow(12);
+    row.scrollTo(row.stride * 3);
+    expect(row.result.current.atStart).toBe(false);
+
+    const again = buildRow(12);
+    row.attach(again.el as HTMLDivElement);
+    expect(row.result.current.index).toBe(0);
+    expect(row.result.current.atStart).toBe(true);
+
+    again.scrollTo(again.stride * 2);
+    expect(row.result.current.index).toBe(2);
+    expect(row.result.current.atStart).toBe(false);
+
+    // The row it stopped watching is silent now.
+    row.scrollTo(row.stride * 5);
+    expect(row.result.current.index).toBe(2);
   });
 
   it("marks every panel on screen, so the last one is reachable at the far end", () => {

@@ -64,7 +64,21 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
    * markets land the row looks like it is against both of its ends. */
   items: number,
 ) {
-  const ref = useRef<T | null>(null);
+  // The row is handed over through a callback ref rather than read off a
+  // ref object at mount, because the board replaces it: opening a market
+  // chart unmounts the carousel, and closing the chart mounts a new one.
+  // Listeners attached once to whatever the ref held at mount never
+  // heard from the replacement -- the arrows still moved it, since they
+  // drive the DOM directly, but `atStart` and `atEnd` stayed frozen at
+  // whatever they were when the chart opened. That is how the back arrow
+  // came to sit disabled with `operations` on screen. Keeping the node in
+  // state is what re-runs the effects below when it changes.
+  const nodeRef = useRef<T | null>(null);
+  const [node, setNode] = useState<T | null>(null);
+  const ref = useCallback((el: T | null) => {
+    nodeRef.current = el;
+    setNode(el);
+  }, []);
   const [state, setState] = useState({
     index: 0,
     firstVisible: 0,
@@ -99,7 +113,7 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
   const cap = useRef<number | null>(null);
 
   const read = useCallback(() => {
-    const el = ref.current;
+    const el = nodeRef.current;
     if (!el) return;
     const step = stride(el);
     const max = el.scrollWidth - el.clientWidth;
@@ -181,10 +195,10 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     );
   }, []);
 
-  useEffect(read, [read, items]);
+  useEffect(read, [read, items, node]);
 
   useEffect(() => {
-    const el = ref.current;
+    const el = node;
     if (!el) return;
 
     read();
@@ -221,7 +235,7 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
       release();
       observer.disconnect();
     };
-  }, [read]);
+  }, [read, node]);
 
   // Smooth unless the reader has asked for less motion, in which case
   // the row simply arrives -- the snap is the point, the travel is not.
@@ -229,7 +243,7 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 
   const step = useCallback((direction: 1 | -1) => {
-    const el = ref.current;
+    const el = nodeRef.current;
     if (!el) return;
     const from = pending.current ?? el.scrollLeft;
     const left = snapTarget(from, stride(el), direction, el.scrollWidth - el.clientWidth);
@@ -238,7 +252,7 @@ export function useCarousel<T extends HTMLElement = HTMLDivElement>(
   }, []);
 
   const to = useCallback((index: number) => {
-    const el = ref.current;
+    const el = nodeRef.current;
     if (!el) return;
     const item = el.children[index];
     if (!item) return;
