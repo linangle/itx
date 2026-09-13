@@ -4,13 +4,49 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import Board from "./Board";
 import * as hub from "../../lib/hub";
-import type { BoardSummaryDto, CapabilitySummaryDto, TaskDto } from "../../lib/hub";
+import type { BoardSummaryDto, CapabilitySummaryDto, MarketSeriesDto, TaskDto } from "../../lib/hub";
 import type { AsyncState } from "../../hooks/useAsync";
 
 vi.mock("../../lib/hub", async (importOriginal) => ({
   ...(await importOriginal<typeof hub>()),
   getLeaderboard: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  // The stats rail asks for the whole board's series on mount. Nothing
+  // by default, so the rail sits at "loading" in tests that are about
+  // something else; the tests that are about it hand it `boardSeries()`.
+  getMarketSeries: vi.fn().mockResolvedValue(undefined),
 }));
+
+/** The whole board's series, as the stats rail asks for it. */
+function boardSeries(): MarketSeriesDto {
+  const zeros = [0, 0, 0, 0];
+  const UNITS = 100_000_000;
+  return {
+    capability: null,
+    window_ms: 24 * 3_600_000,
+    buckets: 4,
+    start_ms: 1_000_000,
+    end_ms: 1_000_000 + 24 * 3_600_000,
+    posted_series: [1, 0, 2, 1],
+    bounty_series: [UNITS, 0, 2 * UNITS, UNITS],
+    settled_series: [0, 1, 0, 2],
+    paid_bounty_series: [0, UNITS, 0, 2 * UNITS],
+    agents_series: [1, 2, 2, 3],
+    fees_series: [...zeros],
+    faucet_series: [2, 1, 0, 4],
+    open_bounty_series: [0, 4 * UNITS, 0, 3 * UNITS],
+    posted: 4,
+    bounty: 4 * UNITS,
+    settled: 3,
+    paid_bounty: 3 * UNITS,
+    agents: 5,
+    fees: 3_000,
+    faucet_grants: 7,
+    faucet_itx: 7 * 50_000_000,
+    open: 1,
+    open_bounty: 9 * UNITS,
+    first_task_at: new Date(1_000_000).toISOString(),
+  };
+}
 
 const BUCKETS = 24;
 
@@ -88,6 +124,13 @@ function renderBoard(
     ...view,
     carousel: within(view.container.querySelector("#itx-board-markets") as HTMLElement),
   };
+}
+
+/** The carousel as it is *now*. `renderBoard` captures the one on first
+ * paint, and opening a chart replaces it -- a test that closes a chart
+ * and clicks the carousel again has to look it up afresh. */
+function liveCarousel() {
+  return within(document.querySelector("#itx-board-markets") as HTMLElement);
 }
 
 /** A board with markets in three sectors, shared by the blocks below.
@@ -201,15 +244,12 @@ describe("Board", () => {
     expect(carousel.queryByText(/1–12 of 12/)).toBeNull();
   });
 
-  it("orders the middle column, and the rail's links with it", () => {
+  it("orders the middle column: overview, latest, activity, sectors", () => {
     const { container } = renderBoard(capabilities);
 
-    // The order the owner asked for. Asserted against the DOM because
-    // three of these are anchors the nav jumps to.
-    //
-    // Read through the anchors each section carries rather than the
-    // sections themselves: the ids live on the *panels*, so that a jump
-    // parks every section's panel on the same line (see `--anchor-top`).
+    // The order the owner asked for, read through the anchors each
+    // section carries: the ids live on the *panels*, so that a jump parks
+    // every section's panel on the same line (see `--anchor-top`).
     const anchors = [...container.querySelectorAll(".itx-board-mid [id^='itx-board-']")].map(
       (e) => e.id,
     );
@@ -220,25 +260,17 @@ describe("Board", () => {
       "itx-board-sectors",
     ]);
 
-    const nav = screen.getByRole("navigation", { name: /board sections/i });
+    // And the four read as four sections: one heading each, at one size.
     expect(
-      within(nav)
-        .getAllByRole("link")
-        .map((a) => a.getAttribute("href"))
-        .filter((href) => href?.startsWith("#")),
-    ).toEqual([
-      "#itx-board-overview",
-      "#itx-board-latest",
-      "#itx-board-activity",
-      "#itx-board-sectors",
-    ]);
+      screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent),
+    ).toEqual(["market overview", "latest bounties", "market activity", "sectors"]);
   });
 
   it("anchors each section on its panel, so the jumps land level", () => {
     // Each sits on a panel rather than on the section around it, which
     // is what lets one offset park every jump on the same line as the
-    // leaderboard panel. Activity is a grid of panels rather than one, so
-    // its anchor is the grid, whose top edge is the panels' top edge. The
+    // leaderboard panel. Market activity is sector blocks of panels rather
+    // than one, so its anchor is the section, whose top edge is theirs. The
     // offset itself (`--anchor-top`) is verified in the browser, since
     // jsdom applies no stylesheet.
     const { container } = renderBoard(capabilities);
@@ -247,7 +279,7 @@ describe("Board", () => {
       expect(anchor).toBeInTheDocument();
       expect(anchor).toHaveClass("itx-board-panel");
     }
-    expect(container.querySelector("#itx-board-activity")).toHaveClass("itx-activity-panel");
+    expect(container.querySelector("#itx-board-activity")).toHaveClass("itx-market-activity");
     expect(container.querySelector("#itx-board-latest")).toHaveClass("itx-board-panel-latest");
   });
 
@@ -268,9 +300,9 @@ describe("Board", () => {
     // coding"), same as a sector panel's label does.
     expect(await screen.findByRole("heading", { name: /^python/ })).toBeInTheDocument();
     expect(document.querySelector("#itx-board-markets")).toBeNull();
-    // ...while the rail either side stays exactly where it was. That is
-    // the whole point of doing this in place rather than as a route.
-    expect(screen.getByRole("navigation", { name: /board sections/i })).toBeInTheDocument();
+    // ...while the rails either side stay exactly where they were. That
+    // is the whole point of doing this in place rather than as a route.
+    expect(screen.getByRole("complementary", { name: /board stats/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/search agents/i)).toBeInTheDocument();
   });
 
@@ -281,44 +313,42 @@ describe("Board", () => {
     expect(screen.getByTestId("search").textContent).toContain("market=software%2Fpython");
   });
 
-  it("goes back to the carousel from the chart", async () => {
+  it("goes back to the carousel from the chart, by either control", async () => {
     const user = userEvent.setup();
     const { carousel } = renderBoard(capabilities);
     await user.click(await carousel.findByRole("button", { name: "python" }));
 
     await user.click(await screen.findByRole("button", { name: /market overview/i }));
     expect(document.querySelector("#itx-board-markets")).not.toBeNull();
+
+    // The chart carries its own close as well as the headline's back.
+    // Re-queried: the carousel is a new element after coming back, and
+    // the one `renderBoard` captured is detached.
+    await user.click(await liveCarousel().findByRole("button", { name: "python" }));
+    await user.click(await screen.findByRole("button", { name: /close the chart/i }));
+    expect(document.querySelector("#itx-board-markets")).not.toBeNull();
+    expect(screen.getByTestId("search").textContent).not.toContain("market=");
   });
 
-  it("lists sectors under the overview, ranked by the money in them", async () => {
+  it("opens one of the board's own figures from the stats rail, in the URL", async () => {
     const user = userEvent.setup();
+    vi.mocked(hub.getMarketSeries).mockResolvedValue(boardSeries());
     renderBoard(capabilities);
-    const nav = screen.getByRole("navigation", { name: /board sections/i });
+    const rail = screen.getByRole("complementary", { name: /board stats/i });
+    await user.click(await within(rail).findByRole("button", { name: /^bounty paid/ }));
 
-    // They are a subsection of the overview, so they are not there until
-    // the overview is the thing being worked with.
-    expect(within(nav).queryAllByRole("button")).toHaveLength(0);
+    // The stat's chart takes the middle column the way a market's does,
+    // and it is a link too.
+    expect(await screen.findByRole("heading", { name: /^bounty paid/ })).toBeInTheDocument();
+    expect(document.querySelector("#itx-board-markets")).toBeNull();
+    expect(screen.getByTestId("search").textContent).toContain("stat=bounty-paid");
+    expect(within(rail).getByRole("button", { name: /^bounty paid/ })).toHaveAttribute("aria-pressed", "true");
 
-    await user.click(within(nav).getByRole("link", { name: "market overview" }));
-    const sectors = within(nav)
-      .getAllByRole("button")
-      .map((b) => b.textContent);
-    expect(sectors).toEqual(["software", "media", "customer-operations"]);
-  });
-
-  it("nests the sectors inside the overview's own entry", async () => {
-    const user = userEvent.setup();
-    renderBoard(capabilities);
-    const nav = screen.getByRole("navigation", { name: /board sections/i });
-    const overview = within(nav).getByRole("link", { name: "market overview" });
-    await user.click(overview);
-
-    // Inside the overview's list item, not a sibling list under a heading
-    // of its own -- which would make "sectors" and the "breakdown" link
-    // read as two names for the same thing.
-    const item = overview.closest("li")!;
-    expect(within(item).getByRole("button", { name: "software" })).toBeInTheDocument();
-    expect(overview).toHaveAttribute("aria-expanded", "true");
+    // One thing in the middle at a time: a market replaces it.
+    await user.click(await screen.findByRole("button", { name: /close the chart/i }));
+    await user.click(await liveCarousel().findByRole("button", { name: "python" }));
+    expect(screen.getByTestId("search").textContent).toContain("market=");
+    expect(screen.getByTestId("search").textContent).not.toContain("stat=");
   });
 
   it("quotes sectors in the strip rather than protocol task kinds", () => {
@@ -330,12 +360,9 @@ describe("Board", () => {
   });
 
   it("files a tag the taxonomy doesn't know under other, rather than dropping it", async () => {
-    const user = userEvent.setup();
     const { carousel } = renderBoard([market("haruspicy", 100)]);
-    const nav = screen.getByRole("navigation", { name: /board sections/i });
-    await user.click(within(nav).getByRole("link", { name: "market overview" }));
-    expect(within(nav).getByRole("button", { name: "other" })).toBeInTheDocument();
     expect(await carousel.findByRole("button", { name: "haruspicy" })).toBeInTheDocument();
+    expect(carousel.getByText("other")).toBeInTheDocument();
   });
 
   /** A tape row's worth of task. Every field the row reads is set --

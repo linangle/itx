@@ -626,6 +626,17 @@ body.itx-landing-body[data-theme="light"] {
   margin-bottom: 0;
 }
 
+/* The section titles down the middle -- latest bounties, market
+   activity, sectors -- at the size "market overview" has, so the four
+   read as four sections. The gap under each matches the one under the
+   overview's own heading line. */
+.itx-board-labels .itx-board-title {
+  margin: 0;
+}
+.itx-board-labels-section {
+  margin-bottom: var(--gap-heading);
+}
+
 /* The market's size, sitting under its name. Normal weight and muted so
    the tag stays the thing you read first. */
 .itx-board-label-sub {
@@ -826,7 +837,7 @@ body.itx-landing-body[data-theme="light"] {
  * `align-self: stretch` is what gives the sticky box a parent to travel
  * within: with the grid's `align-items: start` these columns were only as
  * tall as their contents. */
-.itx-board-nav,
+.itx-board-stats,
 .itx-board-rail {
   align-self: stretch;
   /* Explicit, not just stretched. A sticky child is only bounded by a
@@ -884,7 +895,7 @@ body.itx-landing-body[data-theme="light"] {
  * `--col-nav` / `--col-rail` the board has always laid out on, written on
  * `.itx-board-inner` by `useColumnWidth`, so the title stays over the
  * first market panel however the edges are moved. */
-.itx-board-nav,
+.itx-board-stats,
 .itx-board-rail {
   /* The containing block for the grip below, which is positioned
      against its own column and reaches the whole way down it. */
@@ -912,7 +923,7 @@ body.itx-landing-body[data-theme="light"] {
 
 /* Centred in the gutter: half the gap plus half the grip's own width
    puts the strip's middle on the line between the two columns. */
-.itx-board-nav > .itx-board-grip {
+.itx-board-stats > .itx-board-grip {
   right: calc((var(--sp-8) + var(--grip-w)) / -2);
 }
 
@@ -961,7 +972,7 @@ body.itx-landing-body[data-theme="light"] {
 /* A shut column keeps its grip and loses everything else. Emptying it
    rather than narrowing it: at 0px the panels inside would not vanish,
    they would wrap into an unreadable sliver and go on painting. */
-.itx-board-inner[data-nav-shut] .itx-board-nav > .itx-board-pin,
+.itx-board-inner[data-nav-shut] .itx-board-stats > .itx-board-pin,
 .itx-board-inner[data-rail-shut] .itx-board-rail > .itx-board-pin {
   display: none;
 }
@@ -982,7 +993,7 @@ body.itx-col-resizing {
     display: none;
   }
 
-  .itx-board-inner[data-nav-shut] .itx-board-nav > .itx-board-pin,
+  .itx-board-inner[data-nav-shut] .itx-board-stats > .itx-board-pin,
   .itx-board-inner[data-rail-shut] .itx-board-rail > .itx-board-pin {
     display: flex;
   }
@@ -1219,6 +1230,92 @@ body.itx-col-resizing {
   flex-direction: column;
 }
 
+/* The stats rail's panel: the whole board's figures, each an entry two
+   lines tall -- the label with a sparkline the trends rail's size, then
+   the figure with its change. Two lines because a rail this narrow cannot
+   hold all four on one; two rows of `--row-h` so the entries line up with
+   the tables across the board. The page links sit at the foot, below
+   whatever slack the column has. */
+.itx-board-panel-stats {
+  flex: 1;
+  min-height: 244px;
+  padding: var(--pad-panel-y) var(--pad-panel-x);
+  display: flex;
+  flex-direction: column;
+}
+
+.itx-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.itx-stat {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: calc(var(--row-h) * 1.5);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 130ms ease;
+}
+.itx-stats li:last-child .itx-stat {
+  border-bottom: 0;
+}
+.itx-stat:hover .itx-stat-label,
+.itx-stat:focus-visible .itx-stat-label,
+.itx-stat.is-active .itx-stat-label {
+  color: var(--ld-light);
+}
+.itx-stat:focus-visible {
+  outline: none;
+}
+
+.itx-stat-head,
+.itx-stat-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.itx-stat-label {
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 130ms ease;
+}
+
+.itx-stat-nochart {
+  flex: 0 0 44px;
+}
+
+.itx-stat-value {
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--ld-light);
+  white-space: nowrap;
+}
+
+.itx-stat-change {
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .itx-board-panel-trends {
   /* The last panel in the rail takes up any slack, so the rail ends
      level with the markets column rather than leaving a ragged edge. */
@@ -1232,7 +1329,7 @@ body.itx-col-resizing {
 
 /* left nav */
 
-.itx-board-nav {
+.itx-board-stats {
   min-width: 0;
 }
 
@@ -1298,14 +1395,6 @@ body.itx-col-resizing {
   color: var(--ld-light);
 }
 
-/* Which market the carousel is currently showing. The one fill on the
-   board that is lifted off the ground rather than equal to it: where you
-   are has to hold without a pointer on it. */
-.itx-board-navlist button.is-active {
-  background: var(--bd-nav-fill);
-  color: var(--ld-light);
-  font-weight: 600;
-}
 
 /* The sectors, nested inside the overview's entry. No heading of its own:
  * indented under the thing they belong to, the list needs no label -- its
@@ -1321,20 +1410,7 @@ body.itx-col-resizing {
  * the label and overflowing the panel. Pills are blocks sized by their
  * own padding, so the link and the list under it stack by default. */
 
-.itx-board-navlist-sectors {
-  margin: var(--sp-2) 0 var(--sp-3);
-  padding-left: var(--sp-5);
-  border-left: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
-}
 
-.itx-board-navlist-sectors button {
-  font-size: var(--fs-meta);
-  color: var(--ld-sub);
-}
-.itx-board-navlist-sectors button:hover,
-.itx-board-navlist-sectors button.is-active {
-  color: var(--ld-light);
-}
 
 /* Links off the board entirely, held apart from the in-page ones and
    pinned to the foot of the rail -- there are only ever a handful of
@@ -2504,6 +2580,41 @@ a.itx-board-what:hover {
   margin-top: 0;
 }
 
+/* The label line above a chart, with the close at its far end. The label
+   keeps its own box, which is what holds the panel level with the
+   leaderboard's. */
+.itx-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+/* A bare glyph, like the pagers' triangles: the same size, no edge. */
+.itx-chart-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ld-sub);
+  font: inherit;
+  font-size: var(--fs-label);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 130ms ease,
+    transform 130ms ease;
+}
+.itx-chart-close:hover {
+  color: var(--ld-light);
+  transform: scale(1.1);
+}
+
 .itx-chart-panel {
   box-sizing: border-box;
   padding: var(--sp-6) var(--pad-panel-x);
@@ -2735,18 +2846,43 @@ a.itx-board-what:hover {
    its own definition, because the failure this section exists to correct
    was a number whose meaning had to be guessed. */
 
-/* The activity section, between the tape and the breakdown. The gap
-   above it is the same one every other section takes, which it was
-   the one section not taking: its label started where the tape's panel
-   ended, a label's margin below rather than a section's. */
-.itx-activity {
+/* Market activity, between the tape and the breakdown: every market as
+   a chart, grouped by sector. The gap above it is the same one every
+   other section takes. */
+.itx-market-activity {
   margin-top: var(--gap-section);
 }
 
-/* Not a panel: the grid the tile panels sit in. It carries the section's
-   anchor (see the offset list near `--anchor-top`) because its top edge
-   is the panels' top edge, which is what a jump has to land on. */
+.itx-activity-sector + .itx-activity-sector {
+  margin-top: var(--gap-section);
+}
+
+/* A sector's own heading line: its label, at the size the rails' labels
+   are (this is a heading within a section, not a section), and its pager
+   at the far end when it has more than one page of markets. */
+.itx-activity-sector-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-bottom: var(--gap-label);
+}
+.itx-activity-sector-head .itx-board-label {
+  margin-bottom: 0;
+}
+.itx-activity-sector-head .itx-board-pages {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* Four markets at a time: two across, two down. One column once the
+   panel is too narrow for a chart to have any width left beside its
+   figure. */
 .itx-activity-panel {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-6);
@@ -2757,37 +2893,23 @@ a.itx-board-what:hover {
   }
 }
 
-/* The grid is the panel-wrapper's own layout; a list of tiles inside it
-   is transparent to that. `display: contents` hands the `<li>`s up to
-   the grid without a box of its own in the way. */
-.itx-activity-grid {
-  display: contents;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
 .itx-activity-tile {
   display: flex;
   min-width: 0;
 }
 
-/* The card is the panel, and the panel is the control: it turns about
-   its vertical axis, border and all, on a click or a keypress. No
-   `perspective` anywhere up the tree, deliberately -- without one a
-   rotateY is a horizontal squash, the flat flip of a card on a table
-   rather than a slab swinging out of the screen, which is the site's
-   rule for motion. The front sets the height (it is in flow); the back
-   is laid over it and shows when the card is turned. */
+/* The card is the panel, and the panel is the control: it opens the
+   market's full chart in the middle column. */
 .itx-activity-card {
-  position: relative;
+  box-sizing: border-box;
   flex: 1;
   min-width: 0;
+  padding: var(--sp-5) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
   cursor: pointer;
-  transform-style: preserve-3d;
-  transition:
-    transform 360ms cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 130ms ease;
+  transition: border-color 130ms ease;
 }
 .itx-activity-card:hover,
 .itx-activity-card:focus-visible {
@@ -2796,43 +2918,13 @@ a.itx-board-what:hover {
 .itx-activity-card:focus-visible {
   outline: none;
 }
-.itx-activity-tile.is-flipped .itx-activity-card {
-  transform: rotateY(180deg);
-}
-@media (prefers-reduced-motion: reduce) {
-  .itx-activity-card {
-    transition: border-color 130ms ease;
-  }
-}
-
-/* Both faces share the panel's padding, since the panel's edge is the
-   card's edge on either side. */
-.itx-activity-face {
-  box-sizing: border-box;
-  padding: var(--sp-5) var(--sp-6);
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-
-.itx-activity-front {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-}
-
-.itx-activity-back {
-  position: absolute;
-  inset: 0;
-  transform: rotateY(180deg);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  overflow: auto;
-}
 
 .itx-activity-label {
   font-size: var(--fs-meta);
   color: var(--ld-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The figure beside its chart. */
@@ -2867,28 +2959,13 @@ a.itx-board-what:hover {
 }
 
 /* The chart's box. Measured for width by the tile (see `useElementWidth`
-   in `ActivityPanel`) and given the chart's height even when there is no
-   chart to draw, so a tile without a series is the same height as its
-   neighbours. Matches `CHART_H`. */
+   in `MarketActivity`) and given the chart's height even before there is
+   a chart to draw, so the tiles are the same height as their neighbours.
+   Matches `CHART_H`. */
 .itx-activity-plot {
   flex: 1 1 0;
   min-width: 0;
   min-height: 132px;
-}
-
-.itx-activity-note {
-  margin: 0;
-  font-size: var(--fs-meta);
-  line-height: 1.45;
-  color: var(--ld-sub);
-}
-
-/* The states with nothing to grid: one panel, across the full width. */
-.itx-activity-empty {
-  grid-column: 1 / -1;
-  padding: var(--sp-6) var(--pad-panel-x);
-  font-size: var(--fs-meta);
-  color: var(--ld-sub);
 }
 
 /* ---- hub unreachable -------------------------------------------- */

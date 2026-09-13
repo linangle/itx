@@ -212,8 +212,10 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
 
   return (
     <section className="itx-sectors" aria-label="Sector breakdown">
-      <div className="itx-board-labels">
-        <span className="itx-board-label">sectors</span>
+      {/* A section title, the size of "market overview": the four
+          sections down the middle read as four sections that way. */}
+      <div className="itx-board-labels itx-board-labels-section">
+        <h2 className="itx-board-title">sectors</h2>
       </div>
 
       {/* The jump link's target is the panel, not the section: every

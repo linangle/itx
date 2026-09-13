@@ -1,14 +1,10 @@
 import { useMemo } from "react";
 import TimeSeriesChart from "../../components/TimeSeriesChart";
-import { useAsync } from "../../hooks/useAsync";
 import { useElementWidth } from "../../hooks/useElementWidth";
-import { getMarketSeries } from "../../lib/hub";
 import { marketLabel, sectorOf } from "../../lib/sectors";
-import { bucketsForWidth, parseRange, rangesForAge, windowForRange } from "../../lib/chartRanges";
 import { cumulative, periodChangePct } from "../../lib/series";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
-
-const REFRESH_MS = 5000;
+import { useRangedSeries } from "./useRangedSeries";
 
 interface Props {
   /** The full capability tag — the market's identity, not its label. */
@@ -17,6 +13,7 @@ interface Props {
    * chart someone is looking at is a link they can send. */
   range: string | null;
   onRange: (key: string) => void;
+  onClose: () => void;
 }
 
 /** One market's history, opened in place of the carousel.
@@ -27,35 +24,12 @@ interface Props {
  * URL (`?market=`), so it survives a reload and can be linked.
  *
  * **Range tabs are derived from the market's own age**, not the board's
- * and not a fixed list — see `chartRanges`.
+ * and not a fixed list — see `useRangedSeries`, which the stat chart
+ * shares.
  */
-export default function MarketChart({ capability, range, onRange }: Props) {
+export default function MarketChart({ capability, range, onRange, onClose }: Props) {
   const [box, width] = useElementWidth<HTMLDivElement>();
-
-  /** The market's age, and so which ranges it can offer, comes from the
-   * hub — but the hub only reports it *in* a series response. So the first
-   * request goes out with no window at all and every later one is sized
-   * from the `first_task_at` that came back. The cost is one request at a
-   * possibly-wrong window on first open. */
-  const probe = useAsync(() => getMarketSeries({ capability, buckets: 24 }), [capability]);
-  const ageMs = useMemo(() => {
-    const first = probe.data?.first_task_at;
-    return first ? Date.now() - new Date(first).getTime() : null;
-  }, [probe.data]);
-
-  const ranges = useMemo(() => rangesForAge(ageMs), [ageMs]);
-  const active = useMemo(() => parseRange(range, ageMs), [range, ageMs]);
-
-  const buckets = bucketsForWidth(width || 600);
-  const windowMs = windowForRange(active, ageMs);
-  const series = useAsync(
-    () => getMarketSeries({ capability, windowMs, buckets }),
-    // `probe.data` is in the deps so the first real fetch happens once
-    // the age is known and the default range has settled -- without it
-    // the chart would draw at the pre-age default and then jump.
-    [capability, windowMs, buckets, probe.data],
-    REFRESH_MS,
-  );
+  const { ranges, active, series } = useRangedSeries(capability, range, width);
 
   const data = series.data;
   const line = useMemo(() => cumulative(data?.bounty_series ?? []), [data]);
@@ -71,15 +45,23 @@ export default function MarketChart({ capability, range, onRange }: Props) {
           panels below both start where their labels end, so a chart
           rendered without one pulled its panel 44px above the
           leaderboard beside it. */}
-      <h3 className="itx-board-label itx-chart-label">
-        {marketLabel(capability)}
-        {/* The sector, and only the sector: the title above it is the
-            market, so `software · software/rust` said both twice. The
-            full tag is still the market's identity -- it is in the URL
-            and in the task-list link -- it just does not need a third
-            printing here. */}
-        <span className="itx-board-label-sub">{sectorOf(capability)}</span>
-      </h3>
+      <div className="itx-chart-head">
+        <h3 className="itx-board-label itx-chart-label">
+          {marketLabel(capability)}
+          {/* The sector, and only the sector: the title above it is the
+              market, so `software · software/rust` said both twice. The
+              full tag is still the market's identity -- it is in the URL
+              and in the task-list link -- it just does not need a third
+              printing here. */}
+          <span className="itx-board-label-sub">{sectorOf(capability)}</span>
+        </h3>
+        {/* Beside the headline's own back control, not instead of it: a
+            chart that took the middle column should be closable from the
+            chart. */}
+        <button type="button" className="itx-chart-close" onClick={onClose} aria-label="Close the chart">
+          ×
+        </button>
+      </div>
 
       <div className="itx-board-panel itx-chart-panel" ref={box}>
         {/* Labelled, and the label is not decoration. A bare compact

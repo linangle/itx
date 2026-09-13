@@ -17,6 +17,7 @@
  * number is almost always the gap.
  */
 import type { MarketSeriesDto } from "./hub";
+import { formatCompactItx, formatCount } from "./format";
 import { cumulative, periodChangePct } from "./series";
 
 /** How a tile's value should be read. The component formats; this module
@@ -111,6 +112,31 @@ function runningRate(settled: number[], posted: number[]): number[] {
     done += settled[i] ?? 0;
     return asked > 0 ? (done / asked) * 100 : 0;
   });
+}
+
+/** How a stat's figure reads. A count is never printed with an `itx`
+ * suffix and a rate is never compacted to `1.2K`, which is the whole
+ * reason `ActivityUnit` exists. Takes the unit rather than the tile
+ * because the charts call it too, for the hovered bucket. */
+export function formatStatValue(unit: ActivityUnit, value: number): string {
+  switch (unit) {
+    case "itx":
+      return `${formatCompactItx(value)} itx`;
+    case "pct":
+      // One decimal and no sign: this is a level, not a movement, and
+      // `formatPct` would render it as "+64.0%" as though it had risen.
+      return `${value.toFixed(1)}%`;
+    case "count":
+      return formatCount(value);
+  }
+}
+
+/** The value axis, which has no room for a suffix. Counts stay whole
+ * numbers; itx is compacted the way the market chart's axis is. */
+export function formatStatTick(unit: ActivityUnit, value: number): string {
+  if (unit === "count") return formatCount(value);
+  if (unit === "pct") return `${value.toFixed(0)}%`;
+  return formatCompactItx(value);
 }
 
 export function hasActivitySeries(s: MarketSeriesDto): boolean {

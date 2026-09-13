@@ -5,7 +5,9 @@ import ProfileIcon from "../../components/ProfileIcon";
 import SearchIcon from "../../components/SearchIcon";
 import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
-import ActivityPanel from "./ActivityPanel";
+import StatsRail from "./StatsRail";
+import StatChart from "./StatChart";
+import MarketActivity from "./MarketActivity";
 import MarketChart from "./MarketChart";
 import { sweepColors } from "./marketHue";
 import { useAsync } from "../../hooks/useAsync";
@@ -187,10 +189,12 @@ export default function Board({
     host: innerRef,
     property: "--col-nav",
     attribute: "data-nav-shut",
+    // The stored key predates the rail: the nav this column held before
+    // was resized to the same widths, and a rename would reset everyone's.
     storageKey: "itx-board-nav-w",
     side: "left",
-    label: "the board nav",
-    controls: "itx-board-nav",
+    label: "the stats rail",
+    controls: "itx-board-stats",
     ...NAV_WIDTH,
   });
   const rail = useColumnWidth({
@@ -209,11 +213,16 @@ export default function Board({
    * the board around it. */
   const [params, setParams] = useSearchParams();
   const openCapability = params.get("market");
+  /** Which of the board's own figures is charted in the middle, if any
+   * -- the stats rail's entries open these. One thing in the middle at a
+   * time: opening a stat closes a market and the other way round. */
+  const openStat = params.get("stat");
 
   const openMarket = useCallback(
     (capability: string) => {
       const next = new URLSearchParams(params);
       next.set("market", capability);
+      next.delete("stat");
       // A range carried over from the last market is meaningless for this
       // one -- markets have different ages, so `5d` may not be on offer.
       next.delete("range");
@@ -222,9 +231,22 @@ export default function Board({
     [params, setParams],
   );
 
+  const openStatChart = useCallback(
+    (key: string) => {
+      const next = new URLSearchParams(params);
+      next.set("stat", key);
+      next.delete("market");
+      next.delete("range");
+      setParams(next);
+    },
+    [params, setParams],
+  );
+
+  /** Back to the carousel, from whichever chart has the middle. */
   const closeMarket = useCallback(() => {
     const next = new URLSearchParams(params);
     next.delete("market");
+    next.delete("stat");
     next.delete("range");
     setParams(next);
   }, [params, setParams]);
@@ -253,17 +275,13 @@ export default function Board({
     return () => observer.disconnect();
     // Re-measured on content changes, not only on resizes: on the first
     // paint the board has no data, so the column is a few pixels tall and
-    // that is what the observer recorded. `openCapability` because opening
-    // a market replaces the measured box.
-  }, [sectors, openCapability]);
+    // that is what the observer recorded. The open chart, because opening
+    // one replaces the measured box.
+  }, [sectors, openCapability, openStat]);
 
   // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
 
-  /** Whether the nav is showing the overview's sectors. Opened by
-   * clicking the overview's entry, and by moving the carousel. Closed
-   * only to begin with: a list that vanished mid-read would be worse. */
-  const [sectorsOpen, setSectorsOpen] = useState(false);
 
   /** Which page of the standings the rail is showing, held here with the
    * fetch it keys so the poll and the pager cannot disagree. */
@@ -299,12 +317,6 @@ export default function Board({
   // which sector is at the front, and whether either end is reached.
   const [carouselRef, carousel] = useCarousel<HTMLDivElement>(sectors.length);
 
-  // Moving the row opens the sector list, so it is already there when the
-  // reader looks for it. Keyed on `atStart`, which changes exactly once,
-  // so this costs nothing per frame.
-  useEffect(() => {
-    if (!carousel.atStart) setSectorsOpen(true);
-  }, [carousel.atStart]);
 
   // One of these per table: the panel measures itself and says how many
   // rows it has room for, and the table renders that many.
@@ -327,7 +339,7 @@ export default function Board({
           * swap. */}
         <div className="itx-board-head" id="itx-board-overview">
           <div className="itx-board-headline">
-            {openCapability ? (
+            {openCapability || openStat ? (
               <button type="button" className="itx-chart-back" onClick={closeMarket}>
                 <Triangle direction="left" />
                 market overview
@@ -363,15 +375,16 @@ export default function Board({
         </div>
 
         <div className="itx-board-cols" ref={colsRef}>
-          <BoardNav
-            sectors={sectors}
-            firstVisible={carousel.firstVisible}
-            lastVisible={carousel.lastVisible}
-            expanded={sectorsOpen}
-            setExpanded={setSectorsOpen}
-            onSelect={carousel.to}
-            column={nav}
-          />
+          {/* The left rail: the board's own figures, mirroring the
+            * leaderboard and trends on the right. The column is an
+            * ordinary grid item and the box inside it pins -- see
+            * `.itx-board-pin`. */}
+          <aside className="itx-board-stats" id="itx-board-stats" aria-label="Board stats">
+            <ColumnGrip column={nav} />
+            <div className="itx-board-pin">
+              <StatsRail open={openStat} onOpen={openStatChart} />
+            </div>
+          </aside>
 
           {/* The middle column: the carousel, its position indicator and
             * the tape -- the one column here that actually scrolls. */}
@@ -387,6 +400,14 @@ export default function Board({
               capability={openCapability}
               range={params.get("range")}
               onRange={setRange}
+              onClose={closeMarket}
+            />
+          ) : openStat ? (
+            <StatChart
+              statKey={openStat}
+              range={params.get("range")}
+              onRange={setRange}
+              onClose={closeMarket}
             />
           ) : (
           <div className="itx-board-markets" id="itx-board-markets">
@@ -436,8 +457,8 @@ export default function Board({
           </div>
 
           <section aria-label="Latest">
-          <div className="itx-board-labels itx-board-labels-latest">
-            <span className="itx-board-label">latest postings</span>
+          <div className="itx-board-labels itx-board-labels-latest itx-board-labels-section">
+            <h2 className="itx-board-title">latest bounties</h2>
             <span className="itx-board-live-dot" aria-label="live" title="live" />
           </div>
           {/* The anchor sits on the panel, with an offset a label taller
@@ -491,10 +512,9 @@ export default function Board({
 
           {/* Between the tape and the breakdown on purpose. Latest is
             * what just happened, the breakdown is where the work is, and
-            * this is whether any of it is finishing -- the question the
-            * board could not ask while `created_at` was the only
-            * timestamp the hub had. */}
-          <ActivityPanel />
+            * this is each market's own line -- what the carousel's rows
+            * show as a sparkline, at a size that can be read. */}
+          <MarketActivity sectors={sectors} window={window} onOpen={openMarket} />
 
           <SectorBreakdown sectors={sectors} />
 
@@ -1078,120 +1098,3 @@ function SortHeader({
   );
 }
 
-/** The board's left rail: jump links to the four sections, then the live
- * list of sectors, then the pages that carry on past the board.
- *
- * The sector entries are the useful part -- with three panels visible at a
- * time, the pager alone means clicking through the carousel to find one.
- * These select it directly, and whichever is at the front is marked. */
-function BoardNav({
-  sectors,
-  firstVisible,
-  lastVisible,
-  expanded,
-  setExpanded,
-  onSelect,
-  column,
-}: {
-  sectors: SectorSummary[];
-  /** The sectors on screen, as an inclusive index range: the row shows two
-   * to four panels at once, and the last one never reaches the leading
-   * edge, so marking everything visible is both simpler and true. */
-  firstVisible: number;
-  lastVisible: number;
-  /** Whether the overview's sectors are showing. Held by `Board` because
-   * the carousel opens it too. It never closes itself. */
-  expanded: boolean;
-  setExpanded: (expanded: boolean) => void;
-  onSelect: (index: number) => void;
-  /** This column's own width. The grip is positioned against the column,
-   * so it has to live inside it. */
-  column: ColumnWidth;
-}) {
-  return (
-    <nav className="itx-board-nav" id="itx-board-nav" aria-label="Board sections">
-      <ColumnGrip column={column} />
-      {/* The pinned box, not the column -- see `.itx-board-pin`. */}
-      <div className="itx-board-pin">
-      {/* Where the other columns have a label. A list of section names
-       * needs no heading -- but it does need the height one takes, or this
-       * panel would start above the panels it sits beside. */}
-      <span className="itx-board-label itx-board-label-spacer" aria-hidden="true">
-        {"\u00a0"}
-        <span className="itx-board-label-sub">{"\u00a0"}</span>
-      </span>
-      <div className="itx-board-panel itx-board-panel-nav">
-        {/* Only the sections you have to travel to: the leaderboard and
-            trends are in a rail pinned to the viewport, so a link to them
-            scrolls nothing. The sectors sit *inside* the overview's entry
-            rather than under a heading of their own. */}
-        <ul className="itx-board-navlist">
-          <li className="itx-board-navgroup">
-            {/* Toggles rather than only opening; following the link is
-                unaffected either way -- the anchor still resolves. */}
-            <a
-              href="#itx-board-overview"
-              aria-expanded={expanded}
-              aria-controls="itx-board-navsectors"
-              onClick={() => setExpanded(!expanded)}
-            >
-              market overview
-            </a>
-            {/* Every sector, not as many as fit. Measured like the panels
-                are, this list lost entries the moment the column was capped
-                at the carousel's height. */}
-            {expanded && (
-              <ul
-                className="itx-board-navlist itx-board-navlist-sectors"
-                id="itx-board-navsectors"
-              >
-                {sectors.map((s, index) => {
-                  const showing = index >= firstVisible && index <= lastVisible;
-                  return (
-                    <li key={s.name}>
-                      <button
-                        type="button"
-                        className={showing ? "is-active" : undefined}
-                        aria-current={showing ? "true" : undefined}
-                        onClick={() => onSelect(index)}
-                      >
-                        {s.name}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </li>
-          {/* Leaving the overview puts its sectors away, and the entries
-              run in the order the sections appear below. */}
-          <li>
-            <a href="#itx-board-latest" onClick={() => setExpanded(false)}>
-              latest postings
-            </a>
-          </li>
-          <li>
-            <a href="#itx-board-activity" onClick={() => setExpanded(false)}>
-              activity
-            </a>
-          </li>
-          <li>
-            <a href="#itx-board-sectors" onClick={() => setExpanded(false)}>
-              breakdown
-            </a>
-          </li>
-        </ul>
-
-        <ul className="itx-board-navlist itx-board-navlist-pages">
-          <li>
-            <Link to="/tasks">all tasks</Link>
-          </li>
-          <li>
-            <Link to="/leaderboard">full leaderboard</Link>
-          </li>
-        </ul>
-      </div>
-      </div>
-    </nav>
-  );
-}
