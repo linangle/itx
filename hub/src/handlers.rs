@@ -4135,6 +4135,19 @@ pub struct MarketSeriesDto {
     /// did -- silently returning a subset, or zeroes -- would be worse
     /// than saying so here.
     pub faucet_series: Vec<u64>,
+    /// Bounty on tasks open *right now*, by the bucket each was posted
+    /// in, oldest first.
+    ///
+    /// Not a history. Nothing records when a task was claimed, so what
+    /// was open at any past instant is unknowable, and a history rebuilt
+    /// from posted minus paid would start at zero at the window's left
+    /// edge whatever the backlog really was. This lays the present out
+    /// along the time axis instead: a curve rising to the right is fresh
+    /// work waiting, a flat one is a stale backlog. It sums to less than
+    /// `open_bounty` by exactly the open bounty posted before the window
+    /// began, which a client can draw as the curve's starting level so
+    /// that its last point is `open_bounty` itself.
+    pub open_bounty_series: Vec<u64>,
     /// Totals over the window, so a header can be drawn without summing
     /// the arrays client-side and disagreeing about rounding.
     pub posted: u64,
@@ -4222,6 +4235,7 @@ fn series_for(
     let mut paid_bounty_series = vec![0u64; buckets];
     let mut fees_series = vec![0u64; buckets];
     let mut faucet_series = vec![0u64; buckets];
+    let mut open_bounty_series = vec![0u64; buckets];
     let (mut posted, mut bounty, mut open, mut open_bounty) = (0u64, 0u64, 0u64, 0u64);
     let (mut settled, mut paid_bounty, mut fees) = (0u64, 0u64, 0u64);
     // One set per bucket, plus one for the window. Distinct-per-bucket
@@ -4240,14 +4254,20 @@ fn series_for(
     };
 
     for task in &matching {
+        let posted_bucket = bucket_of(task.created_at.timestamp_millis());
         // Open is a fact about now, not about the window: a task posted
-        // last month and still unclaimed is still on offer today.
+        // last month and still unclaimed is still on offer today. The
+        // series is that same present laid out by posting time, so the
+        // month-old task is in the total and in no bucket.
         if task.status == TaskStatus::Open {
             open += 1;
             open_bounty += task.bounty;
+            if let Some(bucket) = posted_bucket {
+                open_bounty_series[bucket] += task.bounty;
+            }
         }
 
-        if let Some(bucket) = bucket_of(task.created_at.timestamp_millis()) {
+        if let Some(bucket) = posted_bucket {
             posted_series[bucket] += 1;
             bounty_series[bucket] += task.bounty;
             posted += 1;
@@ -4339,6 +4359,7 @@ fn series_for(
         agents_series,
         fees_series,
         faucet_series,
+        open_bounty_series,
         posted,
         bounty,
         settled,
@@ -5827,6 +5848,28 @@ mod summary_tests {
         assert_eq!(out.settled, 1, "but paid an hour ago, inside it");
         assert_eq!(out.paid_bounty, 400);
         assert_eq!(out.settled_series, vec![0, 1]);
+    }
+
+    /// Open bounty has no history -- nothing records when a task was
+    /// claimed -- so its series is the present laid out by posting time:
+    /// what is open now, in the bucket it was posted in. Open work posted
+    /// before the window is in the total and in no bucket, and the gap
+    /// between the two is exactly that backlog.
+    #[test]
+    fn open_bounty_series_lays_out_what_is_open_now_by_when_it_was_posted() {
+        let tasks = [
+            task(now() - Duration::hours(20), 700, TaskStatus::Open, &[]),
+            task(now() - Duration::days(30), 300, TaskStatus::Open, &[]),
+            task(now() - Duration::hours(2), 500, TaskStatus::Claimed, &[]),
+        ];
+        let out = series(&tasks, ask(None, Some(24 * 3_600_000), Some(2)));
+        assert_eq!(out.open_bounty, 1000, "both open tasks, whenever they were posted");
+        assert_eq!(out.open_bounty_series, vec![700, 0], "only the one posted inside the window has a bucket");
+        assert_eq!(
+            out.open_bounty - out.open_bounty_series.iter().sum::<u64>(),
+            300,
+            "the rest was posted before the window began"
+        );
     }
 
     /// Distinct per bucket and distinct over the window are different

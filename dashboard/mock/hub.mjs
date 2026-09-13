@@ -993,6 +993,7 @@ function boardSeries({ capability, windowMs, buckets }) {
   const paid_bounty_series = new Array(n).fill(0);
   const fees_series = new Array(n).fill(0);
   const faucet_series = new Array(n).fill(0);
+  const open_bounty_series = new Array(n).fill(0);
   let posted = 0;
   let bounty = 0;
   let open = 0;
@@ -1012,11 +1013,15 @@ function boardSeries({ capability, windowMs, buckets }) {
       : null;
 
   for (const t of matching) {
+    const posted_at = bucketOf(Date.parse(t.created_at));
+    // Open is a fact about now; the series is that same present laid
+    // out by posting time, so open work older than the window is in the
+    // total and in no bucket -- see the hub's `open_bounty_series`.
     if (t.status === "Open") {
       open += 1;
       open_bounty += t.bounty;
+      if (posted_at !== null) open_bounty_series[posted_at] += t.bounty;
     }
-    const posted_at = bucketOf(Date.parse(t.created_at));
     if (posted_at !== null) {
       posted_series[posted_at] += 1;
       bounty_series[posted_at] += t.bounty;
@@ -1086,6 +1091,7 @@ function boardSeries({ capability, windowMs, buckets }) {
     agents_series,
     fees_series,
     faucet_series,
+    open_bounty_series,
     posted,
     bounty,
     settled,

@@ -9,7 +9,6 @@ import {
   type ActivityTile,
   type ActivityUnit,
 } from "../../lib/activity";
-import { cumulative } from "../../lib/series";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 
 const REFRESH_MS = 5000;
@@ -134,14 +133,9 @@ function Tile({ tile, startMs, endMs }: { tile: ActivityTile; startMs: number; e
   const direction = directionOf(tile.changePct);
   const [flipped, setFlipped] = useState(false);
   const [plot, width] = useElementWidth<HTMLDivElement>();
-
-  // A flow accumulates into the market chart's rising curve; a level is
-  // drawn as read. See `ActivityTile.shape`.
-  const values = useMemo(
-    () =>
-      tile.series === null ? null : tile.shape === "flow" ? cumulative(tile.series) : tile.series,
-    [tile.series, tile.shape],
-  );
+  // Already the line to draw -- accumulated or not is decided where the
+  // tile is defined, see `ActivityTile.curve`.
+  const values = tile.curve;
 
   const turn = () => setFlipped((f) => !f);
 
@@ -180,10 +174,10 @@ function Tile({ tile, startMs, endMs }: { tile: ActivityTile; startMs: number; e
             </div>
             {/* Measured like the market chart's box: `width` is 0 until
                 the plot has been laid out, and a chart drawn at zero
-                width is a chart drawn wrong. No series is a deliberate
-                answer rather than a loading state -- see the tiles' own
-                notes for which ones and why -- and the box keeps its
-                height so the grid stays a grid. */}
+                width is a chart drawn wrong. No curve is a deliberate
+                answer rather than a loading state -- a hub that does not
+                serve what it needs, see `ActivityTile.curve` -- and the
+                box keeps its height so the grid stays a grid. */}
             <div className="itx-activity-plot" ref={plot}>
               {values && width > 0 && (
                 <TimeSeriesChart

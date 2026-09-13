@@ -50,6 +50,9 @@ function series(over: Partial<MarketSeriesDto> = {}): MarketSeriesDto {
     agents_series: [1, 2, 2, 3],
     fees_series: [...zeros],
     faucet_series: [2, 1, 0, 4],
+    // Of the 9 itx open, 7 was posted inside the window; the other 2 is
+    // older and is the level the curve starts from.
+    open_bounty_series: [0, 4 * UNITS, 0, 3 * UNITS],
     posted: 4,
     bounty: 4 * UNITS,
     settled: 3,
@@ -178,12 +181,17 @@ describe("ActivityPanel", () => {
       // in one commit and their charts in the next, once the width has
       // been measured, and a suite under load can land between the two.
       //
-      // Eight of the ten tiles have a series; the two that would be a lie
-      // (open bounty, completion rate) draw nothing and say so in their
-      // notes.
-      await waitFor(() => expect(container.querySelectorAll("svg.itx-chart")).toHaveLength(8));
-      expect(tileNamed("open bounty").querySelector("svg")).toBeNull();
-      expect(tileNamed("completion rate").querySelector("svg")).toBeNull();
+      // Every tile draws, including the two that used to say a chart
+      // would be a lie: open bounty is now the present laid out by
+      // posting time, and completion rate the running ratio -- and both
+      // curves end at the tile's own figure.
+      await waitFor(() => expect(container.querySelectorAll("svg.itx-chart")).toHaveLength(10));
+      expect(
+        tileNamed("open bounty").querySelector(".itx-chart-readout-value")?.textContent,
+      ).toMatch(/^9(\.0+)? itx$/);
+      expect(
+        tileNamed("completion rate").querySelector(".itx-chart-readout-value")?.textContent,
+      ).toBe("75.0%");
 
       // The chart was written for bounty and printed everything as itx.
       // A count tile's readout and axis are counts.

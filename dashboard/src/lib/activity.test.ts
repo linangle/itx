@@ -50,10 +50,12 @@ describe("activityTiles", () => {
       paid_bounty_series: [0, 0, 0, 60],
       paid_bounty: 60,
     });
+    // The curves are the flows accumulated, the way the market chart
+    // draws them, so each ends at its own figure.
     expect(tile(dto, "bounty-posted").value).toBe(100);
-    expect(tile(dto, "bounty-posted").series).toEqual([100, 0, 0, 0]);
+    expect(tile(dto, "bounty-posted").curve).toEqual([100, 100, 100, 100]);
     expect(tile(dto, "bounty-paid").value).toBe(60);
-    expect(tile(dto, "bounty-paid").series).toEqual([0, 0, 0, 60]);
+    expect(tile(dto, "bounty-paid").curve).toEqual([0, 0, 0, 60]);
   });
 
   it("gives a count tile a count unit, so nothing prints a task as itx", () => {
@@ -67,16 +69,39 @@ describe("activityTiles", () => {
     expect(tile(dto, "completion-rate").unit).toBe("pct");
   });
 
-  it("withholds a sparkline where a series would be invented rather than absent", () => {
-    const dto = series({ open_bounty: 900, posted: 4, settled: 2 });
-    // Open bounty is a fact about now; a history would have to be
-    // reconstructed from posted minus paid, which starts at zero at the
-    // window's left edge whatever the real backlog was.
-    expect(tile(dto, "open-bounty").series).toBeNull();
+  it("lays open bounty out by posting time, from the older backlog up to the figure", () => {
+    // Nothing records when a task was claimed, so open bounty has no
+    // history; what the hub serves is the present by posting bucket. Of
+    // the 900 open, 500 was posted inside the window and the other 400
+    // before it -- and that 400 is where the curve starts, not zero,
+    // because it is still on offer. The last point is the figure itself.
+    const dto = series({ open_bounty: 900, open_bounty_series: [0, 200, 0, 300] });
     expect(tile(dto, "open-bounty").value).toBe(900);
-    // A per-bucket completion ratio compares two sets that do not
-    // correspond, so it is a scalar with a note instead.
-    expect(tile(dto, "completion-rate").series).toBeNull();
+    expect(tile(dto, "open-bounty").curve).toEqual([400, 600, 600, 900]);
+  });
+
+  it("withholds the open bounty curve on a hub that does not serve the series", () => {
+    // A history rebuilt from posted minus paid would start at zero at
+    // the window's left edge whatever the backlog really was, so an
+    // older hub gets a figure and no curve rather than an invented one.
+    const dto = series({ open_bounty: 900, bounty_series: [900, 0, 0, 0], bounty: 900 });
+    expect(tile(dto, "open-bounty").curve).toBeNull();
+    expect(tile(dto, "open-bounty").value).toBe(900);
+  });
+
+  it("draws the completion rate as the running rate, settling on the figure", () => {
+    // A per-bucket ratio of two sets that do not correspond would swing
+    // between 0% and 300%; the rate so far in the window settles, and
+    // ends exactly where the tile's own figure is. Before the first task
+    // is posted there is no rate, and that is 0 rather than a division.
+    const dto = series({
+      posted_series: [0, 2, 1, 1],
+      settled_series: [0, 1, 2, 0],
+      posted: 4,
+      settled: 3,
+    });
+    expect(tile(dto, "completion-rate").value).toBe(75);
+    expect(tile(dto, "completion-rate").curve).toEqual([0, 50, 100, 75]);
   });
 
   it("lets the completion rate exceed 100% rather than clamping a real number", () => {
@@ -101,7 +126,7 @@ describe("activityTiles", () => {
       bounty: 1_100,
       posted: 5,
     });
-    expect(tile(dto, "average-bounty").series).toEqual([100, 0, 300, 0]);
+    expect(tile(dto, "average-bounty").curve).toEqual([100, 0, 300, 0]);
     expect(tile(dto, "average-bounty").value).toBe(220);
   });
 

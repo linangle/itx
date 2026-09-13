@@ -495,6 +495,15 @@ export interface MarketSeriesDto {
    * `capability` was asked for, because the faucet issues against a key
    * rather than against a kind of work. */
   faucet_series: number[];
+  /** Bounty on tasks open *right now*, by the bucket each was posted in.
+   *
+   * Not a history — nothing records when a task was claimed — but the
+   * present laid out along the time axis: rising to the right is fresh
+   * work waiting, flat is a stale backlog. Sums to less than
+   * `open_bounty` by exactly the open bounty posted before the window,
+   * which is the level the curve starts from. Optional because a hub
+   * older than 2026-09-13 does not serve it. */
+  open_bounty_series?: number[];
   posted: number;
   bounty: number;
   settled: number;

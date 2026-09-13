@@ -17,7 +17,7 @@
  * number is almost always the gap.
  */
 import type { MarketSeriesDto } from "./hub";
-import { periodChangePct } from "./series";
+import { cumulative, periodChangePct } from "./series";
 
 /** How a tile's value should be read. The component formats; this module
  * only says which kind of quantity it produced, so a count is never
@@ -34,18 +34,18 @@ export interface ActivityTile {
   note: string;
   value: number;
   unit: ActivityUnit;
-  /** Per bucket, oldest first. `null` where a series would be a lie
-   * rather than merely absent -- see `open bounty` and `completion rate`
-   * below. */
-  series: number[] | null;
-  /** How the series should be drawn. A `flow` is an amount that happened
-   * in each bucket -- bounty posted, tasks completed, fees paid -- and
-   * accumulates into the same rising curve the market chart draws. A
-   * `level` is a reading taken each bucket -- agents active, the average
-   * bounty -- and summing it would count the same agent forty-eight
-   * times over. Said here rather than guessed from the unit, because
-   * "tasks posted" and "active agents" are both counts. */
-  shape: "flow" | "level";
+  /** The line to draw: one point per bucket, oldest first, already in
+   * the shape the tile means. A flow -- bounty posted, tasks completed,
+   * fees -- is accumulated here into the same rising curve the market
+   * chart draws, so its last point is the figure above it. A reading --
+   * agents active, the average bounty -- is left as read, since summing
+   * the same agent forty-eight times is not a count of agents. Decided
+   * here rather than by the panel because "tasks posted" and "active
+   * agents" are both counts and only this module knows which is which.
+   *
+   * `null` where the hub has not served what the curve needs -- see
+   * `open bounty` -- rather than a curve invented to fill the space. */
+  curve: number[] | null;
   /** First half of the window against the second, or `null` when there
    * is nothing to compare. Never shown for a tile whose movement has no
    * good or bad direction. */
@@ -82,6 +82,37 @@ function meanSeries(totals: number[], counts: number[]): number[] {
  * fabricated zero is worse than a blank: it is indistinguishable from a
  * quiet market, which is the same failure §5.1 spent a day removing from
  * the landing page. */
+/** Open bounty laid out by posting time, ending at the figure itself.
+ *
+ * Nothing records when a task was claimed, so what was open at any past
+ * instant is unknowable and a history is off the table. What the hub
+ * serves instead is the present by posting bucket, which accumulates
+ * left to right -- and open work posted *before* the window is in the
+ * total but in no bucket, so the curve starts from that backlog rather
+ * than from zero. Read it as "of what is open now, how old is it": a
+ * curve rising to the right is fresh work waiting, a flat one is a
+ * backlog nobody is taking. */
+function openBountyCurve(byBucket: number[], total: number): number[] {
+  const inWindow = byBucket.reduce((a, b) => a + b, 0);
+  const before = Math.max(0, total - inWindow);
+  return cumulative(byBucket).map((v) => v + before);
+}
+
+/** The completion rate so far in the window, bucket by bucket. A
+ * per-bucket ratio of two sets that do not correspond would swing
+ * wildly and mean nothing; the running ratio settles, and its last point
+ * is the window's own rate -- the figure on the tile. Empty until the
+ * first task is posted, since a rate of nothing is not zero. */
+function runningRate(settled: number[], posted: number[]): number[] {
+  let done = 0;
+  let asked = 0;
+  return posted.map((p, i) => {
+    asked += p;
+    done += settled[i] ?? 0;
+    return asked > 0 ? (done / asked) * 100 : 0;
+  });
+}
+
 export function hasActivitySeries(s: MarketSeriesDto): boolean {
   return Array.isArray(s.bounty_series) && Array.isArray(s.settled_series);
 }
@@ -93,109 +124,97 @@ export function activityTiles(s: MarketSeriesDto): ActivityTile[] {
   return [
     {
       key: "bounty-posted",
-      shape: "flow",
       label: "bounty posted",
       note: "itx attached to tasks posted in this window, whether or not the work has been done.",
       value: s.bounty,
       unit: "itx",
-      series: s.bounty_series,
+      curve: cumulative(s.bounty_series),
       changePct: periodChangePct(s.bounty_series),
     },
     {
       key: "bounty-paid",
-      shape: "flow",
       label: "bounty paid",
       note: "itx that actually reached a worker, counted when the chain confirmed the payout rather than when the task was posted.",
       value: s.paid_bounty,
       unit: "itx",
-      series: s.paid_bounty_series,
+      curve: cumulative(s.paid_bounty_series),
       changePct: periodChangePct(s.paid_bounty_series),
     },
     {
       key: "open-bounty",
-      shape: "level",
       label: "open bounty",
-      note: "itx on tasks nobody has claimed, as of right now. A fact about the present, so it has no history to chart.",
+      note: "itx on tasks nobody has claimed, as of right now, laid out by when each was posted. Not a history: nothing records when a task was claimed, so the curve is today's open bounty by age. It starts from what was posted before this window and is still waiting, and ends at the figure above.",
       value: s.open_bounty,
       unit: "itx",
-      // Deliberately no series. The hub reports this as a scalar because
-      // it is a fact about now; reconstructing a history from posted
-      // minus paid would draw a curve that starts at zero at the window's
-      // left edge whatever the backlog really was.
-      series: null,
+      // Absent rather than invented on a hub that predates the series:
+      // a history rebuilt from posted minus paid would start at zero at
+      // the window's left edge whatever the backlog really was.
+      curve: Array.isArray(s.open_bounty_series)
+        ? openBountyCurve(s.open_bounty_series, s.open_bounty)
+        : null,
       changePct: null,
     },
     {
       key: "tasks-posted",
-      shape: "flow",
       label: "tasks posted",
       note: "tasks created in this window, of every kind.",
       value: s.posted,
       unit: "count",
-      series: s.posted_series,
+      curve: cumulative(s.posted_series),
       changePct: periodChangePct(s.posted_series),
     },
     {
       key: "tasks-completed",
-      shape: "flow",
       label: "tasks completed",
       note: "tasks whose last payout confirmed in this window. Some of them were posted before it.",
       value: s.settled,
       unit: "count",
-      series: s.settled_series,
+      curve: cumulative(s.settled_series),
       changePct: periodChangePct(s.settled_series),
     },
     {
       key: "completion-rate",
-      shape: "level",
       label: "completion rate",
-      note: "completions in this window against tasks posted in it. Not a cohort: the two sets overlap but are not the same tasks, so a busy settlement week can read above 100%.",
+      note: "completions in this window against tasks posted in it. Not a cohort: the two sets overlap but are not the same tasks, so a busy settlement week can read above 100%. The curve is the rate so far in the window, bucket by bucket, settling on the figure above.",
       value: completion ?? 0,
       unit: "pct",
-      // No series for the same reason the note gives: a per-bucket ratio
-      // of two sets that do not correspond would swing wildly and mean
-      // nothing at all.
-      series: null,
+      curve: runningRate(s.settled_series, s.posted_series),
       changePct: null,
     },
     {
       key: "average-bounty",
-      shape: "level",
       label: "average bounty",
       note: "posted bounty divided by tasks posted. Quiet buckets are skipped rather than charted as zero.",
       value: averageBounty,
       unit: "itx",
-      series: meanSeries(s.bounty_series, s.posted_series),
+      curve: meanSeries(s.bounty_series, s.posted_series),
       changePct: null,
     },
     {
       key: "active-agents",
-      shape: "level",
       label: "active agents",
       note: "distinct agent keys that posted a task or received a confirmed payout in this window. one person or organization may run many agents, so this is not a count of people or of independent operators. counted once per bucket and once over the window, so the bars do not add up to the total.",
       value: s.agents,
       unit: "count",
-      series: s.agents_series,
+      curve: s.agents_series,
       changePct: periodChangePct(s.agents_series),
     },
     {
       key: "faucet-grants",
-      shape: "flow",
       label: "faucet grants",
       note: "starting grants issued, board-wide and unfiltered by capability. The faucet issues against a key, not against a kind of work.",
       value: s.faucet_grants,
       unit: "count",
-      series: s.faucet_series,
+      curve: cumulative(s.faucet_series),
       changePct: periodChangePct(s.faucet_series),
     },
     {
       key: "chain-fees",
-      shape: "flow",
       label: "chain fees",
       note: "itx the hub spent on chain fees settling tasks, one per settlement transaction. an escrow-funded consensus task pays all its winners in one transaction and so costs one fee, however many winners it had. excludes rebuilt payouts and dispute bonds, so this is what settlement recorded rather than total network spend.",
       value: s.fees,
       unit: "itx",
-      series: s.fees_series,
+      curve: cumulative(s.fees_series),
       changePct: null,
     },
   ];
