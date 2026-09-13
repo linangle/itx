@@ -31,6 +31,10 @@ interface Props {
    * run through `formatCompactItx` is a fraction of one itx. */
   formatValue?: (value: number) => string;
   formatTick?: (value: number) => string;
+  /** The value axis's gutter on the right, in pixels. Sized by default
+   * for a label like `30,000`; a chart whose labels are `4K` can hand
+   * most of it back to the plot. */
+  gutterRight?: number;
 }
 
 /** Chart geometry. The gutters are where the axes live, and they are
@@ -68,11 +72,12 @@ export default function TimeSeriesChart({
   volumeNoun = "tasks",
   formatValue = (value) => `${formatCompactItx(value)} itx`,
   formatTick = formatCompactItx,
+  gutterRight = PAD_RIGHT,
 }: Props) {
   const gradientId = useId();
   const [hover, setHover] = useState<number | null>(null);
 
-  const plotW = Math.max(0, width - PAD_LEFT - PAD_RIGHT);
+  const plotW = Math.max(0, width - PAD_LEFT - gutterRight);
   const strip = volume ? VOLUME_H + VOLUME_GAP : 0;
   const plotH = Math.max(0, height - PAD_TOP - AXIS_H - strip);
 

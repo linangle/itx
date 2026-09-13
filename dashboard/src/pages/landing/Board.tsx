@@ -78,16 +78,16 @@ const REFRESH_MS = 5000;
 // all truncated. Two constants rather than one so either can move.
 // Sized to what each holds, and measured rather than guessed: the right
 // rail is the narrowest width at which nothing in it truncates. Stepped
-// in eights against a full field of names and the trends list, a
-// fifteen-character name beside its score fits from 264 and the longest
-// trend label (`image-generation`, beside its sparkline and change) from
-// 272 -- so 272, where the 232 it started at cut thirty-one of fifty
-// names short. The text is already the site's smallest; the room moved.
-// The stats rail needs less -- a label over a figure, and a graph that
-// takes whatever is left -- so it starts narrower and gives the middle
-// the difference.
+// in eights against a full field of fifty names, with the rails' tables
+// at the meta size and each trend's change stacked under its sparkline,
+// a fifteen-character name beside its four-decimal score fits from 256
+// (two names cut at 248, seventeen at 232) and no trend label truncates
+// at any width tried. What holds the floor at 256 is the score: at two
+// decimals it would be about 232. The stats rail needs less -- a label
+// over a figure, and a graph that takes whatever is left -- so it starts
+// narrower and gives the middle the difference.
 const STATS_WIDTH = { initial: 240, min: 190, max: 420 };
-const RAIL_WIDTH = { initial: 272, min: 190, max: 420 };
+const RAIL_WIDTH = { initial: 256, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
 function ago(iso: string): string {
@@ -578,16 +578,24 @@ export default function Board({
                               {marketLabel(row.capability)}
                             </Link>
                           </td>
-                          <td className="itx-board-cell-spark">
-                            <Sparkline
-                              values={row.series}
-                              width={44}
-                              direction={directionOf(row.changePct)}
-                              label={`${row.capability} tasks posted over the last ${window.label}`}
-                            />
-                          </td>
-                          <td className={`right itx-board-cell-pct ${directionOf(row.changePct)}`}>
-                            {formatPct(row.changePct)}
+                          {/* The change under its sparkline rather than
+                              beside it: one column where there were two,
+                              and the width the percentage took is the
+                              label's -- which is what let the rail come in
+                              from a width the labels needed. */}
+                          <td className="itx-board-cell-trend">
+                            <span className="itx-board-trend">
+                              <Sparkline
+                                values={row.series}
+                                width={56}
+                                height={16}
+                                direction={directionOf(row.changePct)}
+                                label={`${row.capability} tasks posted over the last ${window.label}`}
+                              />
+                              <span className={`itx-board-trend-pct ${directionOf(row.changePct)}`}>
+                                {formatPct(row.changePct)}
+                              </span>
+                            </span>
                           </td>
                         </tr>
                       ))}

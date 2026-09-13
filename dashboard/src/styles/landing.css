@@ -554,7 +554,7 @@ body.itx-landing-body[data-theme="light"] {
      against them: the columns themselves, and the heading line above,
      whose title and pager start and end where the carousel does. */
   --col-nav: 240px;
-  --col-rail: 272px;
+  --col-rail: 256px;
 
   /* Establishes a block formatting context so the quote strip's negative
    * top margin cannot collapse out through here and drag the whole board
@@ -1551,6 +1551,15 @@ body.itx-col-resizing {
   font-size: var(--fs-body);
 }
 
+/* In the rails, a step smaller -- the size the stats rail's entries and
+   the panels' sub-lines already are. The rails are the narrow columns,
+   and at the body size a fifteen-character name beside its score needed
+   a rail wider than the rails should be. */
+.itx-board-rail .itx-board-table,
+.itx-board-stats .itx-board-table {
+  font-size: var(--fs-meta);
+}
+
 .itx-board-table th,
 .itx-board-table td {
   border: 0;
@@ -1640,6 +1649,33 @@ body.itx-col-resizing {
 
 .itx-board-cell-spark {
   width: 68px;
+}
+
+/* A trend's sparkline with its change under it, as one column of the
+   trends rail, so everything else in the row is the label's. A fixed
+   width like the spark cell it replaces had, not `1%`: a block-displayed
+   SVG contributes no min-content width to a table column, so at `1%` the
+   column collapsed to nothing and the stack hung off its right edge,
+   past the panel. Stacked, the two fit a `--row-h` row: a 16px line
+   over an 11px figure. */
+.itx-board-cell-trend {
+  width: 64px;
+  padding-left: var(--sp-3);
+  vertical-align: middle;
+}
+.itx-board-trend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  width: 56px;
+  margin-left: auto;
+}
+.itx-board-trend-pct {
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  line-height: 1.1;
 }
 
 /* The quoted level. Tabular figures so the column reads as a column --

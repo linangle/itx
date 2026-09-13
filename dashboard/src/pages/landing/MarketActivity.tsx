@@ -239,6 +239,9 @@ function MarketTile({
                 height={CHART_H}
                 direction={direction}
                 valueNoun={`Bounty posted in ${market.capability}`}
+                // The axis labels here are `4K`, not `30,000`: most of
+                // the default gutter was air to the right of them.
+                gutterRight={44}
               />
             )}
           </div>
