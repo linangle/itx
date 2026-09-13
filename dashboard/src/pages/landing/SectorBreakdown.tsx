@@ -3,6 +3,7 @@ import { squarify } from "../../lib/treemap";
 import type { TreemapRect } from "../../lib/treemap";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 import type { MarketSummary, SectorSummary } from "../../lib/series";
+import { marketLabel } from "../../lib/sectors";
 
 /** The map is laid out in this space and positioned in percentages, so it
  * never has to be measured. The numbers are the map's own aspect ratio,
@@ -188,7 +189,11 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
       const { of } = pickBasis(inside.markets, MARKET_BASES);
       return squarify(inside.markets, of, MAP_W, MAP_H).map(({ item, rect }) => ({
         key: item.capability,
-        name: item.capability,
+        // The sector is already in the crumb above the map, so a tile
+        // repeating it is a tile spending its width on the one word the
+        // reader has just clicked. Same rule as the sector panels' rows;
+        // the full tag stays the key.
+        name: marketLabel(item.capability),
         changePct: item.changePct,
         hint: `${formatCount(item.open)} open · ${formatCompactItx(item.value)} itx`,
         rect,

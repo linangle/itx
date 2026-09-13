@@ -174,6 +174,21 @@ describe("SectorBreakdown", () => {
     expect(area(tiles[0]) / area(tiles[2])).toBeCloseTo(400 / 200, 1);
   });
 
+  it("labels a sector's tiles by market, not by the whole tag", async () => {
+    // The crumb above the map already says `software`; a tile reading
+    // `software/prover` spends its width on the word the reader just
+    // clicked. The full tag stays the tile's key -- it is what the hub
+    // filters on -- and the sector panels' rows follow the same rule.
+    const user = userEvent.setup();
+    const software = sector("software", 900, 12, {
+      markets: [market("software/prover", 400), market("software/rust", 300)],
+    });
+    const { container } = render(<SectorBreakdown sectors={[software]} />);
+    await user.click(screen.getByRole("button", { name: "software" }));
+    const tiles = [...container.querySelectorAll<HTMLElement>(".itx-sectors-tile")];
+    expect(tiles.map((t) => t.title.split(" ·")[0])).toEqual(["prover", "rust"]);
+  });
+
   it("comes back out of a sector", async () => {
     const user = userEvent.setup();
     const withMarkets = sector("conversation", 900, 12, {
