@@ -1651,25 +1651,36 @@ body.itx-col-resizing {
   width: 68px;
 }
 
-/* A trend's sparkline with its change under it, as one column of the
-   trends rail, so everything else in the row is the label's. A fixed
-   width like the spark cell it replaces had, not `1%`: a block-displayed
-   SVG contributes no min-content width to a table column, so at `1%` the
-   column collapsed to nothing and the stack hung off its right edge,
-   past the panel. Stacked, the two fit a `--row-h` row: a 16px line
-   over an 11px figure. */
+/* A trends row in the stats rail's shape: the market over its change on
+   the left, the graph on the right. The graph's cell is a share of the
+   row rather than a fixed width, so dragging the rail wider widens the
+   graph, and the sparkline stretches its one viewBox to fill it. A share
+   rather than `1%`: a block-displayed SVG contributes no min-content
+   width to a table column, and at `1%` the column collapsed to nothing.
+   Stacked, the label and figure fit a `--row-h` row: a 12px line over an
+   11px one. */
 .itx-board-cell-trend {
-  width: 64px;
+  width: 42%;
   padding-left: var(--sp-3);
   vertical-align: middle;
 }
-.itx-board-trend {
+.itx-board-cell-trend .itx-spark {
+  display: block;
+  width: 100%;
+  height: 20px;
+}
+.itx-board-trend-text {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
   gap: 1px;
-  width: 56px;
-  margin-left: auto;
+  min-width: 0;
+}
+.itx-board-trend-text a {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .itx-board-trend-pct {
   font-size: var(--fs-micro);

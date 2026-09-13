@@ -570,32 +570,32 @@ export default function Board({
                               a rail this narrow, which broke the fixed row
                               height and pushed the percentage past the
                               panel's edge. */}
+                          {/* The stats rail's shape: the market over its
+                              change on the left, the graph on the right
+                              with the wider share of the row. Two columns
+                              where there were three, and the graph has the
+                              width the percentage took. */}
                           <td className="itx-board-cell-market">
-                            <Link
-                              to={`/tasks?capability=${encodeURIComponent(row.capability)}`}
-                              title={row.capability}
-                            >
-                              {marketLabel(row.capability)}
-                            </Link>
-                          </td>
-                          {/* The change under its sparkline rather than
-                              beside it: one column where there were two,
-                              and the width the percentage took is the
-                              label's -- which is what let the rail come in
-                              from a width the labels needed. */}
-                          <td className="itx-board-cell-trend">
-                            <span className="itx-board-trend">
-                              <Sparkline
-                                values={row.series}
-                                width={56}
-                                height={16}
-                                direction={directionOf(row.changePct)}
-                                label={`${row.capability} tasks posted over the last ${window.label}`}
-                              />
+                            <span className="itx-board-trend-text">
+                              <Link
+                                to={`/tasks?capability=${encodeURIComponent(row.capability)}`}
+                                title={row.capability}
+                              >
+                                {marketLabel(row.capability)}
+                              </Link>
                               <span className={`itx-board-trend-pct ${directionOf(row.changePct)}`}>
                                 {formatPct(row.changePct)}
                               </span>
                             </span>
+                          </td>
+                          <td className="itx-board-cell-trend">
+                            <Sparkline
+                              values={row.series}
+                              width={96}
+                              height={20}
+                              direction={directionOf(row.changePct)}
+                              label={`${row.capability} tasks posted over the last ${window.label}`}
+                            />
                           </td>
                         </tr>
                       ))}
