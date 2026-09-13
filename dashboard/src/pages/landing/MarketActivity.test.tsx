@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import MarketActivity from "./MarketActivity";
 import type { MarketSummary, SectorSummary } from "../../lib/series";
 
@@ -101,10 +101,90 @@ describe("MarketActivity", () => {
     await user.click(expand);
     expect(whole()).toEqual(["software", "media", "data", "ml", "writing"]);
     expect(container.querySelector(".itx-activity-teaser")).toBeNull();
+    // Five fit on one page, so there is no pager to offer.
+    expect(screen.queryByRole("button", { name: /page of sectors/i })).toBeNull();
 
     // And back.
     await user.click(screen.getByRole("button", { name: /top 3 sectors/i }));
     expect(whole()).toEqual(["software", "media", "data"]);
+  });
+
+  it("opens the rest ten at a time rather than all at once", async () => {
+    const user = userEvent.setup();
+    const many = Array.from({ length: 23 }, (_, i) =>
+      sector(`s${String(i).padStart(2, "0")}`, [market(`s${i}/a`, 1000 - i)]),
+    );
+    const { container } = renderIt(many);
+    const whole = () =>
+      [...container.querySelectorAll(".itx-market-activity > .itx-activity-sector .itx-board-label")].map(
+        (l) => l.childNodes[0]?.textContent,
+      );
+
+    await user.click(screen.getByRole("button", { name: /all 23 sectors/i }));
+    expect(whole()).toHaveLength(10);
+    expect(whole()[0]).toBe("s00");
+    expect(screen.getByText("1–10 of 23")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /previous page of sectors/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /next page of sectors/i }));
+    expect(whole()[0]).toBe("s10");
+    expect(screen.getByText("11–20 of 23")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /next page of sectors/i }));
+    expect(whole()).toEqual(["s20", "s21", "s22"]);
+    expect(screen.getByText("21–23 of 23")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next page of sectors/i })).toBeDisabled();
+
+    // Closing goes back to the top three, whatever page was open.
+    await user.click(screen.getByRole("button", { name: /top 3 sectors/i }));
+    expect(whole()).toEqual(["s00", "s01", "s02"]);
+    expect(screen.queryByRole("button", { name: /page of sectors/i })).toBeNull();
+  });
+
+  describe("drawing charts", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("draws a tile's chart only once the tile has been on screen", () => {
+      // jsdom lays nothing out, so every element is given a width; and
+      // it has no IntersectionObserver, so one is stood in that lets the
+      // test say when a tile came into view.
+      const widths = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 400 });
+      type Callback = (entries: Array<{ isIntersecting: boolean }>) => void;
+      const seen: Callback[] = [];
+      vi.stubGlobal(
+        "IntersectionObserver",
+        class {
+          constructor(cb: Callback) {
+            seen.push(cb);
+          }
+          observe() {}
+          disconnect() {}
+          unobserve() {}
+          takeRecords() {
+            return [];
+          }
+        },
+      );
+      try {
+        const { container } = renderIt();
+        // Eight tiles, eight observers, and no chart yet.
+        expect(container.querySelectorAll(".itx-activity-card")).toHaveLength(8);
+        expect(container.querySelectorAll("svg.itx-chart")).toHaveLength(0);
+
+        // The first three scroll into view.
+        act(() => seen.slice(0, 3).forEach((cb) => cb([{ isIntersecting: true }])));
+        expect(container.querySelectorAll("svg.itx-chart")).toHaveLength(3);
+
+        // Leaving again does not undraw them.
+        act(() => seen.slice(0, 3).forEach((cb) => cb([{ isIntersecting: false }])));
+        expect(container.querySelectorAll("svg.itx-chart")).toHaveLength(3);
+      } finally {
+        if (widths) Object.defineProperty(HTMLElement.prototype, "clientWidth", widths);
+      }
+    });
   });
 
   it("has nothing to expand on a board of three sectors or fewer", () => {

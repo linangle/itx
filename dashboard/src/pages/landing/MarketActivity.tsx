@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import TimeSeriesChart from "../../components/TimeSeriesChart";
 import Triangle from "../../components/Triangle";
 import { useCarousel } from "../../hooks/useCarousel";
 import { useElementWidth } from "../../hooks/useElementWidth";
+import { useOnceVisible } from "../../hooks/useOnceVisible";
 import { marketLabel } from "../../lib/sectors";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 import type { MarketSummary, SectorSummary, SeriesWindow } from "../../lib/series";
@@ -11,6 +12,11 @@ import type { MarketSummary, SectorSummary, SeriesWindow } from "../../lib/serie
  * ones and the top of a fourth, faded: the board has nine, and nine
  * rows of charts is a page of them. */
 const SHOWN_SECTORS = 3;
+/** Sectors per page once it is expanded. A board can grow sectors
+ * without limit -- a sector exists because somebody posted in it -- and
+ * the section must not grow with it. Ten rows of charts is as long a
+ * page as this wants to be; the rest are a page away. */
+const SECTORS_PER_PAGE = 10;
 /** The tiles' charts, in pixels. Kept in step with
  * `.itx-activity-plot`'s `min-height`. */
 const CHART_H = 132;
@@ -29,7 +35,14 @@ const CHART_H = 132;
  * The first three sectors show whole. The fourth shows faded, under a
  * control that opens the rest -- a teaser of what is there rather than a
  * count of it, so the reader knows the section goes on without nine
- * rows of it going on.
+ * rows of it going on. Opened, the rest come ten at a time, with a pager
+ * beside the control that closes them again, so a board of forty
+ * sectors is four pages and not forty rows.
+ *
+ * A tile draws its chart only once it has been on screen. Every market
+ * on the board is a tile here, in rows that scroll off to the right and
+ * pages that open below the fold, and a chart for each of hundreds of
+ * markets that nobody has scrolled to is hundreds of charts for nothing.
  */
 export default function MarketActivity({
   sectors,
@@ -42,6 +55,10 @@ export default function MarketActivity({
   onOpen: (capability: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Clamped rather than reset: the board re-asks the hub every few
+  // seconds and the sector count can change between polls.
+  const [wantedPage, setWantedPage] = useState(0);
+  const section = useRef<HTMLElement | null>(null);
   const total = sectors.reduce((sum, s) => sum + s.openBounty, 0);
   // The summary carries a window but no instants, so the axis is
   // labelled from the poll's own clock -- the same assumption the sector
@@ -52,8 +69,28 @@ export default function MarketActivity({
   if (sectors.length === 0) return null;
 
   const collapsible = sectors.length > SHOWN_SECTORS;
-  const shown = expanded || !collapsible ? sectors : sectors.slice(0, SHOWN_SECTORS);
+  const pageCount = Math.max(1, Math.ceil(sectors.length / SECTORS_PER_PAGE));
+  const page = Math.min(wantedPage, pageCount - 1);
+  const pageStart = page * SECTORS_PER_PAGE;
+  const shown = !collapsible
+    ? sectors
+    : expanded
+      ? sectors.slice(pageStart, pageStart + SECTORS_PER_PAGE)
+      : sectors.slice(0, SHOWN_SECTORS);
   const teaser = collapsible && !expanded ? sectors[SHOWN_SECTORS] : null;
+
+  /** Turns the page and brings the section's top back into view: the
+   * pager is at the section's foot, so without this the reader would be
+   * left looking at the new page's end. The anchor's own scroll offset
+   * keeps the heading clear of the masthead. */
+  const turnTo = (next: number) => {
+    setWantedPage(next);
+    const el = section.current;
+    if (el && typeof el.scrollIntoView === "function") {
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      el.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
+    }
+  };
   const block = (sector: SectorSummary) => (
     <SectorBlock
       key={sector.name}
@@ -66,7 +103,12 @@ export default function MarketActivity({
   );
 
   return (
-    <section className="itx-market-activity" id="itx-board-activity" aria-label="Market activity">
+    <section
+      className="itx-market-activity"
+      id="itx-board-activity"
+      aria-label="Market activity"
+      ref={section}
+    >
       <div className="itx-board-labels itx-board-labels-section">
         <h2 className="itx-board-title">market activity</h2>
       </div>
@@ -81,22 +123,49 @@ export default function MarketActivity({
         </div>
       )}
       {collapsible && (
-        <button
-          type="button"
-          className="itx-activity-expand"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((e) => !e)}
-        >
-          {expanded ? (
-            <>
-              <span aria-hidden="true">▴</span> top {SHOWN_SECTORS} sectors
-            </>
-          ) : (
-            <>
-              <span aria-hidden="true">▾</span> all {formatCount(sectors.length)} sectors
-            </>
+        <div className={expanded && pageCount > 1 ? "itx-activity-foot has-pages" : "itx-activity-foot"}>
+          <button
+            type="button"
+            className="itx-activity-expand"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((e) => !e)}
+          >
+            {expanded ? (
+              <>
+                <span aria-hidden="true">▴</span> top {SHOWN_SECTORS} sectors
+              </>
+            ) : (
+              <>
+                <span aria-hidden="true">▾</span> all {formatCount(sectors.length)} sectors
+              </>
+            )}
+          </button>
+          {/* Hidden below two pages -- a pager over a complete list is a
+              control that can only ever be disabled. */}
+          {expanded && pageCount > 1 && (
+            <div className="itx-board-pages">
+              <button
+                type="button"
+                onClick={() => turnTo(page - 1)}
+                disabled={page === 0}
+                aria-label="Previous page of sectors"
+              >
+                <Triangle direction="left" />
+              </button>
+              <span>
+                {pageStart + 1}–{pageStart + shown.length} of {formatCount(sectors.length)}
+              </span>
+              <button
+                type="button"
+                onClick={() => turnTo(page + 1)}
+                disabled={page >= pageCount - 1}
+                aria-label="Next page of sectors"
+              >
+                <Triangle direction="right" />
+              </button>
+            </div>
           )}
-        </button>
+        </div>
       )}
     </section>
   );
@@ -195,12 +264,17 @@ function MarketTile({
 }) {
   const direction = directionOf(market.changePct);
   const [plot, width] = useElementWidth<HTMLDivElement>();
+  // Drawn once the tile has been on screen, and not before -- see the
+  // section's note. The box keeps its height meanwhile, so the row does
+  // not change shape as its tiles arrive.
+  const [card, seen] = useOnceVisible<HTMLDivElement>();
   const open = () => onOpen(market.capability);
 
   return (
     <li className="itx-activity-tile">
       <div
         className="itx-board-panel itx-activity-card"
+        ref={card}
         role="button"
         tabIndex={0}
         title={market.capability}
@@ -230,7 +304,7 @@ function MarketTile({
               plot has been laid out, and a chart drawn at zero width is a
               chart drawn wrong. */}
           <div className="itx-activity-plot" ref={plot}>
-            {width > 0 && market.series.length > 0 && (
+            {seen && width > 0 && market.series.length > 0 && (
               <TimeSeriesChart
                 values={market.series}
                 startMs={startMs}

@@ -3016,18 +3016,35 @@ a.itx-board-what:hover {
   margin-top: 0;
 }
 
-/* The control under the fold: the whole width, so it reads as the edge
-   of the section rather than a button in it. */
-.itx-activity-expand {
+/* The section's foot: the open/close control, centred and the whole
+   width so it reads as the edge of the section rather than a button in
+   it -- and, once the section is open past one page of sectors, the
+   pager at the far end with the control at the near one. */
+.itx-activity-foot {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-3);
-  width: 100%;
+  gap: var(--sp-5);
   margin-top: var(--sp-5);
-  padding: var(--sp-4) 0;
-  border: 0;
+  padding-top: var(--sp-4);
   border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+}
+.itx-activity-foot.has-pages {
+  justify-content: space-between;
+}
+.itx-activity-foot .itx-board-pages {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.itx-activity-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: var(--sp-2) 0;
+  border: 0;
   background: none;
   color: var(--ld-sub);
   font: inherit;
