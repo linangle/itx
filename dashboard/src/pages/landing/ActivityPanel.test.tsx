@@ -125,7 +125,7 @@ describe("ActivityPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("flips a tile over to its definition, and back", async () => {
+  it("flips a tile over to its definition, and back, from a click or the keyboard", async () => {
     vi.mocked(hub.getMarketSeries).mockResolvedValue(series());
     render(<ActivityPanel />);
     await waitFor(() => expect(screen.getByText("bounty paid")).toBeInTheDocument());
@@ -134,19 +134,31 @@ describe("ActivityPanel", () => {
     const back = tile.querySelector(".itx-activity-back");
     if (!back) throw new Error("no back face");
 
-    // At rest the figure faces out and the definition is turned away --
-    // from sight and from assistive tech both, or a screen reader would
-    // read the note under every number as though it were a caption still.
+    // The whole panel is the control -- there is no button to find, so
+    // its accessible name is the face that is showing: the figure at
+    // rest, the definition once turned. At rest the definition is turned
+    // away from sight and from assistive tech both, or a screen reader
+    // would read the note under every number as though it were a
+    // caption still.
+    const panel = within(tile).getByRole("button", { name: /^bounty paid/ });
+    expect(panel).toHaveAttribute("aria-expanded", "false");
     expect(tile).not.toHaveClass("is-flipped");
     expect(back).toHaveAttribute("aria-hidden", "true");
 
-    await user.click(within(tile).getByRole("button", { name: /what bounty paid counts/i }));
+    await user.click(panel);
     expect(tile).toHaveClass("is-flipped");
+    expect(panel).toHaveAttribute("aria-expanded", "true");
     expect(back).not.toHaveAttribute("aria-hidden");
+    expect(within(tile).getByRole("button", { name: /^what bounty paid counts/ })).toBe(panel);
     expect(within(back as HTMLElement).getByText(/counted when the chain confirmed/i)).toBeInTheDocument();
 
-    // The same button turns it back, and says so.
-    await user.click(within(tile).getByRole("button", { name: /back to the bounty paid figure/i }));
+    // A second click turns it back; so does the keyboard, both ways.
+    await user.click(panel);
+    expect(tile).not.toHaveClass("is-flipped");
+    panel.focus();
+    await user.keyboard("{Enter}");
+    expect(tile).toHaveClass("is-flipped");
+    await user.keyboard(" ");
     expect(tile).not.toHaveClass("is-flipped");
     expect(back).toHaveAttribute("aria-hidden", "true");
   });

@@ -506,6 +506,7 @@ body.itx-landing-body[data-theme="light"] {
 
 #itx-board-predictions,
 #itx-board-latest,
+#itx-board-activity,
 #itx-board-sectors,
 #itx-board-newsroom {
   scroll-margin-top: var(--anchor-top);
@@ -2742,81 +2743,37 @@ a.itx-board-what:hover {
   margin-top: var(--gap-section);
 }
 
+/* Not a panel: the grid the tile panels sit in. It carries the section's
+   anchor (see the offset list near `--anchor-top`) because its top edge
+   is the panels' top edge, which is what a jump has to land on. */
 .itx-activity-panel {
-  padding: var(--sp-6) var(--pad-panel-x);
-}
-
-/* Two across, each tile a figure beside its chart. Two rather than
-   auto-fit because a chart needs width to be a chart: at five across
-   the charts were 64px sparklines, and at two they are the market
-   chart in miniature. One column once the panel is too narrow for the
-   chart to have any width left beside the figure. */
-.itx-activity-grid {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-7) var(--sp-8);
+  gap: var(--sp-6);
 }
 @media (max-width: 700px) {
-  .itx-activity-grid {
+  .itx-activity-panel {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
+/* The grid is the panel-wrapper's own layout; a list of tiles inside it
+   is transparent to that. `display: contents` hands the `<li>`s up to
+   the grid without a box of its own in the way. */
+.itx-activity-grid {
+  display: contents;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 .itx-activity-tile {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
   min-width: 0;
 }
 
-/* The label and the flip control, above the card so that neither turns
-   with it: the label stays readable on either face, and the button is
-   still where the hand left it when it wants to turn back. */
-.itx-activity-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-}
-
-.itx-activity-label {
-  font-size: var(--fs-meta);
-  color: var(--ld-sub);
-}
-
-/* A bare glyph in a ring, the size of the pagers' triangles. `?` on the
-   front, `×` on the back -- the button is what it will do, not what it
-   did. */
-.itx-activity-flip {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--bd-line) 80%, transparent);
-  border-radius: 50%;
-  background: none;
-  color: var(--ld-sub);
-  font: inherit;
-  font-size: var(--fs-micro);
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    color 130ms ease,
-    border-color 130ms ease;
-}
-.itx-activity-flip:hover,
-.itx-activity-flip[aria-pressed="true"] {
-  color: var(--ld-light);
-  border-color: var(--ld-sub);
-}
-
-/* The card: two faces on one box, turned about its vertical axis. No
+/* The card is the panel, and the panel is the control: it turns about
+   its vertical axis, border and all, on a click or a keypress. No
    `perspective` anywhere up the tree, deliberately -- without one a
    rotateY is a horizontal squash, the flat flip of a card on a table
    rather than a slab swinging out of the screen, which is the site's
@@ -2824,39 +2781,69 @@ a.itx-board-what:hover {
    is laid over it and shows when the card is turned. */
 .itx-activity-card {
   position: relative;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
   transform-style: preserve-3d;
-  transition: transform 360ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    transform 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 130ms ease;
+}
+.itx-activity-card:hover,
+.itx-activity-card:focus-visible {
+  border-color: var(--ld-sub);
+}
+.itx-activity-card:focus-visible {
+  outline: none;
 }
 .itx-activity-tile.is-flipped .itx-activity-card {
   transform: rotateY(180deg);
 }
 @media (prefers-reduced-motion: reduce) {
   .itx-activity-card {
-    transition: none;
+    transition: border-color 130ms ease;
   }
 }
 
+/* Both faces share the panel's padding, since the panel's edge is the
+   card's edge on either side. */
 .itx-activity-face {
+  box-sizing: border-box;
+  padding: var(--sp-5) var(--sp-6);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
 }
 
 .itx-activity-front {
   display: flex;
-  align-items: stretch;
-  gap: var(--sp-5);
+  flex-direction: column;
+  gap: var(--sp-4);
 }
 
 .itx-activity-back {
   position: absolute;
   inset: 0;
   transform: rotateY(180deg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
   overflow: auto;
 }
 
-/* The figure, to the left of its chart. Fixed to what its widest value
-   needs rather than a share of the tile, so every chart in the column
-   starts on the same line. */
+.itx-activity-label {
+  font-size: var(--fs-meta);
+  color: var(--ld-sub);
+}
+
+/* The figure beside its chart. */
+.itx-activity-body {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-5);
+}
+
+/* Fixed to what its widest value needs rather than a share of the tile,
+   so every chart in the column starts on the same line. */
 .itx-activity-figure {
   flex: 0 0 132px;
   min-width: 0;
@@ -2896,7 +2883,10 @@ a.itx-board-what:hover {
   color: var(--ld-sub);
 }
 
+/* The states with nothing to grid: one panel, across the full width. */
 .itx-activity-empty {
+  grid-column: 1 / -1;
+  padding: var(--sp-6) var(--pad-panel-x);
   font-size: var(--fs-meta);
   color: var(--ld-sub);
 }

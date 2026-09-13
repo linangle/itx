@@ -51,18 +51,25 @@ export default function ActivityPanel() {
       <div className="itx-board-labels">
         <span className="itx-board-label">activity</span>
       </div>
-      <div className="itx-board-panel itx-activity-panel" id="itx-board-activity">
-        {series.error && <div className="itx-activity-empty">couldn&apos;t reach the hub.</div>}
+      {/* Not a panel with tiles in it: each tile is its own panel, and this
+          is the grid they sit in. It still carries the section's anchor,
+          because its top edge is the panels' top edge, which is what the
+          nav's offset needs to park level with the leaderboard. The three
+          states with nothing to grid are one panel each. */}
+      <div className="itx-activity-panel" id="itx-board-activity">
+        {series.error && (
+          <div className="itx-board-panel itx-activity-empty">couldn&apos;t reach the hub.</div>
+        )}
         {/* Named rather than blank: an operator seeing this has upgraded
             the site ahead of the hub, and the fix is to upgrade the hub.
             §5.2 states that order. */}
         {!series.error && stale && (
-          <div className="itx-activity-empty">
+          <div className="itx-board-panel itx-activity-empty">
             this hub is older than this page, and doesn&apos;t serve activity yet.
           </div>
         )}
         {!series.error && !stale && !tiles && (
-          <div className="itx-activity-empty">loading activity…</div>
+          <div className="itx-board-panel itx-activity-empty">loading activity…</div>
         )}
         {tiles && series.data && (
           <ul className="itx-activity-grid">
@@ -108,10 +115,20 @@ function formatTick(unit: ActivityUnit, value: number): string {
  *
  * The definition used to be a caption under every tile, which made the
  * panel mostly prose. It is still on the tile -- every figure here is
- * one definition away from being misread -- but behind it, a flip away,
- * where it costs nothing until it is wanted. The label sits above the
- * card rather than on it, so it stays put while the card turns and the
- * back does not have to repeat it.
+ * one definition away from being misread -- but on the back, a flip
+ * away, where it costs nothing until it is wanted. The whole panel is
+ * the control: click it, or focus it and press Enter or Space, and it
+ * turns; the same again turns it back. There is no separate button to
+ * find, so the back carries its own heading, phrased as what it is
+ * ("what bounty posted counts") rather than repeating the label.
+ *
+ * `role="button"` on a div rather than a real `<button>`: the panel's
+ * content is a figure and a chart, which is block content a button may
+ * not hold, and a button's accessible name is its whole text -- which
+ * is fine here, since the name then *is* the figure, and once turned it
+ * is the definition. Whichever face is turned away is `aria-hidden`, so
+ * a screen reader hears one face at a time rather than the note under
+ * every number as though it were a caption still.
  */
 function Tile({ tile, startMs, endMs }: { tile: ActivityTile; startMs: number; endMs: number }) {
   const direction = directionOf(tile.changePct);
@@ -126,64 +143,66 @@ function Tile({ tile, startMs, endMs }: { tile: ActivityTile; startMs: number; e
     [tile.series, tile.shape],
   );
 
+  const turn = () => setFlipped((f) => !f);
+
   return (
     <li className={flipped ? "itx-activity-tile is-flipped" : "itx-activity-tile"}>
-      <div className="itx-activity-head">
-        {/* No `title` on the label, though the note would make an obvious
-            tooltip. A `title` becomes the element's accessible name, so
-            the label announced itself as its own footnote and the words
-            "bounty posted" were never spoken at all. The note is on the
-            back instead, reachable by the button beside it. */}
-        <span className="itx-activity-label">{tile.label}</span>
-        <button
-          type="button"
-          className="itx-activity-flip"
-          aria-pressed={flipped}
-          aria-label={flipped ? `Back to the ${tile.label} figure` : `What ${tile.label} counts`}
-          onClick={() => setFlipped((f) => !f)}
-        >
-          {flipped ? "×" : "?"}
-        </button>
-      </div>
-
-      <div className="itx-activity-card">
-        {/* Whichever face is turned away is hidden from assistive tech
-            as well as from sight, or a screen reader would read both. */}
+      <div
+        className="itx-board-panel itx-activity-card"
+        role="button"
+        tabIndex={0}
+        aria-expanded={flipped}
+        onClick={turn}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            turn();
+          }
+        }}
+      >
         <div className="itx-activity-face itx-activity-front" aria-hidden={flipped || undefined}>
-          <div className="itx-activity-figure">
-            <span className="itx-activity-value">{formatValue(tile.unit, tile.value)}</span>
-            {tile.changePct !== null && (
-              <span
-                className={`itx-activity-change ${direction}`}
-                title="the second half of this window against the first"
-              >
-                {formatPct(tile.changePct)}
-              </span>
-            )}
-          </div>
-          {/* Measured like the market chart's box: `width` is 0 until the
-              plot has been laid out, and a chart drawn at zero width is a
-              chart drawn wrong. No series is a deliberate answer rather
-              than a loading state -- see the tiles' own notes for which
-              ones and why -- and the box keeps its height so the grid
-              stays a grid. */}
-          <div className="itx-activity-plot" ref={plot}>
-            {values && width > 0 && (
-              <TimeSeriesChart
-                values={values}
-                startMs={startMs}
-                endMs={endMs}
-                width={width}
-                height={CHART_H}
-                direction={direction}
-                valueNoun={tile.label}
-                formatValue={(v) => formatValue(tile.unit, v)}
-                formatTick={(v) => formatTick(tile.unit, v)}
-              />
-            )}
+          {/* No `title` on the label, though the note would make an
+              obvious tooltip. A `title` becomes the element's accessible
+              name, so the label announced itself as its own footnote and
+              the words "bounty posted" were never spoken at all. */}
+          <span className="itx-activity-label">{tile.label}</span>
+          <div className="itx-activity-body">
+            <div className="itx-activity-figure">
+              <span className="itx-activity-value">{formatValue(tile.unit, tile.value)}</span>
+              {tile.changePct !== null && (
+                <span
+                  className={`itx-activity-change ${direction}`}
+                  title="the second half of this window against the first"
+                >
+                  {formatPct(tile.changePct)}
+                </span>
+              )}
+            </div>
+            {/* Measured like the market chart's box: `width` is 0 until
+                the plot has been laid out, and a chart drawn at zero
+                width is a chart drawn wrong. No series is a deliberate
+                answer rather than a loading state -- see the tiles' own
+                notes for which ones and why -- and the box keeps its
+                height so the grid stays a grid. */}
+            <div className="itx-activity-plot" ref={plot}>
+              {values && width > 0 && (
+                <TimeSeriesChart
+                  values={values}
+                  startMs={startMs}
+                  endMs={endMs}
+                  width={width}
+                  height={CHART_H}
+                  direction={direction}
+                  valueNoun={tile.label}
+                  formatValue={(v) => formatValue(tile.unit, v)}
+                  formatTick={(v) => formatTick(tile.unit, v)}
+                />
+              )}
+            </div>
           </div>
         </div>
         <div className="itx-activity-face itx-activity-back" aria-hidden={!flipped || undefined}>
+          <span className="itx-activity-label">what {tile.label} counts</span>
           <p className="itx-activity-note">{tile.note}</p>
         </div>
       </div>

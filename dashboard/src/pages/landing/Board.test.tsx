@@ -235,16 +235,19 @@ describe("Board", () => {
   });
 
   it("anchors each section on its panel, so the jumps land level", () => {
-    // All three sit on a panel rather than on the section around it, which
+    // Each sits on a panel rather than on the section around it, which
     // is what lets one offset park every jump on the same line as the
-    // leaderboard panel. The offset itself (`--anchor-top`) is verified in
-    // the browser, since jsdom applies no stylesheet.
+    // leaderboard panel. Activity is a grid of panels rather than one, so
+    // its anchor is the grid, whose top edge is the panels' top edge. The
+    // offset itself (`--anchor-top`) is verified in the browser, since
+    // jsdom applies no stylesheet.
     const { container } = renderBoard(capabilities);
-    for (const id of ["itx-board-latest", "itx-board-activity", "itx-board-sectors"]) {
+    for (const id of ["itx-board-latest", "itx-board-sectors"]) {
       const anchor = container.querySelector(`#${id}`);
       expect(anchor).toBeInTheDocument();
       expect(anchor).toHaveClass("itx-board-panel");
     }
+    expect(container.querySelector("#itx-board-activity")).toHaveClass("itx-activity-panel");
     expect(container.querySelector("#itx-board-latest")).toHaveClass("itx-board-panel-latest");
   });
 
