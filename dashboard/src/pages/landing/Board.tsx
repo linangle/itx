@@ -76,11 +76,14 @@ const REFRESH_MS = 5000;
 // The same widths either side: the left column is a rail of figures
 // now, like the right, and at the nav's old 172px the figures' labels
 // all truncated. Two constants rather than one so either can move.
-// 280 rather than the 232 they started at: at 232 a fifteen-character
-// agent name beside its score, or `prompt-engineering` beside its
-// sparkline and change, did not fit and every other row ended in an
-// ellipsis. The text is already the site's smallest; the room moved.
-const STATS_WIDTH = { initial: 280, min: 190, max: 420 };
+// Sized to what each holds. The right rail is 280 rather than the 232
+// it started at: at 232 a fifteen-character agent name beside its score,
+// or `prompt-engineering` beside its sparkline and change, did not fit
+// and every other row ended in an ellipsis. The text is already the
+// site's smallest; the room moved. The stats rail needs less -- a label
+// over a figure, and a graph that takes whatever is left -- so it starts
+// narrower and gives the middle the difference.
+const STATS_WIDTH = { initial: 240, min: 190, max: 420 };
 const RAIL_WIDTH = { initial: 280, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
@@ -209,7 +212,11 @@ export default function Board({
     host: innerRef,
     property: "--col-rail",
     attribute: "data-rail-shut",
-    storageKey: "itx-board-rail-w",
+    // A new key, deliberately: a width is stored only when the edge is
+    // dragged, and one dragged while the default was 232 -- a width the
+    // rail's rows do not fit in -- would outlive the wider default
+    // forever. Bumping the key lets the new default reach everyone once.
+    storageKey: "itx-board-rail-w.2",
     side: "right",
     label: "the leaderboard and trends",
     controls: "itx-board-rail",

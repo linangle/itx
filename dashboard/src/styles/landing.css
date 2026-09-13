@@ -553,7 +553,7 @@ body.itx-landing-body[data-theme="light"] {
   /* The board's fixed side columns, named here because two rows resolve
      against them: the columns themselves, and the heading line above,
      whose title and pager start and end where the carousel does. */
-  --col-nav: 280px;
+  --col-nav: 240px;
   --col-rail: 280px;
 
   /* Establishes a block formatting context so the quote strip's negative
@@ -1296,12 +1296,16 @@ body.itx-col-resizing {
   outline: none;
 }
 
+/* Sized to its words and never narrower: the slack goes to the graph
+   beside it rather than opening as a gap between the two, and the graph
+   is the one that gives when the rail is dragged narrow -- a column of
+   text that shrank below its words ran them into the graph. */
 .itx-rail-stat-text {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .itx-rail-stat-label {
@@ -1313,10 +1317,14 @@ body.itx-col-resizing {
   transition: color 130ms ease;
 }
 
+/* The change under the figure rather than beside it: the column is then
+   as wide as its widest word, and the width a percentage took on the
+   figure's line is the graph's instead. */
 .itx-rail-stat-figures {
   display: flex;
-  align-items: baseline;
-  gap: var(--sp-3);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
   white-space: nowrap;
 }
 
@@ -1334,12 +1342,15 @@ body.itx-col-resizing {
   font-variant-numeric: tabular-nums;
 }
 
-/* The graph's column. It gives way before the figures do -- down to the
-   trends rail's width -- when the rail is dragged narrow, and the
-   sparkline inside stretches its one viewBox to whatever is left. */
+/* The graph's column: whatever the figures leave, up to a ceiling past
+   which a sparkline is just a long line. It gives way before the figures
+   do -- down to the trends rail's width -- when the rail is dragged
+   narrow, and the sparkline inside stretches its one viewBox to whatever
+   it has. */
 .itx-rail-stat-spark {
-  flex: 0 3 76px;
+  flex: 1 3 76px;
   min-width: 44px;
+  max-width: 128px;
   height: 24px;
   display: flex;
   align-items: center;
@@ -3006,18 +3017,23 @@ a.itx-board-what:hover {
   text-overflow: ellipsis;
 }
 
-/* The figure beside its chart. */
+/* The figure beside its chart, close beside it: at a tile two across
+   the chart has a couple of hundred pixels to be a chart in, and a wide
+   gap and a wide figure column were taking a third of them. */
 .itx-activity-body {
   display: flex;
   align-items: stretch;
-  gap: var(--sp-5);
+  gap: var(--sp-3);
 }
 
-/* Fixed to what its widest value needs rather than a share of the tile,
-   so every chart in the column starts on the same line. */
+/* Sized to its own words rather than fixed for the widest value a tile
+   might hold: that fixed width was mostly air beside "3.4K itx", and
+   the chart wants the air more than the charts across a row want to
+   start on exactly the same line. */
 .itx-activity-figure {
-  flex: 0 0 132px;
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 45%;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -3025,11 +3041,10 @@ a.itx-board-what:hover {
 }
 
 .itx-activity-value {
-  font-size: 20px;
+  font-size: 18px;
   font-variant-numeric: tabular-nums;
   color: var(--ld-light);
-  /* A long compact figure wraps rather than pushing the grid wider. */
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .itx-activity-change {
