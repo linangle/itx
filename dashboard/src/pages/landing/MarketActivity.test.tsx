@@ -56,25 +56,61 @@ describe("MarketActivity", () => {
     expect(block("media").getByText(/19\.2% of open bounty/)).toBeInTheDocument();
   });
 
-  it("shows four markets of a sector at a time, and pages to the rest", async () => {
-    const user = userEvent.setup();
+  it("lays every market of a sector out in one row, with the overview's arrows", () => {
     renderIt();
-    // The tiles, not the pager's own two buttons, which share the block.
-    const tiles = () =>
-      block("software")
-        .getAllByRole("button")
-        .filter((b) => b.classList.contains("itx-activity-card"))
-        .map((b) => b.textContent?.match(/^[a-z-]+/)?.[0]);
-    expect(tiles()).toEqual(["python", "rust", "sql", "cpp"]);
-    expect(block("software").getByText("1–4 of 6")).toBeInTheDocument();
+    // Every tile is in the row -- it scrolls, the way the market
+    // overview's does, rather than paging -- biggest open bounty first.
+    const tiles = block("software")
+      .getAllByRole("button")
+      .filter((b) => b.classList.contains("itx-activity-card"))
+      .map((b) => b.textContent?.match(/^[a-z-]+/)?.[0]);
+    expect(tiles).toEqual(["python", "rust", "sql", "cpp", "testing", "prover"]);
+    expect(block("software").getByRole("list")).toHaveClass("itx-activity-row");
 
-    await user.click(block("software").getByRole("button", { name: /next page of software activity/i }));
-    expect(tiles()).toEqual(["testing", "prover"]);
-    expect(block("software").getByText("5–6 of 6")).toBeInTheDocument();
+    // The arrows and the position beside them. jsdom lays nothing out,
+    // so where the row sits is the hook's own tests' business; what is
+    // pinned here is that each sector has its pair and says its count.
+    expect(block("software").getByRole("button", { name: /previous software markets/i })).toBeInTheDocument();
+    expect(block("software").getByRole("button", { name: /next software markets/i })).toBeInTheDocument();
+    expect(block("software").getByText(/of 6$/)).toBeInTheDocument();
+    expect(block("media").getByText(/of 2$/)).toBeInTheDocument();
+  });
 
-    // A sector that fits on one page has no pager at all.
-    expect(block("media").queryByText(/of 2/)).toBeNull();
-    expect(block("media").queryByRole("button", { name: /page of media activity/i })).toBeNull();
+  it("shows the top three sectors whole, a fourth faded, and opens the rest on request", async () => {
+    const user = userEvent.setup();
+    const many = ["software", "media", "data", "ml", "writing"].map((name, i) =>
+      sector(name, [market(`${name}/a`, 500 - i * 100), market(`${name}/b`, 100)]),
+    );
+    const { container } = renderIt(many);
+
+    // Three blocks in the section proper, and the fourth inside the
+    // teaser -- present to be seen, hidden from assistive tech and the
+    // pointer because it is a picture of the next block, not the block.
+    const whole = () =>
+      [...container.querySelectorAll(".itx-market-activity > .itx-activity-sector .itx-board-label")].map(
+        (l) => l.childNodes[0]?.textContent,
+      );
+    expect(whole()).toEqual(["software", "media", "data"]);
+    const teaser = container.querySelector(".itx-activity-teaser");
+    expect(teaser).toHaveAttribute("aria-hidden", "true");
+    expect(teaser?.textContent).toContain("ml");
+    expect(container.textContent).not.toContain("writing");
+
+    const expand = screen.getByRole("button", { name: /all 5 sectors/i });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    await user.click(expand);
+    expect(whole()).toEqual(["software", "media", "data", "ml", "writing"]);
+    expect(container.querySelector(".itx-activity-teaser")).toBeNull();
+
+    // And back.
+    await user.click(screen.getByRole("button", { name: /top 3 sectors/i }));
+    expect(whole()).toEqual(["software", "media", "data"]);
+  });
+
+  it("has nothing to expand on a board of three sectors or fewer", () => {
+    renderIt();
+    expect(screen.queryByRole("button", { name: /sectors$/i })).toBeNull();
+    expect(document.querySelector(".itx-activity-teaser")).toBeNull();
   });
 
   it("labels a tile by its market alone, keeping the full tag as the title", () => {

@@ -1012,7 +1012,11 @@ body.itx-col-resizing {
    in. The carousel takes its height from the tallest sector now, and the
    rail is simply the taller of the two columns. */
 
-.itx-board-markets {
+/* On the middle column rather than on the overview's own wrapper, so
+   that every row in the column reads them: the overview's carousel, and
+   the market activity section's rows, which are the same kind of row and
+   show the same number across. */
+.itx-board-mid {
   /* One width for a market column, read by the carousel items. The
      label lives inside the item, so it inherits this automatically
      instead of being laid out separately and hoping the two agree. */
@@ -1020,7 +1024,9 @@ body.itx-col-resizing {
   /* How many panels the clip shows whole. The one after them is the
      peek, and this is what tells the carousel where to start fading it. */
   --markets-shown: 2;
+}
 
+.itx-board-markets {
   position: relative;
   min-width: 0;
   display: flex;
@@ -1129,7 +1135,10 @@ body.itx-col-resizing {
  * The next item is deliberately half past the edge: the peek is what
  * tells you there is more, and it fades rather than ending on a hard cut
  * -- a panel sliced down the middle reads as a rendering fault. */
-.itx-board-carousel {
+/* Shared with `.itx-activity-row`, the market activity section's rows:
+   the same scroll container, fades and peek, driven by the same hook. */
+.itx-board-carousel,
+.itx-activity-row {
   /* Where the peeking panel starts: the whole panels before it, each
      with the gap that follows it. */
   --peek-edge: calc(var(--markets-shown) * (var(--market-basis) + var(--sp-7)));
@@ -1188,7 +1197,8 @@ body.itx-col-resizing {
 /* Safari's is the one that shows: hidden by hand, since
    `scrollbar-width` is Firefox's spelling and nothing standard covers
    WebKit yet. */
-.itx-board-carousel::-webkit-scrollbar {
+.itx-board-carousel::-webkit-scrollbar,
+.itx-activity-row::-webkit-scrollbar {
   display: none;
 }
 
@@ -1196,7 +1206,8 @@ body.itx-col-resizing {
    nothing: the last panel finishes on the edge, and dimming it would be a
    promise of more that isn't there. Collapsed by moving a stop rather
    than by dropping one, so the gradient keeps its shape. */
-.itx-board-carousel[data-at-end] {
+.itx-board-carousel[data-at-end],
+.itx-activity-row[data-at-end] {
   --peek-edge: 100%;
 }
 
@@ -2254,14 +2265,14 @@ a.itx-board-what:hover {
  * enough for a key, a sparkline and a percentage without the three
  * drifting apart, narrow enough that the next one is worth showing. */
 @media (min-width: 1700px) {
-  .itx-board-markets {
+  .itx-board-mid {
     --market-basis: calc(29.6% - 4px);
     --markets-shown: 3;
   }
 }
 
 @media (min-width: 2150px) {
-  .itx-board-markets {
+  .itx-board-mid {
     --market-basis: calc(22.5% - 4px);
     --markets-shown: 4;
   }
@@ -2301,14 +2312,7 @@ a.itx-board-what:hover {
     display: none;
   }
 
-  /* Stacked, the nav is no longer sized by a row it shares with the
-     panels, so it needs a height of its own -- without one its fit box
-     resolves to nothing and the market list empties. */
-  .itx-board-panel-nav {
-    min-height: 480px;
-  }
-
-  .itx-board-markets {
+  .itx-board-mid {
     --market-basis: calc(78% - 4px);
     --markets-shown: 1;
   }
@@ -2319,7 +2323,7 @@ a.itx-board-what:hover {
 }
 
 @media (max-width: 640px) {
-  .itx-board-markets {
+  .itx-board-mid {
     --market-basis: 92%;
     --markets-shown: 1;
   }
@@ -2910,26 +2914,64 @@ a.itx-board-what:hover {
   border-top: 0;
 }
 
-/* Four markets at a time: two across, two down. One column once the
-   panel is too narrow for a chart to have any width left beside its
-   figure. */
-.itx-activity-panel {
+/* A sector's markets in one row that scrolls, sharing the overview
+   row's rules above. The shared rule sets `flex: 1`, which is the
+   overview filling its column; a row here is as tall as its tiles. The
+   tiles take the overview's own basis, so a row shows as many markets
+   across as that shows panels at every width. */
+.itx-activity-row {
+  flex: none;
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-6);
-}
-@media (max-width: 700px) {
-  .itx-activity-panel {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .itx-activity-tile {
-  display: flex;
+  flex: 0 0 var(--market-basis);
   min-width: 0;
+  display: flex;
+}
+
+/* The fourth sector, faded out under the fold. Enough of it to say the
+   section continues; none of it for the pointer, since it is a picture
+   of the block rather than the block. */
+.itx-activity-teaser {
+  max-height: 150px;
+  overflow: hidden;
+  margin-top: var(--gap-section);
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, 0.5) 45%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, 0.5) 45%, transparent 100%);
+}
+.itx-activity-teaser .itx-activity-sector {
+  margin-top: 0;
+}
+
+/* The control under the fold: the whole width, so it reads as the edge
+   of the section rather than a button in it. */
+.itx-activity-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  width: 100%;
+  margin-top: var(--sp-5);
+  padding: var(--sp-4) 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
+  background: none;
+  color: var(--ld-sub);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  transition: color 130ms ease;
+}
+.itx-activity-expand:hover,
+.itx-activity-expand:focus-visible {
+  color: var(--ld-light);
+}
+.itx-activity-expand:focus-visible {
+  outline: none;
 }
 
 /* The card is the panel, and the panel is the control: it opens the

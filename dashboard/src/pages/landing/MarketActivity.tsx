@@ -1,13 +1,16 @@
 import { useState } from "react";
 import TimeSeriesChart from "../../components/TimeSeriesChart";
 import Triangle from "../../components/Triangle";
+import { useCarousel } from "../../hooks/useCarousel";
 import { useElementWidth } from "../../hooks/useElementWidth";
 import { marketLabel } from "../../lib/sectors";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 import type { MarketSummary, SectorSummary, SeriesWindow } from "../../lib/series";
 
-/** Markets shown per sector at a time: two across, two down. */
-const PAGE = 4;
+/** Sectors shown before the section asks to be expanded. Three whole
+ * ones and the top of a fourth, faded: the board has nine, and nine
+ * rows of charts is a page of them. */
+const SHOWN_SECTORS = 3;
 /** The tiles' charts, in pixels. Kept in step with
  * `.itx-activity-plot`'s `min-height`. */
 const CHART_H = 132;
@@ -15,11 +18,18 @@ const CHART_H = 132;
 /** Every market on the board, as a chart each, grouped by sector.
  *
  * The sectors run top to bottom by the open bounty in them -- the same
- * order the carousel and the breakdown use -- and each shows four of its
- * markets at a time, biggest open bounty first, with a pager for the
- * rest. Drawn from the summary the board already holds: every market's
- * running bounty line is in `MarketSummary.series`, so this asks the hub
- * for nothing the carousel did not.
+ * order the carousel and the breakdown use -- and each is a row of its
+ * markets, biggest open bounty first, that scrolls the way the market
+ * overview's row does: the same hook, the same arrows, the same fades,
+ * and as many tiles across as that row shows panels. Drawn from the
+ * summary the board already holds: every market's running bounty line
+ * is in `MarketSummary.series`, so this asks the hub for nothing the
+ * carousel did not.
+ *
+ * The first three sectors show whole. The fourth shows faded, under a
+ * control that opens the rest -- a teaser of what is there rather than a
+ * count of it, so the reader knows the section goes on without nine
+ * rows of it going on.
  */
 export default function MarketActivity({
   sectors,
@@ -31,6 +41,7 @@ export default function MarketActivity({
   /** Opens a market's full chart in the middle column. */
   onOpen: (capability: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const total = sectors.reduce((sum, s) => sum + s.openBounty, 0);
   // The summary carries a window but no instants, so the axis is
   // labelled from the poll's own clock -- the same assumption the sector
@@ -40,21 +51,53 @@ export default function MarketActivity({
 
   if (sectors.length === 0) return null;
 
+  const collapsible = sectors.length > SHOWN_SECTORS;
+  const shown = expanded || !collapsible ? sectors : sectors.slice(0, SHOWN_SECTORS);
+  const teaser = collapsible && !expanded ? sectors[SHOWN_SECTORS] : null;
+  const block = (sector: SectorSummary) => (
+    <SectorBlock
+      key={sector.name}
+      sector={sector}
+      share={total > 0 ? sector.openBounty / total : 0}
+      startMs={startMs}
+      endMs={endMs}
+      onOpen={onOpen}
+    />
+  );
+
   return (
     <section className="itx-market-activity" id="itx-board-activity" aria-label="Market activity">
       <div className="itx-board-labels itx-board-labels-section">
         <h2 className="itx-board-title">market activity</h2>
       </div>
-      {sectors.map((sector) => (
-        <SectorBlock
-          key={sector.name}
-          sector={sector}
-          share={total > 0 ? sector.openBounty / total : 0}
-          startMs={startMs}
-          endMs={endMs}
-          onOpen={onOpen}
-        />
-      ))}
+      {shown.map(block)}
+      {/* The fourth sector, faded out under the fold: visible enough to
+          say the section continues, hidden from assistive tech and from
+          the pointer because it is a picture of the next block rather
+          than the block. */}
+      {teaser && (
+        <div className="itx-activity-teaser" aria-hidden="true">
+          {block(teaser)}
+        </div>
+      )}
+      {collapsible && (
+        <button
+          type="button"
+          className="itx-activity-expand"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((e) => !e)}
+        >
+          {expanded ? (
+            <>
+              <span aria-hidden="true">▴</span> top {SHOWN_SECTORS} sectors
+            </>
+          ) : (
+            <>
+              <span aria-hidden="true">▾</span> all {formatCount(sectors.length)} sectors
+            </>
+          )}
+        </button>
+      )}
     </section>
   );
 }
@@ -73,16 +116,10 @@ function SectorBlock({
   endMs: number;
   onOpen: (capability: string) => void;
 }) {
-  // Per sector rather than shared: sectors hold different numbers of
-  // markets, so one index would mean page three of a sector with one.
-  // Clamped rather than reset from an effect, because the board re-asks
-  // the hub every few seconds and a sector can lose markets between
-  // polls.
-  const [wanted, setWanted] = useState(0);
-  const pageCount = Math.max(1, Math.ceil(sector.markets.length / PAGE));
-  const page = Math.min(wanted, pageCount - 1);
-  const start = page * PAGE;
-  const shown = sector.markets.slice(start, start + PAGE);
+  // The market overview's own row mechanics: a real scroll container the
+  // browser drives -- finger, wheel, momentum -- with the hook supplying
+  // what it cannot know, which tile is current and where an arrow lands.
+  const [row, carousel] = useCarousel<HTMLUListElement>(sector.markets.length);
 
   return (
     <div className="itx-activity-sector">
@@ -94,35 +131,42 @@ function SectorBlock({
             {sector.markets.length === 1 ? "market" : "markets"} · {formatCompactItx(sector.openBounty)} itx
           </span>
         </span>
-        {/* Hidden below two pages -- a pager over a complete list is a
-            control that can only ever be disabled. The labels name the
-            sector because every sector on the page has one of these. */}
-        {pageCount > 1 && (
-          <div className="itx-board-pages">
-            <button
-              type="button"
-              onClick={() => setWanted(page - 1)}
-              disabled={page === 0}
-              aria-label={`Previous page of ${sector.name} activity`}
-            >
-              <Triangle direction="left" />
-            </button>
-            <span>
-              {start + 1}–{start + shown.length} of {formatCount(sector.markets.length)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setWanted(page + 1)}
-              disabled={page >= pageCount - 1}
-              aria-label={`Next page of ${sector.name} activity`}
-            >
-              <Triangle direction="right" />
-            </button>
-          </div>
-        )}
+        {/* Disabled at the ends rather than wrapping, like the overview's:
+            the row is a scroll, and a control that jumped the whole way
+            back would contradict what dragging it does. The labels name
+            the sector because every sector on the page has a pair. */}
+        <div className="itx-board-pages">
+          <button
+            type="button"
+            onClick={() => carousel.step(-1)}
+            disabled={carousel.atStart}
+            aria-label={`Previous ${sector.name} markets`}
+          >
+            <Triangle direction="left" />
+          </button>
+          <span>
+            {carousel.firstVisible + 1}–{carousel.lastVisible + 1} of{" "}
+            {formatCount(sector.markets.length)}
+          </span>
+          <button
+            type="button"
+            onClick={() => carousel.step(1)}
+            disabled={carousel.atEnd}
+            aria-label={`Next ${sector.name} markets`}
+          >
+            <Triangle direction="right" />
+          </button>
+        </div>
       </div>
-      <ul className="itx-activity-panel">
-        {shown.map((market) => (
+      {/* Which end the row is against, as a pair of flags: whether an
+          edge fades, and how, is the stylesheet's business. */}
+      <ul
+        className="itx-activity-row"
+        ref={row}
+        data-at-start={carousel.atStart || undefined}
+        data-at-end={carousel.atEnd || undefined}
+      >
+        {sector.markets.map((market) => (
           <MarketTile key={market.capability} market={market} startMs={startMs} endMs={endMs} onOpen={onOpen} />
         ))}
       </ul>

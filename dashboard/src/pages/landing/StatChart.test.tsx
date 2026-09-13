@@ -50,8 +50,11 @@ function renderChart(statKey: string, onClose = vi.fn()) {
 describe("StatChart", () => {
   it("heads with the figure, its change, and its definition", async () => {
     renderChart("bounty-paid");
-    expect(await screen.findByRole("heading", { name: /^bounty paid/ })).toBeInTheDocument();
-    expect(screen.getByText(/^3(\.0+)? itx$/)).toBeInTheDocument();
+    // Waited for the figure rather than the heading: the heading names
+    // the key before the hub has answered, so it is there on the first
+    // render and says nothing about whether the data is.
+    expect(await screen.findByText(/^3(\.0+)? itx$/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^bounty paid/ })).toBeInTheDocument();
     // The definition is here now, where the tiles' captions and then
     // their backs used to carry it.
     expect(screen.getByText(/counted when the chain confirmed the payout/i)).toBeInTheDocument();
@@ -59,8 +62,7 @@ describe("StatChart", () => {
 
   it("prints a count as a count", async () => {
     const { container } = renderChart("tasks-completed");
-    await screen.findByRole("heading", { name: /^tasks completed/ });
-    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(await screen.findByText("3")).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/\d\s*itx/);
   });
 
