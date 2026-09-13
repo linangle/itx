@@ -10,9 +10,10 @@
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
 // activity sized like a real marketplace rather than a smoke test: four
 // thousand agents with distinct keys, twenty thousand tasks, every
-// status, and 47 capability tags that trend differently on purpose -- some
-// surging, some fading, some steady -- so change columns show real ups
-// and downs instead of a wall of identical numbers.
+// status, and 47 capability tags -- 99 with the growth roster, see
+// `GROWTH` below -- that trend differently on purpose -- some surging,
+// some fading, some steady -- so change columns show real ups and downs
+// instead of a wall of identical numbers.
 //
 // Tags are written `<sector>/<market>`, which is the only structure the
 // board reads (see `src/lib/sectors.ts`): a sector exists because a
@@ -25,7 +26,9 @@
 // posting new tasks and advancing existing ones through their
 // lifecycles, so the board, the tape and the "live" pill have something
 // genuinely moving to show. Set `STATIC=1` to freeze it at the backfill
-// instead, which is what you want when comparing two screenshots.
+// instead, which is what you want when comparing two screenshots. Set
+// `LEAN=1` to serve the core roster alone -- nine sectors, forty-seven
+// markets -- rather than the board as it might look a year in.
 //
 //   npm run mock            # from dashboard/, reloads when this file changes
 //   VITE_HUB_URL=http://127.0.0.1:9101 npm run dev
@@ -133,7 +136,7 @@ const DISPUTE_WORKERS = AGENTS.slice(Math.round(AGENTS.length * 0.38));
 // judgment work would, checksum work is hash-matched, subjective work is
 // disputable. Nothing enforces that pairing -- it just keeps a task's
 // detail page from contradicting its own tag.
-const CAPABILITIES = [
+const CORE = [
   // software
   {
     tag: "software/python",
@@ -596,6 +599,99 @@ const CAPABILITIES = [
   },
 ];
 
+// The board a year in, on top of the core roster: the shapes the site
+// has to handle once it is no longer a demo of forty-seven markets.
+//
+// Three of them, on purpose. `other` past twelve markets -- bare tags
+// from posters who never read the convention, several of them the same
+// work as a namespaced market (`python` beside `software/python`), which
+// is exactly the mess a real board accumulates -- so the overview's
+// panel pages. Eleven more sectors, so there are twenty and the market
+// activity section pages, the carousel is long, and the quote strip
+// scrolls; among them `metallurgy/alloy-selection`, the docs' own
+// example of a tag invented the first time it was needed, as a sector
+// of one. And `software` past twelve markets, so a sector that is not
+// `other` pages too.
+//
+// `weight` is how much traffic a tag draws against a namespaced one's
+// 1: the legacy tags take a third, because a tag nobody was told to use
+// is not one many use. Omitted, it is 1.
+const GROWTH = [
+  // other: bare tags, as posted by agents who did not read the docs
+  { tag: "python", weight: 0.35, profile: "fading", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Small python script, details on claim", "Fix a script that stopped working"] },
+  { tag: "writing", weight: 0.35, profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write a short post, topic on claim", "Tidy up a paragraph"] },
+  { tag: "research", weight: 0.35, profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Look something up, details on claim", "Find three sources for a claim"] },
+  { tag: "general", weight: 0.35, profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Small task, details on claim", "Quick check of a spreadsheet formula"] },
+  { tag: "data-entry", weight: 0.35, profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Key 200 receipts into a sheet", "Copy a table out of a PDF"] },
+  { tag: "scraping", weight: 0.35, profile: "fading", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Scrape a page into CSV", "Pull the prices off a listing page"] },
+  { tag: "translation", weight: 0.35, profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Translate a paragraph into French", "Translate a menu into English"] },
+  { tag: "qa", weight: 0.35, profile: "surging", kinds: ["disputable", "disputable", "hash_match"], jobs: ["Click through a signup flow and note what breaks", "Try to break a form, report what did"] },
+  { tag: "devops", weight: 0.35, profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Set up a cron job on a VPS", "Get a container to start on boot"] },
+  { tag: "seo", weight: 0.35, profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write meta descriptions for 30 pages", "Suggest titles for ten posts"] },
+  { tag: "legal", weight: 0.35, profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Read a lease and flag anything odd", "Summarise a terms-of-service change"] },
+  { tag: "crypto", weight: 0.35, profile: "surging", kinds: ["disputable", "hash_match", "disputable"], jobs: ["Explain a transaction trace", "Check a contract address against a list"] },
+  { tag: "misc", weight: 0.35, profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Odd job, details on claim", "Something quick, will explain"] },
+  { tag: "help", weight: 0.35, profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Need a hand with something, details on claim", "Second pair of eyes on a draft"] },
+  // software, past twelve
+  { tag: "software/go", profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Add context cancellation through a worker pool", "Port a CLI from Python to Go"] },
+  { tag: "software/java", profile: "fading", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Upgrade a service from Java 11 to 21", "Fix a thread leak in a connection pool"] },
+  { tag: "software/typescript", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Type a 4k-line JS module strictly, no anys", "Fix a generic that stopped inferring"] },
+  { tag: "software/kotlin", profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Migrate an Android screen to Compose", "Make a coroutine flow cancellable"] },
+  { tag: "software/swift", profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Fix a layout that breaks on iPad", "Add widget support to an iOS app"] },
+  { tag: "software/devops", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Write a GitHub Actions matrix for three OSes", "Move a deploy from a shell script to Terraform"] },
+  { tag: "software/api-design", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Review a REST API for consistency before v1", "Design pagination for a list endpoint"] },
+  { tag: "software/database-migration", profile: "fading", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Move a schema from MySQL to Postgres, data intact", "Backfill a new column without locking the table"] },
+  // finance
+  { tag: "finance/reconciliation", profile: "surging", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Reconcile a month of bank lines against invoices", "Find the 3,000 that does not balance"] },
+  { tag: "finance/invoice-extraction", profile: "steady", kinds: ["hash_match", "consensus", "disputable"], jobs: ["Extract totals and dates from 200 invoices", "Pull VAT lines out of a receipt batch"] },
+  { tag: "finance/bookkeeping", profile: "steady", kinds: ["disputable", "disputable", "hash_match"], jobs: ["Categorise a quarter of card transactions", "Close the books for a small shop, monthly"] },
+  { tag: "finance/tax-lookup", profile: "fading", kinds: ["consensus", "disputable", "disputable"], jobs: ["Find the VAT rate for 40 product categories", "Check which of these expenses are deductible"] },
+  // legal
+  { tag: "legal/contract-review", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Redline a vendor agreement against a checklist", "Flag the indemnity clauses in a 60-page contract"] },
+  { tag: "legal/compliance-check", profile: "steady", kinds: ["consensus", "disputable", "disputable"], jobs: ["Check a privacy policy against GDPR's headings", "List the licences in a dependency tree"] },
+  { tag: "legal/clause-extraction", profile: "fading", kinds: ["hash_match", "consensus", "disputable"], jobs: ["Pull every termination clause from 30 leases", "Extract the governing-law line from a contract set"] },
+  // security
+  { tag: "security/code-audit", profile: "surging", kinds: ["consensus", "consensus", "disputable"], jobs: ["Audit an auth module for injection and IDOR", "Review a smart contract before deploy"] },
+  { tag: "security/pentest", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Probe a staging site, scope attached, report findings", "Test an upload endpoint for path traversal"] },
+  { tag: "security/phishing-triage", profile: "steady", kinds: ["consensus", "consensus", "disputable"], jobs: ["Classify 500 reported emails as phishing or not", "Rate a batch of suspicious domains"] },
+  // audio
+  { tag: "audio/podcast-editing", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Cut a 90-minute recording to 40, ums removed", "Level two voices and add the intro"] },
+  { tag: "audio/music-generation", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["A 30-second loop for a product video, no vocals", "Three jingle variants, upbeat, 10 seconds"] },
+  { tag: "audio/noise-removal", profile: "fading", kinds: ["disputable", "hash_match", "disputable"], jobs: ["Strip the hum from a lecture recording", "Clean up a voicemail so the number is audible"] },
+  // hardware
+  { tag: "hardware/pcb-review", profile: "steady", kinds: ["consensus", "disputable", "disputable"], jobs: ["Review a two-layer board before fab", "Check a schematic's decoupling"] },
+  { tag: "hardware/firmware", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Fix an I2C driver that hangs on a bad ack", "Add OTA updates to an ESP32 build"] },
+  { tag: "hardware/cad-cleanup", profile: "fading", kinds: ["disputable", "disputable", "hash_match"], jobs: ["Make a STEP file watertight for printing", "Parametrise a bracket so its holes move together"] },
+  // sales
+  { tag: "sales/outreach", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write 50 first-touch emails from a lead list", "Draft follow-ups for a stalled pipeline"] },
+  { tag: "sales/lead-scoring", profile: "steady", kinds: ["consensus", "hash_match", "disputable"], jobs: ["Score 2,000 signups by fit against a rubric", "Rank inbound leads for a week"] },
+  { tag: "sales/proposal-writing", profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Turn a call transcript into a proposal", "Write a statement of work from notes"] },
+  // science
+  { tag: "science/data-analysis", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Run the stats for a 200-subject study, script attached", "Re-analyse a dataset with the outliers handled"] },
+  { tag: "science/simulation", profile: "steady", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Run a 10k-iteration Monte Carlo, seeded, return CSV", "Sweep a parameter across 50 values"] },
+  { tag: "science/lab-protocol", profile: "fading", kinds: ["disputable", "consensus", "disputable"], jobs: ["Write up a protocol from a methods section", "Check a protocol for missing controls"] },
+  // math
+  { tag: "math/proof-checking", profile: "steady", kinds: ["consensus", "consensus", "disputable"], jobs: ["Check a 12-page proof for gaps", "Formalise a lemma in Lean"] },
+  { tag: "math/symbolic-integration", profile: "fading", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Integrate a family of 40 expressions in closed form", "Simplify a generating function"] },
+  // geo
+  { tag: "geo/gis", profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Join a shapefile to a CSV by postcode", "Compute drive-time isochrones for 30 sites"] },
+  { tag: "geo/satellite-imagery", profile: "surging", kinds: ["consensus", "disputable", "disputable"], jobs: ["Count vehicles in 200 lot images", "Flag cleared land across a tile set"] },
+  // metallurgy: the docs' example, a sector of one
+  { tag: "metallurgy/alloy-selection", profile: "steady", kinds: ["disputable", "consensus", "disputable"], jobs: ["Pick an alloy for a marine fitting, spec attached", "Compare three steels for a bracket under fatigue"] },
+  // gaming
+  { tag: "gaming/level-design", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Block out three levels from a design doc", "Balance a boss fight from playtest notes"] },
+  { tag: "gaming/playtesting", profile: "steady", kinds: ["consensus", "disputable", "disputable"], jobs: ["Play a build for two hours, report every stall", "Rate ten puzzles for difficulty order"] },
+  { tag: "gaming/npc-dialogue", profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write 200 barks for a market square", "Voice a shopkeeper in three moods"] },
+];
+
+// The roster the fixture serves. Core alone with `LEAN=1`; otherwise the
+// board a year in.
+const CAPABILITIES = process.env.LEAN === "1" ? CORE : [...CORE, ...GROWTH];
+
+// What a task picks its tag from: each tag as many times as its weight
+// calls for, in tenths, so `pick` stays a uniform draw.
+const TAG_POOL = CAPABILITIES.flatMap((c) => Array(Math.round((c.weight ?? 1) * 10)).fill(c));
+
 // Agents specialise. Without this, a thousand agents spread across a
 // dozen tags leaves almost everyone with a single paid task per market,
 // which is not just thin -- it makes the change column meaningless,
@@ -663,7 +759,7 @@ const STATUSES = [
 
 function makeTask(index) {
   const status = pick(STATUSES);
-  const tagged = random() < 0.8 ? pick(CAPABILITIES) : null;
+  const tagged = random() < 0.8 ? pick(TAG_POOL) : null;
   // Kind follows the tag now rather than being drawn independently of
   // it, so a task's mechanics match the work it claims to be: pooled
   // judgment lands on consensus, checksum work on hash_match, anything
@@ -754,7 +850,11 @@ function makeTask(index) {
 // single payout -- a misleading -100% or an empty dash. Rows are markets
 // now and pool every task in their tag, so that pressure is off; at
 // 5000 tasks every one of the then-35 markets already had 20+ of 24
-// buckets active, and 47 over twenty thousand is denser still.
+// buckets active, and 47 over twenty thousand is denser still. With the
+// growth roster it is 99, still ten a bucket -- and the bare legacy tags
+// in it are weighted down to a third of a namespaced tag's traffic, so
+// `other` is many small markets rather than the biggest sector on the
+// board by virtue of having the most tags.
 //
 // What this buys instead is *scale*: a leaderboard thousands deep, an
 // agent who has genuinely worked a market rather than touched it once,
