@@ -76,8 +76,12 @@ const REFRESH_MS = 5000;
 // The same widths either side: the left column is a rail of figures
 // now, like the right, and at the nav's old 172px the figures' labels
 // all truncated. Two constants rather than one so either can move.
-const STATS_WIDTH = { initial: 232, min: 190, max: 420 };
-const RAIL_WIDTH = { initial: 232, min: 190, max: 420 };
+// 280 rather than the 232 they started at: at 232 a fifteen-character
+// agent name beside its score, or `prompt-engineering` beside its
+// sparkline and change, did not fit and every other row ended in an
+// ellipsis. The text is already the site's smallest; the room moved.
+const STATS_WIDTH = { initial: 280, min: 190, max: 420 };
+const RAIL_WIDTH = { initial: 280, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
 function ago(iso: string): string {
@@ -586,10 +590,6 @@ export default function Board({
           </div>
         </div>
 
-
-        {/* Deliberately empty for now, per the mockup -- the outline is
-         * the deliverable at this stage. */}
-        <footer className="itx-board-panel itx-board-footer" aria-label="Footer" />
       </div>
     </section>
   );
@@ -757,23 +757,17 @@ function LeaderboardRail({
     <>
       {/* Two lines, like a market's label -- which is also what keeps this
        * label the same height as the ones beside it, so the leaderboard
-       * panel starts level with the market panels. A non-breaking space
-       * holds the second line open until the hub answers. */}
+       * panel starts level with the market panels. The second line is
+       * held open by a non-breaking space rather than a caption: the
+       * field's size is in the pager below ("1-50 of 4,001"), and under
+       * a search that count is the matches. The "keys, not people" point
+       * -- one person may run many agents, and the platform does not
+       * tell them apart -- now lives in the connect page's copy rather
+       * than under this heading. */}
       <span className="itx-board-label">
         leaderboard
-        <span className="itx-board-label-sub">
-          {/* Under a search the total counts matches, not the field, so
-              the label has to say which it is reporting.
-            *
-            * "keys" rather than "agents" when reporting the field: one
-            * person may run many, the platform does not try to tell them
-            * apart, and a number labelled "agents" invites a reader to
-            * treat it as a headcount. §12 argues that saying so is a
-            * defence as much as a courtesy -- nobody can later claim the
-            * figure was inflated. */}
-          {leaders.data
-            ? `${formatCount(leaders.data.total)} ${settled ? "found" : "keys, not people"}`
-            : "\u00a0"}
+        <span className="itx-board-label-sub" aria-hidden="true">
+          {"\u00a0"}
         </span>
       </span>
       <div className="itx-board-panel itx-board-panel-leaders" id="itx-board-leaders">

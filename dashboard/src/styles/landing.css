@@ -553,8 +553,8 @@ body.itx-landing-body[data-theme="light"] {
   /* The board's fixed side columns, named here because two rows resolve
      against them: the columns themselves, and the heading line above,
      whose title and pager start and end where the carousel does. */
-  --col-nav: 232px;
-  --col-rail: 232px;
+  --col-nav: 280px;
+  --col-rail: 280px;
 
   /* Establishes a block formatting context so the quote strip's negative
    * top margin cannot collapse out through here and drag the whole board
@@ -1838,6 +1838,13 @@ body.itx-col-resizing {
 /* A bare triangle, like the carousel's -- the outlined box it sat in was
    the third pager treatment on the site. The 22px stays as the hit area;
    it just has no edge now. */
+/* The position, centred between the arrows -- it wraps to two lines in
+   a rail this narrow ("1-50 of" / "4,001"), and left-aligned the second
+   line hung under the first arrow. */
+.itx-board-pages span {
+  flex: 1 1 auto;
+  text-align: center;
+}
 .itx-board-pages button {
   flex: none;
   display: inline-flex;
@@ -2248,10 +2255,6 @@ a.itx-board-what:hover {
   flex: none;
 }
 
-.itx-board-footer {
-  min-height: 96px;
-  margin-top: var(--gap-section);
-}
 
 /* responsive */
 
