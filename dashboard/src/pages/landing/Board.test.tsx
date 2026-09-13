@@ -122,16 +122,75 @@ describe("Board", () => {
     expect(rows.map((r) => r.textContent?.match(/^[a-z-]+/)?.[0])).toEqual(["python", "web-dev"]);
   });
 
-  it("caps a sector's panel at twelve markets however many it holds", () => {
-    // No sector in the taxonomy is this wide, which is why the cap needs a
-    // test rather than an eyeball. Unknown tags all file into "other".
-    const many = Array.from({ length: 14 }, (_, i) =>
+  /** A sector of `count` markets, descending in value so the order the
+   * panel shows them in is the order they are written here. Bare tags, so
+   * they all land in one sector -- which is the case that needs the pager,
+   * and, until the fixture posts namespaced tags, the case the demo board
+   * is actually in. */
+  function wideSector(count: number) {
+    return Array.from({ length: count }, (_, i) =>
       market(`haruspicy-${String.fromCharCode(97 + i)}`, 1000 - i),
     );
+  }
 
-    const { carousel } = renderBoard(many);
-    const rows = within(carousel.getAllByRole("table")[0]).getAllByRole("row").slice(1);
-    expect(rows.length).toBe(12);
+  function marketRows(carousel: ReturnType<typeof renderBoard>["carousel"]) {
+    // `role="presentation"` on the padding rows keeps them out of this --
+    // see the pad in `SectorPanel`.
+    return within(carousel.getAllByRole("table")[0])
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.textContent?.match(/^[a-z-]+/)?.[0]);
+  }
+
+  it("shows twelve of a sector's markets at a time", () => {
+    const { carousel } = renderBoard(wideSector(14));
+    expect(marketRows(carousel).length).toBe(12);
+  });
+
+  it("pages to the markets past the twelfth rather than dropping them", async () => {
+    // The regression this exists for: the panel used to slice at twelve and
+    // say nothing, so a sector of thirty-five showed twelve markets under a
+    // heading reading "35 markets" and the other twenty-three were on no
+    // page of the site at all.
+    const user = userEvent.setup();
+    const { carousel } = renderBoard(wideSector(35));
+
+    expect(marketRows(carousel)).toContain("haruspicy-a");
+    expect(marketRows(carousel)).not.toContain("haruspicy-m");
+    expect(carousel.getByText("1–12 of 35")).toBeInTheDocument();
+
+    await user.click(carousel.getByRole("button", { name: /next page of other markets/i }));
+
+    expect(marketRows(carousel)).toContain("haruspicy-m");
+    expect(marketRows(carousel)).not.toContain("haruspicy-a");
+    expect(carousel.getByText("13–24 of 35")).toBeInTheDocument();
+  });
+
+  it("keeps a short last page as tall as a full one", async () => {
+    // Thirty-five markets is two full pages and a last one of eleven. The
+    // panel is sized by its rows and the column publishes that height as
+    // `--board-col-h`, which the pinned rail takes as its floor -- so a
+    // last page one row shorter would drag the whole rail up on the click
+    // that reached it.
+    const user = userEvent.setup();
+    const { carousel, container } = renderBoard(wideSector(35));
+    const next = carousel.getByRole("button", { name: /next page of other markets/i });
+
+    await user.click(next);
+    await user.click(next);
+
+    expect(carousel.getByText("25–35 of 35")).toBeInTheDocument();
+    // Eleven markets, and the twelfth row is padding.
+    expect(marketRows(carousel).length).toBe(11);
+    expect(container.querySelectorAll(".itx-board-row-pad")).toHaveLength(1);
+  });
+
+  it("hides the pager from a sector that fits on one page", () => {
+    const { carousel } = renderBoard(wideSector(12));
+    // A pager over a complete list is a control that can only ever be
+    // disabled -- the standings' pager hides itself for the same reason.
+    expect(carousel.queryByRole("button", { name: /page of other markets/i })).toBeNull();
+    expect(carousel.queryByText(/1–12 of 12/)).toBeNull();
   });
 
   it("orders the middle column, and the rail's links with it", () => {

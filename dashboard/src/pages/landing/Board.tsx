@@ -43,9 +43,17 @@ import type {
 } from "../../lib/series";
 
 /** Ceilings for the tables that measure themselves -- see `useFitRows`.
- * `MAX_MARKET_ROWS` is the exception and a real limit: the sector panels
- * are sized by their rows rather than measured, so it caps how long the
- * longest may get before the carousel's box scrolls instead of growing. */
+ * `MAX_MARKET_ROWS` is the exception: the sector panels are sized by their
+ * rows rather than measured, so it caps how tall one may get before the
+ * carousel's box scrolls instead of growing.
+ *
+ * It has to stay a cap on *height*. The markets column publishes its own
+ * height as `--board-col-h` and the pinned rail beside it takes that as a
+ * floor, over a `max-height` the floor outranks -- so a panel free to grow
+ * to any length is a pinned column taller than the screen with parts that
+ * can never be scrolled to. What it is no longer is a cap on how many
+ * markets a sector may *have*: past the twelfth they are a page away
+ * rather than gone. */
 const MAX_MARKET_ROWS = 12;
 const MAX_TRENDING_ROWS = 24;
 const MAX_UPDATE_ROWS = 20;
@@ -900,6 +908,22 @@ const SectorPanel = memo(function SectorPanel({
   // their rows rather than measured for how many they can hold, capped at
   // `MAX_MARKET_ROWS`. They still finish level with each other because the
   // carousel is a flex row, so every item stretches to the tallest.
+
+  // Which page of markets this panel is showing -- held here rather than by
+  // `Board`, unlike `sort`. One shared index would mean page three of a
+  // sector that has one page: sectors hold different numbers of markets,
+  // and nothing about them is comparable the way an ordering is.
+  const [paged, setPaged] = useState<{ sort: MarketSort; page: number }>({ sort, page: 0 });
+  const pageCount = Math.max(1, Math.ceil(markets.length / MAX_MARKET_ROWS));
+  // Both corrections are derived rather than run from an effect, so they
+  // land in the render that caused them instead of a second one: a new
+  // ordering starts at the top, because sorting is how you ask for the top,
+  // and a page that has stopped existing falls back to the last one that
+  // has. The board re-asks the hub every few seconds and a sector can lose
+  // markets between polls, so the second is not hypothetical.
+  const page = Math.min(paged.sort === sort ? paged.page : 0, pageCount - 1);
+  const start = page * MAX_MARKET_ROWS;
+  const shown = markets.slice(start, start + MAX_MARKET_ROWS);
   return (
     <section className="itx-board-panel itx-board-panel-market">
       {/* Not an `itx-board-fit` box, unlike every other panel's inner div:
@@ -926,7 +950,7 @@ const SectorPanel = memo(function SectorPanel({
               </tr>
             </thead>
             <tbody>
-              {markets.slice(0, MAX_MARKET_ROWS).map((m) => (
+              {shown.map((m) => (
                 <tr key={m.capability}>
                   {/* Opens the market's chart rather than navigating to its
                       task list: the question a row in a table of *prices*
@@ -951,10 +975,60 @@ const SectorPanel = memo(function SectorPanel({
                   <td className={`right ${directionOf(m.changePct)}`}>{formatPct(m.changePct)}</td>
                 </tr>
               ))}
+              {/* A short last page is padded out to a full one. The panel is
+                  as tall as its rows and the *column* publishes that height
+                  as `--board-col-h`, so without this, paging a 35-market
+                  sector to its final eleven would shorten the tallest panel
+                  in the row and drag the pinned rail up a row with it --
+                  a click on `next` that moves the whole board. Only when
+                  there is more than one page: a sector with three markets
+                  is meant to be three rows tall.
+                  `presentation`, because these are spacing and not rows --
+                  a screen reader counting fourteen markets in a sector of
+                  eleven would be this fix inventing data. */}
+              {pageCount > 1 &&
+                Array.from({ length: MAX_MARKET_ROWS - shown.length }, (_, i) => (
+                  <tr key={`pad-${i}`} className="itx-board-row-pad" role="presentation">
+                    <td colSpan={4} />
+                  </tr>
+                ))}
             </tbody>
           </table>
         )}
       </div>
+
+      {/* Twelve at a time, and hidden entirely below that -- a pager over a
+          complete list is a control that can only ever be disabled, which
+          is how the standings' pager reads it too.
+
+          No first/last buttons, unlike the standings: fifty agents a page
+          over a couple of thousand makes returning to the top a click per
+          page, while a sector deep enough to need three pages is already
+          two clicks from either end. The labels name the sector because
+          several of these are on screen at once. */}
+      {pageCount > 1 && (
+        <div className="itx-board-pages">
+          <button
+            type="button"
+            onClick={() => setPaged({ sort, page: page - 1 })}
+            disabled={page === 0}
+            aria-label={`Previous page of ${sector.name} markets`}
+          >
+            <Triangle direction="left" />
+          </button>
+          <span>
+            {start + 1}–{start + shown.length} of {formatCount(markets.length)}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPaged({ sort, page: page + 1 })}
+            disabled={page >= pageCount - 1}
+            aria-label={`Next page of ${sector.name} markets`}
+          >
+            <Triangle direction="right" />
+          </button>
+        </div>
+      )}
     </section>
   );
 });

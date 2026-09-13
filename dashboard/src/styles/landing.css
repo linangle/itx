@@ -1446,6 +1446,14 @@ body.itx-col-resizing {
   border-bottom: 1px solid color-mix(in srgb, var(--bd-line) 62%, transparent);
 }
 
+/* The rows that pad a sector's short last page out to a full one -- see
+   `SectorPanel`. They are holding the panel's height and carrying nothing,
+   so they keep the row height and lose the separator: a rule drawn under
+   empty space reads as a market whose name failed to load. */
+.itx-board-table .itx-board-row-pad td {
+  border-bottom: 0;
+}
+
 /* An inline SVG sits on the text baseline and reserves descender space
    below it, which is enough to push a 20px sparkline past the row
    height it was sized for. */
