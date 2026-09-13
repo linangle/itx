@@ -554,7 +554,7 @@ body.itx-landing-body[data-theme="light"] {
      against them: the columns themselves, and the heading line above,
      whose title and pager start and end where the carousel does. */
   --col-nav: 240px;
-  --col-rail: 280px;
+  --col-rail: 272px;
 
   /* Establishes a block formatting context so the quote strip's negative
    * top margin cannot collapse out through here and drag the whole board
@@ -1287,10 +1287,12 @@ body.itx-col-resizing {
 .itx-rail-stats li:last-child .itx-rail-stat {
   border-bottom: 0;
 }
+/* The label is the light one at rest now, so a hover or the open entry
+   is marked the way the board marks a live link: in blue. */
 .itx-rail-stat:hover .itx-rail-stat-label,
 .itx-rail-stat:focus-visible .itx-rail-stat-label,
 .itx-rail-stat.is-active .itx-rail-stat-label {
-  color: var(--ld-light);
+  color: var(--ld-blue);
 }
 .itx-rail-stat:focus-visible {
   outline: none;
@@ -1308,9 +1310,14 @@ body.itx-col-resizing {
   gap: 1px;
 }
 
+/* The label leads and the figure follows, by a step rather than a
+   shout: the same size, the label in the light colour, the figure a
+   tone below it. Reversed from the tiles' convention because an entry
+   here is a row in a list of ten -- what the reader scans for is the
+   name of the figure, and the number is what they find once they have. */
 .itx-rail-stat-label {
-  font-size: var(--fs-micro);
-  color: var(--ld-sub);
+  font-size: var(--fs-meta);
+  color: var(--ld-light);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1328,13 +1335,14 @@ body.itx-col-resizing {
   white-space: nowrap;
 }
 
-/* The figure at the body size and the body weight: it is one of ten in
-   a rail, not a headline. */
+/* The figure at the label's size and a tone below its colour: it is
+   one of ten in a rail, not a headline, and the label above it is the
+   thing that names it. */
 .itx-rail-stat-value {
-  font-size: var(--fs-body);
+  font-size: var(--fs-meta);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
-  color: var(--ld-light);
+  color: color-mix(in srgb, var(--ld-light) 55%, var(--ld-sub));
 }
 
 .itx-rail-stat-change {

@@ -76,15 +76,18 @@ const REFRESH_MS = 5000;
 // The same widths either side: the left column is a rail of figures
 // now, like the right, and at the nav's old 172px the figures' labels
 // all truncated. Two constants rather than one so either can move.
-// Sized to what each holds. The right rail is 280 rather than the 232
-// it started at: at 232 a fifteen-character agent name beside its score,
-// or `prompt-engineering` beside its sparkline and change, did not fit
-// and every other row ended in an ellipsis. The text is already the
-// site's smallest; the room moved. The stats rail needs less -- a label
-// over a figure, and a graph that takes whatever is left -- so it starts
-// narrower and gives the middle the difference.
+// Sized to what each holds, and measured rather than guessed: the right
+// rail is the narrowest width at which nothing in it truncates. Stepped
+// in eights against a full field of names and the trends list, a
+// fifteen-character name beside its score fits from 264 and the longest
+// trend label (`image-generation`, beside its sparkline and change) from
+// 272 -- so 272, where the 232 it started at cut thirty-one of fifty
+// names short. The text is already the site's smallest; the room moved.
+// The stats rail needs less -- a label over a figure, and a graph that
+// takes whatever is left -- so it starts narrower and gives the middle
+// the difference.
 const STATS_WIDTH = { initial: 240, min: 190, max: 420 };
-const RAIL_WIDTH = { initial: 280, min: 190, max: 420 };
+const RAIL_WIDTH = { initial: 272, min: 190, max: 420 };
 
 /** "3m" -> "3m ago"; "just now" stays as is. */
 function ago(iso: string): string {
