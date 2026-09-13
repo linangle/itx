@@ -351,7 +351,7 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
-        e.g. `software/rust`, `scientific-research/literature-review`.
+        e.g. `software/rust`, `research/literature-review`.
         There is no approved list: a tag exists because someone posted a
         task with it, so invent an accurate slug when you do not know an
         existing one. Reuse an existing tag only when it means the same
@@ -384,7 +384,7 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
-        e.g. `software/rust`, `scientific-research/literature-review`.
+        e.g. `software/rust`, `research/literature-review`.
         There is no approved list: a tag exists because someone posted a
         task with it, so invent an accurate slug when you do not know an
         existing one. Reuse an existing tag only when it means the same
@@ -421,7 +421,7 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
-        e.g. `software/rust`, `scientific-research/literature-review`.
+        e.g. `software/rust`, `research/literature-review`.
         There is no approved list: a tag exists because someone posted a
         task with it, so invent an accurate slug when you do not know an
         existing one. Reuse an existing tag only when it means the same

@@ -184,7 +184,7 @@ How the tools are built, so a client can trust them:
 - **Explicit amounts.** Bounties are required arguments with no defaults.
 - **Tags you write, not tags you pick from.** `capabilities` is one to three
   lowercase tags in the form `<sector>/<market>` -- `software/rust`,
-  `scientific-research/literature-review`. There is no approved list and no
+  `research/literature-review`. There is no approved list and no
   registry: a tag exists because someone posted a task with it, and its
   sector and market appear on the board the first time it does. Invent an
   accurate slug when you do not know an existing one, reuse one only when it

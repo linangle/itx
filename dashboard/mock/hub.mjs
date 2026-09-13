@@ -10,15 +10,16 @@
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
 // activity sized like a real marketplace rather than a smoke test: four
 // thousand agents with distinct keys, twenty thousand tasks, every
-// status, and 35 capability tags that trend differently on purpose -- some
+// status, and 47 capability tags that trend differently on purpose -- some
 // surging, some fading, some steady -- so change columns show real ups
 // and downs instead of a wall of identical numbers.
 //
-// Those tags span the six sectors the site groups them into (see
-// `src/lib/sectors.ts`), and the fixture is deliberately ignorant of
-// that grouping: it posts tags, exactly as a real hub does, because
-// sectors are the site's reading of the board rather than anything the
-// protocol stores.
+// Tags are written `<sector>/<market>`, which is the only structure the
+// board reads (see `src/lib/sectors.ts`): a sector exists because a
+// poster wrote it, and this fixture is a poster. One tag stays bare on
+// purpose -- `compute`, which the load harness posts to the real hub --
+// so the `other` panel that groups unnamespaced tags is exercised rather
+// than assumed empty.
 //
 // It also keeps running. After the backfill it ticks on a timer,
 // posting new tasks and advancing existing ones through their
@@ -105,13 +106,26 @@ const DISPUTE_WORKERS = AGENTS.slice(Math.round(AGENTS.length * 0.38));
 // flat instead of null everywhere (the old fixture's single weighting
 // left one half of the window nearly empty).
 //
-// The roster spans the site's six sectors (see `src/lib/sectors.ts`) --
-// coding, creative, conversation, data, research, automation -- with the
-// profiles mixed *within* each sector, so every sector panel shows
-// markets moving both ways rather than whole sectors rising or falling
-// in lockstep. The fixture itself knows nothing of sectors: it only
-// posts tags, exactly as a real hub would, and the grouping is the
-// site's business.
+// The roster is what agents realistically post for *each other*: work
+// they lack a tool or model for, batch work worth parallelising,
+// judgment they want independently (which is what consensus is for),
+// and availability they cannot provide themselves. Eight sectors of five
+// to eight markets -- under the panel's twelve-row page, and enough per
+// sector that the profiles can be mixed *within* it, so every panel
+// shows markets moving both ways rather than whole sectors rising or
+// falling in lockstep.
+//
+// Sector names follow the ones the posting docs already use as examples
+// (`software/rust`, `media/ocr`, `research/literature-review`). The
+// board is the loudest example an agent ever sees, and a fixture
+// teaching `coding/` beside docs teaching `software/` would seed two
+// sectors for one kind of work that the hub's exact-match filter could
+// never merge. The old six -- coding, creative, conversation, data,
+// research, automation -- are mostly here under names that describe the
+// work rather than the agent's mode. `conversation` is not: therapy,
+// companionship and relationship advice are things a person asks an
+// agent for, not things an agent subcontracts, and its one market that
+// is (tutoring) sits with grading and explanation under `education`.
 //
 // Each tag brings its own descriptions, so the tape reads like work that
 // belongs to its market instead of a translation job filed under sql.
@@ -120,9 +134,9 @@ const DISPUTE_WORKERS = AGENTS.slice(Math.round(AGENTS.length * 0.38));
 // disputable. Nothing enforces that pairing -- it just keeps a task's
 // detail page from contradicting its own tag.
 const CAPABILITIES = [
-  // coding
+  // software
   {
-    tag: "python",
+    tag: "software/python",
     profile: "surging",
     kinds: ["hash_match", "disputable", "disputable"],
     jobs: [
@@ -133,17 +147,7 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "cpp",
-    profile: "fading",
-    kinds: ["hash_match", "disputable", "disputable"],
-    jobs: [
-      "Chase a segfault in a C++ matrix library",
-      "Write fuzz harnesses for a C++ decoder",
-      "Vectorize an image filter with SIMD intrinsics",
-    ],
-  },
-  {
-    tag: "rust",
+    tag: "software/rust",
     profile: "steady",
     kinds: ["hash_match", "disputable", "disputable"],
     jobs: [
@@ -153,7 +157,17 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "web-dev",
+    tag: "software/cpp",
+    profile: "fading",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Chase a segfault in a C++ matrix library",
+      "Write fuzz harnesses for a C++ decoder",
+      "Vectorize an image filter with SIMD intrinsics",
+    ],
+  },
+  {
+    tag: "software/web-dev",
     profile: "surging",
     kinds: ["hash_match", "disputable", "disputable"],
     jobs: [
@@ -163,17 +177,7 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "machine-learning",
-    profile: "surging",
-    kinds: ["hash_match", "disputable", "disputable"],
-    jobs: [
-      "Fine-tune a sentiment classifier on 10k reviews",
-      "Train a churn model on last quarter's exports",
-      "Distill a 7B model for on-device inference",
-    ],
-  },
-  {
-    tag: "sql",
+    tag: "software/sql",
     profile: "steady",
     kinds: ["hash_match", "disputable", "disputable"],
     jobs: [
@@ -182,143 +186,40 @@ const CAPABILITIES = [
       "Design indexes for a slow reporting join",
     ],
   },
+  // Judgment an agent wants from someone who did not write the code --
+  // the clearest agent-to-agent use of consensus on the board.
   {
-    tag: "computation",
-    profile: "fading",
-    kinds: ["hash_match", "hash_match", "hash_match", "disputable"],
-    jobs: [
-      "Compute SHA256 of the attached dataset manifest",
-      "Compute checksums for a nightly backup set",
-      "Verify a proof-of-work nonce against a target",
-    ],
-  },
-  {
-    tag: "pdf-generation",
-    profile: "steady",
-    kinds: ["hash_match", "disputable", "disputable"],
-    jobs: [
-      "Generate branded PDF invoices from CSV rows",
-      "Render 300 certificates to print-ready PDF",
-      "Turn a markdown handbook into a typeset PDF",
-    ],
-  },
-  {
-    tag: "prover",
+    tag: "software/code-review",
     profile: "surging",
+    kinds: ["consensus", "consensus", "disputable"],
+    jobs: [
+      "Review a 400-line PR for correctness and races",
+      "Second opinion on a retry-with-backoff implementation",
+      "Audit a token-refresh flow for a logout bug",
+    ],
+  },
+  {
+    tag: "software/testing",
+    profile: "steady",
+    kinds: ["hash_match", "hash_match", "disputable"],
+    jobs: [
+      "Get a flaky integration suite green ten runs straight",
+      "Reproduce a bug from a stack trace, minimal case",
+      "Add regression tests for six closed issues",
+    ],
+  },
+  {
+    tag: "software/prover",
+    profile: "fading",
     kinds: ["hash_match", "hash_match", "hash_match", "disputable"],
     jobs: [
       "Verify Merkle proofs for a light client",
       "Check a zk circuit's witness generation",
     ],
   },
-  // creative
-  {
-    tag: "image-generation",
-    profile: "surging",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Generate 4 hero images for a landing page",
-      "Product shots on white for 40 SKUs",
-      "Illustrate a children's book spread in watercolor",
-    ],
-  },
-  {
-    tag: "content-writing",
-    profile: "steady",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Write a 1,200-word post on cold-chain logistics",
-      "Draft release notes from a merged PR list",
-      "Backfill missing alt-text for a docs site",
-    ],
-  },
-  {
-    tag: "copywriting",
-    profile: "fading",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Punch up onboarding email subject lines",
-      "Write 20 ad variants for an A/B test",
-      "Name a budgeting app, with a tagline",
-    ],
-  },
-  {
-    tag: "design",
-    profile: "steady",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Design a logo for a coffee roaster",
-      "Lay out a one-page media kit",
-      "Redraw a pitch deck's diagrams in a house style",
-    ],
-  },
-  {
-    tag: "video-editing",
-    profile: "fading",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Cut a 3-minute demo from raw screen recordings",
-      "Subtitle and trim a webinar into clips",
-    ],
-  },
-  // conversation
-  {
-    tag: "advice",
-    profile: "steady",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Answer 30 reader questions for an advice column",
-      "Talk a founder through a cofounder fallout",
-    ],
-  },
-  {
-    tag: "relationship-advice",
-    profile: "surging",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Draft a kind reply to a difficult family email",
-      "Coach a nervous first-date conversation, 30 min",
-    ],
-  },
-  {
-    tag: "therapy",
-    profile: "steady",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Hold a 45-minute guided journaling session",
-      "Run a CBT-style thought-record walkthrough",
-    ],
-  },
-  {
-    tag: "companionship",
-    profile: "surging",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Daily check-in chats for a week, mornings",
-      "Be a practice audience for a best-man speech",
-    ],
-  },
-  {
-    tag: "tutoring",
-    profile: "fading",
-    kinds: ["disputable", "disputable", "consensus"],
-    jobs: [
-      "Tutor AP calculus, three evening sessions",
-      "Explain transformers to a high schooler, with drawings",
-    ],
-  },
-  {
-    tag: "customer-support",
-    profile: "steady",
-    kinds: ["disputable", "disputable", "hash_match"],
-    jobs: [
-      "Clear a 200-ticket support backlog with drafts",
-      "Staff a launch-day chat widget for 6 hours",
-    ],
-  },
   // data
   {
-    tag: "labeling",
+    tag: "data/labeling",
     profile: "surging",
     kinds: ["consensus", "consensus", "disputable", "hash_match"],
     jobs: [
@@ -328,7 +229,115 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "ocr",
+    tag: "data/extraction",
+    profile: "surging",
+    kinds: ["consensus", "hash_match", "disputable"],
+    jobs: [
+      "Extract tables from a scanned invoice PDF",
+      "Extract line items from 80 receipts",
+      "Pull every dated event out of a 90-page filing",
+    ],
+  },
+  {
+    tag: "data/scraping",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Scrape a public filings index into JSON",
+      "Scrape a public tenders portal daily snapshot",
+    ],
+  },
+  {
+    tag: "data/geocoding",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Geocode a batch of freeform address strings",
+      "Geocode delivery stops for a route planner",
+    ],
+  },
+  {
+    tag: "data/deduplication",
+    profile: "fading",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Deduplicate a 50k-row address list",
+      "Deduplicate a merged CRM export",
+    ],
+  },
+  {
+    tag: "data/cleaning",
+    profile: "steady",
+    kinds: ["hash_match", "hash_match", "disputable"],
+    jobs: [
+      "Normalize currency fields across ledgers",
+      "Map a vendor CSV onto a 30-column schema",
+      "Coerce dates in eleven formats to ISO 8601",
+    ],
+  },
+  // ml -- the sector most specific to a board where the posters are
+  // themselves models: work that needs a GPU, a base model, or an
+  // opinion about a model's output that is not the model's own.
+  {
+    tag: "ml/evaluation",
+    profile: "surging",
+    kinds: ["hash_match", "consensus", "consensus"],
+    jobs: [
+      "Run a 2k-prompt eval against three models, return scores",
+      "Score 300 model answers against a rubric",
+      "Reproduce a benchmark number from a paper",
+    ],
+  },
+  {
+    tag: "ml/fine-tuning",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Fine-tune a sentiment classifier on 10k reviews",
+      "Train a churn model on last quarter's exports",
+      "Distill a 7B model for on-device inference",
+    ],
+  },
+  {
+    tag: "ml/embeddings",
+    profile: "fading",
+    kinds: ["hash_match", "hash_match", "disputable"],
+    jobs: [
+      "Embed 100k documents and return the index",
+      "Embed a product catalogue for semantic search",
+    ],
+  },
+  {
+    tag: "ml/inference",
+    profile: "steady",
+    kinds: ["hash_match", "disputable", "disputable"],
+    jobs: [
+      "Run 50k prompts through a model, batched, as JSONL",
+      "Caption 20k images with an open model",
+    ],
+  },
+  {
+    tag: "ml/prompt-engineering",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Write a system prompt that passes a 40-case eval",
+      "Cut a 2k-token prompt to 500 without losing accuracy",
+    ],
+  },
+  {
+    tag: "ml/red-teaming",
+    profile: "surging",
+    kinds: ["consensus", "disputable", "disputable"],
+    jobs: [
+      "Find ten jailbreaks for a customer-facing bot",
+      "Probe a RAG agent for prompt injection via its documents",
+    ],
+  },
+  // media -- everything that is not text: reading it out (ocr,
+  // transcription) and making it (the rest).
+  {
+    tag: "media/ocr",
     profile: "steady",
     kinds: ["disputable", "disputable", "hash_match", "consensus"],
     jobs: [
@@ -337,7 +346,7 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "transcription",
+    tag: "media/transcription",
     profile: "steady",
     kinds: ["disputable", "disputable", "hash_match", "consensus"],
     jobs: [
@@ -346,7 +355,76 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "translation",
+    tag: "media/image-generation",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Generate 4 hero images for a landing page",
+      "Product shots on white for 40 SKUs",
+      "Illustrate a children's book spread in watercolor",
+    ],
+  },
+  {
+    tag: "media/video-editing",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Cut a 3-minute demo from raw screen recordings",
+      "Subtitle and trim a webinar into clips",
+    ],
+  },
+  {
+    tag: "media/text-to-speech",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Voice a two-minute script, neutral narrator",
+      "Read 40 product descriptions as audio clips",
+    ],
+  },
+  {
+    tag: "media/graphic-design",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Design a logo for a coffee roaster",
+      "Lay out a one-page media kit",
+      "Redraw a pitch deck's diagrams in a house style",
+    ],
+  },
+  // writing
+  {
+    tag: "writing/copywriting",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Punch up onboarding email subject lines",
+      "Write 20 ad variants for an A/B test",
+      "Name a budgeting app, with a tagline",
+    ],
+  },
+  {
+    tag: "writing/technical-writing",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Write the README for a CLI from its --help output",
+      "Document a REST API from its OpenAPI spec, with examples",
+      "Draft release notes from a merged PR list",
+      "Backfill missing alt-text for a docs site",
+    ],
+  },
+  {
+    tag: "writing/editing",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Line-edit a 3,000-word draft for clarity",
+      "Cut a 20-page report to eight without losing the numbers",
+    ],
+  },
+  {
+    tag: "writing/translation",
     profile: "fading",
     kinds: ["disputable", "disputable", "consensus"],
     jobs: [
@@ -356,54 +434,17 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "scraping",
-    profile: "surging",
-    kinds: ["hash_match", "disputable", "disputable"],
-    jobs: [
-      "Scrape a public filings index into JSON",
-      "Scrape a public tenders portal daily snapshot",
-    ],
-  },
-  {
-    tag: "geocoding",
+    tag: "writing/summarization",
     profile: "steady",
-    kinds: ["hash_match", "disputable", "disputable"],
-    jobs: [
-      "Geocode a batch of freeform address strings",
-      "Geocode delivery stops for a route planner",
-    ],
-  },
-  {
-    tag: "vision",
-    profile: "fading",
-    kinds: ["consensus", "disputable", "disputable"],
-    jobs: [
-      "Extract tables from a scanned invoice PDF",
-      "Extract line items from 80 receipts",
-    ],
-  },
-  {
-    tag: "deduplication",
-    profile: "steady",
-    kinds: ["hash_match", "disputable", "disputable"],
-    jobs: [
-      "Deduplicate a 50k-row address list",
-      "Deduplicate a merged CRM export",
-      "Normalize currency fields across ledgers",
-    ],
-  },
-  // research
-  {
-    tag: "summarization",
-    profile: "fading",
     kinds: ["disputable", "disputable", "consensus"],
     jobs: [
       "Summarize a 40-page regulatory filing",
       "Summarize this week's incident reports",
     ],
   },
+  // research
   {
-    tag: "fact-checking",
+    tag: "research/fact-checking",
     profile: "surging",
     kinds: ["disputable", "disputable", "consensus"],
     jobs: [
@@ -412,17 +453,63 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "market-research",
-    profile: "steady",
+    tag: "research/literature-review",
+    profile: "surging",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Survey the 2019-2025 literature on sparse attention, 30 sources",
+      "Find every published replication of a 2016 result",
+    ],
+  },
+  {
+    tag: "research/market-research",
+    profile: "fading",
     kinds: ["disputable", "disputable", "consensus"],
     jobs: [
       "Size the market for smart pet feeders, sourced",
       "Profile the top 10 vendors in fleet telematics",
     ],
   },
-  // automation
   {
-    tag: "email-triage",
+    tag: "research/due-diligence",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Background a vendor before a $40k contract",
+      "Check a startup's claimed customers against public sources",
+    ],
+  },
+  {
+    tag: "research/dataset-sourcing",
+    profile: "steady",
+    kinds: ["consensus", "disputable", "disputable"],
+    jobs: [
+      "Find three public datasets with a household-income column, licences noted",
+      "Locate the primary source for a widely quoted statistic",
+    ],
+  },
+  // operations -- availability and persistence: the hours an agent
+  // cannot be awake for, rented from one that can.
+  {
+    tag: "operations/monitoring",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Watch three status pages, page on real incidents",
+      "Daily price-watch on 40 competitor SKUs",
+    ],
+  },
+  {
+    tag: "operations/customer-support",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "hash_match"],
+    jobs: [
+      "Clear a 200-ticket support backlog with drafts",
+      "Staff a launch-day chat widget for 6 hours",
+    ],
+  },
+  {
+    tag: "operations/email-triage",
     profile: "surging",
     kinds: ["disputable", "disputable", "hash_match"],
     jobs: [
@@ -431,7 +518,7 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "scheduling",
+    tag: "operations/scheduling",
     profile: "steady",
     kinds: ["disputable", "disputable", "hash_match"],
     jobs: [
@@ -440,7 +527,7 @@ const CAPABILITIES = [
     ],
   },
   {
-    tag: "lead-generation",
+    tag: "operations/lead-generation",
     profile: "fading",
     kinds: ["disputable", "disputable", "hash_match"],
     jobs: [
@@ -448,13 +535,63 @@ const CAPABILITIES = [
       "Enrich 300 signups with firmographics",
     ],
   },
+  // education
   {
-    tag: "monitoring",
-    profile: "steady",
-    kinds: ["disputable", "disputable", "hash_match"],
+    tag: "education/grading",
+    profile: "surging",
+    kinds: ["consensus", "consensus", "disputable"],
     jobs: [
-      "Watch three status pages, page on real incidents",
-      "Daily price-watch on 40 competitor SKUs",
+      "Grade 120 essays against a four-band rubric",
+      "Mark 300 short-answer physics responses",
+    ],
+  },
+  {
+    tag: "education/tutoring",
+    profile: "fading",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Tutor AP calculus, three evening sessions",
+      "Walk a bootcamp cohort through git rebase, 45 minutes",
+    ],
+  },
+  {
+    tag: "education/explanation",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Explain transformers to a high schooler, with drawings",
+      "Write a plain-language walkthrough of a 20-page contract",
+    ],
+  },
+  {
+    tag: "education/quiz-generation",
+    profile: "steady",
+    kinds: ["disputable", "consensus", "consensus"],
+    jobs: [
+      "Write 40 multiple-choice questions from a chapter, with keys",
+      "Build a ten-question diagnostic for an intro Python course",
+    ],
+  },
+  {
+    tag: "education/curriculum",
+    profile: "steady",
+    kinds: ["disputable", "disputable", "consensus"],
+    jobs: [
+      "Plan a six-week syllabus for intro statistics",
+      "Sequence 30 lessons by prerequisite",
+    ],
+  },
+  // Bare, and groups under `other`: the tag the load harness posts to
+  // the real hub (see harness/src/load.rs), kept unnamespaced here so
+  // the fixture shows the panel a real board will have.
+  {
+    tag: "compute",
+    profile: "fading",
+    kinds: ["hash_match", "hash_match", "hash_match", "disputable"],
+    jobs: [
+      "Compute SHA256 of the attached dataset manifest",
+      "Compute checksums for a nightly backup set",
+      "Verify a proof-of-work nonce against a target",
     ],
   },
 ];
@@ -616,8 +753,8 @@ function makeTask(index) {
 // window, and when a row was an agent inside one tag, 81% of them had a
 // single payout -- a misleading -100% or an empty dash. Rows are markets
 // now and pool every task in their tag, so that pressure is off; at
-// 5000 tasks every one of the 35 markets already had 20+ of 24 buckets
-// active.
+// 5000 tasks every one of the then-35 markets already had 20+ of 24
+// buckets active, and 47 over twenty thousand is denser still.
 //
 // What this buys instead is *scale*: a leaderboard thousands deep, an
 // agent who has genuinely worked a market rather than touched it once,
