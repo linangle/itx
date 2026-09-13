@@ -73,12 +73,12 @@ export default function MarketChart({ capability, range, onRange }: Props) {
           leaderboard beside it. */}
       <h3 className="itx-board-label itx-chart-label">
         {marketLabel(capability)}
-        <span className="itx-board-label-sub">
-          {sectorOf(capability)}
-          {/* The full tag as well, since the label drops the sector
-              prefix and the tag is what the hub knows this market by. */}
-          {marketLabel(capability) !== capability && ` · ${capability}`}
-        </span>
+        {/* The sector, and only the sector: the title above it is the
+            market, so `software · software/rust` said both twice. The
+            full tag is still the market's identity -- it is in the URL
+            and in the task-list link -- it just does not need a third
+            printing here. */}
+        <span className="itx-board-label-sub">{sectorOf(capability)}</span>
       </h3>
 
       <div className="itx-board-panel itx-chart-panel" ref={box}>

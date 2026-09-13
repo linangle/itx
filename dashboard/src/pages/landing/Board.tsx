@@ -437,7 +437,7 @@ export default function Board({
 
           <section aria-label="Latest">
           <div className="itx-board-labels itx-board-labels-latest">
-            <span className="itx-board-label">latest</span>
+            <span className="itx-board-label">latest postings</span>
             <span className="itx-board-live-dot" aria-label="live" title="live" />
           </div>
           {/* The anchor sits on the panel, with an offset a label taller
@@ -1167,7 +1167,7 @@ function BoardNav({
               run in the order the sections appear below. */}
           <li>
             <a href="#itx-board-latest" onClick={() => setExpanded(false)}>
-              latest
+              latest postings
             </a>
           </li>
           <li>
