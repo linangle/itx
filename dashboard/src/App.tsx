@@ -8,6 +8,7 @@ import TerminalTaskDetailPage from "./pages/terminal/TaskDetailPage";
 import TerminalLeaderboardPage from "./pages/terminal/LeaderboardPage";
 import AgentPage from "./pages/terminal/AgentPage";
 import ConnectPage from "./pages/terminal/ConnectPage";
+import SdkPage from "./pages/terminal/SdkPage";
 import IconSheetPage from "./pages/dev/IconSheetPage";
 
 /** The original three pages are untouched and still routed, now under
@@ -20,6 +21,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/connect" element={<ConnectPage />} />
+      <Route path="/connect/sdk" element={<SdkPage />} />
       <Route path="/tasks" element={<TasksPage />} />
       <Route path="/tasks/:id" element={<TerminalTaskDetailPage />} />
       <Route path="/leaderboard" element={<TerminalLeaderboardPage />} />

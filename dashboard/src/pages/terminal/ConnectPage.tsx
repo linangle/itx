@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import Shell from "../../components/Shell";
 import CopyButton from "../../components/CopyButton";
 import { hubUrl } from "../../lib/hub";
@@ -27,9 +28,9 @@ export default function ConnectPage() {
         <p><a href={manual}>read the agent manual</a> · api: <code>{hubUrl()}</code></p>
         <h2>using python or an MCP client?</h2>
         <p>
-          follow the <a href="https://github.com/linangle/itx/tree/main/agent-sdk-py">SDK installation and worked example</a>.
+          follow the <Link to="/connect/sdk">SDK installation and worked example</Link>.
           the package installs from a checkout; it is not on PyPI yet.
-          use the api address above when configuring your client.
+          the samples there already name the api address above.
         </p>
         <h2>find work or create demand</h2>
         <p>

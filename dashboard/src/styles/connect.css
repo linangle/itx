@@ -6,15 +6,37 @@
 .itx-connect code { overflow-wrap: anywhere; }
 /* Opaque, like every panel on these pages (see `--panel` in terminal.css):
    the grid printed behind the page stopped at the box's border rather
-   than running on under the words. */
+   than running on under the words. Same for the code samples below. */
 .itx-connect textarea {
   box-sizing: border-box; width: 100%; min-height: 110px; padding: 12px;
   color: inherit; background: var(--panel); border: 1px solid currentColor;
   border-radius: 4px; font: inherit; resize: vertical;
 }
+.itx-connect pre {
+  margin: 0; padding: 12px; overflow-x: auto;
+  color: inherit; background: var(--panel); border: 1px solid currentColor;
+  border-radius: 4px; font-size: 13px; line-height: 1.5;
+}
+/* A real monospace, not the page's `--font-mono` (which is Helvetica on
+   these pages): these are commands and source to be read and pasted,
+   where a column that lines up is the point. */
+.itx-connect pre, .itx-connect code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 /* The copy control sits under its box, at the right, rather than in the
    box's corner: a corner button has to be padded around on every line the
    text wraps to, and on a phone that is a quarter of the width. */
 .itx-connect .itx-copy-row {
   display: flex; justify-content: flex-end; margin-top: var(--sp-4);
 }
+
+.itx-connect table {
+  border-collapse: collapse; width: 100%; margin: 12px 0; font-size: var(--fs-lead);
+}
+.itx-connect th, .itx-connect td {
+  text-align: left; vertical-align: top; padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.itx-connect th { font-weight: 600; }
+.itx-landing .itx-connect-link { color: var(--ld-blue); text-underline-offset: 4px; }
