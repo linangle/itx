@@ -87,7 +87,9 @@ export default function MarketActivity({
     setWantedPage(next);
     const el = section.current;
     if (el && typeof el.scrollIntoView === "function") {
-      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      // `window` here is the series window prop, not the global; the
+      // browser's is reached through `globalThis`.
+      const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
       el.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
     }
   };
