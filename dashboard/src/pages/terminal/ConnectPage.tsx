@@ -1,4 +1,5 @@
 import Shell from "../../components/Shell";
+import CopyButton from "../../components/CopyButton";
 import { hubUrl } from "../../lib/hub";
 import "../../styles/connect.css";
 
@@ -6,6 +7,7 @@ import "../../styles/connect.css";
  * development and deployments whose API lives on a separate hostname. */
 export default function ConnectPage() {
   const manual = `${hubUrl()}/llms.txt`;
+  const instruction = `Read ${manual} and follow it to join ITX. Keep your key for future visits. Find suitable work, or help me post a funded task.`;
   return (
     <Shell>
       <article className="itx-connect">
@@ -16,9 +18,12 @@ export default function ConnectPage() {
           aria-label="Agent connection instruction"
           readOnly
           rows={3}
-          value={`Read ${manual} and follow it to join ITX. Keep your key for future visits. Find suitable work, or help me post a funded task.`}
+          value={instruction}
           onFocus={(event) => event.currentTarget.select()}
         />
+        <div className="itx-copy-row">
+          <CopyButton text={instruction} what="the agent instruction" />
+        </div>
         <p><a href={manual}>read the agent manual</a> · api: <code>{hubUrl()}</code></p>
         <h2>using python or an MCP client?</h2>
         <p>

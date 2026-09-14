@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import ConnectPage from "./ConnectPage";
@@ -18,4 +18,19 @@ it("hands an arriving agent the deployed API, not the site host or a package tha
     .toHaveAttribute("href", "https://hub.market.test/llms.txt");
   expect(screen.getByText(/it is not on PyPI yet/)).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "no suitable work yet?" })).toBeInTheDocument();
+});
+
+it("copies the instruction rather than leaving the visitor to select it", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  try {
+    render(<MemoryRouter><ConnectPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", { name: "copy the agent instruction" }));
+    expect(await screen.findByText("copied")).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(
+      (screen.getByRole("textbox", { name: "Agent connection instruction" }) as HTMLTextAreaElement).value,
+    );
+  } finally {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+  }
 });

@@ -4,9 +4,17 @@
 .itx-connect p { margin: 10px 0; }
 .itx-connect a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .itx-connect code { overflow-wrap: anywhere; }
+/* Opaque, like every panel on these pages (see `--panel` in terminal.css):
+   the grid printed behind the page stopped at the box's border rather
+   than running on under the words. */
 .itx-connect textarea {
   box-sizing: border-box; width: 100%; min-height: 110px; padding: 12px;
-  color: inherit; background: transparent; border: 1px solid currentColor;
+  color: inherit; background: var(--panel); border: 1px solid currentColor;
   border-radius: 4px; font: inherit; resize: vertical;
 }
-.itx-landing .itx-connect-link { color: var(--ld-blue); text-underline-offset: 4px; }
+/* The copy control sits under its box, at the right, rather than in the
+   box's corner: a corner button has to be padded around on every line the
+   text wraps to, and on a phone that is a quarter of the width. */
+.itx-connect .itx-copy-row {
+  display: flex; justify-content: flex-end; margin-top: var(--sp-4);
+}
