@@ -10,7 +10,7 @@
 // rather than read from the clock, so tests are deterministic.
 
 import type { BoardSummaryDto, TaskDto } from "./hub";
-import { sectorOf } from "./sectors";
+import { OTHER_SECTOR, sectorOf } from "./sectors";
 
 export interface BucketOptions {
   /** How many buckets to divide the window into. Each becomes one point
@@ -276,6 +276,23 @@ export interface MarketSummary {
   changePct: number | null;
 }
 
+/** An ordering of sectors with `other` last whatever the ordering says.
+ *
+ * Sectors rank by the money in them, and `other` is not a sector anyone
+ * chose: it is where tags that named no sector are kept. Ranked like
+ * the rest it could head the board -- and did, once the fixture had
+ * fifteen bare tags in it -- which reads as the board's biggest sector
+ * being "unsorted". It goes last, and the rest keep their order. */
+export function otherLast<T extends { name: string }>(
+  compare: (a: T, b: T) => number,
+): (a: T, b: T) => number {
+  return (a, b) => {
+    if (a.name === OTHER_SECTOR) return b.name === OTHER_SECTOR ? 0 : 1;
+    if (b.name === OTHER_SECTOR) return -1;
+    return compare(a, b);
+  };
+}
+
 export interface SectorSummary {
   /** Sector name from `sectors.ts`, or `OTHER_SECTOR`. */
   name: string;
@@ -363,7 +380,7 @@ export function summarizeBySector(
         changePct: periodChangePct(series),
       };
     })
-    .sort((a, b) => b.openBounty - a.openBounty || b.open - a.open);
+    .sort(otherLast((a, b) => b.openBounty - a.openBounty || b.open - a.open));
 }
 
 export interface BoardTotals {
@@ -490,7 +507,7 @@ export function sectorsFromSummary(summary: BoardSummaryDto): SectorSummary[] {
       markets: sector.markets.sort((a, b) => b.openBounty - a.openBounty || b.open - a.open),
       changePct: periodChangePct(sector.series),
     }))
-    .sort((a, b) => b.openBounty - a.openBounty || b.open - a.open);
+    .sort(otherLast((a, b) => b.openBounty - a.openBounty || b.open - a.open));
 }
 
 // ---------------------------------------------------------------------

@@ -189,6 +189,20 @@ describe("SectorBreakdown", () => {
     expect(tiles.map((t) => t.title.split(" ·")[0])).toEqual(["prover", "rust"]);
   });
 
+  it("lists other last however heavy it is", () => {
+    // The list ranks by weight and `other` is not a sector anyone chose;
+    // the map is laid out by area and needs no such rule.
+    const { container } = render(
+      <SectorBreakdown
+        sectors={[sector("other", 900, 1), sector("software", 500, 2), sector("media", 100, 3)]}
+      />,
+    );
+    const rows = [...container.querySelectorAll(".itx-sectors-table tbody tr td button")].map(
+      (b) => b.textContent,
+    );
+    expect(rows).toEqual(["software", "media", "other"]);
+  });
+
   it("comes back out of a sector", async () => {
     const user = userEvent.setup();
     const withMarkets = sector("conversation", 900, 12, {

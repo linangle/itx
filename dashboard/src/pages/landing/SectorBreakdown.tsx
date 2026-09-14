@@ -3,6 +3,7 @@ import { squarify } from "../../lib/treemap";
 import type { TreemapRect } from "../../lib/treemap";
 import { directionOf, formatCompactItx, formatCount, formatPct } from "../../lib/format";
 import type { MarketSummary, SectorSummary } from "../../lib/series";
+import { otherLast } from "../../lib/series";
 import { marketLabel } from "../../lib/sectors";
 
 /** The map is laid out in this space and positioned in percentages, so it
@@ -168,8 +169,11 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
    * open bounty, which is right up until that is the number that ran out
    * -- and a column of descending percentages that suddenly is not
    * descending reads as a sorting bug. */
+  // Heaviest first, and `other` last whatever it weighs -- see
+  // `otherLast`. The map itself is laid out by area and needs no such
+  // rule: a tile is where its size puts it.
   const rows = useMemo(
-    () => [...sectors].sort((a, b) => basis(b) - basis(a)),
+    () => [...sectors].sort(otherLast((a, b) => basis(b) - basis(a))),
     [sectors, basis],
   );
 

@@ -425,6 +425,24 @@ describe("from the hub's board summary", () => {
     expect(sectors[0].markets.map((m) => m.capability)).toEqual(["new-field/new-specialty"]);
   });
 
+  it("keeps other last however much bounty its bare tags hold", () => {
+    // Sectors rank by the money in them, and `other` is not a sector
+    // anyone chose -- it is where tags that named no sector are kept.
+    // With enough bare tags it out-earned every real sector and headed
+    // the board as its biggest sector, "unsorted". It goes last.
+    const sectors = sectorsFromSummary(
+      summary([
+        capability("python", 900),
+        capability("misc", 800),
+        capability("software/rust", 100),
+        capability("media/ocr", 50),
+      ]),
+    );
+    expect(sectors.map((s) => s.name)).toEqual(["software", "media", "other"]);
+    // And the rest keep their order among themselves.
+    expect(sectors[0].openBounty).toBeGreaterThan(sectors[1].openBounty);
+  });
+
   it("shows nothing at all when the hub reports no tagged work", () => {
     // An empty board is an empty board. It must not fall back to a
     // sample of sectors that would read as a market with activity in it.
