@@ -225,7 +225,14 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
           offset that does the parking is a label's height taller than
           the bar -- see `--anchor-top`. */}
       <div className="itx-sectors-panel itx-board-panel" id="itx-board-sectors">
+        {/* The list scrolls inside the height the map sets, rather than
+            setting the panel's height itself: twenty sectors is twenty
+            rows, and the map beside them is nine-sixteenths of its width
+            whatever the count, so without this the panel was mostly the
+            blank under the map. The wrapper takes the row's height from
+            the map and the scroller fills it. */}
         <div className="itx-sectors-table">
+          <div className="itx-sectors-scroll">
           <table className="itx-board-table">
             <thead>
               <tr>
@@ -280,6 +287,7 @@ export default function SectorBreakdown({ sectors }: { sectors: SectorSummary[] 
               })}
             </tbody>
           </table>
+          </div>
         </div>
 
         <div className="itx-sectors-side">

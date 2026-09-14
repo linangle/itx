@@ -141,9 +141,13 @@ export default function MarketActivity({
             )}
           </button>
           {/* Hidden below two pages -- a pager over a complete list is a
-              control that can only ever be disabled. */}
+              control that can only ever be disabled. The overview's
+              arrows, not the small pager the rows inside each sector use:
+              this turns the whole section, and it should look like the
+              control that turns the whole overview rather than like the
+              ones that move one row. */}
           {expanded && pageCount > 1 && (
-            <div className="itx-board-pages">
+            <div className="itx-board-pager itx-activity-pager">
               <button
                 type="button"
                 onClick={() => turnTo(page - 1)}

@@ -10,7 +10,7 @@
 // `X-Total-Count` header and CORS), seeded with a deterministic week of
 // activity sized like a real marketplace rather than a smoke test: four
 // thousand agents with distinct keys, twenty thousand tasks, every
-// status, and 47 capability tags -- 99 with the growth roster, see
+// status, and 47 capability tags -- 93 with the growth roster, see
 // `GROWTH` below -- that trend differently on purpose -- some surging,
 // some fading, some steady -- so change columns show real ups and downs
 // instead of a wall of identical numbers.
@@ -602,16 +602,28 @@ const CORE = [
 // The board a year in, on top of the core roster: the shapes the site
 // has to handle once it is no longer a demo of forty-seven markets.
 //
-// Three of them, on purpose. `other` past twelve markets -- bare tags
-// from posters who never read the convention, several of them the same
-// work as a namespaced market (`python` beside `software/python`), which
-// is exactly the mess a real board accumulates -- so the overview's
-// panel pages. Eleven more sectors, so there are twenty and the market
-// activity section pages, the carousel is long, and the quote strip
-// scrolls; among them `metallurgy/alloy-selection`, the docs' own
-// example of a tag invented the first time it was needed, as a sector
-// of one. And `software` past twelve markets, so a sector that is not
-// `other` pages too.
+// Chosen by asking what an agent actually posts for another agent. It
+// posts when it hits a wall it cannot clear itself: it cannot run the
+// thing (compute, a runtime, a licensed tool), cannot judge the thing
+// alone (a second opinion, a majority), cannot do enough of the thing
+// (batch labour), cannot stay awake for it (monitoring, a queue), cannot
+// perceive it (sight, sound), or does not know it (a domain with a right
+// answer). Demand concentrates: most of it lands in the sectors the
+// core roster already has, a few more domains are big enough to be
+// sectors of their own -- finance, legal, security, science -- and the
+// rest is a long tail of odd *markets* inside broad sectors, not odd
+// sectors. Podcast editing is `media`, firmware is `software`, GIS is
+// `data`, outreach is `operations`.
+//
+// Three shapes on purpose. `other` past twelve markets -- bare tags from
+// posters who never read the convention, several of them the same work
+// as a namespaced market (`python` beside `software/python`), which is
+// exactly the mess a real board accumulates -- so the overview's panel
+// pages. Enough sectors that the market activity section pages and the
+// carousel and quote strip are long; among them `hr`, a sector of one,
+// because any agent may invent a sector the first time it needs one and
+// the board has to carry it. And `software` past twelve, so a sector
+// that is not `other` pages too.
 //
 // `weight` is how much traffic a tag draws against a namespaced one's
 // 1: the legacy tags take a third, because a tag nobody was told to use
@@ -641,47 +653,37 @@ const GROWTH = [
   { tag: "software/devops", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Write a GitHub Actions matrix for three OSes", "Move a deploy from a shell script to Terraform"] },
   { tag: "software/api-design", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Review a REST API for consistency before v1", "Design pagination for a list endpoint"] },
   { tag: "software/database-migration", profile: "fading", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Move a schema from MySQL to Postgres, data intact", "Backfill a new column without locking the table"] },
-  // finance
+  { tag: "software/firmware", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Fix an I2C driver that hangs on a bad ack", "Add OTA updates to an ESP32 build"] },
+  // the long tail as markets inside broad sectors, not as sectors
+  { tag: "media/podcast-editing", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Cut a 90-minute recording to 40, ums removed", "Level two voices and add the intro"] },
+  { tag: "media/music-generation", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["A 30-second loop for a product video, no vocals", "Three jingle variants, upbeat, 10 seconds"] },
+  { tag: "media/noise-removal", profile: "fading", kinds: ["disputable", "hash_match", "disputable"], jobs: ["Strip the hum from a lecture recording", "Clean up a voicemail so the number is audible"] },
+  { tag: "data/gis", profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Join a shapefile to a CSV by postcode", "Compute drive-time isochrones for 30 sites"] },
+  { tag: "data/satellite-imagery", profile: "surging", kinds: ["consensus", "disputable", "disputable"], jobs: ["Count vehicles in 200 lot images", "Flag cleared land across a tile set"] },
+  { tag: "operations/outreach", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write 50 first-touch emails from a lead list", "Draft follow-ups for a stalled pipeline"] },
+  { tag: "operations/lead-scoring", profile: "steady", kinds: ["consensus", "hash_match", "disputable"], jobs: ["Score 2,000 signups by fit against a rubric", "Rank inbound leads for a week"] },
+  { tag: "writing/proposal-writing", profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Turn a call transcript into a proposal", "Write a statement of work from notes"] },
+  // finance: reconciling, extracting and classifying money is work an
+  // agent runs into constantly and wants done exactly
   { tag: "finance/reconciliation", profile: "surging", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Reconcile a month of bank lines against invoices", "Find the 3,000 that does not balance"] },
   { tag: "finance/invoice-extraction", profile: "steady", kinds: ["hash_match", "consensus", "disputable"], jobs: ["Extract totals and dates from 200 invoices", "Pull VAT lines out of a receipt batch"] },
   { tag: "finance/bookkeeping", profile: "steady", kinds: ["disputable", "disputable", "hash_match"], jobs: ["Categorise a quarter of card transactions", "Close the books for a small shop, monthly"] },
   { tag: "finance/tax-lookup", profile: "fading", kinds: ["consensus", "disputable", "disputable"], jobs: ["Find the VAT rate for 40 product categories", "Check which of these expenses are deductible"] },
-  // legal
+  // legal: a domain with right answers an agent does not have
   { tag: "legal/contract-review", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Redline a vendor agreement against a checklist", "Flag the indemnity clauses in a 60-page contract"] },
   { tag: "legal/compliance-check", profile: "steady", kinds: ["consensus", "disputable", "disputable"], jobs: ["Check a privacy policy against GDPR's headings", "List the licences in a dependency tree"] },
   { tag: "legal/clause-extraction", profile: "fading", kinds: ["hash_match", "consensus", "disputable"], jobs: ["Pull every termination clause from 30 leases", "Extract the governing-law line from a contract set"] },
-  // security
+  // security: judgment nobody should take from the author
   { tag: "security/code-audit", profile: "surging", kinds: ["consensus", "consensus", "disputable"], jobs: ["Audit an auth module for injection and IDOR", "Review a smart contract before deploy"] },
   { tag: "security/pentest", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Probe a staging site, scope attached, report findings", "Test an upload endpoint for path traversal"] },
   { tag: "security/phishing-triage", profile: "steady", kinds: ["consensus", "consensus", "disputable"], jobs: ["Classify 500 reported emails as phishing or not", "Rate a batch of suspicious domains"] },
-  // audio
-  { tag: "audio/podcast-editing", profile: "steady", kinds: ["disputable", "disputable", "consensus"], jobs: ["Cut a 90-minute recording to 40, ums removed", "Level two voices and add the intro"] },
-  { tag: "audio/music-generation", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["A 30-second loop for a product video, no vocals", "Three jingle variants, upbeat, 10 seconds"] },
-  { tag: "audio/noise-removal", profile: "fading", kinds: ["disputable", "hash_match", "disputable"], jobs: ["Strip the hum from a lecture recording", "Clean up a voicemail so the number is audible"] },
-  // hardware
-  { tag: "hardware/pcb-review", profile: "steady", kinds: ["consensus", "disputable", "disputable"], jobs: ["Review a two-layer board before fab", "Check a schematic's decoupling"] },
-  { tag: "hardware/firmware", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Fix an I2C driver that hangs on a bad ack", "Add OTA updates to an ESP32 build"] },
-  { tag: "hardware/cad-cleanup", profile: "fading", kinds: ["disputable", "disputable", "hash_match"], jobs: ["Make a STEP file watertight for printing", "Parametrise a bracket so its holes move together"] },
-  // sales
-  { tag: "sales/outreach", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write 50 first-touch emails from a lead list", "Draft follow-ups for a stalled pipeline"] },
-  { tag: "sales/lead-scoring", profile: "steady", kinds: ["consensus", "hash_match", "disputable"], jobs: ["Score 2,000 signups by fit against a rubric", "Rank inbound leads for a week"] },
-  { tag: "sales/proposal-writing", profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Turn a call transcript into a proposal", "Write a statement of work from notes"] },
-  // science
+  // science: compute and checking, for agents that have neither to spare
   { tag: "science/data-analysis", profile: "surging", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Run the stats for a 200-subject study, script attached", "Re-analyse a dataset with the outliers handled"] },
   { tag: "science/simulation", profile: "steady", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Run a 10k-iteration Monte Carlo, seeded, return CSV", "Sweep a parameter across 50 values"] },
+  { tag: "science/proof-checking", profile: "steady", kinds: ["consensus", "consensus", "disputable"], jobs: ["Check a 12-page proof for gaps", "Formalise a lemma in Lean"] },
   { tag: "science/lab-protocol", profile: "fading", kinds: ["disputable", "consensus", "disputable"], jobs: ["Write up a protocol from a methods section", "Check a protocol for missing controls"] },
-  // math
-  { tag: "math/proof-checking", profile: "steady", kinds: ["consensus", "consensus", "disputable"], jobs: ["Check a 12-page proof for gaps", "Formalise a lemma in Lean"] },
-  { tag: "math/symbolic-integration", profile: "fading", kinds: ["hash_match", "hash_match", "disputable"], jobs: ["Integrate a family of 40 expressions in closed form", "Simplify a generating function"] },
-  // geo
-  { tag: "geo/gis", profile: "steady", kinds: ["hash_match", "disputable", "disputable"], jobs: ["Join a shapefile to a CSV by postcode", "Compute drive-time isochrones for 30 sites"] },
-  { tag: "geo/satellite-imagery", profile: "surging", kinds: ["consensus", "disputable", "disputable"], jobs: ["Count vehicles in 200 lot images", "Flag cleared land across a tile set"] },
-  // metallurgy: the docs' example, a sector of one
-  { tag: "metallurgy/alloy-selection", profile: "steady", kinds: ["disputable", "consensus", "disputable"], jobs: ["Pick an alloy for a marine fitting, spec attached", "Compare three steels for a bracket under fatigue"] },
-  // gaming
-  { tag: "gaming/level-design", profile: "surging", kinds: ["disputable", "disputable", "consensus"], jobs: ["Block out three levels from a design doc", "Balance a boss fight from playtest notes"] },
-  { tag: "gaming/playtesting", profile: "steady", kinds: ["consensus", "disputable", "disputable"], jobs: ["Play a build for two hours, report every stall", "Rate ten puzzles for difficulty order"] },
-  { tag: "gaming/npc-dialogue", profile: "fading", kinds: ["disputable", "disputable", "consensus"], jobs: ["Write 200 barks for a market square", "Voice a shopkeeper in three moods"] },
+  // hr: a sector of one, because any agent may start one
+  { tag: "hr/resume-screening", profile: "steady", kinds: ["consensus", "consensus", "disputable"], jobs: ["Screen 300 resumes against a job spec, shortlist 20", "Rank applicants for a first-round call"] },
 ];
 
 // The roster the fixture serves. Core alone with `LEAN=1`; otherwise the
@@ -851,7 +853,7 @@ function makeTask(index) {
 // now and pool every task in their tag, so that pressure is off; at
 // 5000 tasks every one of the then-35 markets already had 20+ of 24
 // buckets active, and 47 over twenty thousand is denser still. With the
-// growth roster it is 99, still ten a bucket -- and the bare legacy tags
+// growth roster it is 93, still ten a bucket -- and the bare legacy tags
 // in it are weighted down to a third of a namespaced tag's traffic, so
 // `other` is many small markets rather than the biggest sector on the
 // board by virtue of having the most tags.

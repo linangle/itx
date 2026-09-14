@@ -2446,6 +2446,30 @@ a.itx-board-what:hover {
   cursor: pointer;
 }
 
+/* The list column: a positioned box that takes its height from the grid
+   row -- which the map sets, being the taller item once the list no
+   longer counts -- and a scroller filling it. Absolutely positioned so
+   the list contributes no height of its own; that is the whole trick.
+   The header stays put while the rows scroll under it. */
+.itx-sectors-table {
+  position: relative;
+  min-height: 0;
+}
+.itx-sectors-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.itx-sectors-scroll::-webkit-scrollbar {
+  display: none;
+}
+.itx-sectors-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--ld-dark);
+}
+
 .itx-sectors-table table {
   table-layout: fixed;
   width: 100%;
@@ -2650,6 +2674,14 @@ a.itx-board-what:hover {
 @media (max-width: 1080px) {
   .itx-sectors-panel {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stacked, the list is above the map rather than beside it, so there
+     is no row height to fill: it gets a height of its own and scrolls
+     within that. */
+  .itx-sectors-scroll {
+    position: static;
+    max-height: calc(var(--row-h) * 8);
   }
 }
 
@@ -3032,10 +3064,20 @@ a.itx-board-what:hover {
 .itx-activity-foot.has-pages {
   justify-content: space-between;
 }
-.itx-activity-foot .itx-board-pages {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
+/* The section's own pager, in the overview's idiom -- the same arrows
+   that sit beside "market overview", at the same size -- so it reads as
+   turning the whole section, distinct from the small pagers that move a
+   single sector's row. The position sits between the arrows. */
+.itx-activity-pager {
+  gap: var(--sp-5);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+.itx-activity-pager button {
+  /* The overview's arrows take the board's own 16px; these sit in a
+     line set smaller, so the size is said outright. */
+  font-size: 16px;
+  line-height: 1;
 }
 
 .itx-activity-expand {
