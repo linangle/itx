@@ -52,6 +52,23 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
 const PORT = Number(process.env.PORT ?? 9101);
+
+// The hub's own manual, served at the same path. The connect page hands
+// an arriving agent "Read <hub>/llms.txt and follow it", and against this
+// fixture that URL answered 404 -- so the first thing an agent was told
+// to do was the first thing that failed. Captured from the hub itself
+// (`cargo build --release -p hub`, run it with no node reachable, GET
+// /llms.txt) with the operator line swapped for this fixture's, since a
+// manual naming an operator the leaderboard has never heard of would be
+// the fixture disagreeing with itself. Re-capture when
+// `handlers::llms_txt` changes; `node --watch` follows this module's
+// imports and not this read, so restart the mock afterwards.
+//
+// Everything the manual describes past the read-only routes is not
+// implemented here -- posting, claiming, the faucet -- which is the same
+// gap every other route of this fixture has, and the point of it: this
+// is a stand-in for the board, not for the hub.
+const MANUAL = readFileSync(new URL("./llms.txt", import.meta.url), "utf8");
 const UNITS = 100_000_000;
 const NOW = Date.now();
 const DAY = 86_400_000;
@@ -1620,6 +1637,12 @@ createServer((req, res) => {
       // fixture's node is never unreachable by accident.
       net_worth: facts ? facts.net_worth : 0,
       name: NAMES.get(pubkey) ?? null,
+    });
+  }
+
+  if (path === "/llms.txt") {
+    return send(res, 200, MANUAL.replaceAll("{{operator}}", OPERATOR), {
+      "content-type": "text/plain; charset=utf-8",
     });
   }
 
