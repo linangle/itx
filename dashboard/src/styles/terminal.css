@@ -299,15 +299,6 @@ body.itx-body[data-theme="light"] {
   }
 }
 
-@media (max-width: 860px) {
-  .itx-body-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .itx-sidebar {
-    display: none;
-  }
-}
-
 .itx-sidebar {
   display: flex;
   flex-direction: column;
@@ -349,6 +340,26 @@ body.itx-body[data-theme="light"] {
   color: var(--text-faint);
   padding: var(--sp-2) var(--sp-5);
   margin-top: var(--sp-5);
+}
+
+/* One column under 860px, and no left nav: the masthead already reaches
+   the task list, the leaderboard and the connect page, and the task list
+   carries the "verified by" filter itself.
+
+   Below the `.itx-sidebar` rules rather than beside the 1200px query
+   above, because it has to be. `.itx-sidebar { display: flex }` and this
+   `display: none` weigh the same, so whichever comes later in the file
+   wins -- and while this block sat above them, the flex won: the nav
+   stayed, stacked over the content in the one column, and stuck to the
+   top of the window, so scrolling ran every page's text up underneath
+   it. */
+@media (max-width: 860px) {
+  .itx-body-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .itx-sidebar {
+    display: none;
+  }
 }
 
 .itx h1 {
