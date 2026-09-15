@@ -68,6 +68,12 @@
   --brand: #63ba6c;
   --brand-contrast: #161418;
   --warn: #d8402d;
+  /* The palette's green as printed, in both themes. `--brand` and `--up`
+     are re-derived darker on the light theme so that green *text* clears
+     its contrast ratio; a filled bar carries no text, and drawn in the
+     derived green it read as a different colour from the one the site is
+     built on. */
+  --brand-fixed: #63ba6c;
 
   /* Stat cards are outlined here, not filled -- the landing board has no
      filled panels. */
@@ -1186,13 +1192,9 @@ a.itx-chip:hover {
   background: color-mix(in srgb, var(--text-faint) 22%, transparent);
 }
 
-.itx-step.reached .itx-step-bar {
-  background: var(--brand);
-}
-
+.itx-step.reached .itx-step-bar,
 .itx-step.current .itx-step-bar {
-  background: var(--brand);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+  background: var(--brand-fixed);
 }
 
 .itx-step.derailed .itx-step-bar {
