@@ -670,8 +670,11 @@ cargo build --release
 # Node.js and GitHub's `hub` for every user on the box, /usr/local/bin coming
 # first on the default PATH -- and a treasury host is a bad place to discover
 # that `node` now means something else.
-for b in node hub miner; do
-    sudo install -m 0755 "target/release/$b" "/usr/local/bin/itx-$b"
+# console and wallet are not services. The console is the operator's own view
+# (§8.5); the wallet is §9.10's manual payout, and the day it is needed is
+# not the day to discover it was never installed.
+for b in node hub miner itx-console wallet; do
+    sudo install -m 0755 "target/release/$b" "/usr/local/bin/itx-${b#itx-}"
 done
 
 sudo cp deploy/itx-*.service deploy/itx-*.timer /etc/systemd/system/
@@ -2612,6 +2615,17 @@ the work.
        --node 127.0.0.1:9000
    sudo systemctl start itx-hub
    ```
+
+   **The fee.** That command pays at the wallet's default, which is the hub's
+   flat fee — the very fee step 1 may have just found the node refusing. It is
+   safe to raise *here* and only here: a `PayoutFailed` task has had every
+   attempt dropped (`mark_payout_failed`), so nothing of the hub's is in flight
+   for it, and `--fee` at whatever the node now clears cannot replace anything.
+   Never do this for a `Submitted` task. Its attempt is outstanding, its inputs
+   are reserved in the payments journal, and a hand payment priced above the
+   hub's replaces the hub's own payout at the node — which is why the wallet's
+   default matches the hub's fee, and why step 2 reads `status=payoutfailed`
+   and nothing else.
 
    `itx-wallet pay` **refuses to run while anything is listening on the hub's
    port**, which is what makes the warning above a property rather than a hope;

@@ -113,7 +113,9 @@ step "2. the binaries, under their itx- names"
 # Never their build names: `node` and `hub` in /usr/local/bin shadow
 # Node.js and GitHub's `hub` for every user on the box, and a treasury
 # host is a bad place to discover that. See §5.
-for b in node hub miner console; do
+# wallet too: §9.10's manual payout, which a recovery is the likeliest
+# time to need, and which no install step put on a box until 2026-09-15.
+for b in node hub miner console wallet; do
     [[ -f "$RELEASE_DIR/itx-$b" ]] || fail "no itx-$b in $RELEASE_DIR"
     install -m 0755 "$RELEASE_DIR/itx-$b" "/usr/local/bin/itx-$b"
 done
