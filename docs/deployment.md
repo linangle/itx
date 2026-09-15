@@ -1993,24 +1993,37 @@ misconfiguration nothing else reports. `hub_rate_limited_per_key_total` is what
 tells the two apart: a genuine flood moves both counters, that misconfiguration
 moves only the per-IP one.
 
-**Blocking `/metrics` at the proxy.** Caddy:
+**Blocking `/metrics` at the proxy.** Both shipped configs already do; this
+is what they contain, for anyone writing their own. Caddy — a `handle`, placed
+before the catch-all `handle` that proxies everything:
 
 ```caddyfile
-@metrics path /metrics
-respond @metrics 404
+handle /metrics {
+	respond 404
+}
 ```
 
-nginx:
+Not `@metrics path /metrics` with a bare `respond @metrics 404`. That form
+sat in this section, and in the shipped Caddyfile, for weeks and blocked
+nothing: Caddy sorts `handle` before `respond`, so the catch-all `handle`
+took every request first and the 404 was never reached — `/metrics` was
+proxied to the hub on the internet, and `caddy validate` accepted it. §4.9
+has the discovery and the check (`caddy adapt`, then read the route order).
+
+nginx — an exact-match location, which outranks the prefix `location /`
+whatever the order:
 
 ```nginx
 location = /metrics {
     allow 127.0.0.1;
+    allow ::1;
     deny all;
 }
 ```
 
 Scrape it from the box itself (`curl -s localhost:9100/metrics`), or open
-it to the monitoring host only.
+it to the monitoring host only. Then confirm from off-box:
+`curl -sI https://hub.<domain>/metrics | head -1` must say 404.
 
 The proxy's access log remains a useful cross-check, and is the only
 source that survives the hub process dying. A usable p99 from Caddy's JSON
