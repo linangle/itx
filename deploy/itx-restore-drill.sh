@@ -51,6 +51,15 @@ PORT_BASE=19000
 USE_GPG=0
 ISOLATE=1
 
+# Kept for the re-exec in step 0. The loop below consumes "$@" as it
+# parses, so by the time `unshare` re-runs this script there was nothing
+# left to hand it: the second copy started with no arguments and died at
+# the `--archive is required` check. That happened on every host where
+# the namespace is available -- which is the production box -- and on
+# none of the machines the drill had been rehearsed on, which is why
+# nobody saw it.
+ORIGINAL_ARGS=("$@")
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --archive)              ARCHIVE="$2";         shift 2 ;;
@@ -106,7 +115,7 @@ if [[ -z "${ITX_DRILL_NETNS:-}" ]]; then
         # DOWN, and every bind below would fail with EADDRNOTAVAIL),
         # then re-runs this script with its original arguments.
         exec unshare --net --map-root-user -- \
-            /bin/sh -c 'ip link set lo up && exec "$@"' sh "$0" "$@"
+            /bin/sh -c 'ip link set lo up && exec "$@"' sh "$0" "${ORIGINAL_ARGS[@]}"
     else
         echo "WARNING: no private network namespace available (unshare/ip missing,"
         echo "  or unprivileged user namespaces are disabled). The hub started in"
