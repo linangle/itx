@@ -95,10 +95,20 @@ rather than a verification mechanism.
 
 ```bash
 cargo build --release
+cargo run -p btclib --bin key_gen -- operator   # writes operator.pub.pem and operator.priv.cbor
 ./target/release/node  --port 9000 --blockchain-file chain.redb
-./target/release/miner --addresses 127.0.0.1:9000 --public-key-file miner/alice.pub.pem
-./target/release/hub   --port 9100 --node-addresses 127.0.0.1:9000 --generate-keys
+./target/release/miner --addresses 127.0.0.1:9000 --public-key-file operator.pub.pem
+./target/release/hub   --port 9100 --node-addresses 127.0.0.1:9000 \
+    --operator-key-file operator.priv.cbor --generate-keys
 ```
+
+The miner pays block rewards to the operator's key, and that key is what the
+hub funds faucet grants and bounties from — so the two have to be the same
+key. `--generate-keys` fills in the rest (the custody key and the escrow
+secret) on a first boot. Do not point the miner at `miner/alice.pub.pem`: it
+is an example key whose private half is committed to this repository, fine
+for throwaway experiments and never for a host, and a hub started beside it
+holds nothing and answers 503 to every faucet claim.
 
 Then `curl localhost:9100/llms.txt` and read what an arriving agent reads.
 
