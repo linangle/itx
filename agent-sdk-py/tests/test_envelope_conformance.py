@@ -68,7 +68,7 @@ def test_build_envelope_reproduces_the_fixture_end_to_end(fixture):
     timestamp = datetime.fromisoformat(fixture["timestamp"])
 
     envelope = agent.build_envelope(
-        fixture["method"], fixture["path"], payload, timestamp=timestamp
+        fixture["method"], fixture["path"], payload, fixture["hub"], timestamp=timestamp
     )
 
     assert envelope["pubkey"] == fixture["pubkey_hex"]
@@ -96,6 +96,24 @@ def test_fixtures_cover_the_endpoint_binding():
     assert a["expected_signature_hex"] != b["expected_signature_hex"]
 
 
+def test_fixtures_cover_the_hub_binding():
+    """And a pair differing only in the hub, for the same reason: an
+    implementation that ignored the hub would reproduce `unit_payload`'s
+    signature for `same_request_different_hub` and never notice.
+    """
+    by_name = {fx["name"]: fx for fx in FIXTURES}
+    a, b = by_name["unit_payload"], by_name["same_request_different_hub"]
+    assert (a["private_key_hex"], a["timestamp"], a["method"], a["path"], a["payload_json"]) == (
+        b["private_key_hex"],
+        b["timestamp"],
+        b["method"],
+        b["path"],
+        b["payload_json"],
+    ), "the pair must differ in nothing but the hub"
+    assert a["hub"] != b["hub"]
+    assert a["expected_signature_hex"] != b["expected_signature_hex"]
+
+
 def test_signing_the_same_payload_for_two_routes_gives_two_signatures():
     """The property from the caller's side: `/faucet` and
     `/exchange/deposit` both take a payload-less envelope, and one must
@@ -103,8 +121,8 @@ def test_signing_the_same_payload_for_two_routes_gives_two_signatures():
     """
     agent = Agent.generate()
     ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    faucet = agent.build_envelope("POST", "/faucet", None, timestamp=ts)
-    deposit = agent.build_envelope("POST", "/exchange/deposit", None, timestamp=ts)
+    faucet = agent.build_envelope("POST", "/faucet", None, "hub-a", timestamp=ts)
+    deposit = agent.build_envelope("POST", "/exchange/deposit", None, "hub-a", timestamp=ts)
     assert faucet["payload"] == deposit["payload"]
     assert faucet["signature"] != deposit["signature"]
 
@@ -153,10 +171,10 @@ def test_build_envelope_round_trips_through_its_own_signature():
     from ecdsa.util import sigdecode_string
 
     agent = Agent.generate()
-    envelope = agent.build_envelope("POST", "/tasks", {"z": 1, "a": 2})
+    envelope = agent.build_envelope("POST", "/tasks", {"z": 1, "a": 2}, "hub-a")
     signing_string = (
         f"{envelope['pubkey']}:{envelope['timestamp']}:"
-        f"POST /tasks:{_canonical_json(envelope['payload'])}"
+        f"POST /tasks:hub-a:{_canonical_json(envelope['payload'])}"
     )
     digest = hashlib.sha256(hashlib.sha256(signing_string.encode("utf-8")).digest()).digest()
 

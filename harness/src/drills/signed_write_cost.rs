@@ -71,6 +71,7 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
             &key,
             "POST",
             "/tasks",
+            &hub.hub_id().await?,
             CreateTaskPayload {
                 description: format!("signed-write-cost {round}"),
                 bounty: 1,

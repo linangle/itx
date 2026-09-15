@@ -125,12 +125,20 @@ class Agent:
         method: str,
         path: str,
         payload: Any,
+        hub: str,
         timestamp: Optional[datetime] = None,
     ) -> dict:
-        """Signs ``payload`` *for one specific endpoint*, producing a
-        ready-to-send envelope dict. Mirrors
+        """Signs ``payload`` *for one specific endpoint of one specific
+        hub*, producing a ready-to-send envelope dict. Mirrors
         ``btclib::envelope::SignedEnvelope::new`` (``new_at`` if
         ``timestamp`` is given explicitly, e.g. for reproducible tests).
+
+        ``hub`` is the hub's identity: its operator public key, hex, as
+        ``GET /health`` reports it under ``operator`` (``HubClient.hub_id``
+        reads it for you). Bound like ``method`` and ``path`` and never
+        sent, so an envelope built for one hub is rejected at every
+        other -- the same key on two hubs, or a request captured from one
+        and replayed at another inside the drift window, is a 401.
 
         ``method`` is the uppercase HTTP method and ``path`` the request
         path exactly as it will appear in the request line -- no scheme,
@@ -160,7 +168,7 @@ class Agent:
         ts = timestamp or datetime.now(timezone.utc)
         timestamp_str = _format_rfc3339(ts)
         payload_json = _canonical_json(payload)
-        signing_string = f"{self.pubkey_hex}:{timestamp_str}:{method} {path}:{payload_json}"
+        signing_string = f"{self.pubkey_hex}:{timestamp_str}:{method} {path}:{hub}:{payload_json}"
         return {
             "pubkey": self.pubkey_hex,
             "timestamp": timestamp_str,

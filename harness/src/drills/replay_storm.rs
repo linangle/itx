@@ -66,7 +66,7 @@ pub async fn run(repo: &Path, bin_dir: &Path, work_dir: PathBuf) -> Result<Repor
     let mut first_use_accepted = 0;
     for index in 0..ENVELOPES {
         let key = PrivateKey::new_key();
-        let envelope = build_envelope(&key, "POST", PATH, ());
+        let envelope = build_envelope(&key, "POST", PATH, &hub.hub_id().await?, ());
         let client = hub.from_source(&format!("10.7.0.{}", index + 1));
         let reply = client.post_envelope(PATH, &envelope).await?;
         samples.push(Sample::new("first use", reply.status, reply.latency));

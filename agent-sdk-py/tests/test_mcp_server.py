@@ -274,6 +274,9 @@ def test_hub_rejections_reach_the_model_with_status_and_body(monkeypatch, tmp_pa
         raise HubError(409, {"error": "faucet already claimed for this pubkey"})
 
     monkeypatch.setattr(mcp_server.HubClient, "_post", reject)
+    # The first signed call would otherwise read the hub's identity from
+    # `/health`, and there is no hub here to answer it.
+    monkeypatch.setattr(mcp_server.HubClient, "hub_id", lambda self: "02" + "ab" * 32)
     srv = mcp_server.build_server("http://hub.test", str(tmp_path / "agent.key"))
     with pytest.raises(ToolError, match="409.*faucet already claimed"):
         _call(srv, "claim_faucet", {})

@@ -127,6 +127,8 @@ async fn main() -> Result<()> {
 
     let operator_key = PrivateKey::load_from_file(&operator_key_file)
         .map_err(|e| anyhow::anyhow!("failed to load operator private key: {e}"))?;
+    // What every envelope below signs for: this hub is the operator key\'s.
+    let hub_id = operator_key.public_key().to_string();
     let agent_key = PrivateKey::new_key();
     println!("agent pubkey: {}", agent_key.public_key());
 
@@ -143,7 +145,7 @@ async fn main() -> Result<()> {
     assert!(llms.contains("itx agent hub"));
 
     println!("\n== POST /faucet/challenge (agent) ==");
-    let envelope = build_envelope(&agent_key, "POST", "/faucet/challenge", ());
+    let envelope = build_envelope(&agent_key, "POST", "/faucet/challenge", &hub_id, ());
     let resp = client
         .post(format!("{base_url}/faucet/challenge"))
         .json(&envelope)
@@ -163,7 +165,7 @@ async fn main() -> Result<()> {
         challenge_id: challenge["challenge_id"].as_str().unwrap().to_string(),
         solution,
     };
-    let envelope = build_envelope(&agent_key, "POST", "/faucet", &payload);
+    let envelope = build_envelope(&agent_key, "POST", "/faucet", &hub_id, &payload);
     let resp = client
         .post(format!("{base_url}/faucet"))
         .json(&envelope)
@@ -184,7 +186,7 @@ async fn main() -> Result<()> {
     println!("\n== POST /faucet again (should be rejected, already claimed) ==");
     // The challenge leg refuses first: an already-granted key is told so
     // before it is asked to spend any CPU.
-    let envelope = build_envelope(&agent_key, "POST", "/faucet/challenge", ());
+    let envelope = build_envelope(&agent_key, "POST", "/faucet/challenge", &hub_id, ());
     let resp = client
         .post(format!("{base_url}/faucet/challenge"))
         .json(&envelope)
@@ -202,7 +204,7 @@ async fn main() -> Result<()> {
         min_reputation: 0,
         capabilities: BTreeSet::new(),
     };
-    let envelope = build_envelope(&impostor_key, "POST", "/tasks", payload);
+    let envelope = build_envelope(&impostor_key, "POST", "/tasks", &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks"))
         .json(&envelope)
@@ -221,7 +223,7 @@ async fn main() -> Result<()> {
         min_reputation: 0,
         capabilities: BTreeSet::new(),
     };
-    let envelope = build_envelope(&operator_key, "POST", "/tasks", payload);
+    let envelope = build_envelope(&operator_key, "POST", "/tasks", &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks"))
         .json(&envelope)
@@ -254,7 +256,7 @@ async fn main() -> Result<()> {
     let payload = ClaimPayload {
         task_id: task_id.clone(),
     };
-    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/claim"), payload);
+    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/claim"), &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks/{task_id}/claim"))
         .json(&envelope)
@@ -271,7 +273,7 @@ async fn main() -> Result<()> {
         task_id: task_id.clone(),
         output: "definitely wrong".to_string(),
     };
-    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/submit"), payload);
+    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/submit"), &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks/{task_id}/submit"))
         .json(&envelope)
@@ -287,7 +289,7 @@ async fn main() -> Result<()> {
     let payload = ClaimPayload {
         task_id: task_id.clone(),
     };
-    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/claim"), payload);
+    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/claim"), &hub_id, payload);
     client
         .post(format!("{base_url}/tasks/{task_id}/claim"))
         .json(&envelope)
@@ -299,7 +301,7 @@ async fn main() -> Result<()> {
         task_id: task_id.clone(),
         output: correct_answer.to_string(),
     };
-    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/submit"), payload);
+    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/{task_id}/submit"), &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks/{task_id}/submit"))
         .json(&envelope)
@@ -391,7 +393,7 @@ async fn main() -> Result<()> {
         min_reputation: 0,
         capabilities: BTreeSet::new(),
     };
-    let envelope = build_envelope(&agent_key, "POST", "/tasks/escrow", payload);
+    let envelope = build_envelope(&agent_key, "POST", "/tasks/escrow", &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks/escrow"))
         .json(&envelope)
@@ -439,7 +441,7 @@ async fn main() -> Result<()> {
     let payload = ConfirmEscrowPayload {
         escrow_id: escrow_id.clone(),
     };
-    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/escrow/{escrow_id}/confirm"), payload);
+    let envelope = build_envelope(&agent_key, "POST", &format!("/tasks/escrow/{escrow_id}/confirm"), &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks/escrow/{escrow_id}/confirm"))
         .json(&envelope)
@@ -456,7 +458,7 @@ async fn main() -> Result<()> {
     let payload = ClaimPayload {
         task_id: escrow_task_id.clone(),
     };
-    let envelope = build_envelope(&worker_key, "POST", &format!("/tasks/{escrow_task_id}/claim"), payload);
+    let envelope = build_envelope(&worker_key, "POST", &format!("/tasks/{escrow_task_id}/claim"), &hub_id, payload);
     client
         .post(format!("{base_url}/tasks/{escrow_task_id}/claim"))
         .json(&envelope)
@@ -468,7 +470,7 @@ async fn main() -> Result<()> {
         task_id: escrow_task_id.clone(),
         output: escrow_answer.to_string(),
     };
-    let envelope = build_envelope(&worker_key, "POST", &format!("/tasks/{escrow_task_id}/submit"), payload);
+    let envelope = build_envelope(&worker_key, "POST", &format!("/tasks/{escrow_task_id}/submit"), &hub_id, payload);
     let resp = client
         .post(format!("{base_url}/tasks/{escrow_task_id}/submit"))
         .json(&envelope)

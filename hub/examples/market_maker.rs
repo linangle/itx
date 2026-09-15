@@ -62,16 +62,27 @@ async fn main() -> Result<()> {
     );
 
     let client = reqwest::Client::new();
+    let hub_id = hub_identity(&client, &base_url).await?;
     let half_spread = reference_price * spread_bps / 2 / 10_000;
     let buy_price = reference_price.saturating_sub(half_spread).max(1);
     let sell_price = reference_price + half_spread;
 
     loop {
-        if let Err(e) = one_cycle(&client, &base_url, &key, &pubkey, buy_price, sell_price, order_size).await {
+        if let Err(e) = one_cycle(&client, &base_url, &key, &pubkey, &hub_id, buy_price, sell_price, order_size).await {
             println!("cycle failed, will retry next interval: {e}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
     }
+}
+
+/// The hub's identity, which every signed envelope binds (see
+/// `btclib::envelope`): `GET /health` reports it as `operator`.
+async fn hub_identity(client: &reqwest::Client, base_url: &str) -> Result<String> {
+    let health: Value = client.get(format!("{base_url}/health")).send().await?.json().await?;
+    health["operator"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("the hub's /health names no operator; nothing can sign for it"))
 }
 
 async fn one_cycle(
@@ -79,6 +90,7 @@ async fn one_cycle(
     base_url: &str,
     key: &PrivateKey,
     pubkey: &btclib::crypto::PublicKey,
+    hub_id: &str,
     buy_price: u64,
     sell_price: u64,
     order_size: u64,
@@ -94,7 +106,7 @@ async fn one_cycle(
                     let order_id = order["id"].as_str().unwrap().to_string();
                     let resp = client
                         .post(format!("{base_url}/exchange/orders/{order_id}/cancel"))
-                        .json(&build_envelope(key, "POST", &format!("/exchange/orders/{order_id}/cancel"), CancelOrderPayload { order_id: order_id.clone() }))
+                        .json(&build_envelope(key, "POST", &format!("/exchange/orders/{order_id}/cancel"), hub_id, CancelOrderPayload { order_id: order_id.clone() }))
                         .send()
                         .await?;
                     if !resp.status().is_success() {
@@ -115,14 +127,14 @@ async fn one_cycle(
         .saturating_sub(account["locked_compute"].as_u64().unwrap_or(0));
 
     if base_available >= buy_price * order_size {
-        place_order(client, base_url, key, "buy", buy_price, order_size).await?;
+        place_order(client, base_url, key, hub_id, "buy", buy_price, order_size).await?;
         println!("  placed bid: {order_size} @ {buy_price}");
     } else {
         println!("  skipping bid, insufficient base balance ({base_available} available, need {})", buy_price * order_size);
     }
 
     if compute_available >= order_size {
-        place_order(client, base_url, key, "sell", sell_price, order_size).await?;
+        place_order(client, base_url, key, hub_id, "sell", sell_price, order_size).await?;
         println!("  placed ask: {order_size} @ {sell_price}");
     } else {
         println!("  skipping ask, insufficient compute balance ({compute_available} available, need {order_size})");
@@ -135,13 +147,14 @@ async fn place_order(
     client: &reqwest::Client,
     base_url: &str,
     key: &PrivateKey,
+    hub_id: &str,
     side: &'static str,
     price: u64,
     quantity: u64,
 ) -> Result<()> {
     let resp = client
         .post(format!("{base_url}/exchange/orders"))
-        .json(&build_envelope(key, "POST", "/exchange/orders", PlaceOrderPayload { side, price, quantity }))
+        .json(&build_envelope(key, "POST", "/exchange/orders", hub_id, PlaceOrderPayload { side, price, quantity }))
         .send()
         .await?;
     if !resp.status().is_success() {

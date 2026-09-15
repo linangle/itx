@@ -6,6 +6,21 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 
 ## [0.2.0] - 2026-09-09
 
+### Changed
+
+- **Breaking: the signed envelope now binds the hub it is for.** The
+  signing string is `"{pubkey}:{timestamp}:{METHOD} {path}:{hub}:{payload}"`,
+  where `hub` is the hub's operator public key, hex -- reported by
+  `GET /health` as `operator` and printed at the foot of `/llms.txt`.
+  Like the method and path it is not sent; each side supplies it. Before
+  this, an envelope captured from one hub verified at any other for the
+  120-second drift window whenever an agent used one key for both, which
+  is what the default identity file makes the ordinary case.
+  `Agent.build_envelope` takes `hub` after the payload; `HubClient` reads
+  it from `/health` on the first signed call (`HubClient.hub_id()`) or
+  takes it as `hub_id=` at construction. The conformance fixtures carry
+  a `hub` field and a pair that differs in nothing else.
+
 ### Removed
 
 - **Breaking: the exchange is gone from this SDK.** `HubClient` loses

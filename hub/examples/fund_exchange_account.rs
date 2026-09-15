@@ -25,6 +25,16 @@ struct ConfirmExchangeDepositPayload {
     escrow_id: String,
 }
 
+/// The hub's identity, which every signed envelope binds (see
+/// `btclib::envelope`): `GET /health` reports it as `operator`.
+async fn hub_identity(client: &reqwest::Client, base_url: &str) -> Result<String> {
+    let health: Value = client.get(format!("{base_url}/health")).send().await?.json().await?;
+    health["operator"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("the hub's /health names no operator; nothing can sign for it"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -35,9 +45,10 @@ async fn main() -> Result<()> {
 
     let key = PrivateKey::load_from_file(&key_file).map_err(|e| anyhow::anyhow!("{e}"))?;
     let client = reqwest::Client::new();
+    let hub_id = hub_identity(&client, &base_url).await?;
 
     let reservation: Value =
-        client.post(format!("{base_url}/exchange/deposit")).json(&build_envelope(&key, "POST", "/exchange/deposit", ())).send().await?.json().await?;
+        client.post(format!("{base_url}/exchange/deposit")).json(&build_envelope(&key, "POST", "/exchange/deposit", &hub_id, ())).send().await?.json().await?;
     let escrow_id = reservation["escrow_id"].as_str().unwrap().to_string();
     let deposit_pubkey = PublicKey::from_sec1_bytes(&hex::decode(reservation["deposit_address"].as_str().unwrap())?)?;
     println!("reserved deposit {escrow_id}, address {}", reservation["deposit_address"]);
@@ -71,7 +82,7 @@ async fn main() -> Result<()> {
 
     let account: Value = client
         .post(format!("{base_url}/exchange/deposit/{escrow_id}/confirm"))
-        .json(&build_envelope(&key, "POST", &format!("/exchange/deposit/{escrow_id}/confirm"), ConfirmExchangeDepositPayload { escrow_id }))
+        .json(&build_envelope(&key, "POST", &format!("/exchange/deposit/{escrow_id}/confirm"), &hub_id, ConfirmExchangeDepositPayload { escrow_id }))
         .send()
         .await?
         .json()

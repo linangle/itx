@@ -58,6 +58,11 @@ pub struct HubClient {
     base_url: String,
     http: reqwest::Client,
     forwarded_for: Option<String>,
+    /// The hub's identity, which every signed envelope binds (see
+    /// `btclib::envelope`), read once from `/health` and shared by every
+    /// clone -- a drill that fans out over a thousand source addresses
+    /// asks the hub who it is once.
+    hub_id: std::sync::Arc<tokio::sync::OnceCell<String>>,
 }
 
 impl HubClient {
@@ -78,7 +83,26 @@ impl HubClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             http,
             forwarded_for: None,
+            hub_id: std::sync::Arc::new(tokio::sync::OnceCell::new()),
         })
+    }
+
+    /// The identity this client signs for: the hub's operator public key,
+    /// as `GET /health` reports it under `operator`. Fetched on first use
+    /// and kept.
+    pub async fn hub_id(&self) -> Result<String> {
+        self.hub_id
+            .get_or_try_init(|| async {
+                let reply = self.get("/health").await?;
+                reply
+                    .body
+                    .get("operator")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .context("the hub's /health names no operator, so nothing can sign for it -- is the hub older than this harness?")
+            })
+            .await
+            .cloned()
     }
 
     /// A clone of this client that presents itself as coming from `ip`.
@@ -122,7 +146,8 @@ impl HubClient {
         path: &str,
         payload: T,
     ) -> Result<Reply> {
-        let envelope = build_envelope(key, "POST", path, payload);
+        let hub_id = self.hub_id().await?;
+        let envelope = build_envelope(key, "POST", path, &hub_id, payload);
         self.post_envelope(path, &envelope).await
     }
 

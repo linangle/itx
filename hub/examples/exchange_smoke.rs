@@ -65,6 +65,16 @@ async fn wait_for_balance_at_least(node_address: &str, pubkey: &PublicKey, minim
     anyhow::bail!("timed out waiting for balance >= {minimum}")
 }
 
+/// The hub's identity, which every signed envelope binds (see
+/// `btclib::envelope`): `GET /health` reports it as `operator`.
+async fn hub_identity(client: &reqwest::Client, base_url: &str) -> Result<String> {
+    let health: Value = client.get(format!("{base_url}/health")).send().await?.json().await?;
+    health["operator"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("the hub's /health names no operator; nothing can sign for it"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -84,6 +94,7 @@ async fn main() -> Result<()> {
     };
     println!("agent pubkey: {}", agent_key.public_key());
     let client = reqwest::Client::new();
+    let hub_id = hub_identity(&client, &base_url).await?;
 
     println!("\n== waiting for the agent to have a confirmed on-chain balance ==");
     wait_for_balance_at_least(&node_address, &agent_key.public_key(), 50_000_000).await?;
@@ -101,7 +112,7 @@ async fn main() -> Result<()> {
     println!("\n== POST /exchange/deposit ==");
     let reservation: Value = client
         .post(format!("{base_url}/exchange/deposit"))
-        .json(&build_envelope(&agent_key, "POST", "/exchange/deposit", ()))
+        .json(&build_envelope(&agent_key, "POST", "/exchange/deposit", &hub_id, ()))
         .send()
         .await?
         .json()
@@ -132,7 +143,7 @@ async fn main() -> Result<()> {
     println!("\n== POST /exchange/deposit/:id/confirm ==");
     let account: Value = client
         .post(format!("{base_url}/exchange/deposit/{escrow_id}/confirm"))
-        .json(&build_envelope(&agent_key, "POST", &format!("/exchange/deposit/{escrow_id}/confirm"), ConfirmExchangeDepositPayload { escrow_id: escrow_id.clone() }))
+        .json(&build_envelope(&agent_key, "POST", &format!("/exchange/deposit/{escrow_id}/confirm"), &hub_id, ConfirmExchangeDepositPayload { escrow_id: escrow_id.clone() }))
         .send()
         .await?
         .json()
@@ -190,7 +201,7 @@ async fn main() -> Result<()> {
     for attempt in 1..=40 {
         let resp = client
             .post(format!("{base_url}/exchange/withdraw"))
-            .json(&build_envelope(&agent_key, "POST", "/exchange/withdraw", WithdrawPayload { amount: withdraw_amount }))
+            .json(&build_envelope(&agent_key, "POST", "/exchange/withdraw", &hub_id, WithdrawPayload { amount: withdraw_amount }))
             .send()
             .await?;
         if resp.status().is_success() {

@@ -167,10 +167,42 @@ class HubClient:
     against in the same script).
     """
 
-    def __init__(self, base_url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        hub_id: Optional[str] = None,
+    ):
         self.base_url = _validated_base_url(base_url)
         self.timeout = timeout
         self.session = requests.Session()
+        # The identity every signed envelope binds (see `Agent.build_envelope`).
+        # `None` until the first signed call, which reads it from `/health`;
+        # pass it to skip that lookup when you already hold it.
+        self._hub_id = hub_id
+
+    def hub_id(self) -> str:
+        """The identity every signed envelope binds: this hub's operator
+        public key, hex, as ``GET /health`` reports it under ``operator``.
+        Read once from the hub and kept for the life of the client -- an
+        older hub whose ``/health`` has no ``operator`` cannot be signed
+        for, and says so here rather than as a 401 later.
+        """
+        if self._hub_id is None:
+            resp = self.session.get(f"{self.base_url}/health", timeout=self.timeout)
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            operator = body.get("operator") if isinstance(body, dict) else None
+            if not isinstance(operator, str) or not operator:
+                raise HubError(
+                    resp.status_code,
+                    "the hub's /health names no operator, so this client cannot sign for it "
+                    "(an older hub?); pass hub_id= to HubClient if you know it",
+                )
+            self._hub_id = operator
+        return self._hub_id
 
     def _get(self, path: str, params: Optional[dict] = None) -> Any:
         # Unsigned reads follow redirects (`requests`' default). Nothing
@@ -226,7 +258,7 @@ class HubClient:
         this method makes it unrepresentable for users of this one, which
         is worth more than the line it saves.
         """
-        return self._post(path, signer.build_envelope("POST", path, payload))
+        return self._post(path, signer.build_envelope("POST", path, payload, self.hub_id()))
 
     @staticmethod
     def _handle(resp: requests.Response) -> Any:
@@ -255,8 +287,10 @@ class HubClient:
         return resp.text
 
     def get_health(self) -> dict:
-        """`{"status": "ok", "chain_height": N}`, or raises `HubError`
-        (503) if no configured node is reachable. Doesn't report which
+        """`{"status": "ok", "chain_height": N, "operator": "<hex>"}`, or
+        raises `HubError` (503) if no configured node is reachable.
+        `operator` is the hub's identity, which every signed envelope
+        binds (see `hub_id`). Doesn't report which
         node answered -- that's deliberately not public, see the hub's
         own `health` handler doc comment.
         """

@@ -1,7 +1,8 @@
 [
   {
-    "expected_signature_hex": "e2d3ae0d6d84a7cbfaf07d22fbd217ef54ebd175f34242ad08a98e557e316ba950f5f7ec774f778180c217df725a9aabe1347ca26068cb362b6cb078b2fe027d",
-    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /faucet:null",
+    "expected_signature_hex": "71a1eadea16757981517be0fa14e47ff7150c376a505ef079e8ed8c6023a76c014c5e3703afd9f150a85f960197e99740d2ecf03d4719c5639643c2c791981ca",
+    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /faucet:030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922:null",
+    "hub": "030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922",
     "method": "POST",
     "name": "unit_payload",
     "path": "/faucet",
@@ -11,8 +12,21 @@
     "timestamp": "2026-01-01T00:00:00+00:00"
   },
   {
-    "expected_signature_hex": "8a00601fdb0cf68d9067e66b09fe5124e773740b66bce17467c4045ed17aafcc3a5ba06e21be2ca0c3e8354f8d677babd4009cbd621b0137ad3390289637de79",
-    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /exchange/deposit:null",
+    "expected_signature_hex": "737aeab03a973d3ac8512cdcb347e16224f5a695d13df9bc833f408d1cddb9651a0e61b68eded18100084605f5e9312a868fdb8cb9ce5cced7cffdbc6e7f7276",
+    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /faucet:03c6f9f507afb60a88f3c3a6e12444bc5f80a24de0c488388e25bd2f3d99e85d15:null",
+    "hub": "03c6f9f507afb60a88f3c3a6e12444bc5f80a24de0c488388e25bd2f3d99e85d15",
+    "method": "POST",
+    "name": "same_request_different_hub",
+    "path": "/faucet",
+    "payload_json": "null",
+    "private_key_hex": "2207621b28e394b7c6d15af51e470076eba39706d22a2013424a67fc67a68a7d",
+    "pubkey_hex": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2",
+    "timestamp": "2026-01-01T00:00:00+00:00"
+  },
+  {
+    "expected_signature_hex": "1d0d773279527e58d2b2c2e1cf77ac176def4f349d44475e6679d4164da541432bfb760ba44e1cbe1837fa4c1c6985ee7588af1a00ff00621ef1518de4278805",
+    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /exchange/deposit:030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922:null",
+    "hub": "030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922",
     "method": "POST",
     "name": "same_payload_different_path",
     "path": "/exchange/deposit",
@@ -22,8 +36,9 @@
     "timestamp": "2026-01-01T00:00:00+00:00"
   },
   {
-    "expected_signature_hex": "9243e44ce236071c672e6b75a3263a2bc570539d77f18b8dc46293526d1871d83b85e1245b99eb228f26f0525240f91708a0c670ddd53fc2be0b937609f73dd9",
-    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /tasks/11111111-2222-3333-4444-555555555555/claim:{\"task_id\":\"11111111-2222-3333-4444-555555555555\"}",
+    "expected_signature_hex": "77574543b51d010b92fd9530bacd4af41b4942bec8db30fb70e2364b2b5f5f3b64e7852e2df8a11ed4158fd1a3e07f056a8104a585523fba94c997695e16dd18",
+    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-01-01T00:00:00+00:00:POST /tasks/11111111-2222-3333-4444-555555555555/claim:030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922:{\"task_id\":\"11111111-2222-3333-4444-555555555555\"}",
+    "hub": "030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922",
     "method": "POST",
     "name": "simple_struct",
     "path": "/tasks/11111111-2222-3333-4444-555555555555/claim",
@@ -33,8 +48,9 @@
     "timestamp": "2026-01-01T00:00:00+00:00"
   },
   {
-    "expected_signature_hex": "b646a9261ade7a705e2649c65355b7c47f0cd7eb63514cac603afb08cd497a024535bf33a7cce904e709c1cc48073b88b298a006874d193ddd2ed183e3513255",
-    "expected_signing_string": "03cb8eec73b83f6c9ba0d872f382319f36acbda44ea815db4e22a2711f534149c6:2026-06-15T12:30:45.123+00:00:POST /tasks/escrow:{\"description\":\"reference SDK fixture task\",\"bounty\":1000000,\"min_reputation\":3,\"capabilities\":[\"python\",\"rust\"]}",
+    "expected_signature_hex": "94317f937d1531725db29e927da3064ed5a90ac50b8295471f2cd36239345ceb02694ffdf8ed43b41a5ef5c7c1565f470367d8305176bdcd12518a388a27f84e",
+    "expected_signing_string": "03cb8eec73b83f6c9ba0d872f382319f36acbda44ea815db4e22a2711f534149c6:2026-06-15T12:30:45.123+00:00:POST /tasks/escrow:030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922:{\"description\":\"reference SDK fixture task\",\"bounty\":1000000,\"min_reputation\":3,\"capabilities\":[\"python\",\"rust\"]}",
+    "hub": "030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922",
     "method": "POST",
     "name": "multi_field_with_capabilities",
     "path": "/tasks/escrow",
@@ -44,8 +60,9 @@
     "timestamp": "2026-06-15T12:30:45.123+00:00"
   },
   {
-    "expected_signature_hex": "f65aa6f6c0d6e623c1e6a273583bdbe0fb44ef78500fc0653b92562274a744d26f0f519307df42121774ed8407f8283c51bf6d271b96dd3390c59d3d9f8730ae",
-    "expected_signing_string": "03cb8eec73b83f6c9ba0d872f382319f36acbda44ea815db4e22a2711f534149c6:2026-01-01T00:00:00+00:00:POST /tasks:{\"description\":\"no tags\",\"bounty\":10,\"min_reputation\":0,\"capabilities\":[]}",
+    "expected_signature_hex": "00bd2fe06d39e64283b02ff394ddcd110cab576bf449b22ca54b058da6da4011115808b449bfe25bf4186a844eadefd3ca34d3cbf1a682703119b2b96c509e29",
+    "expected_signing_string": "03cb8eec73b83f6c9ba0d872f382319f36acbda44ea815db4e22a2711f534149c6:2026-01-01T00:00:00+00:00:POST /tasks:030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922:{\"description\":\"no tags\",\"bounty\":10,\"min_reputation\":0,\"capabilities\":[]}",
+    "hub": "030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922",
     "method": "POST",
     "name": "multi_field_empty_capabilities",
     "path": "/tasks",
@@ -55,8 +72,9 @@
     "timestamp": "2026-01-01T00:00:00+00:00"
   },
   {
-    "expected_signature_hex": "34ba16b55b1cc0958e33a6352e50e3d9cb00b4cbd7325ea0ccb367fbd95c0708714eeb04f26035f6e4d435d2e4c51d321bbdfcf66d6beec34d384c126fa033df",
-    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-06-15T12:30:45.123+00:00:POST /tasks/consensus:{\"note\":\"café \\\"quoted\\\" \\\\ newline:\\n テスト 🦄\"}",
+    "expected_signature_hex": "571d0ca8a41656f176bd10470f92f5537ba618d3e61b17380b727ebecb3b2b4a2e6e6b0c64ce5696fa1ad8c4e7a638efb18c5e2f09623edcdd529d577fd19486",
+    "expected_signing_string": "038fad25e7cf43d6f027d2eb3cd9ad6359034db13875e3d12cb750df4a2bd3b5a2:2026-06-15T12:30:45.123+00:00:POST /tasks/consensus:030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922:{\"note\":\"café \\\"quoted\\\" \\\\ newline:\\n テスト 🦄\"}",
+    "hub": "030247532004b9707601f4431d8049a105e4e006a285bfeb70ff79402770741922",
     "method": "POST",
     "name": "unicode_and_escaping_stress",
     "path": "/tasks/consensus",

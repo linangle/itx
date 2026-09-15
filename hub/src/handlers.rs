@@ -919,16 +919,32 @@ impl From<&Trade> for TradeDto {
 pub struct HealthDto {
     pub status: &'static str,
     pub chain_height: u32,
+    /// This hub's identity, which every signed envelope binds (see
+    /// `btclib::envelope`): the operator public key, hex. Here rather
+    /// than only in the manual because a client has to read it before
+    /// its first signed request, and this is the one route every client
+    /// already calls first. Present on the degraded answer too, since a
+    /// client learning who it is talking to does not need the node.
+    pub operator: String,
 }
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Response {
     match state.node.chain_tip().await {
-        Ok(chain_height) => Json(HealthDto { status: "ok", chain_height }).into_response(),
+        Ok(chain_height) => Json(HealthDto {
+            status: "ok",
+            chain_height,
+            operator: state.hub_id.clone(),
+        })
+        .into_response(),
         Err(e) => {
             warn!("health check failed: no configured node is reachable: {e}");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "status": "degraded", "error": "no configured node is reachable" })),
+                Json(serde_json::json!({
+                    "status": "degraded",
+                    "error": "no configured node is reachable",
+                    "operator": state.hub_id,
+                })),
             )
                 .into_response()
         }
@@ -4547,8 +4563,18 @@ Every state-changing request body is a "signed envelope":
     }}
 
 To produce the signature: build the exact string
-"{{pubkey}}:{{timestamp}}:{{METHOD}} {{path}}:{{payload_as_compact_json}}",
+"{{pubkey}}:{{timestamp}}:{{METHOD}} {{path}}:{{hub}}:{{payload_as_compact_json}}",
 SHA256 it, and sign that hash with your private key.
+
+`hub` is this hub's identity: its operator public key, hex -- the value
+under "Operator address" at the foot of this document, and the `operator`
+field of GET /health, which is where a client should read it before its
+first signed request. Like `METHOD` and `path` it is not a field you send;
+it is context the signature commits to, and this hub supplies its own.
+Binding it means an envelope signed for this hub verifies nowhere else:
+the same key used on two hubs, or a request captured from one hub and
+replayed at another inside the 120-second window, is a 401 rather than
+an action.
 
 The server does not hash the bytes you sent. It parses the envelope, rebuilds
 that string from what it parsed, and hashes the rebuild -- so four things

@@ -57,6 +57,10 @@ pub struct AppState {
     pub node: NodeClient,
     pub operator_private_key: PrivateKey,
     pub operator_public_key: PublicKey,
+    /// This hub\'s identity as clients bind it into their signatures: the
+    /// operator public key, hex. Published by `/health` as `operator` and
+    /// at the foot of the manual. See `btclib::envelope`.
+    pub hub_id: String,
     /// Serializes every `pay_bounty` call (faucet grants and task
     /// payouts alike) so at most one is ever building/submitting a
     /// transaction against the operator's UTXO set at a time. Without
@@ -1206,6 +1210,7 @@ async fn main() -> Result<()> {
         store,
         node: NodeClient::new(node_addresses).with_metrics(metrics.clone()),
         operator_private_key,
+        hub_id: operator_public_key.to_string(),
         operator_public_key,
         payout_lock: Mutex::new(()),
         operator_wallet_outputs: args.operator_wallet_outputs,
@@ -2506,6 +2511,8 @@ mod tests {
         exchange_enabled: bool,
     ) -> TestHub {
         let operator_public_key = operator_private_key.public_key();
+        // What `envelope` will sign for from here on -- see `TEST_HUB_ID`.
+        TEST_HUB_ID.with(|id| *id.borrow_mut() = operator_public_key.to_string());
         let store_path = temp_store_path();
         let store = Arc::new(HubStore::open_or_create(&store_path).unwrap());
         let exchange_custody_private_key = PrivateKey::new_key();
@@ -2541,6 +2548,7 @@ mod tests {
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
             operator_private_key: operator_private_key.clone(),
+            hub_id: operator_public_key.to_string(),
             operator_public_key,
             payout_lock: Mutex::new(()),
             operator_wallet_outputs: wallet_floor,
@@ -2590,7 +2598,8 @@ mod tests {
         let pubkey_hex = key.public_key().to_string();
         let timestamp_str = timestamp.to_rfc3339();
         let payload_json = serde_json::to_string(&payload).unwrap();
-        let signing_string = format!("{pubkey_hex}:{timestamp_str}:POST {path}:{payload_json}");
+        let hub_id = test_hub_id();
+        let signing_string = format!("{pubkey_hex}:{timestamp_str}:POST {path}:{hub_id}:{payload_json}");
         let hash = Hash::hash_bytes(signing_string.as_bytes());
         let signature = Signature::sign_hash(&hash, key);
         json!({
@@ -2603,6 +2612,21 @@ mod tests {
 
     fn envelope<T: Serialize>(key: &PrivateKey, path: &str, payload: T) -> Value {
         envelope_at(key, path, payload, Utc::now())
+    }
+
+    thread_local! {
+        /// The identity of the hub the current test spawned last, so
+        /// `envelope` can bind it without every one of the suite's
+        /// eighty-odd call sites naming the hub. `#[tokio::test]` runs
+        /// each test on its own thread, so one test's hub never leaks
+        /// into another's. A test that talks to two hubs at once builds
+        /// its envelopes with `SignedEnvelope::new` and says which -- see
+        /// `an_envelope_signed_for_one_hub_is_refused_by_another`.
+        static TEST_HUB_ID: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+
+    fn test_hub_id() -> String {
+        TEST_HUB_ID.with(|id| id.borrow().clone())
     }
 
     /// Drives `board` directly (bypassing HTTP entirely) through
@@ -3717,14 +3741,14 @@ mod tests {
         ];
 
         for (left, right, payload) in pairs {
-            let envelope = btclib::envelope::SignedEnvelope::new(&key, "POST", left, payload);
+            let envelope = btclib::envelope::SignedEnvelope::new(&key, "POST", left, "hub", payload);
             assert!(
-                envelope.verify_signature(Utc::now(), "POST", left).is_ok(),
+                envelope.verify_signature(Utc::now(), "POST", left, "hub").is_ok(),
                 "an envelope must verify at the route it was signed for ({left})"
             );
             assert!(
                 matches!(
-                    envelope.verify_signature(Utc::now(), "POST", right),
+                    envelope.verify_signature(Utc::now(), "POST", right, "hub"),
                     Err(btclib::envelope::EnvelopeError::BadSignature)
                 ),
                 "an envelope signed for {left} must not verify at {right}"
@@ -4109,7 +4133,8 @@ mod tests {
         let hand_signed = |payload_json: &str| -> Value {
             let pubkey = poster.public_key().to_string();
             let timestamp = Utc::now().to_rfc3339();
-            let signing_string = format!("{pubkey}:{timestamp}:POST /tasks/escrow:{payload_json}");
+            let hub_id = test_hub_id();
+            let signing_string = format!("{pubkey}:{timestamp}:POST /tasks/escrow:{hub_id}:{payload_json}");
             let signature = btclib::crypto::Signature::sign_hash(
                 &Hash::hash_bytes(signing_string.as_bytes()),
                 &poster,
@@ -8467,6 +8492,33 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
         assert!(resp.text().await.unwrap().contains("2001:db8:1::/48"));
         assert_eq!(hub.state.board.read().await.faucet_granted_since(0), 2, "no third grant from the block");
+    }
+
+    /// The envelope binds the hub it was signed for, the way it binds
+    /// the route. An agent that uses one key on two hubs -- the SDK's
+    /// default identity file makes that the ordinary case -- used to
+    /// sign requests either hub would accept for the drift window, so a
+    /// request captured from one could be replayed at the other.
+    #[tokio::test]
+    async fn an_envelope_signed_for_one_hub_is_refused_by_another() {
+        let key_a = PrivateKey::new_key();
+        let node_a = FakeNode::spawn(key_a.public_key(), 100_000_000).await;
+        let hub_a = spawn_hub(key_a, node_a.addr.clone()).await;
+        let key_b = PrivateKey::new_key();
+        let node_b = FakeNode::spawn(key_b.public_key(), 100_000_000).await;
+        let hub_b = spawn_hub(key_b, node_b.addr.clone()).await;
+        assert_ne!(hub_a.state.hub_id, hub_b.state.hub_id);
+
+        // `/health` is where a client learns the identity it must bind.
+        let health: Value = hub_a.client.get(format!("{}/health", hub_a.base_url)).send().await.unwrap().json().await.unwrap();
+        assert_eq!(health["operator"], hub_a.state.hub_id);
+
+        let agent = PrivateKey::new_key();
+        let for_a = btclib::envelope::SignedEnvelope::new(&agent, "POST", "/faucet/challenge", &hub_a.state.hub_id, ());
+        let at_b = hub_b.client.post(format!("{}/faucet/challenge", hub_b.base_url)).json(&for_a).send().await.unwrap();
+        assert_eq!(at_b.status(), reqwest::StatusCode::UNAUTHORIZED, "signed for hub A, refused by hub B");
+        let at_a = hub_a.client.post(format!("{}/faucet/challenge", hub_a.base_url)).json(&for_a).send().await.unwrap();
+        assert_eq!(at_a.status(), reqwest::StatusCode::OK, "and accepted by the hub it names");
     }
 
     /// The clustering view, which is the thing an operator opens the

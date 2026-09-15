@@ -60,6 +60,10 @@ struct Console {
     hub: String,
     key: btclib::crypto::PrivateKey,
     http: reqwest::Client,
+    /// The hub's identity, which the signed read binds (see
+    /// `btclib::envelope`): read from `/health` on the first request and
+    /// kept for the life of the console.
+    hub_id: tokio::sync::OnceCell<String>,
 }
 
 #[tokio::main]
@@ -74,6 +78,7 @@ async fn main() -> Result<()> {
         hub: args.hub.trim_end_matches('/').to_string(),
         key,
         http: reqwest::Client::new(),
+        hub_id: tokio::sync::OnceCell::new(),
     });
 
     let app = Router::new()
@@ -126,7 +131,31 @@ fn open_in_browser(url: &str) {
 async fn overview(
     State(console): State<Arc<Console>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let envelope = sdk::build_envelope(&console.key, "POST", "/admin/overview", ());
+    let hub_id = console
+        .hub_id
+        .get_or_try_init(|| async {
+            let health: serde_json::Value = console
+                .http
+                .get(format!("{}/health", console.hub))
+                .send()
+                .await
+                .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not reach the hub: {e}")))?
+                .json()
+                .await
+                .map_err(|e| (StatusCode::BAD_GATEWAY, format!("the hub's /health was not JSON: {e}")))?;
+            health
+                .get("operator")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "the hub's /health names no operator, so this console cannot sign for it -- is the hub older than this console?".to_string(),
+                    )
+                })
+        })
+        .await?;
+    let envelope = sdk::build_envelope(&console.key, "POST", "/admin/overview", hub_id, ());
     let response = console
         .http
         .post(format!("{}/admin/overview", console.hub))

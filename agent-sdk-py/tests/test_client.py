@@ -19,10 +19,42 @@ from itx_agent_sdk import Agent, HubClient, HubError
 from itx_agent_sdk.client import FaucetSolveTimeout, solve_faucet_challenge
 
 
+# The hub these tests sign for. Supplied to the constructor so no test
+# here has to answer the `/health` lookup a fresh client would otherwise
+# make before its first signed call; `test_hub_id_*` below cover that.
+HUB_ID = "02" + "ab" * 32
+
+
 def make_client_with_mock_session() -> HubClient:
-    client = HubClient("http://hub.test")
+    client = HubClient("http://hub.test", hub_id=HUB_ID)
     client.session = MagicMock()
     return client
+
+
+def test_hub_id_is_read_from_health_once_and_kept():
+    client = HubClient("http://hub.test")
+    client.session = MagicMock()
+    client.session.get.return_value = mock_response({"status": "ok", "chain_height": 1, "operator": HUB_ID})
+    assert client.hub_id() == HUB_ID
+    assert client.hub_id() == HUB_ID
+    client.session.get.assert_called_once_with("http://hub.test/health", timeout=ANY)
+
+
+def test_a_hub_that_names_no_operator_cannot_be_signed_for():
+    client = HubClient("http://hub.test")
+    client.session = MagicMock()
+    client.session.get.return_value = mock_response({"status": "ok", "chain_height": 1})
+    with pytest.raises(HubError, match="names no operator"):
+        client.hub_id()
+
+
+def test_a_degraded_hub_still_says_who_it_is():
+    # The node being down is no reason a client cannot learn who it is
+    # talking to; the hub puts `operator` on the 503 as well.
+    client = HubClient("http://hub.test")
+    client.session = MagicMock()
+    client.session.get.return_value = mock_response({"status": "degraded", "operator": HUB_ID}, status_code=503)
+    assert client.hub_id() == HUB_ID
 
 
 def mock_response(json_body=None, status_code: int = 200, headers: dict = None) -> MagicMock:

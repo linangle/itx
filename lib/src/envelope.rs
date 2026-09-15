@@ -44,7 +44,7 @@ pub enum EnvelopeError {
 /// -- not a Rust/CBOR-specific encoding -- so that any HTTP client in any
 /// language (not just Rust) can construct a valid request. The exact
 /// recipe (see `signing_string`) is
-/// `"{pubkey_hex}:{timestamp_rfc3339}:{METHOD} {path}:{payload_as_json}"`,
+/// `"{pubkey_hex}:{timestamp_rfc3339}:{METHOD} {path}:{hub}:{payload_as_json}"`,
 /// SHA256'd and then secp256k1/ECDSA-signed.
 ///
 /// Note what the method and path are doing there: they are *not* carried
@@ -56,6 +56,14 @@ pub enum EnvelopeError {
 /// the same payload shape accepted each other's envelopes: `POST /faucet`
 /// and `POST /exchange/deposit` (both payload-less), `POST /tasks/:id/claim`
 /// and `POST /tasks/:id/cancel` (both `{task_id}`), and three more pairs.
+///
+/// `hub` is the same idea applied to *which hub*. The verifying hub's
+/// identity -- its operator public key, hex, which it publishes in
+/// `GET /health` as `operator` and at the foot of its manual -- is bound
+/// the same way: supplied by each side, never sent. Without it an
+/// envelope captured from one hub verified at any other for the drift
+/// window whenever an agent used one key for both, which is what the
+/// SDKs' single default identity file makes the ordinary case.
 ///
 /// This type lives here rather than in `hub` so that verifiers (`hub`)
 /// and constructors (`sdk`, and through it `agent-sdk-py`'s fixture
@@ -102,16 +110,17 @@ impl<T: Serialize> SignedEnvelope<T> {
     /// from a fixed set, the path matched a route whose only variable
     /// segments are UUIDs, and the payload is re-serialized canonically by
     /// the verifier rather than echoed. No field can borrow characters
-    /// from its neighbour.
-    pub fn signing_string(&self, method: &str, path: &str) -> Result<String, EnvelopeError> {
+    /// from its neighbour. (`hub` is hex too.)
+    pub fn signing_string(&self, method: &str, path: &str, hub: &str) -> Result<String, EnvelopeError> {
         let payload_json = serde_json::to_string(&self.payload)
             .map_err(|e| EnvelopeError::BadPublicKey(format!("payload not serializable: {e}")))?;
         Ok(format!(
-            "{}:{}:{} {}:{}",
+            "{}:{}:{} {}:{}:{}",
             self.pubkey,
             self.timestamp.to_rfc3339(),
             method,
             path,
+            hub,
             payload_json
         ))
     }
@@ -121,8 +130,8 @@ impl<T: Serialize> SignedEnvelope<T> {
     /// documents. `sdk` (and through it `smoke_agent.rs`) is a thin
     /// wrapper around this, so there is exactly one place either half of
     /// the recipe is written down in Rust.
-    pub fn new(private_key: &PrivateKey, method: &str, path: &str, payload: T) -> Self {
-        Self::new_at(private_key, Utc::now(), method, path, payload)
+    pub fn new(private_key: &PrivateKey, method: &str, path: &str, hub: &str, payload: T) -> Self {
+        Self::new_at(private_key, Utc::now(), method, path, hub, payload)
     }
 
     /// Same as `new`, but with an explicit timestamp rather than the
@@ -134,6 +143,7 @@ impl<T: Serialize> SignedEnvelope<T> {
         timestamp: DateTime<Utc>,
         method: &str,
         path: &str,
+        hub: &str,
         payload: T,
     ) -> Self {
         let mut envelope = SignedEnvelope {
@@ -143,7 +153,7 @@ impl<T: Serialize> SignedEnvelope<T> {
             signature: String::new(),
         };
         let signing_string = envelope
-            .signing_string(method, path)
+            .signing_string(method, path, hub)
             .expect("payload just came from a live value, it must serialize");
         let hash = Hash::hash_bytes(signing_string.as_bytes());
         let signature = Signature::sign_hash(&hash, private_key);
@@ -162,7 +172,8 @@ impl<T: Serialize> SignedEnvelope<T> {
     /// never anything the envelope claims about itself -- that is the
     /// whole point of binding them. Passing the route the envelope was
     /// *intended* for, rather than the one it arrived on, would rebuild
-    /// exactly the gap this closes.
+    /// exactly the gap this closes. `hub` is the verifier's own identity,
+    /// for the same reason.
     ///
     /// Deliberately does NOT check for replay -- that needs state that
     /// persists across requests, which only a server has, layered on top
@@ -173,6 +184,7 @@ impl<T: Serialize> SignedEnvelope<T> {
         now: DateTime<Utc>,
         method: &str,
         path: &str,
+        hub: &str,
     ) -> Result<PublicKey, EnvelopeError> {
         if (now - self.timestamp).abs() > Duration::seconds(MAX_REQUEST_DRIFT_SECONDS) {
             return Err(EnvelopeError::ClockDrift);
@@ -188,7 +200,7 @@ impl<T: Serialize> SignedEnvelope<T> {
         let signature = Signature::from_bytes(&signature_bytes)
             .map_err(|e| EnvelopeError::BadSignatureEncoding(e.to_string()))?;
 
-        let hash = Hash::hash_bytes(self.signing_string(method, path)?.as_bytes());
+        let hash = Hash::hash_bytes(self.signing_string(method, path, hub)?.as_bytes());
         if !signature.verify(&hash, &pubkey) {
             return Err(EnvelopeError::BadSignature);
         }
@@ -202,6 +214,9 @@ mod tests {
     use super::*;
     use serde::Serialize;
 
+    /// Any string will do here; a real hub's is its operator public key.
+    const HUB: &str = "hub-a";
+
     #[derive(Serialize, Deserialize)]
     struct Payload {
         a: u64,
@@ -211,18 +226,18 @@ mod tests {
     #[test]
     fn a_freshly_signed_envelope_verifies() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", Payload { a: 1, b: "x".into() });
-        let verified = envelope.verify_signature(Utc::now(), "POST", "/tasks").unwrap();
+        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, Payload { a: 1, b: "x".into() });
+        let verified = envelope.verify_signature(Utc::now(), "POST", "/tasks", HUB).unwrap();
         assert_eq!(verified, key.public_key());
     }
 
     #[test]
     fn verify_rejects_a_signature_from_a_different_key() {
         let key = PrivateKey::new_key();
-        let mut envelope = SignedEnvelope::new(&key, "POST", "/tasks", Payload { a: 1, b: "x".into() });
+        let mut envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, Payload { a: 1, b: "x".into() });
         envelope.pubkey = PrivateKey::new_key().public_key().to_string();
         assert!(matches!(
-            envelope.verify_signature(Utc::now(), "POST", "/tasks"),
+            envelope.verify_signature(Utc::now(), "POST", "/tasks", HUB),
             Err(EnvelopeError::BadSignature)
         ));
     }
@@ -230,10 +245,10 @@ mod tests {
     #[test]
     fn verify_rejects_a_tampered_payload() {
         let key = PrivateKey::new_key();
-        let mut envelope = SignedEnvelope::new(&key, "POST", "/tasks", Payload { a: 1, b: "x".into() });
+        let mut envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, Payload { a: 1, b: "x".into() });
         envelope.payload.a = 2;
         assert!(matches!(
-            envelope.verify_signature(Utc::now(), "POST", "/tasks"),
+            envelope.verify_signature(Utc::now(), "POST", "/tasks", HUB),
             Err(EnvelopeError::BadSignature)
         ));
     }
@@ -241,34 +256,35 @@ mod tests {
     #[test]
     fn verify_rejects_a_timestamp_too_far_in_the_past_or_future() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", Payload { a: 1, b: "x".into() });
+        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, Payload { a: 1, b: "x".into() });
         let too_late = envelope.timestamp + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1);
         let too_early = envelope.timestamp - Duration::seconds(MAX_REQUEST_DRIFT_SECONDS + 1);
-        assert!(matches!(envelope.verify_signature(too_late, "POST", "/tasks"), Err(EnvelopeError::ClockDrift)));
-        assert!(matches!(envelope.verify_signature(too_early, "POST", "/tasks"), Err(EnvelopeError::ClockDrift)));
+        assert!(matches!(envelope.verify_signature(too_late, "POST", "/tasks", HUB), Err(EnvelopeError::ClockDrift)));
+        assert!(matches!(envelope.verify_signature(too_early, "POST", "/tasks", HUB), Err(EnvelopeError::ClockDrift)));
     }
 
     #[test]
     fn verify_accepts_a_timestamp_right_at_the_drift_boundary() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", Payload { a: 1, b: "x".into() });
+        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, Payload { a: 1, b: "x".into() });
         let at_boundary = envelope.timestamp + Duration::seconds(MAX_REQUEST_DRIFT_SECONDS);
-        assert!(envelope.verify_signature(at_boundary, "POST", "/tasks").is_ok());
+        assert!(envelope.verify_signature(at_boundary, "POST", "/tasks", HUB).is_ok());
     }
 
     #[test]
     fn signing_string_matches_the_documented_recipe() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", Payload { a: 1, b: "x".into() });
+        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, Payload { a: 1, b: "x".into() });
         let expected = format!(
-            "{}:{}:{} {}:{}",
+            "{}:{}:{} {}:{}:{}",
             envelope.pubkey,
             envelope.timestamp.to_rfc3339(),
             "POST",
             "/tasks",
+            HUB,
             serde_json::to_string(&envelope.payload).unwrap()
         );
-        assert_eq!(envelope.signing_string("POST", "/tasks").unwrap(), expected);
+        assert_eq!(envelope.signing_string("POST", "/tasks", HUB).unwrap(), expected);
     }
 
     /// The reason the recipe changed. An envelope signed for one route
@@ -277,10 +293,10 @@ mod tests {
     #[test]
     fn an_envelope_signed_for_one_path_does_not_verify_against_another() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", ());
-        assert!(envelope.verify_signature(Utc::now(), "POST", "/faucet").is_ok());
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", HUB, ());
+        assert!(envelope.verify_signature(Utc::now(), "POST", "/faucet", HUB).is_ok());
         assert!(matches!(
-            envelope.verify_signature(Utc::now(), "POST", "/exchange/deposit"),
+            envelope.verify_signature(Utc::now(), "POST", "/exchange/deposit", HUB),
             Err(EnvelopeError::BadSignature)
         ));
     }
@@ -290,10 +306,25 @@ mod tests {
     #[test]
     fn an_envelope_signed_for_one_resource_does_not_verify_against_another() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/tasks/aaa/claim", ());
-        assert!(envelope.verify_signature(Utc::now(), "POST", "/tasks/aaa/claim").is_ok());
+        let envelope = SignedEnvelope::new(&key, "POST", "/tasks/aaa/claim", HUB, ());
+        assert!(envelope.verify_signature(Utc::now(), "POST", "/tasks/aaa/claim", HUB).is_ok());
         assert!(matches!(
-            envelope.verify_signature(Utc::now(), "POST", "/tasks/bbb/claim"),
+            envelope.verify_signature(Utc::now(), "POST", "/tasks/bbb/claim", HUB),
+            Err(EnvelopeError::BadSignature)
+        ));
+    }
+
+    /// The other half of what the recipe binds: an envelope signed for
+    /// one hub is not an envelope for another, however identical the
+    /// request -- the same key on two hubs, or a capture replayed
+    /// across them inside the drift window, is a 401 rather than an act.
+    #[test]
+    fn an_envelope_signed_for_one_hub_does_not_verify_at_another() {
+        let key = PrivateKey::new_key();
+        let envelope = SignedEnvelope::new(&key, "POST", "/faucet", HUB, ());
+        assert!(envelope.verify_signature(Utc::now(), "POST", "/faucet", HUB).is_ok());
+        assert!(matches!(
+            envelope.verify_signature(Utc::now(), "POST", "/faucet", "hub-b"),
             Err(EnvelopeError::BadSignature)
         ));
     }
@@ -301,9 +332,9 @@ mod tests {
     #[test]
     fn the_method_is_bound_too_not_just_the_path() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", ());
+        let envelope = SignedEnvelope::new(&key, "POST", "/tasks", HUB, ());
         assert!(matches!(
-            envelope.verify_signature(Utc::now(), "DELETE", "/tasks"),
+            envelope.verify_signature(Utc::now(), "DELETE", "/tasks", HUB),
             Err(EnvelopeError::BadSignature)
         ));
     }
@@ -314,10 +345,10 @@ mod tests {
     #[test]
     fn fields_cannot_be_shifted_across_the_separators() {
         let key = PrivateKey::new_key();
-        let envelope = SignedEnvelope::new(&key, "POST", "/a", "b".to_string());
+        let envelope = SignedEnvelope::new(&key, "POST", "/a", HUB, "b".to_string());
         assert_ne!(
-            envelope.signing_string("POST", "/a").unwrap(),
-            envelope.signing_string("POST", "/a:").unwrap()
+            envelope.signing_string("POST", "/a", HUB).unwrap(),
+            envelope.signing_string("POST", "/a:", HUB).unwrap()
         );
     }
 }

@@ -41,11 +41,12 @@ fn fixture_entry<T: Serialize>(
     timestamp: DateTime<Utc>,
     method: &str,
     path: &str,
+    hub: &str,
     payload: T,
 ) -> Value {
-    let envelope = SignedEnvelope::new_at(private_key, timestamp, method, path, payload);
+    let envelope = SignedEnvelope::new_at(private_key, timestamp, method, path, hub, payload);
     let signing_string = envelope
-        .signing_string(method, path)
+        .signing_string(method, path, hub)
         .expect("every fixture payload below is a plain serializable struct");
     let payload_json = serde_json::to_string(&envelope.payload).unwrap();
     json!({
@@ -55,6 +56,7 @@ fn fixture_entry<T: Serialize>(
         "timestamp": envelope.timestamp.to_rfc3339(),
         "method": method,
         "path": path,
+        "hub": hub,
         "payload_json": payload_json,
         "expected_signing_string": signing_string,
         "expected_signature_hex": envelope.signature,
@@ -84,6 +86,11 @@ fn main() {
 
     let (key_a, seed_a) = fixed_key(b"itx fixture key A");
     let (key_b, seed_b) = fixed_key(b"itx fixture key B");
+    // Two hubs, so the fixture file can pin the hub binding the way it
+    // pins the path binding: the same request, signed for the other
+    // hub, must produce a different signature.
+    let hub_a = fixed_key(b"itx fixture hub A").0.public_key().to_string();
+    let hub_b = fixed_key(b"itx fixture hub B").0.public_key().to_string();
 
     let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
     let t2 = Utc
@@ -91,7 +98,12 @@ fn main() {
         .unwrap()
         + chrono::Duration::milliseconds(123);
 
-    fixtures.push(fixture_entry("unit_payload", &key_a, seed_a, t1, "POST", "/faucet", ()));
+    fixtures.push(fixture_entry("unit_payload", &key_a, seed_a, t1, "POST", "/faucet", &hub_a, ()));
+
+    // The same key, timestamp, path and payload as `unit_payload`,
+    // signed for a different hub. An implementation that ignored the hub
+    // would produce `unit_payload`'s signature here and fail.
+    fixtures.push(fixture_entry("same_request_different_hub", &key_a, seed_a, t1, "POST", "/faucet", &hub_b, ()));
 
     // The same key, timestamp and payload as `unit_payload`, differing
     // only in the path -- and `/faucet` and `/exchange/deposit` are one
@@ -99,7 +111,7 @@ fn main() {
     // apart. A Python implementation that ignored the path would produce
     // the signature above for this entry and fail here, which is the
     // single most valuable thing this fixture file now pins.
-    fixtures.push(fixture_entry("same_payload_different_path", &key_a, seed_a, t1, "POST", "/exchange/deposit", ()));
+    fixtures.push(fixture_entry("same_payload_different_path", &key_a, seed_a, t1, "POST", "/exchange/deposit", &hub_a, ()));
 
     fixtures.push(fixture_entry(
         "simple_struct",
@@ -108,6 +120,7 @@ fn main() {
         t1,
         "POST",
         "/tasks/11111111-2222-3333-4444-555555555555/claim",
+        &hub_a,
         ClaimLikePayload {
             task_id: "11111111-2222-3333-4444-555555555555".to_string(),
         },
@@ -120,6 +133,7 @@ fn main() {
         t2,
         "POST",
         "/tasks/escrow",
+        &hub_a,
         RichPayload {
             description: "reference SDK fixture task".to_string(),
             bounty: 1_000_000,
@@ -135,6 +149,7 @@ fn main() {
         t1,
         "POST",
         "/tasks",
+        &hub_a,
         RichPayload {
             description: "no tags".to_string(),
             bounty: 10,
@@ -156,6 +171,7 @@ fn main() {
         t2,
         "POST",
         "/tasks/consensus",
+        &hub_a,
         UnicodeStressPayload {
             note: "caf\u{e9} \"quoted\" \\ newline:\n \u{30c6}\u{30b9}\u{30c8} \u{1f984}".to_string(),
         },

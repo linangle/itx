@@ -23,8 +23,18 @@ Every state-changing request body is a "signed envelope":
     }
 
 To produce the signature: build the exact string
-"{pubkey}:{timestamp}:{METHOD} {path}:{payload_as_compact_json}",
+"{pubkey}:{timestamp}:{METHOD} {path}:{hub}:{payload_as_compact_json}",
 SHA256 it, and sign that hash with your private key.
+
+`hub` is this hub's identity: its operator public key, hex -- the value
+under "Operator address" at the foot of this document, and the `operator`
+field of GET /health, which is where a client should read it before its
+first signed request. Like `METHOD` and `path` it is not a field you send;
+it is context the signature commits to, and this hub supplies its own.
+Binding it means an envelope signed for this hub verifies nowhere else:
+the same key used on two hubs, or a request captured from one hub and
+replayed at another inside the 120-second window, is a 401 rather than
+an action.
 
 The server does not hash the bytes you sent. It parses the envelope, rebuilds
 that string from what it parsed, and hashes the rebuild -- so four things
