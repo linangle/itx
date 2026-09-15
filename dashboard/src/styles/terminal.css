@@ -319,7 +319,7 @@ body.itx-body[data-theme="light"] {
 .itx-sidebar a {
   color: var(--text-dim);
   padding: var(--sp-3) var(--sp-5);
-  border-radius: 999px;
+  border-radius: var(--radius-field);
   font-size: var(--fs-body);
 }
 
@@ -335,15 +335,16 @@ body.itx-body[data-theme="light"] {
   font-weight: 600;
 }
 
-/* The heading over a group of nav entries. Set like a table header --
-   micro, faint -- so it reads as a label for what follows rather than as
-   another destination. The top margin is what separates one group from
-   the entries above it. */
+/* The heading over a group of nav entries. The entries' own size and
+   face, one weight up and one shade down, so it reads as the label for
+   what follows rather than as another destination -- and not as a
+   smaller, tracked-out second typeface, which is what a micro label
+   above body-size entries looked like. The top margin is what separates
+   one group from the entries above it. */
 .itx-sidebar-caption {
-  font-size: var(--fs-micro);
-  font-family: var(--font-mono);
-  letter-spacing: 0.5px;
-  color: var(--text-faint);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-dim);
   padding: var(--sp-2) var(--sp-5);
   margin-top: var(--sp-5);
 }
@@ -430,7 +431,6 @@ body.itx-body[data-theme="light"] {
   font-size: var(--fs-meta);
   font-weight: 600;
   color: var(--text-dim);
-  letter-spacing: 0.6px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -512,14 +512,15 @@ body.itx-body[data-theme="light"] {
    authored lower case in the markup rather than being upper-cased here,
    so what a screen reader reads out and what the eye reads are the same
    string -- `text-transform` could not tell `ITX` from a sentence. */
+/* A heading is not smaller than what it heads: the header row is the
+   table's own size, in weight rather than in size or tracking. */
 .itx-table th {
   text-align: left;
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: var(--fs-micro);
+  font-size: var(--fs-body);
   color: var(--text-faint);
   background: transparent;
-  letter-spacing: 0.5px;
   padding: var(--sp-3) var(--sp-5) var(--sp-4);
   border: none;
   border-bottom: 1px solid var(--border);
@@ -642,14 +643,17 @@ body.itx-body[data-theme="light"] {
 
 /* ---------------------------------------------------------------- badges */
 
+/* The corner is the field radius scaled to the badge's height -- the
+   same shape as the controls above the table, not a pill. Nothing else
+   on these pages is a pill any more; the filter fields, the panels and
+   the nav's active row all turn the same way. */
 .itx-badge {
   display: inline-block;
   padding: 1px var(--sp-4);
-  border-radius: 999px;
+  border-radius: 6px;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   font-weight: 600;
-  letter-spacing: 0.4px;
   border: 1px solid transparent;
 }
 
@@ -684,6 +688,14 @@ body.itx-body[data-theme="light"] {
   font-size: var(--fs-micro);
   color: var(--text-dim);
   font-family: var(--font-mono);
+}
+
+/* In a table every cell is the table's size. The micro size is for a
+   kind riding beside a title or a badge, where it is the smaller fact;
+   as a column of its own it was two points under the task beside it, for
+   no reason a reader could name. */
+.itx-table td.itx-kind {
+  font-size: inherit;
 }
 
 .itx-pubkey {
@@ -1211,7 +1223,6 @@ a.itx-chip:hover {
 .itx-step-label {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  letter-spacing: 0.4px;
   color: var(--text-faint);
   margin-top: var(--sp-3);
   overflow: hidden;
@@ -1270,7 +1281,6 @@ a.itx-chip:hover {
 .itx-callout-head {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  letter-spacing: 0.5px;
   color: var(--down);
   margin-bottom: var(--sp-3);
 }
@@ -1289,7 +1299,6 @@ a.itx-chip:hover {
 .itx-facts dt {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  letter-spacing: 0.4px;
   color: var(--text-faint);
   padding-top: var(--sp-1);
 }
