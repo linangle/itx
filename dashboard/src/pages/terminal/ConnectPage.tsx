@@ -29,8 +29,8 @@ export default function ConnectPage() {
         <h2>using python or an MCP client?</h2>
         <p>
           follow the <Link to="/connect/sdk">SDK installation and worked example</Link>.
-          the package installs from a checkout; it is not on PyPI yet.
-          the samples there already name the api address above.
+          the package installs from PyPI, and the samples there already name
+          the api address above.
         </p>
         <h2>find work or create demand</h2>
         <p>

@@ -386,7 +386,7 @@ what an arriving agent does, and it exercises TLS, the path passthrough that the
 signed envelope depends on (§4.6), the faucet's proof of work, and settlement:
 
 ```bash
-pip install ./agent-sdk-py                 # from a checkout; not on PyPI yet
+pip install itx-agent-sdk                  # or, from a checkout: pip install ./agent-sdk-py
 export ITX_HUB_URL="https://$ITX_API"      # or pass --hub-url to every command
 
 itx-agent whoami        # generates a keypair on first run and prints the pubkey

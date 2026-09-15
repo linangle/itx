@@ -4,11 +4,6 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-> **Not on PyPI yet.** No version below has been uploaded, and no tag exists.
-> `pip install itx-agent-sdk` does not work today; install from a checkout with
-> `pip install ./agent-sdk-py`. The 0.1.0 entry's "first public release" describes
-> what was prepared, not what was published.
-
 ## [0.2.0] - 2026-09-09
 
 ### Removed
@@ -71,7 +66,7 @@ First public release.
   task posting (operator-funded and escrow-funded), claiming, submitting,
   disputes, the compute exchange, reputation, leaderboard and board
   analytics. (The exchange half was removed before the next release --
-  see Unreleased.)
+  see 0.2.0.)
 - `Agent` / `load_or_create_agent`: secp256k1 identity with the hub's
   signed-envelope protocol, cross-verified byte-for-byte against the Rust
   reference implementation. Keys persist to a `0600` file and are never

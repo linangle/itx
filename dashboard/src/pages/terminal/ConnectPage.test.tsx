@@ -16,7 +16,7 @@ it("hands an arriving agent the deployed API, not the site host or a package tha
     .toContain("https://hub.market.test/llms.txt");
   expect(screen.getByRole("link", { name: "read the agent manual" }))
     .toHaveAttribute("href", "https://hub.market.test/llms.txt");
-  expect(screen.getByText(/it is not on PyPI yet/)).toBeInTheDocument();
+  expect(screen.getByText(/installs from PyPI/)).toBeInTheDocument();
   // The guide lives on the site, not in the repository's file tree.
   expect(screen.getByRole("link", { name: "SDK installation and worked example" }))
     .toHaveAttribute("href", "/connect/sdk");

@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import SdkPage from "./SdkPage";
-import { AGENT, COMMAND, INSTALL, README_HUB, forThisHub } from "./sdkSamples";
+import { AGENT, COMMAND, INSTALL, MCP_CLAUDE_CODE, README_HUB, forThisHub } from "./sdkSamples";
 // The README itself, as text: Vite's `?raw` rather than `node:fs`, since
 // the app's tsconfig knows Vite's module types and not Node's.
 import readme from "../../../../agent-sdk-py/README.md?raw";
@@ -26,6 +26,7 @@ describe("the samples are the README's", () => {
     ["install", INSTALL],
     ["worked agent", AGENT],
     ["itx-agent command", COMMAND],
+    ["claude code", MCP_CLAUDE_CODE],
   ])("%s", (_name, sample) => {
     expect(blocks.get(sample.split("\n")[0])).toBe(sample);
   });

@@ -16,13 +16,13 @@ export function forThisHub(sample: string, hub: string): string {
   return sample.split(README_HUB).join(hub);
 }
 
-/** Where the checkout comes from. Not in the README, whose reader is
- * already in one. */
+/** Where the source comes from, for a reader who wants it. Not in the
+ * README, whose reader is already in it. */
 export const CLONE = `git clone https://github.com/linangle/itx.git && cd itx`;
 
-export const INSTALL = `pip install ./agent-sdk-py           # the client library
-pip install "./agent-sdk-py[mcp]"    # plus the MCP server
-uv tool install ./agent-sdk-py       # the itx-agent command on your PATH`;
+export const INSTALL = `pip install itx-agent-sdk             # the client library
+pip install "itx-agent-sdk[mcp]"      # plus the MCP server
+uv tool install itx-agent-sdk         # the itx-agent command on your PATH`;
 
 export const AGENT = `import argparse
 
@@ -83,22 +83,18 @@ itx-agent submit <id> "the answer"  # or: --file answer.txt, or "-" for stdin
 itx-agent status                    # reputation and this agent's own tasks
 itx-agent llms                      # the hub's machine-readable manual`;
 
-/* The README writes the MCP commands in the by-name form (`--from
- * "itx-agent-sdk[mcp]"`), which is what they become once the package is
- * on PyPI -- and it says so. Until then that is the first command an
- * arriving agent runs that fails, so these two name the checkout
- * instead; the MCP client starts the server from its own working
- * directory, which is why the JSON form needs the checkout's full path. */
+/* The README's MCP commands, by name; the Claude Code one is held to
+ * the README by test like the rest. */
 export const MCP_CLAUDE_CODE = `claude mcp add itx \\
   -e ITX_HUB_URL=http://127.0.0.1:9100 \\
   -e ITX_AGENT_KEY_FILE=~/.itx/agent.key \\
-  -- uvx --from "./agent-sdk-py[mcp]" itx-agent-mcp-server`;
+  -- uvx --from "itx-agent-sdk[mcp]" itx-agent-mcp-server`;
 
 export const MCP_JSON = `{
   "mcpServers": {
     "itx": {
       "command": "uvx",
-      "args": ["--from", "/path/to/itx/agent-sdk-py[mcp]", "itx-agent-mcp-server"],
+      "args": ["--from", "itx-agent-sdk[mcp]", "itx-agent-mcp-server"],
       "env": {
         "ITX_HUB_URL": "http://127.0.0.1:9100",
         "ITX_AGENT_KEY_FILE": "~/.itx/agent.key"

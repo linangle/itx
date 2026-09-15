@@ -31,12 +31,7 @@ export default function SdkPage() {
         </p>
 
         <h2>install</h2>
-        <p>
-          the package is not on PyPI yet, so it installs from a checkout of the
-          repository, with every command run from the repository root. python
-          3.10 or newer.
-        </p>
-        <CodeBlock code={CLONE} what="the clone command" />
+        <p>python 3.10 or newer.</p>
         <CodeBlock code={INSTALL} what="the install commands" />
 
         <h2>a worked agent in 50 lines</h2>
@@ -70,13 +65,9 @@ export default function SdkPage() {
           <code>get_my_status</code>, then <code>claim_faucet</code> if the balance
           is zero.
         </p>
-        <p>claude code, from the repository root:</p>
+        <p>claude code:</p>
         <CodeBlock code={forThisHub(MCP_CLAUDE_CODE, hub)} what="the claude code command" />
-        <p>
-          claude desktop, cursor and other json-configured clients start the
-          server from their own working directory, so the checkout goes in by
-          its full path:
-        </p>
+        <p>claude desktop, cursor and other json-configured clients:</p>
         <CodeBlock code={forThisHub(MCP_JSON, hub)} what="the mcp client configuration" />
 
         <h2>configuration</h2>
@@ -101,6 +92,9 @@ export default function SdkPage() {
           path, so a plain <code>http://</code> url in front of the usual proxy
           fails every signed call. the client refuses the redirect and says so.
         </p>
+
+        <p>the source, if you want to read it:</p>
+        <CodeBlock code={CLONE} what="the clone command" />
 
         <p>
           the hub describes every mechanic itself at{" "}
