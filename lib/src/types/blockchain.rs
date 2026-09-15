@@ -115,9 +115,7 @@ impl Blockchain {
     }
 
     pub fn calculate_block_reward(&self) -> u64 {
-        let block_height = self.block_height();
-        let halvings = block_height / crate::HALVING_INTERVAL;
-        (crate::INITIAL_REWARD * 10u64.pow(8)) >> halvings
+        crate::block_reward_at_height(self.block_height())
     }
 
     pub fn create_block_template(&self, pubkey: PublicKey) -> Result<Block> {
@@ -1500,6 +1498,39 @@ mod tests {
         );
         blockchain.add_to_mempool(honest).unwrap();
         assert_eq!(blockchain.mempool().len(), 1);
+    }
+
+    /// At the 64th halving -- height 504,000, about 93 days in at
+    /// 16-second blocks -- the coinbase check divided by `2u64.pow(64)`,
+    /// which overflows, and every block from there on failed
+    /// verification: the chain could accept nothing more. The reward
+    /// has been zero since the 33rd halving; the check should say so
+    /// and move on.
+    #[test]
+    fn a_block_past_the_sixty_fourth_halving_still_verifies_its_coinbase() {
+        let (blockchain, genesis_hash, genesis_ts) = chain_with_real_genesis();
+        let coinbase = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: 0,
+                unique_id: Uuid::new_v4(),
+                pubkey: PrivateKey::new_key().public_key(),
+            }],
+        );
+        let header = BlockHeader::new(
+            genesis_ts + chrono::Duration::seconds(1),
+            0,
+            genesis_hash,
+            MerkleRoot::calculate(&[coinbase.clone()]),
+            blockchain.target(),
+        );
+        let block = Block::new(header, vec![coinbase]);
+        for height in [33 * crate::HALVING_INTERVAL, 64 * crate::HALVING_INTERVAL, u64::MAX] {
+            assert!(
+                block.verify_coinbase_transaction(height, &HashMap::new()).is_ok(),
+                "a zero coinbase must verify at height {height}"
+            );
+        }
     }
 
     #[test]

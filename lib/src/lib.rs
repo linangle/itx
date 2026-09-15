@@ -32,6 +32,26 @@ pub const INITIAL_REWARD: u64 = 50;
 // permanently zeroing mining income far sooner than the project's own
 // economics were designed around).
 pub const HALVING_INTERVAL: u64 = 7875;
+
+/// The coinbase reward at `height`, in base units: `INITIAL_REWARD`
+/// halved once per `HALVING_INTERVAL`, and zero from the 33rd halving
+/// on, since 50 * 10^8 < 2^33.
+///
+/// One function for both sides of the chain, because there were two.
+/// Block verification divided by `2u64.pow(halvings)`, which overflows
+/// at the 64th halving -- height 504,000, about 93 days in at 16-second
+/// blocks -- and panicked; the template shifted by `halvings`, which
+/// the same height overflows the other way. From that block on nothing
+/// could be verified, so the chain could accept no block at all. A
+/// shift past the width is simply zero here, which is what the reward
+/// has been for thirty-one halvings by then anyway.
+pub fn block_reward_at_height(height: u64) -> u64 {
+    let halvings = height / HALVING_INTERVAL;
+    if halvings >= u64::BITS as u64 {
+        return 0;
+    }
+    (INITIAL_REWARD * 10u64.pow(8)) >> halvings
+}
 // Ideal block time in seconds -- 16, not 600 (Bitcoin's own value) and not
 // the rounder-looking 15: IDEAL_BLOCK_TIME * DIFFICULTY_UPDATE_INTERVAL
 // needs to be evenly divisible by 4 for `adjust_target`'s clamp-to-1/4
@@ -143,5 +163,18 @@ mod tests {
     #[test]
     fn min_target_has_positive_work() {
         assert!(work_from_target(MIN_TARGET) > U256::zero());
+    }
+
+    #[test]
+    fn the_block_reward_halves_and_then_stays_at_zero_past_the_shift_width() {
+        let full = INITIAL_REWARD * 10u64.pow(8);
+        assert_eq!(block_reward_at_height(0), full);
+        assert_eq!(block_reward_at_height(HALVING_INTERVAL - 1), full);
+        assert_eq!(block_reward_at_height(HALVING_INTERVAL), full / 2);
+        assert_eq!(block_reward_at_height(32 * HALVING_INTERVAL), 1);
+        assert_eq!(block_reward_at_height(33 * HALVING_INTERVAL), 0);
+        // The 64th halving: `2u64.pow(64)` and `x >> 64` both overflow.
+        assert_eq!(block_reward_at_height(64 * HALVING_INTERVAL), 0);
+        assert_eq!(block_reward_at_height(u64::MAX), 0);
     }
 }
