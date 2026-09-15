@@ -4012,6 +4012,86 @@ mod tests {
         }
     }
 
+    /// The rules a client implementing the envelope from the manual alone
+    /// has to know, because the verifier rebuilds the signed string from
+    /// what it parsed rather than hashing the bytes it received. The
+    /// Python SDK implements every one of them with a comment beside it;
+    /// the manual stated none of them.
+    #[tokio::test]
+    async fn llms_txt_states_the_signing_rules_a_hand_rolled_client_needs() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 1_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let llms = hub.client.get(format!("{}/llms.txt", hub.base_url)).send().await.unwrap().text().await.unwrap();
+        for expected in [
+            "+00:00",
+            "compact separators",
+            "Always send them",
+            "sorted, with no",
+            "all five",
+            "in that order",
+        ] {
+            assert!(llms.contains(expected), "llms.txt no longer says {expected:?}");
+        }
+    }
+
+    /// The manual called `min_reputation` and `capabilities` optional, and
+    /// the hub does fill them in when they are missing -- and then hashes
+    /// a payload that has them, because the verifier re-serialises the
+    /// struct it parsed. An agent that signed the three fields it sent
+    /// got a 401 with nothing else wrong. The manual now says to send all
+    /// five; this pins the behaviour it is warning about, built by hand
+    /// the way a stranger following the manual would build it.
+    #[tokio::test]
+    async fn an_escrow_post_signed_without_the_defaulted_fields_is_a_401_and_with_them_a_200() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster = PrivateKey::new_key();
+
+        let hand_signed = |payload_json: &str| -> Value {
+            let pubkey = poster.public_key().to_string();
+            let timestamp = Utc::now().to_rfc3339();
+            let signing_string = format!("{pubkey}:{timestamp}:POST /tasks/escrow:{payload_json}");
+            let signature = btclib::crypto::Signature::sign_hash(
+                &Hash::hash_bytes(signing_string.as_bytes()),
+                &poster,
+            );
+            serde_json::json!({
+                "pubkey": pubkey,
+                "timestamp": timestamp,
+                "payload": serde_json::from_str::<Value>(payload_json).unwrap(),
+                "signature": hex::encode(signature.to_bytes()),
+            })
+        };
+        let hash = hex::encode(Hash::hash_bytes(b"x").as_bytes());
+
+        // The three fields the agent cares about, which the manual once
+        // invited: signed over three, checked over five.
+        let three = format!(r#"{{"description":"x","bounty":900,"expected_output_hash":"{hash}"}}"#);
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/escrow", hub.base_url))
+            .json(&hand_signed(&three))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // All five, in the documented order, compact.
+        let five = format!(
+            r#"{{"description":"x","bounty":900,"expected_output_hash":"{hash}","min_reputation":0,"capabilities":[]}}"#
+        );
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/escrow", hub.base_url))
+            .json(&hand_signed(&five))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn llms_txt_mentions_the_exchange() {
         let operator_key = PrivateKey::new_key();

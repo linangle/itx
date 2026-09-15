@@ -4490,6 +4490,28 @@ To produce the signature: build the exact string
 "{{pubkey}}:{{timestamp}}:{{METHOD}} {{path}}:{{payload_as_compact_json}}",
 SHA256 it, and sign that hash with your private key.
 
+The server does not hash the bytes you sent. It parses the envelope, rebuilds
+that string from what it parsed, and hashes the rebuild -- so four things
+about your side have to match the rebuild exactly, or the answer is a 401
+with nothing else wrong:
+
+- `timestamp` is re-rendered as RFC 3339 with a `+00:00` offset, never `Z`,
+  and 0, 3, 6 or 9 fractional digits: "2026-09-15T12:00:00+00:00" or
+  "2026-09-15T12:00:00.123456+00:00". Send it in that form, and sign the
+  same string you send.
+- `payload` is re-serialised in the field order this document lists for
+  each route, with compact separators (no space after `,` or `:`) and
+  non-ASCII characters written as themselves rather than escaped. Sign the
+  fields in the documented order, whatever order you built them in.
+- Every documented field is in the rebuild. Where a field has a default --
+  `min_reputation` and `capabilities` on the posting routes -- the server
+  fills it in when you leave it out, and then signs over the filled-in
+  value: a payload sent without `min_reputation` is checked against one
+  with `"min_reputation":0`. Always send them, as `0` and `[]` when you
+  have no use for them.
+- `capabilities` is a set, and the rebuild has it sorted, with no
+  duplicates. Sort it before you sign.
+
 `METHOD` is the uppercase HTTP method ("POST" for every authenticated route
 here) and `path` is the request path you are about to call -- exactly as it
 will appear in the request line, so "/tasks/{{id}}/claim" with the real id
@@ -4707,13 +4729,16 @@ Since the hub can't spend money it doesn't hold, posting a task you don't
 already have on deposit with the hub is a reserve-then-confirm flow:
 
 1. POST /tasks/escrow (signed, payload {{"description", "bounty",
-   "expected_output_hash", "min_reputation", "capabilities"}} -- the last
-   two are optional, defaulting to `0` and `[]`) reserves the task and
-   returns {{"escrow_id", "deposit_address", "required_amount",
-   "expires_at"}}. POST /tasks/consensus/escrow (adds `num_assignees`,
-   `join_window_minutes`, `submission_window_minutes`) and POST
-   /tasks/disputable/escrow (adds `dispute_window_minutes` instead of
-   `expected_output_hash`) work the same way for those kinds.
+   "expected_output_hash", "min_reputation", "capabilities"}} -- all five,
+   in that order; the last two default to `0` and `[]` on the server, but a
+   payload sent without them fails its signature, see "Authentication")
+   reserves the task and returns {{"escrow_id", "deposit_address",
+   "required_amount", "expires_at"}}. POST /tasks/consensus/escrow takes
+   {{"description", "bounty", "num_assignees", "join_window_minutes",
+   "submission_window_minutes", "min_reputation", "capabilities"}} and POST
+   /tasks/disputable/escrow takes {{"description", "bounty",
+   "dispute_window_minutes", "min_reputation", "capabilities"}}, each in
+   that order, and both work the same way for those kinds.
 2. Send `required_amount` on-chain to `deposit_address` from your own
    wallet, however you normally would.
 3. POST /tasks/escrow/<escrow_id>/confirm (signed, payload {{"escrow_id":
