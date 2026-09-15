@@ -608,6 +608,19 @@ body.itx-body[data-theme="light"] {
    where they are, and does nothing at all on a wide window. */
 .itx-table-scroll {
   overflow-x: auto;
+  /* Overlay scrollbars -- macOS, every phone -- draw nothing until the
+     reader scrolls, so a table wider than its panel simply ended at the
+     panel's edge and read as clipped: the age column was there, one
+     swipe to the right, and nothing said so. These paint a shade at
+     whichever edge has more table behind it. The two `local` gradients
+     ride with the content and cover the two `scroll` shades until that
+     end comes into view; cells are transparent, so the shading shows
+     through the rows. On a wide window neither shade is ever uncovered. */
+  background:
+    linear-gradient(to right, var(--panel) 40%, transparent) 0 0 / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--panel) 40%, transparent) 100% 0 / 28px 100% no-repeat local,
+    linear-gradient(to right, color-mix(in srgb, var(--text) 16%, transparent), transparent) 0 0 / 14px 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in srgb, var(--text) 16%, transparent), transparent) 100% 0 / 14px 100% no-repeat scroll;
 }
 
 .itx-table tbody tr:hover {
@@ -628,8 +641,14 @@ body.itx-body[data-theme="light"] {
      to every other one, which is right while there is space to surrender
      and wrong once there isn't -- at a narrow window the descriptions
      became a column of ellipses. Below this the table stops shrinking and
-     scrolls sideways inside `.itx-table-scroll` instead. */
-  min-width: 200px;
+     scrolls sideways inside `.itx-table-scroll` instead.
+
+     140, down from 200: with the other seven columns at their natural
+     width the task list's floor was 916px, and a window squeezed to
+     eleven hundred -- a panel of about 865 -- already lost the age
+     column past the edge. At 140 the same window keeps all eight, with
+     a few pixels to spare for the widths rounding differently. */
+  min-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
