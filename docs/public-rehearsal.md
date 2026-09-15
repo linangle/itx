@@ -293,14 +293,24 @@ out. **This is the line no rehearsal so far has been able to produce.**
 
 Two certificates, two lineages — one `certbot` invocation per name, never one
 with two `-d` flags, because the two `server` blocks name two separate paths
-under `/etc/letsencrypt/live/` (see the header of `deploy/nginx.conf`):
+under `/etc/letsencrypt/live/` (see the header of `deploy/nginx.conf`). Issue
+them **before** the config is installed and nginx is running, with certbot's
+own listener on :80, because nginx will not start on a missing certificate and
+`certonly --nginx` would have nothing to drive:
 
 ```bash
-sudo certbot certonly --nginx -d "$ITX_SITE"
-sudo certbot certonly --nginx -d "$ITX_API"
-sudo certbot renew --dry-run          # gate: the renewal path, which Caddy does for you
+sudo certbot certonly --standalone -d "$ITX_SITE" \
+     --pre-hook 'systemctl stop nginx' --post-hook 'systemctl start nginx'
+sudo certbot certonly --standalone -d "$ITX_API" \
+     --pre-hook 'systemctl stop nginx' --post-hook 'systemctl start nginx'
+# now install deploy/nginx.conf, `sudo nginx -t`, `sudo systemctl enable --now nginx`
+sudo certbot renew --dry-run          # gate: the renewal path, hooks included -- nginx blips
 systemctl list-timers | grep certbot  # gate: the timer exists and is scheduled
 ```
+
+The hooks are the part that matters in sixty days: `certonly` records no
+installer, so without them a renewal succeeds and nginx keeps serving the
+expired certificate.
 
 `certbot renew --dry-run` is the single most valuable command in this document
 for an nginx deployment, because renewal is the part that fails silently three
