@@ -196,11 +196,24 @@ impl Blockchain {
         let mut known_inputs = HashSet::new();
 
         for input in &transaction.inputs {
-            if !self.utxos.contains_key(&input.prev_transaction_output_hash) {
+            let Some((_, prev_output)) = self.utxos.get(&input.prev_transaction_output_hash) else {
                 return Err(BtcError::InvalidTransaction);
-            }
+            };
             if known_inputs.contains(&input.prev_transaction_output_hash) {
                 return Err(BtcError::InvalidTransaction);
+            }
+            // The chain's only signature check lived in block
+            // verification, so the mempool took anyone's word for who
+            // owned an input. A well-formed spend of somebody else's
+            // output under a garbage signature was admitted, marked that
+            // output spent on the way in -- which is what every balance
+            // read and the hub's payment builder go by -- sat in every
+            // template until the block carrying it was rejected, and
+            // struck the miner that mined it. Verify here, the way
+            // `Block::verify_transactions` does, before anything is
+            // marked.
+            if !input.signature.verify(&prev_output.hash(), &prev_output.pubkey) {
+                return Err(BtcError::InvalidSignature);
             }
             known_inputs.insert(input.prev_transaction_output_hash);
         }
@@ -1417,6 +1430,76 @@ mod tests {
         assert!(header2.mine(1_000_000));
         assert!(blockchain.add_block(Block::new(header2, transactions2)).is_err());
         assert_eq!(blockchain.utxos().len(), utxos_before, "a refused block changes nothing");
+    }
+
+    /// The mempool admitted a spend of someone else's output on the
+    /// strength of a signature it never checked, and marked the output
+    /// spent on the way in. Signed with the wrong key, the spend is now
+    /// refused before anything is marked, and the rightful owner can
+    /// still spend the same output afterwards.
+    #[test]
+    fn a_spend_signed_by_the_wrong_key_is_refused_by_the_mempool() {
+        let (mut blockchain, genesis_hash, genesis_ts) = chain_with_real_genesis();
+        let target = blockchain.target();
+        let reward = blockchain.calculate_block_reward();
+
+        let owner = PrivateKey::new_key();
+        let coinbase1 = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: reward,
+                unique_id: Uuid::new_v4(),
+                pubkey: owner.public_key(),
+            }],
+        );
+        let merkle_root1 = MerkleRoot::calculate(&[coinbase1.clone()]);
+        let mut header1 = BlockHeader::new(
+            genesis_ts + chrono::Duration::seconds(1),
+            0,
+            genesis_hash,
+            merkle_root1,
+            target,
+        );
+        assert!(header1.mine(1_000_000));
+        let block1 = Block::new(header1, vec![coinbase1]);
+        let spendable = block1.transactions[0].outputs[0].clone();
+        blockchain.add_block(block1).unwrap();
+
+        let thief = PrivateKey::new_key();
+        let forged = Transaction::new(
+            vec![TransactionInput {
+                prev_transaction_output_hash: spendable.hash(),
+                signature: Signature::sign_output(&spendable.hash(), &thief),
+            }],
+            vec![TransactionOutput {
+                value: 0,
+                unique_id: Uuid::new_v4(),
+                pubkey: thief.public_key(),
+            }],
+        );
+        assert!(
+            matches!(blockchain.add_to_mempool(forged), Err(BtcError::InvalidSignature)),
+            "a spend the owner did not sign must be refused"
+        );
+        assert!(blockchain.mempool().is_empty());
+        assert!(
+            !blockchain.utxos()[&spendable.hash()].0,
+            "a refused spend must not mark the output it names"
+        );
+
+        let honest = Transaction::new(
+            vec![TransactionInput {
+                prev_transaction_output_hash: spendable.hash(),
+                signature: Signature::sign_output(&spendable.hash(), &owner),
+            }],
+            vec![TransactionOutput {
+                value: reward,
+                unique_id: Uuid::new_v4(),
+                pubkey: PrivateKey::new_key().public_key(),
+            }],
+        );
+        blockchain.add_to_mempool(honest).unwrap();
+        assert_eq!(blockchain.mempool().len(), 1);
     }
 
     #[test]
