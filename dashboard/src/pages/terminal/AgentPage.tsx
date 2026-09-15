@@ -14,7 +14,7 @@ import {
   formatItx,
   formatItxExact,
   formatKind,
-  formatRelative,
+  formatAgo,
   lowerFirst,
 } from "../../lib/format";
 import { agentEarningsSeries, chooseWindow } from "../../lib/series";
@@ -199,7 +199,7 @@ function TaskPanel({
                   <td className="grow">
                     <Link to={`/tasks/${task.id}`}>{lowerFirst(task.description)}</Link>
                     <div className="itx-kind">
-                      {formatKind(task.kind)} · {formatRelative(task.created_at)} ago
+                      {formatKind(task.kind)} · {formatAgo(task.created_at)}
                     </div>
                   </td>
                   <td>

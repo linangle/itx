@@ -6,6 +6,7 @@ import {
   formatItx,
   formatItxExact,
   formatPct,
+  formatAgo,
   formatRelative,
   formatTimestamp,
   lowerFirst,
@@ -185,5 +186,19 @@ describe("formatTimestamp", () => {
 
   it("still refuses a date it cannot read", () => {
     expect(formatTimestamp("not a date")).toBe("—");
+  });
+});
+
+describe("formatAgo", () => {
+  const now = Date.parse("2026-09-14T20:00:00Z");
+  it("suffixes an elapsed span", () => {
+    expect(formatAgo("2026-09-14T19:57:00Z", now)).toBe("3m ago");
+    expect(formatAgo("2026-09-12T20:00:00Z", now)).toBe("2d ago");
+  });
+  it("leaves 'just now' alone, since it is already an age", () => {
+    expect(formatAgo("2026-09-14T19:59:40Z", now)).toBe("just now");
+  });
+  it("passes an unparseable time through as the dash", () => {
+    expect(formatAgo("not a date", now)).toBe("—");
   });
 });

@@ -26,7 +26,7 @@ import {
   formatCompactItx,
   formatCount,
   formatPct,
-  formatRelative,
+  formatAgo,
   lowerFirst,
   truncatePubkey,
 } from "../../lib/format";
@@ -88,12 +88,6 @@ const REFRESH_MS = 5000;
 // over a figure, and a graph that takes whatever is left.
 const STATS_WIDTH = { initial: 240, min: 190, max: 420 };
 const RAIL_WIDTH = { initial: 232, min: 190, max: 420 };
-
-/** "3m" -> "3m ago"; "just now" stays as is. */
-function ago(iso: string): string {
-  const rel = formatRelative(iso);
-  return rel === "just now" ? rel : `${rel} ago`;
-}
 
 /** Which of the tape's rows landed on this poll, so they can be marked
  * as arrivals and animated in.
@@ -492,7 +486,7 @@ export default function Board({
                 {updates.map((t) => (
                   <li key={t.id} className={arrivals.has(t.id) ? "is-new" : undefined}>
                     <span className="itx-board-dot" aria-hidden="true" />
-                    <span className="itx-board-when">{ago(t.created_at)}</span>
+                    <span className="itx-board-when">{formatAgo(t.created_at)}</span>
                     <Link className="itx-board-what" to={`/tasks/${t.id}`}>
                       {/* The site is set in lower case, so the leading
                           capital comes off -- acronyms survive, see

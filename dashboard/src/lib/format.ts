@@ -137,6 +137,14 @@ export function formatRelative(iso: string, now: number = Date.now()): string {
   return `${Math.floor(delta / DAY)}d`;
 }
 
+/** `formatRelative` read as an age: `3m ago`, `2d ago`. `just now` is
+ * already an age and takes no suffix -- "just now ago" is what every
+ * caller that appended the word itself printed for a fresh task. */
+export function formatAgo(iso: string, now: number = Date.now()): string {
+  const delta = formatRelative(iso, now);
+  return delta === "just now" || delta === "—" ? delta : `${delta} ago`;
+}
+
 /** A deadline rendered as time remaining, or as how long ago it lapsed.
  *
  * Separate from `formatRelative` because a deadline's *direction* is the

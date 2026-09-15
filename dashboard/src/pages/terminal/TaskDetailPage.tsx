@@ -7,11 +7,11 @@ import { useAsync } from "../../hooks/useAsync";
 import { getTask, HubRequestError } from "../../lib/hub";
 import type { TaskDto } from "../../lib/hub";
 import {
+  formatAgo,
   formatCount,
   formatCountdown,
   formatItxExact,
   formatKind,
-  formatRelative,
   formatTimestamp,
   lowerFirst,
   formatVerification,
@@ -84,7 +84,7 @@ function Detail({ task }: { task: TaskDto }) {
             <dt>posted</dt>
             <dd>
               {formatTimestamp(task.created_at)}{" "}
-              <span className="flat">({formatRelative(task.created_at)} ago)</span>
+              <span className="flat">({formatAgo(task.created_at)})</span>
             </dd>
 
             <dt>poster</dt>
@@ -262,7 +262,7 @@ function KindPanel({ task }: { task: TaskDto }) {
                 <div style={{ fontSize: 13, marginBottom: 8 }}>{dispute.reason}</div>
                 <div className="flat" style={{ fontSize: 12 }}>
                   filed by <PubkeyLink pubkey={dispute.challenger} /> ·{" "}
-                  {formatRelative(dispute.filed_at)} ago ·{" "}
+                  {formatAgo(dispute.filed_at)} ·{" "}
                   {dispute.resolution
                     ? dispute.resolution.replace(/_/g, " ")
                     : "awaiting the operator"}
