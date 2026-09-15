@@ -274,9 +274,10 @@ export default function TasksPage() {
           value={kind}
           onChange={(value) => update("kind", value)}
           label="Filter by verification"
+          placeholder="verification"
           options={KINDS.map((k) => ({
             value: k,
-            label: k ? `${formatVerification(k)} (${formatKind(k)})` : "any verification",
+            label: k ? `${formatVerification(k)} (${formatKind(k)})` : "any",
           }))}
         />
 
@@ -284,9 +285,11 @@ export default function TasksPage() {
           value={status}
           onChange={(value) => update("status", value)}
           label="Filter by status"
+          placeholder="status"
+          emptyValue="all"
           options={STATUSES.map((s) => ({
             value: s,
-            label: s === "all" ? "any status" : formatStatus(s),
+            label: s === "all" ? "any" : formatStatus(s),
           }))}
         />
 
@@ -301,7 +304,7 @@ export default function TasksPage() {
         <ComboFilter
           value={capability}
           options={marketOptions}
-          placeholder="market (capability tag)"
+          placeholder="market"
           label="Filter by market"
           renderOption={marketLabel}
           onChange={(value) => update("capability", value)}

@@ -13,6 +13,13 @@ interface Props {
    * option is the label -- so this is the only thing naming it. */
   label: string;
   options: SelectOption[];
+  /** What the closed control says while nothing is chosen -- the
+   * field's own name, the way the combo boxes beside it show theirs --
+   * instead of the reset option's label. */
+  placeholder?: string;
+  /** The value that means "no filter". The empty string unless said
+   * otherwise; the status filter's is `all`. */
+  emptyValue?: string;
 }
 
 /** A one-of-N picker that draws its own menu.
@@ -33,7 +40,14 @@ interface Props {
  * closes, opening starts on the current value, and the roles say
  * combobox/listbox/option.
  */
-export default function SelectField({ value, onChange, label, options }: Props) {
+export default function SelectField({
+  value,
+  onChange,
+  label,
+  options,
+  placeholder,
+  emptyValue = "",
+}: Props) {
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(-1);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -41,6 +55,7 @@ export default function SelectField({ value, onChange, label, options }: Props) 
 
   const selected = options.findIndex((option) => option.value === value);
   const current = selected >= 0 ? options[selected] : undefined;
+  const unset = placeholder !== undefined && value === emptyValue;
 
   // A filter cleared elsewhere -- the "clear filters" button, the Back
   // button -- moves the highlight with it, so reopening the menu starts
@@ -104,7 +119,7 @@ export default function SelectField({ value, onChange, label, options }: Props) 
     >
       <button
         type="button"
-        className="itx-select"
+        className={unset ? "itx-select itx-select-placeholder" : "itx-select"}
         aria-label={label}
         role="combobox"
         aria-expanded={open}
@@ -115,7 +130,7 @@ export default function SelectField({ value, onChange, label, options }: Props) 
           setHighlight(-1);
         }}
       >
-        {current ? current.label : ""}
+        {unset ? placeholder : current ? current.label : ""}
       </button>
       <span className="itx-select-caret" aria-hidden="true">
         <Triangle direction="down" />

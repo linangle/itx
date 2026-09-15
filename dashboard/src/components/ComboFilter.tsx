@@ -114,6 +114,11 @@ export default function ComboFilter({
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
+        // A click opens the list, as it does on the selects beside this
+        // field: the caret is the smaller target, and a reader who has
+        // just clicked "status" and watched it drop expects the same of
+        // "sector".
+        onClick={() => setOpen(true)}
         onChange={(event) => {
           setDraft(event.target.value);
           setOpen(true);
@@ -137,7 +142,7 @@ export default function ComboFilter({
         <ul className="itx-menu" id={listId} role="listbox" aria-label={label}>
           {matches.length === 0 && (
             <li className="itx-menu-empty" role="presentation">
-              No match
+              no match
             </li>
           )}
           {value !== "" && (
@@ -147,7 +152,7 @@ export default function ComboFilter({
                 className="itx-menu-option itx-menu-clear"
                 onClick={() => commit("")}
               >
-                Any
+                any
               </button>
             </li>
           )}

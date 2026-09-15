@@ -853,6 +853,13 @@ body.itx-body[data-theme="light"] {
   align-items: center;
 }
 
+/* Unset, the select shows its own name the way the combo boxes beside it
+   show theirs -- in the placeholder shade, so a filter that is not
+   applied does not read as one that is. */
+.itx-select-placeholder {
+  color: var(--text-faint);
+}
+
 .itx-select-caret {
   position: absolute;
   right: var(--sp-6);
