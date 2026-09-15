@@ -28,3 +28,18 @@ thiserror = "1.0.59"
 bigdecimal = "0.4.5"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt"] }
+
+# Overflow checks in the binary that ships. The chain's value checks
+# (`Block::verify_transactions`, `Blockchain::add_to_mempool`) compare
+# sums of u64 amounts, and the hub compares sums of bounties. Without
+# this, a sum that wraps in release passes a `<` that fails in every
+# test run, because tests build with the dev profile, where the check
+# is on -- so the suites could never see it. Found 2026-09-15: outputs
+# of `u64::MAX` and `reward + 1` summed to `reward` and conserved value
+# against a single input. The validation paths now use checked
+# arithmetic and refuse; this is the floor under everything that does
+# not, so the worst case anywhere else is a panic rather than a mint.
+# It costs a few percent on integer arithmetic, which nothing here is
+# bound by.
+[profile.release]
+overflow-checks = true

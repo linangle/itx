@@ -233,18 +233,28 @@ impl Blockchain {
             self.unmark_transaction_utxos(&removed);
         }
 
-        let all_inputs: u64 = transaction
+        // Checked for the same reason `Block::verify_transactions` is:
+        // a wrapped output sum passes this comparison. `transaction_fee`
+        // above already refused a wrap, so this cannot fail on the same
+        // transaction; it stays checked so the two never drift apart.
+        let all_inputs = transaction
             .inputs
             .iter()
-            .map(|input| {
-                self.utxos
-                    .get(&input.prev_transaction_output_hash)
-                    .expect("BUG: impossible")
-                    .1
-                    .value
+            .try_fold(0u64, |acc, input| {
+                acc.checked_add(
+                    self.utxos
+                        .get(&input.prev_transaction_output_hash)
+                        .expect("BUG: impossible")
+                        .1
+                        .value,
+                )
             })
-            .sum();
-        let all_outputs: u64 = transaction.outputs.iter().map(|output| output.value).sum();
+            .ok_or(BtcError::InvalidTransaction)?;
+        let all_outputs = transaction
+            .outputs
+            .iter()
+            .try_fold(0u64, |acc, output| acc.checked_add(output.value))
+            .ok_or(BtcError::InvalidTransaction)?;
         if all_inputs < all_outputs {
             return Err(BtcError::InvalidTransaction);
         }
@@ -265,18 +275,28 @@ impl Blockchain {
     }
 
     fn transaction_fee(&self, transaction: &Transaction) -> Result<u64> {
-        let input_value: u64 = transaction
+        // Checked sums. This runs before the conservation check in
+        // `add_to_mempool`, so it is the first thing a wrapped output
+        // total meets, and it has to refuse rather than report a fee
+        // that would sort the transaction to the head of the mempool.
+        let input_value = transaction
             .inputs
             .iter()
-            .map(|input| {
-                self.utxos
-                    .get(&input.prev_transaction_output_hash)
-                    .expect("BUG: impossible")
-                    .1
-                    .value
+            .try_fold(0u64, |acc, input| {
+                acc.checked_add(
+                    self.utxos
+                        .get(&input.prev_transaction_output_hash)
+                        .expect("BUG: impossible")
+                        .1
+                        .value,
+                )
             })
-            .sum();
-        let output_value: u64 = transaction.outputs.iter().map(|output| output.value).sum();
+            .ok_or(BtcError::InvalidTransaction)?;
+        let output_value = transaction
+            .outputs
+            .iter()
+            .try_fold(0u64, |acc, output| acc.checked_add(output.value))
+            .ok_or(BtcError::InvalidTransaction)?;
         if input_value < output_value {
             return Err(BtcError::InvalidTransaction);
         }
@@ -1306,6 +1326,97 @@ mod tests {
         // entry) would panic on it. Adding anything else must not panic.
         let throwaway = Transaction::new(vec![], vec![]);
         let _ = blockchain.add_to_mempool(throwaway);
+    }
+
+    /// Two outputs whose values wrap past `u64::MAX` sum to exactly the
+    /// input, so `input < output` is false and the transaction conserves
+    /// value on paper while creating 2^64 units in fact. The dev profile
+    /// panicked on the `+`, so no test ever reached the comparison; the
+    /// release profile the node shipped under had overflow checks off
+    /// and wrapped silently. Both the mempool and block verification
+    /// refuse it now, and the input it names stays unmarked.
+    #[test]
+    fn a_transaction_whose_outputs_wrap_is_refused_rather_than_conserved() {
+        let (mut blockchain, genesis_hash, genesis_ts) = chain_with_real_genesis();
+        let target = blockchain.target();
+        let reward = blockchain.calculate_block_reward();
+
+        let payee_key = PrivateKey::new_key();
+        let coinbase1 = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: reward,
+                unique_id: Uuid::new_v4(),
+                pubkey: payee_key.public_key(),
+            }],
+        );
+        let merkle_root1 = MerkleRoot::calculate(&[coinbase1.clone()]);
+        let mut header1 = BlockHeader::new(
+            genesis_ts + chrono::Duration::seconds(1),
+            0,
+            genesis_hash,
+            merkle_root1,
+            target,
+        );
+        assert!(header1.mine(1_000_000));
+        let block1 = Block::new(header1, vec![coinbase1]);
+        let block1_hash = block1.hash();
+        let block1_ts = block1.header.timestamp;
+        let spendable = block1.transactions[0].outputs[0].clone();
+        blockchain.add_block(block1).unwrap();
+
+        // u64::MAX + (reward + 1) wraps to exactly `reward`: the input.
+        let wrapped = Transaction::new(
+            vec![TransactionInput {
+                prev_transaction_output_hash: spendable.hash(),
+                signature: Signature::sign_output(&spendable.hash(), &payee_key),
+            }],
+            vec![
+                TransactionOutput {
+                    value: u64::MAX,
+                    unique_id: Uuid::new_v4(),
+                    pubkey: PrivateKey::new_key().public_key(),
+                },
+                TransactionOutput {
+                    value: reward + 1,
+                    unique_id: Uuid::new_v4(),
+                    pubkey: PrivateKey::new_key().public_key(),
+                },
+            ],
+        );
+        assert_eq!(u64::MAX.wrapping_add(reward + 1), reward, "the test's premise");
+
+        assert!(
+            matches!(blockchain.add_to_mempool(wrapped.clone()), Err(BtcError::InvalidTransaction)),
+            "the mempool must refuse a wrapped output sum"
+        );
+        assert!(blockchain.mempool().is_empty());
+        assert!(
+            !blockchain.utxos()[&spendable.hash()].0,
+            "a refused spend must not leave its input marked"
+        );
+
+        // And a mined block carrying it is refused by verification too.
+        let utxos_before = blockchain.utxos().len();
+        let coinbase2 = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: blockchain.calculate_block_reward(),
+                unique_id: Uuid::new_v4(),
+                pubkey: PrivateKey::new_key().public_key(),
+            }],
+        );
+        let transactions2 = vec![coinbase2, wrapped];
+        let mut header2 = BlockHeader::new(
+            block1_ts + chrono::Duration::seconds(1),
+            0,
+            block1_hash,
+            MerkleRoot::calculate(&transactions2),
+            blockchain.target(),
+        );
+        assert!(header2.mine(1_000_000));
+        assert!(blockchain.add_block(Block::new(header2, transactions2)).is_err());
+        assert_eq!(blockchain.utxos().len(), utxos_before, "a refused block changes nothing");
     }
 
     #[test]

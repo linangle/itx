@@ -725,9 +725,10 @@ Notes that are not boilerplate:
 
   Turning the flag on also restores a set of known defects that are currently
   unreachable rather than fixed — a deposit credited on a single confirmation,
-  unchecked subtraction in the fill and cancel paths against a release profile
-  with no overflow checks, an unpaginated order book over a table that is never
-  pruned, and a taker fee that floors to zero on small fills. They are recorded
+  unchecked subtraction in the fill and cancel paths (a panic since the release
+  profile started checking overflow on 2026-09-15, a silent wrap before), an
+  unpaginated order book over a table that is never pruned, and a taker fee
+  that floors to zero on small fills. They are recorded
   in the pre-launch audit. Do not pass this on a host holding real custody to
   see what it does; bring up a throwaway stack instead.
 - **All three key paths are passed explicitly** even though the hub has

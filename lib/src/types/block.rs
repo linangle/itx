@@ -105,8 +105,8 @@ impl Block {
         self.verify_coinbase_transaction(predicted_block_height, utxos)?;
 
         for transaction in self.transactions.iter().skip(1) {
-            let mut input_value = 0;
-            let mut output_value = 0;
+            let mut input_value: u64 = 0;
+            let mut output_value: u64 = 0;
 
             for input in &transaction.inputs {
                 let prev_output = utxos
@@ -130,7 +130,9 @@ impl Block {
                     return Err(BtcError::InvalidSignature);
                 }
 
-                input_value += prev_output.value;
+                input_value = input_value
+                    .checked_add(prev_output.value)
+                    .ok_or(BtcError::InvalidTransaction)?;
                 inputs.insert(
                     input.prev_transaction_output_hash,
                     prev_output.clone(),
@@ -138,7 +140,16 @@ impl Block {
             }
 
             for output in &transaction.outputs {
-                output_value += output.value;
+                // Checked, and the check is load-bearing: two outputs
+                // whose values wrap past `u64::MAX` sum to less than
+                // their input, and `input < output` is then false. The
+                // dev profile panics on the `+`, which is why no test
+                // ever reached the comparison; the release profile
+                // wrapped and conserved value on a transaction that
+                // created 2^64 units from one.
+                output_value = output_value
+                    .checked_add(output.value)
+                    .ok_or(BtcError::InvalidTransaction)?;
             }
 
             if input_value < output_value {
@@ -164,13 +175,16 @@ impl Block {
         let block_reward = crate::INITIAL_REWARD
             * 10u64.pow(8)
             / 2u64.pow((predicted_block_height / crate::HALVING_INTERVAL) as u32);
-        let total_coinbase_outputs: u64 = coinbase_transaction
+        let total_coinbase_outputs = coinbase_transaction
             .outputs
             .iter()
-            .map(|output| output.value)
-            .sum();
+            .try_fold(0u64, |acc, output| acc.checked_add(output.value))
+            .ok_or(BtcError::InvalidTransaction)?;
+        let owed = block_reward
+            .checked_add(miner_fees)
+            .ok_or(BtcError::InvalidTransaction)?;
 
-        if total_coinbase_outputs != block_reward + miner_fees {
+        if total_coinbase_outputs != owed {
             return Err(BtcError::InvalidTransaction);
         }
 
@@ -192,8 +206,8 @@ pub fn calculate_miner_fees_for_transactions(
     let mut total_fees = 0u64;
 
     for transaction in transactions {
-        let mut input_value = 0;
-        let mut output_value = 0;
+        let mut input_value: u64 = 0;
+        let mut output_value: u64 = 0;
 
         for input in &transaction.inputs {
             let prev_output = utxos
@@ -204,18 +218,24 @@ pub fn calculate_miner_fees_for_transactions(
                 return Err(BtcError::InvalidTransaction);
             }
 
-            input_value += prev_output.unwrap().value;
+            input_value = input_value
+                .checked_add(prev_output.unwrap().value)
+                .ok_or(BtcError::InvalidTransaction)?;
         }
 
         for output in &transaction.outputs {
-            output_value += output.value;
+            output_value = output_value
+                .checked_add(output.value)
+                .ok_or(BtcError::InvalidTransaction)?;
         }
 
         if input_value < output_value {
             return Err(BtcError::InvalidTransaction);
         }
 
-        total_fees += input_value - output_value;
+        total_fees = total_fees
+            .checked_add(input_value - output_value)
+            .ok_or(BtcError::InvalidTransaction)?;
     }
 
     Ok(total_fees)

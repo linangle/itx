@@ -4980,9 +4980,9 @@ fn validate_positive_minutes(value: i64, field: &str) -> Result<(), ApiError> {
 /// exists: the bounty itself, plus the fee the eventual payout will pay.
 ///
 /// A checked add, and the check is the whole point. `bounty` arrives on a
-/// signed payload with no ceiling above it, and the release profile this
-/// ships under has `overflow-checks = false` -- so `bounty +
-/// HUB_TRANSACTION_FEE` wrapped, and a bounty of `u64::MAX - 999` asked
+/// signed payload with no ceiling above it, and until 2026-09-15 the
+/// release profile this shipped under had `overflow-checks = false` -- so
+/// `bounty + HUB_TRANSACTION_FEE` wrapped, and a bounty of `u64::MAX - 999` asked
 /// for a `required_amount` of **zero**. `TaskBoard::confirm_escrow` then
 /// compares `observed_amount < required_amount`, which `0 < 0` does not
 /// satisfy, so the deposit confirmed against an address holding nothing
@@ -6409,8 +6409,8 @@ mod escrow_amount_tests {
     }
 
     /// The exploit this closes, stated as its arithmetic. Under the
-    /// release profile -- no overflow checks -- `bounty +
-    /// HUB_TRANSACTION_FEE` wrapped to zero here, and a zero
+    /// release profile as it was until 2026-09-15 -- no overflow checks --
+    /// `bounty + HUB_TRANSACTION_FEE` wrapped to zero here, and a zero
     /// `required_amount` is one that `TaskBoard::confirm_escrow` accepts
     /// against a deposit address holding nothing: a free task carrying a
     /// bounty nobody funded.
