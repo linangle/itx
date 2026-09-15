@@ -1496,6 +1496,32 @@ impl TaskBoard {
         self.pending_deposits.get(&escrow_id)
     }
 
+    /// Closed tasks whose own escrow deposit is still `Consumed`.
+    ///
+    /// Every path that closes a task without a winner -- an understaffed
+    /// cancellation, a deadline tie, a submission that ties, an operator
+    /// cancel -- refunds the escrow inline, once, and
+    /// `handlers::disburse_escrow` gives up quietly on a node error
+    /// before the payment is journaled. A `Closed` task is in no other
+    /// selector, so that refund was never retried and the poster's
+    /// deposit stayed at its address for good. Once a refund is prepared
+    /// the deposit is `Disbursing` and the payments journal owns it, so
+    /// this names exactly the refunds that never got that far; the
+    /// sweep retries them every pass, as it already does the dispute
+    /// bond's leg. An operator-funded task has no deposit and is never
+    /// named.
+    pub fn closed_tasks_with_unrefunded_escrow(&self) -> Vec<Uuid> {
+        self.tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::Closed)
+            .filter(|task| {
+                self.escrow_for_task(task.id)
+                    .is_some_and(|deposit| deposit.status == EscrowStatus::Consumed)
+            })
+            .map(|task| task.id)
+            .collect()
+    }
+
     /// Records that `id`'s deposit has been fully dealt with -- either
     /// nothing was ever sent to it, or whatever was there has already
     /// been refunded on-chain to `depositor`. Callers must perform (or

@@ -673,6 +673,21 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         info!("sweep: finalized unchallenged disputable task {task_id} past its dispute window");
     }
 
+    // Refunds that did not go out when their task closed. Each close
+    // path above -- and the operator's cancel, and a submission that
+    // ties -- refunds inline, once, and `disburse_escrow` returns
+    // quietly on a node error before anything is journaled; after that
+    // a `Closed` task was in no selector at all, and the poster's
+    // deposit stayed where it was. Retried here every pass until
+    // `prepare` has journaled the payment, the way the dispute bond's
+    // leg already is. From then on the journal owns it and
+    // `disburse_escrow` returns early on the payment it finds.
+    let unrefunded = state.board.read().await.closed_tasks_with_unrefunded_escrow();
+    for task_id in unrefunded {
+        handlers::refund_closed_task_escrow(state, task_id).await;
+        info!("sweep: retried the escrow refund of closed task {task_id}");
+    }
+
     let overdue_escrows: Vec<PendingDeposit> = {
         let board = state.board.read().await;
         board.overdue_reserved_escrows(now).into_iter().cloned().collect()
@@ -1585,6 +1600,12 @@ mod tests {
         /// would be a test that passes for whichever reason it felt
         /// like that run.
         drain_after_next_fetch: Arc<std::sync::atomic::AtomicBool>,
+        /// While set, every `FetchUTXOs` closes the connection without
+        /// answering, so the hub's balance read fails the way it does
+        /// against a node that is down. The only way to stage "the node
+        /// was not there at the moment a refund was attempted" and then
+        /// bring it back, which is what a retry has to survive.
+        refuse_fetches: Arc<std::sync::atomic::AtomicBool>,
         /// Blocks this fake claims to have mined, one per accepted
         /// transaction. Needed because a payment's evidence outlives its
         /// UTXO: once a recipient spends onward, the chain is the only
@@ -1607,6 +1628,7 @@ mod tests {
             let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hang_up_after_one = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let drain_after_next_fetch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let refuse_fetches = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let blocks: Arc<AsyncMutex<Vec<btclib::types::Block>>> = Arc::new(AsyncMutex::new(Vec::new()));
             let submitted_for_accept_loop = submitted.clone();
             let utxos_for_accept_loop = utxos.clone();
@@ -1618,6 +1640,7 @@ mod tests {
             let connections_for_accept_loop = connections.clone();
             let hang_up_for_accept_loop = hang_up_after_one.clone();
             let drain_for_accept_loop = drain_after_next_fetch.clone();
+            let refuse_for_accept_loop = refuse_fetches.clone();
             let blocks_for_accept_loop = blocks.clone();
             tokio::spawn(async move {
                 loop {
@@ -1634,6 +1657,7 @@ mod tests {
                     let duplicates = duplicates_for_accept_loop.clone();
                     let hang_up_after_one = hang_up_for_accept_loop.clone();
                     let drain = drain_for_accept_loop.clone();
+                    let refuse = refuse_for_accept_loop.clone();
                     let blocks = blocks_for_accept_loop.clone();
                     tokio::spawn(async move {
                         if btclib::network::perform_handshake_acceptor(&mut socket)
@@ -1649,6 +1673,9 @@ mod tests {
                             };
                             match message {
                                 Message::FetchUTXOs(pk) => {
+                                    if refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                                        return;
+                                    }
                                     let owned: Vec<(TransactionOutput, bool)> = utxos
                                         .lock()
                                         .await
@@ -1793,8 +1820,15 @@ mod tests {
                 connections,
                 hang_up_after_one,
                 drain_after_next_fetch,
+                refuse_fetches,
                 blocks,
             }
+        }
+
+        /// Makes every balance read fail (or lets them succeed again) --
+        /// see `refuse_fetches`.
+        fn refuse_fetches(&self, on: bool) {
+            self.refuse_fetches.store(on, std::sync::atomic::Ordering::SeqCst);
         }
 
         /// How many duplicate transactions this node has struck the hub
@@ -6956,6 +6990,90 @@ mod tests {
                 .iter()
                 .any(|o| o.pubkey == poster_key.public_key() && o.value == 900),
             "the poster gets the deposit back less the network fee"
+        );
+    }
+
+    /// A closed task's escrow refund was one inline attempt. With the
+    /// node not answering at the moment the sweep cancelled an
+    /// understaffed task, `disburse_escrow` returned before the payment
+    /// was journaled, and a `Closed` task with a `Consumed` deposit was
+    /// in no selector -- the poster's bounty stayed at its address for
+    /// good. The next sweep after the node is back must pick it up.
+    #[tokio::test]
+    async fn a_closed_task_whose_escrow_refund_failed_is_refunded_by_a_later_sweep() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+
+        let payload = handlers::EscrowConsensusTaskPayload {
+            description: "nobody will join this".to_string(),
+            bounty: 900,
+            num_assignees: 3,
+            join_window_minutes: 60,
+            submission_window_minutes: 30,
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/consensus/escrow", hub.base_url))
+            .json(&envelope(&poster_key, "/tasks/consensus/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
+        let required_amount = reservation["required_amount"].as_u64().unwrap();
+        fake_node.fund(deposit_pubkey, required_amount).await;
+        let task: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let task_id: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+        // The join window passes with nobody aboard, and the node is not
+        // answering when the sweep cancels the task and tries to refund.
+        fake_node.refuse_fetches(true);
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(61)).await;
+        {
+            let board = hub.state.board.read().await;
+            assert_eq!(board.get_task(task_id).unwrap().status, TaskStatus::Closed);
+            assert_eq!(
+                board.escrow_for_task(task_id).unwrap().status,
+                board::EscrowStatus::Consumed,
+                "the inline refund could not read the balance and gave up before journaling anything"
+            );
+        }
+        assert!(fake_node.submitted_transactions().await.is_empty());
+
+        // The node is back. Nothing about the task changes -- it is
+        // Closed and stays Closed -- so only a selector that looks at
+        // closed tasks can find this.
+        fake_node.refuse_fetches(false);
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(62)).await;
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(submitted.len(), 1, "the next sweep must retry the refund a node outage interrupted");
+        assert!(
+            submitted[0]
+                .outputs
+                .iter()
+                .any(|o| o.pubkey == poster_key.public_key() && o.value == 900),
+            "the poster gets the deposit back less the network fee"
+        );
+        assert_eq!(
+            hub.state.board.read().await.escrow_for_task(task_id).unwrap().status,
+            board::EscrowStatus::Disbursing,
+            "once journaled, the payments journal owns the refund"
         );
     }
 
