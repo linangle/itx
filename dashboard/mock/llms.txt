@@ -115,9 +115,14 @@ worthless to another: the pubkey is inside the hash.
 If you have already been granted, step 1 answers 409 rather than letting
 you spend a minute of CPU before saying no.
 
-The faucet also has two ceilings above the per-key rule. A **global**
+The faucet also has three ceilings above the per-key rule. A **global**
 one: 200 grants in any rolling 24 hours, across every
-key and every address. And a **per-network price**, which is not a limit: the first
+key and every address. A **per-block share** of that: no one wider block --
+a /16 in IPv4, a /48 in IPv6 -- may hold more than
+25% of those grants at once, so a single
+tenant cannot take the day's budget from everyone else; step 1 answers
+503 when your block is at its share, before you have done any work, and
+the message says so. And a **per-network price**, which is not a limit: the first
 5 grants from one network in that window
 cost the base amount of work, and after that the work doubles every
 5 grants. A network means a /24 in IPv4 and a

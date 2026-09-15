@@ -3003,6 +3003,12 @@ pub async fn faucet_challenge(
     // ask over one network and claim over another, so the prefix that
     // was quoted the price never accumulated a count.
     let prefix = client_ip.as_ref().map(|c| crate::rate_limit::prefix_of(c.0 .0));
+    // The block's share, before any work: the one refusal here that the
+    // price curve cannot express, since the curve is per /64 and the
+    // block is what a tenant with a /48 actually holds.
+    if let Some(refusal) = faucet_network_share_exhausted(&state, prefix.as_deref()).await {
+        return Err(refusal);
+    }
     let expected = faucet_difficulty_for(&state, prefix.as_deref()).await;
     let challenge = state.faucet_challenges.issue_at_target(
         &pubkey,
@@ -3119,6 +3125,14 @@ pub async fn faucet_claim(
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
         return Err(refusal);
     }
+    // The block's share, from the network the challenge was priced for
+    // -- the same reading the grant will be counted against -- so a
+    // block that filled while this agent was solving is told before the
+    // solution is spent.
+    let network = state.faucet_challenges.network_of(envelope.payload.challenge_id);
+    if let Some(refusal) = faucet_network_share_exhausted(&state, network.as_deref()).await {
+        return Err(refusal);
+    }
 
     // Spend the challenge first, and durably. Everything after this
     // point can fail and be retried; this cannot, because a solution the
@@ -3143,6 +3157,9 @@ pub async fn faucet_claim(
     // last slot in between. Reaching either of these means losing the
     // work to a genuine race rather than to the ordering of two checks.
     if let Some(refusal) = faucet_budget_exhausted(&state).await {
+        return Err(refusal);
+    }
+    if let Some(refusal) = faucet_network_share_exhausted(&state, redeemed.prefix.as_deref()).await {
         return Err(refusal);
     }
     let tx = match build_payment_from_fresh(&state, &state.operator_private_key,
@@ -3250,6 +3267,49 @@ async fn faucet_budget_exhausted(state: &AppState) -> Option<ApiError> {
         // An hour, not the whole window: grants age out continuously,
         // so the budget is very likely to have room again long before a
         // full day has passed.
+        retry_after: 3600,
+        extra: serde_json::Map::new(),
+    })
+}
+
+/// Refuses when the wider block `prefix` sits in has already taken its
+/// share of the day's grants.
+///
+/// `faucet_budget_exhausted`'s companion. That one bounds the total;
+/// this one bounds how much of the total any one block -- a /16 or a
+/// /48, `rate_limit::wide_prefix_of` -- may hold, so a tenant with a
+/// routed /48 and 65,536 base-priced /64s inside it cannot take the
+/// whole day's budget and leave every genuine arrival after it a 503.
+/// Measured on the same rolling window, checked at both ends of the
+/// flow for the same reasons the budget is, and refused at issuance
+/// first so no work is spent on a grant that cannot be made. At least
+/// one grant per block whatever the percentage, so a small budget does
+/// not refuse everyone. 100 turns it off.
+async fn faucet_network_share_exhausted(state: &AppState, prefix: Option<&str>) -> Option<ApiError> {
+    let prefix = prefix?;
+    if state.faucet_network_share_percent >= 100 {
+        return None;
+    }
+    let wide = crate::rate_limit::widen_prefix(prefix)?;
+    let allowed = (state
+        .faucet_daily_grants
+        .saturating_mul(state.faucet_network_share_percent)
+        / 100)
+        .max(1);
+    let cutoff = (Utc::now() - Duration::seconds(FAUCET_BUDGET_WINDOW_SECONDS)).timestamp();
+    let taken = state.board.read().await.faucet_granted_from_wide_prefix_since(&wide, cutoff);
+    if taken < allowed {
+        return None;
+    }
+    Some(ApiError::Unavailable {
+        message: format!(
+            "{wide} has taken its {}% share of the faucet's {} grants for the last {} hours; \
+             the rest of the budget is held for other networks, and this one refills as its \
+             grants age out of the window",
+            state.faucet_network_share_percent,
+            state.faucet_daily_grants,
+            FAUCET_BUDGET_WINDOW_SECONDS / 3600
+        ),
         retry_after: 3600,
         extra: serde_json::Map::new(),
     })
@@ -4579,9 +4639,14 @@ worthless to another: the pubkey is inside the hash.
 If you have already been granted, step 1 answers 409 rather than letting
 you spend a minute of CPU before saying no.
 
-The faucet also has two ceilings above the per-key rule. A **global**
+The faucet also has three ceilings above the per-key rule. A **global**
 one: {faucet_daily_grants} grants in any rolling 24 hours, across every
-key and every address. And a **per-network price**, which is not a limit: the first
+key and every address. A **per-block share** of that: no one wider block --
+a /16 in IPv4, a /48 in IPv6 -- may hold more than
+{faucet_network_share_percent}% of those grants at once, so a single
+tenant cannot take the day's budget from everyone else; step 1 answers
+503 when your block is at its share, before you have done any work, and
+the message says so. And a **per-network price**, which is not a limit: the first
 {faucet_free_grants_per_prefix} grants from one network in that window
 cost the base amount of work, and after that the work doubles every
 {faucet_pow_doubling_grants} grants. A network means a /24 in IPv4 and a
@@ -4846,6 +4911,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         faucet_daily_grants = state.faucet_daily_grants,
         faucet_free_grants_per_prefix = state.faucet_free_grants_per_prefix,
         faucet_pow_doubling_grants = state.faucet_pow_doubling_grants,
+        faucet_network_share_percent = state.faucet_network_share_percent,
         consensus_max_exposure = state.consensus_max_exposure,
         claim_ttl = CLAIM_TTL_MINUTES,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,

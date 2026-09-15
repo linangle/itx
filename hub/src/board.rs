@@ -2327,6 +2327,20 @@ impl TaskBoard {
             .count() as u64
     }
 
+    /// Grants at or after `cutoff` from every network inside the wider
+    /// block `wide` -- a /16 or a /48, as `rate_limit::wide_prefix_of`
+    /// renders it. The per-network curve prices a /24 or a /64, and a
+    /// hosting /48 is 65,536 of those each quoted the base price, so the
+    /// curve never engaged against the one tenant that could afford to
+    /// try. This is the count the faucet's network share is measured on.
+    pub fn faucet_granted_from_wide_prefix_since(&self, wide: &str, cutoff: i64) -> u64 {
+        self.faucet_grant_prefixes
+            .iter()
+            .filter(|(_, from)| crate::rate_limit::widen_prefix(from).as_deref() == Some(wide))
+            .filter(|(pubkey, _)| self.faucet_grants.get(*pubkey).is_some_and(|at| *at >= cutoff))
+            .count() as u64
+    }
+
     /// Grants per network: `(in the window, all time)` keyed by prefix.
     ///
     /// The clustering view `admin` renders. Grouped here rather than in

@@ -174,6 +174,9 @@ pub struct AppState {
     /// Grants per doubling of the price past that. See
     /// `Args::faucet_pow_doubling_grants`.
     pub faucet_pow_doubling_grants: u64,
+    /// The most of the daily budget one /16 or /48 may hold, in percent.
+    /// See `Args::faucet_network_share_percent`.
+    pub faucet_network_share_percent: u64,
     /// Read-only keys admitted to `/admin/*`. See `Args::admin_keys`.
     pub admin_keys: std::collections::BTreeSet<String>,
     /// Display names for agents (see `names`). Its own lock rather than
@@ -366,6 +369,23 @@ struct Args {
     /// a known shared network -- a campus, a large employer -- whose
     /// users are not each other. Narrow it during an attack.
     faucet_pow_doubling_grants: u64,
+    #[argh(option, default = "25")]
+    /// the largest share of the daily grant budget, in percent, that one
+    /// wider block -- a /16 in IPv4, a /48 in IPv6 -- may hold in the
+    /// rolling window. 100 turns it off.
+    ///
+    /// The per-network price is keyed on a /24 or a /64 and the budget
+    /// is one counter for everyone. A hosting /48 is 65,536 /64s, each
+    /// quoted the base price, so one tenant with a routed block could
+    /// take the whole day's budget at the base price in minutes, and
+    /// every genuine arrival for the rest of the day got a 503 -- while
+    /// the console's busiest-network alert read two hundred prefixes
+    /// with one grant each as a population. This caps what any one
+    /// block can take, so the rest of the budget stays for everyone
+    /// else, and it refuses at issuance so no work is spent on a grant
+    /// that cannot be made. At least one grant per block whatever the
+    /// percentage.
+    faucet_network_share_percent: u64,
     #[argh(option, default = "String::new()")]
     /// comma-separated hex pubkeys allowed to read /admin/overview.
     ///
@@ -907,6 +927,12 @@ async fn main() -> Result<()> {
 
     let args: Args = argh::from_env();
     let node_addresses: Vec<String> = args.node_addresses.split(',').map(|s| s.trim().to_string()).collect();
+    if args.faucet_network_share_percent > 100 {
+        anyhow::bail!(
+            "--faucet-network-share-percent is a percentage of the daily budget; got {}",
+            args.faucet_network_share_percent
+        );
+    }
     let trusted_proxies = rate_limit::parse_trusted_proxies(&args.trusted_proxies)
         .map_err(|e| anyhow::anyhow!("--trusted-proxies is not a list of IP addresses: {e}"))?;
 
@@ -1199,6 +1225,7 @@ async fn main() -> Result<()> {
         consensus_max_exposure: args.consensus_max_exposure,
         faucet_free_grants_per_prefix: args.faucet_free_grants_per_prefix,
         faucet_pow_doubling_grants: args.faucet_pow_doubling_grants,
+        faucet_network_share_percent: args.faucet_network_share_percent,
         admin_keys: args
             .admin_keys
             .split(',')
@@ -2371,7 +2398,7 @@ mod tests {
         node_address: String,
         floor: usize,
     ) -> TestHub {
-        spawn_hub_inner_with_floor(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, u64::MAX, u64::MAX, Default::default(), floor, true).await
+        spawn_hub_inner_with_floor(operator_private_key, node_address, rate_limit::TrustedProxies::new(), u64::MAX, u64::MAX, u64::MAX, 100, Default::default(), floor, true).await
     }
 
     async fn spawn_hub_with_prefix_cap(
@@ -2411,7 +2438,7 @@ mod tests {
         faucet_grants_per_prefix: u64,
         admin_keys: std::collections::BTreeSet<String>,
     ) -> TestHub {
-        spawn_hub_inner_with_floor(operator_private_key, node_address, trusted_proxies, faucet_daily_grants, consensus_max_exposure, faucet_grants_per_prefix, admin_keys, operator_wallet::DEFAULT_WALLET_OUTPUTS, true).await
+        spawn_hub_inner_with_floor(operator_private_key, node_address, trusted_proxies, faucet_daily_grants, consensus_max_exposure, faucet_grants_per_prefix, 100, admin_keys, operator_wallet::DEFAULT_WALLET_OUTPUTS, true).await
     }
 
     /// The production default: no order book. Every other spawner in
@@ -2430,9 +2457,37 @@ mod tests {
             u64::MAX,
             u64::MAX,
             u64::MAX,
+            100,
             Default::default(),
             operator_wallet::DEFAULT_WALLET_OUTPUTS,
             false,
+        )
+        .await
+    }
+
+    /// A hub with a real daily budget and a per-block share of it, that
+    /// believes `X-Forwarded-For` from the loopback so one test can
+    /// arrive from many networks. The production default share is 25;
+    /// every other spawner turns the share off (100), because the
+    /// budget tests grant several times from 127.0.0.1 and a share of a
+    /// two-grant budget is one.
+    async fn spawn_hub_with_network_share(
+        operator_private_key: PrivateKey,
+        node_address: String,
+        faucet_daily_grants: u64,
+        share_percent: u64,
+    ) -> TestHub {
+        spawn_hub_inner_with_floor(
+            operator_private_key,
+            node_address,
+            rate_limit::parse_trusted_proxies("127.0.0.1").unwrap(),
+            faucet_daily_grants,
+            u64::MAX,
+            u64::MAX,
+            share_percent,
+            Default::default(),
+            operator_wallet::DEFAULT_WALLET_OUTPUTS,
+            true,
         )
         .await
     }
@@ -2445,6 +2500,7 @@ mod tests {
         faucet_daily_grants: u64,
         consensus_max_exposure: u64,
         faucet_grants_per_prefix: u64,
+        faucet_network_share_percent: u64,
         admin_keys: std::collections::BTreeSet<String>,
         wallet_floor: usize,
         exchange_enabled: bool,
@@ -2480,6 +2536,7 @@ mod tests {
             consensus_max_exposure,
             faucet_free_grants_per_prefix: faucet_grants_per_prefix,
             faucet_pow_doubling_grants: 5,
+            faucet_network_share_percent,
             admin_keys,
             store,
             node: NodeClient::new(vec![node_address]).with_metrics(metrics.clone()),
@@ -8286,6 +8343,130 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
+    /// One tenant with a routed /48 has 65,536 /64s, each quoted the
+    /// base price, so the per-network curve never engaged against it and
+    /// it could take the whole day's budget in minutes -- and every
+    /// genuine arrival for the rest of the day got a 503. The share
+    /// bounds what one block may hold, and refuses at issuance so no
+    /// work is spent on a grant that cannot be made.
+    #[tokio::test]
+    async fn one_block_cannot_take_more_than_its_share_of_the_faucet_at_issuance() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 10_000_000_000).await;
+        // Eight a day, a quarter each: two grants per /48 or /16.
+        let hub = spawn_hub_with_network_share(operator_key, fake_node.addr.clone(), 8, 25).await;
+
+        async fn ask(hub: &TestHub, key: &PrivateKey, via: &str) -> reqwest::Response {
+            hub.client
+                .post(format!("{}/faucet/challenge", hub.base_url))
+                .header("X-Forwarded-For", via)
+                .json(&envelope(key, "/faucet/challenge", ()))
+                .send()
+                .await
+                .unwrap()
+        }
+        async fn claim(hub: &TestHub, key: &PrivateKey, challenge: &Value, via: &str) -> reqwest::StatusCode {
+            let payload = handlers::FaucetClaimPayload {
+                challenge_id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+                solution: solve_faucet_challenge(challenge),
+            };
+            hub.client
+                .post(format!("{}/faucet", hub.base_url))
+                .header("X-Forwarded-For", via)
+                .json(&envelope(key, "/faucet", payload))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+        async fn granted(hub: &TestHub, via: &str) {
+            let key = PrivateKey::new_key();
+            let resp = ask(hub, &key, via).await;
+            assert_eq!(resp.status(), reqwest::StatusCode::OK, "issuance from {via}");
+            let challenge: Value = resp.json().await.unwrap();
+            assert_eq!(claim(hub, &key, &challenge, via).await, reqwest::StatusCode::OK, "claim from {via}");
+        }
+
+        // Two different /64s inside one /48 -- what the curve sees as
+        // two networks at the base price -- fill the block's share.
+        granted(&hub, "2001:db8:1:1::1").await;
+        granted(&hub, "2001:db8:1:2::1").await;
+
+        // The third /64 in the same /48 is refused before any work.
+        let resp = ask(&hub, &PrivateKey::new_key(), "2001:db8:1:3::1").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = resp.json().await.unwrap();
+        let message = body["error"].as_str().unwrap_or_default().to_string();
+        assert!(message.contains("2001:db8:1::/48"), "the refusal names the block: {message}");
+        assert!(message.contains("share"), "{message}");
+
+        // Another block is unaffected, and so is the budget: three of
+        // eight are spent, so this is the share refusing, not the total.
+        granted(&hub, "2001:db8:2:1::1").await;
+        // The same rule for IPv4: two /24s fill a /16, the third is refused.
+        granted(&hub, "203.0.113.1").await;
+        granted(&hub, "203.0.114.1").await;
+        let resp = ask(&hub, &PrivateKey::new_key(), "203.0.115.1").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.text().await.unwrap().contains("203.0.0.0/16"));
+        granted(&hub, "198.51.100.1").await;
+    }
+
+    /// A block that filled while an agent was solving is told at the
+    /// claim, from the network its challenge was priced for, before the
+    /// solution is spent -- the same courtesy the budget gets.
+    #[tokio::test]
+    async fn a_block_that_filled_while_an_agent_solved_is_refused_before_its_work_is_spent() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 10_000_000_000).await;
+        let hub = spawn_hub_with_network_share(operator_key, fake_node.addr.clone(), 8, 25).await;
+
+        async fn challenge_from(hub: &TestHub, key: &PrivateKey, via: &str) -> Value {
+            let resp = hub
+                .client
+                .post(format!("{}/faucet/challenge", hub.base_url))
+                .header("X-Forwarded-For", via)
+                .json(&envelope(key, "/faucet/challenge", ()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+            resp.json().await.unwrap()
+        }
+        async fn claim(hub: &TestHub, key: &PrivateKey, challenge: &Value, via: &str) -> reqwest::Response {
+            let payload = handlers::FaucetClaimPayload {
+                challenge_id: challenge["challenge_id"].as_str().unwrap().parse().unwrap(),
+                solution: solve_faucet_challenge(challenge),
+            };
+            hub.client
+                .post(format!("{}/faucet", hub.base_url))
+                .header("X-Forwarded-For", via)
+                .json(&envelope(key, "/faucet", payload))
+                .send()
+                .await
+                .unwrap()
+        }
+
+        // The slow solver asks while its block is empty.
+        let slow = PrivateKey::new_key();
+        let slow_challenge = challenge_from(&hub, &slow, "2001:db8:1:9::1").await;
+
+        // Two neighbours in the same /48 ask and claim first.
+        for via in ["2001:db8:1:1::1", "2001:db8:1:2::1"] {
+            let key = PrivateKey::new_key();
+            let challenge = challenge_from(&hub, &key, via).await;
+            assert_eq!(claim(&hub, &key, &challenge, via).await.status(), reqwest::StatusCode::OK);
+        }
+
+        // The slow solver presents its solution: refused, by the share,
+        // with the block named -- and told at the claim rather than
+        // handed a grant the block is not allowed.
+        let resp = claim(&hub, &slow, &slow_challenge, "2001:db8:1:9::1").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.text().await.unwrap().contains("2001:db8:1::/48"));
+        assert_eq!(hub.state.board.read().await.faucet_granted_since(0), 2, "no third grant from the block");
     }
 
     /// The clustering view, which is the thing an operator opens the

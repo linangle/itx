@@ -501,6 +501,14 @@ impl ChallengeBook {
         Ok(redeemed)
     }
 
+    /// The network an outstanding challenge was priced for, if it is
+    /// known here. Read before redemption, so a refusal that depends on
+    /// the network -- its share of the day's budget -- can be given
+    /// before the work is spent rather than after.
+    pub fn network_of(&self, id: Uuid) -> Option<String> {
+        self.by_id.get(&id).and_then(|c| c.prefix.clone())
+    }
+
     /// Everything `redeem` checks, spending nothing.
     ///
     /// The faucet asks this before it asks whether it can afford the

@@ -319,6 +319,42 @@ pub fn prefix_of(ip: IpAddr) -> String {
     }
 }
 
+/// The wider block `ip` sits in: a /16 for IPv4, a /48 for IPv6 -- the
+/// size of allocation one hosting tenant or ISP segment holds, and the
+/// unit a single party can hold thousands of `prefix_of` networks
+/// inside.
+///
+/// `prefix_of` prices the faucet, and its comment says the answer to a
+/// datacentre /48 is the global budget. That was half right: the budget
+/// bounds the *loss*, but a /48 is 65,536 /64s each quoted the base
+/// price, so one tenant could take the entire day's budget at the base
+/// price in minutes -- and every genuine arrival for the rest of the
+/// day was refused by a budget that looked, from the console, as if a
+/// population had arrived. This is the unit the faucet's network share
+/// (`--faucet-network-share-percent`) is measured on: not a price, a
+/// share of the budget no one block may exceed, so the rest stays for
+/// everyone else.
+pub fn wide_prefix_of(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            format!("{a}.{b}.0.0/16")
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2])
+        }
+    }
+}
+
+/// `wide_prefix_of` for a network as `prefix_of` rendered it, so a
+/// grant recorded against a /24 or a /64 can be counted against the
+/// block that holds it without a second string being stored.
+pub fn widen_prefix(prefix: &str) -> Option<String> {
+    let (address, _) = prefix.split_once('/')?;
+    address.parse::<IpAddr>().ok().map(wide_prefix_of)
+}
+
 /// The reverse-proxy addresses whose `X-Forwarded-For` header this hub
 /// believes. Empty by default, and empty is the only safe default: the
 /// header is set by whoever sends the request, so honouring it from an
@@ -554,6 +590,24 @@ mod tests {
         // accepted weakness: a datacentre /48 is 65,536 of these. The
         // global faucet budget is what bounds that case.
         assert_ne!(prefix_of("2001:db8:1:3::1".parse().unwrap()), prefix_of(a));
+    }
+
+    /// A /48 is many /64s and a /16 is many /24s; the share is measured
+    /// on the block, and a recorded network widens to the block it is in.
+    #[test]
+    fn a_wide_network_is_a_48_or_a_16_and_a_recorded_network_widens_to_it() {
+        assert_eq!(wide_prefix_of("2001:db8:1:2::1".parse().unwrap()), "2001:db8:1::/48");
+        assert_eq!(wide_prefix_of("2001:db8:1:ffff::1".parse().unwrap()), "2001:db8:1::/48");
+        assert_ne!(wide_prefix_of("2001:db8:2:2::1".parse().unwrap()), "2001:db8:1::/48");
+        assert_eq!(wide_prefix_of("203.0.113.9".parse().unwrap()), "203.0.0.0/16");
+        assert_eq!(wide_prefix_of("203.0.200.9".parse().unwrap()), "203.0.0.0/16");
+        assert_ne!(wide_prefix_of("203.1.113.9".parse().unwrap()), "203.0.0.0/16");
+        // A v4-mapped address widens with its v4 form, as `prefix_of` does.
+        assert_eq!(wide_prefix_of("::ffff:203.0.113.9".parse().unwrap()), "203.0.0.0/16");
+
+        assert_eq!(widen_prefix("2001:db8:1:2::/64").as_deref(), Some("2001:db8:1::/48"));
+        assert_eq!(widen_prefix("203.0.113.0/24").as_deref(), Some("203.0.0.0/16"));
+        assert_eq!(widen_prefix("not a network"), None);
     }
 
     /// The same asymmetry, now applied where it was missing: the *rate
