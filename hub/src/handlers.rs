@@ -1675,6 +1675,20 @@ async fn submit_consensus_task(
     // but winners still need settling regardless of who completed the set.
     try_settle_verified_task(state, task_id).await;
 
+    // A tie closes the task with no winner (`CloseReason::NoMajority`),
+    // and a closed escrow-funded task's deposit has nowhere left to go
+    // but back to its poster. The sweep's deadline-resolution path does
+    // exactly this (main.rs: "A tie (Closed, no winner) needs its escrow
+    // refunded"); this path -- the last assignee's own submission
+    // resolving the task -- did not. The deposit sat `Consumed` under a
+    // `Closed` task, which no sweep selector looks at and which boot
+    // reconciliation does not flag because the task still names it, so
+    // the poster's bounty and fee stayed at an address nothing would
+    // ever spend.
+    if task_after_submit.status == TaskStatus::Closed {
+        refund_closed_task_escrow(state, task_id).await;
+    }
+
     // Did *this* agent's own answer match the majority? Absent from
     // `pending_payouts` (computed from the pre-settlement snapshot, so it
     // still names every winner) means either they disagreed, or the task

@@ -6866,6 +6866,99 @@ mod tests {
         }
     }
 
+    /// A tie closes an escrow-funded consensus task with no winner. The
+    /// sweep's deadline path refunded the escrow in that case; the
+    /// submit path -- the last assignee's own submission resolving the
+    /// task -- did not, and nothing afterwards looks at a `Closed` task,
+    /// so the poster's bounty and fee stayed at the deposit address for
+    /// good. The refund now goes out from the submission that tied it,
+    /// without waiting for a sweep that would never have picked it up.
+    #[tokio::test]
+    async fn a_tied_agent_funded_consensus_task_refunds_its_escrow_from_the_submission_that_tied_it() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee1 = PrivateKey::new_key();
+        let assignee2 = PrivateKey::new_key();
+
+        let payload = handlers::EscrowConsensusTaskPayload {
+            description: "two answers, no majority".to_string(),
+            bounty: 900,
+            num_assignees: 2,
+            join_window_minutes: 60,
+            submission_window_minutes: 30,
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/consensus/escrow", hub.base_url))
+            .json(&envelope(&poster_key, "/tasks/consensus/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
+        let required_amount = reservation["required_amount"].as_u64().unwrap();
+        assert_eq!(required_amount, 900 + 1_000);
+        fake_node.fund(deposit_pubkey, required_amount).await;
+
+        let task: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
+            .json(&envelope(&poster_key, &format!("/tasks/escrow/{escrow_id}/confirm"), handlers::ConfirmEscrowPayload { escrow_id }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let task_id: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+        for assignee in [&assignee1, &assignee2] {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+        for (assignee, answer) in [(&assignee1, "42"), (&assignee2, "43")] {
+            hub.client
+                .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
+                .json(&envelope(assignee, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: answer.to_string() }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+
+        let closed = hub.state.board.read().await.get_task(task_id).unwrap().clone();
+        assert_eq!(closed.status, TaskStatus::Closed, "one answer each is a tie, and a tie closes the task");
+        assert!(matches!(closed.close_reason, Some(crate::board::CloseReason::NoMajority)));
+
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(
+            submitted.len(),
+            1,
+            "the tie must send the escrow back to the poster from the submission itself, not wait for a sweep"
+        );
+        assert!(
+            submitted[0]
+                .outputs
+                .iter()
+                .any(|o| o.pubkey == poster_key.public_key() && o.value == 900),
+            "the poster gets the deposit back less the network fee"
+        );
+    }
+
     /// One lost consensus payout is resent once, not once per winner.
     ///
     /// A consensus settlement is a single transaction paying every
