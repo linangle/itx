@@ -9,11 +9,21 @@
 # state.
 #
 # Usage:
-#   itx-backup.sh --recipient age1xxxx...            [--dest DIR] [--keep N]
-#   itx-backup.sh --recipient ops@example.com --gpg  [--dest DIR] [--keep N]
+#   itx-backup.sh --recipient age1xxxx...            [--dest DIR] [--keep N] [--remote DEST]
+#   itx-backup.sh --recipient ops@example.com --gpg  [--dest DIR] [--keep N] [--remote DEST]
 #
+#   --remote      an rsync destination (user@host:/path/) the finished
+#                 archive and its manifest are copied to. An archive that
+#                 stays on this box is not a backup of this box: the case
+#                 itx-recover.sh exists for is the one where the box is
+#                 gone, and the archives with it. The copy failing fails
+#                 the run, loudly, with the local archive kept.
 #   --no-stop     stop nothing (you are snapshotting underneath this)
 #   --stop-node   also stop the node -- DISCARDS ITS MEMPOOL, read below
+#
+# --recipient and --remote default to $ITX_BACKUP_RECIPIENT and
+# $ITX_BACKUP_REMOTE, which is how itx-backup.service passes them in from
+# /etc/itx/backup.env without the unit being edited per deployment.
 #
 # The recipient's PRIVATE key must not live on this box. That is the
 # whole point; putting it here to "make restores easier" gives the
@@ -26,7 +36,8 @@ set -euo pipefail
 
 STATE_DIR=${ITX_STATE_DIR:-/var/lib/itx}
 DEST=${ITX_BACKUP_DEST:-/var/backups/itx}
-RECIPIENT=""
+RECIPIENT=${ITX_BACKUP_RECIPIENT:-}
+REMOTE=${ITX_BACKUP_REMOTE:-}
 USE_GPG=0
 KEEP=14
 STOP_HUB=1
@@ -35,6 +46,7 @@ STOP_NODE=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --recipient) RECIPIENT="$2"; shift 2 ;;
+        --remote)    REMOTE="$2";    shift 2 ;;
         --dest)      DEST="$2";      shift 2 ;;
         --keep)      KEEP="$2";      shift 2 ;;
         --gpg)       USE_GPG=1;      shift ;;
@@ -45,6 +57,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$RECIPIENT" ]] || { echo "--recipient is required" >&2; exit 2; }
+if [[ -n "$REMOTE" ]]; then
+    command -v rsync >/dev/null || { echo "rsync not found, and --remote needs it" >&2; exit 1; }
+fi
 
 # --no-stop means stop nothing, whatever order the flags arrived in.
 # "stop nothing" is the safe reading of a contradictory pair, and it also
@@ -278,6 +293,25 @@ PARTIAL=""
 # someone reading the backup directory who does not hold the key. It is a
 # hash of a secret, not the secret.
 cp "$WORK/MANIFEST.txt" "$OUT.manifest.txt"
+
+# Off the box, before anything else can go wrong. Written before the
+# prune so a copy that fails cannot be followed by a prune that removes
+# the one archive nobody else has; and it fails the run rather than
+# warning, because a backup job that exits 0 with the archive still on
+# the box it is protecting is the failure that gets found by needing it.
+# The remote end is expected to be write-only for this box's key
+# (`rrsync -wo`, §7.1): a compromised box must not be able to read or
+# delete what it already sent.
+if [[ -n "$REMOTE" ]]; then
+    echo "copying to $REMOTE"
+    if ! rsync -a --partial --chmod=F600 -- "$OUT" "$OUT.manifest.txt" "$REMOTE"; then
+        echo "FAILED to copy $OUT to $REMOTE -- the archive is on this box and nowhere else" >&2
+        exit 1
+    fi
+else
+    echo "note: no --remote / ITX_BACKUP_REMOTE, so this archive stays on this box."
+    echo "  That is not a backup of this box. docs/deployment.md §7.1."
+fi
 
 echo "pruning to the last $KEEP"
 # Read into an array first so an empty result is an empty array rather

@@ -1,0 +1,20 @@
+# ITX nightly backup -- the schedule. Enable this, not the service:
+#
+#   sudo systemctl enable --now itx-backup.timer
+#
+# 03:17 UTC rather than a round hour, so it does not land on the same
+# minute as everybody else's cron; the random delay spreads it further.
+# Persistent, so a box that was off at 03:17 runs it on the next boot
+# rather than skipping the night.
+
+[Unit]
+Description=Nightly ITX encrypted backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+Unit=itx-backup.service
+
+[Install]
+WantedBy=timers.target

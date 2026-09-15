@@ -273,7 +273,7 @@ jobs:
         # names and unit ordering are what this is here to catch.
         run: |
           set -o pipefail
-          for unit in deploy/*.service; do
+          for unit in deploy/*.service deploy/*.timer; do
             echo "== $unit"
             out=$(systemd-analyze verify "$unit" 2>&1 || true)
             echo "$out"

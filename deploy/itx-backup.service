@@ -1,0 +1,26 @@
+# ITX nightly backup -- the service half. `itx-backup.timer` starts it.
+#
+# Root, not the itx user: the script stops and restarts itx-hub, reads the
+# secrets directory, and writes to /var/backups. It ships unedited; the
+# two values that differ per deployment -- the age recipient and the
+# off-box destination -- come from /etc/itx/backup.env, which the runbook
+# (docs/deployment.md §7.1) has you write once:
+#
+#   ITX_BACKUP_RECIPIENT=age1...
+#   ITX_BACKUP_REMOTE=backup@vault.example.net:/srv/itx-backups/
+#
+# Without ITX_BACKUP_REMOTE the archive stays on this box, which is the
+# case itx-recover.sh cannot recover from -- the script says so on every
+# run. Run it once by hand after enabling the timer and read the journal.
+
+[Unit]
+Description=ITX encrypted backup
+Documentation=file:///usr/local/share/doc/itx/deployment.md
+After=itx-hub.service
+
+[Service]
+Type=oneshot
+# The dash makes a missing file a loud failure inside the script
+# (--recipient is required) rather than a unit that will not load.
+EnvironmentFile=-/etc/itx/backup.env
+ExecStart=/usr/local/bin/itx-backup.sh --dest /var/backups/itx

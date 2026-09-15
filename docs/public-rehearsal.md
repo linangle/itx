@@ -138,9 +138,9 @@ sudo chown -R itx:itx /var/lib/itx
 sudo chmod 700 /var/lib/itx/secrets
 
 for b in node hub miner console; do sudo install -m 0755 "itx-$b" "/usr/local/bin/itx-$b"; done
-sudo cp deploy/itx-*.service /etc/systemd/system/
+sudo cp deploy/itx-*.service deploy/itx-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemd-analyze verify /etc/systemd/system/itx-*.service   # gate: must be silent
+sudo systemd-analyze verify /etc/systemd/system/itx-*.service /etc/systemd/system/itx-*.timer   # gate: must be silent
 ```
 
 The miner needs a **public** key to pay coinbase to, and the release tarball

@@ -674,9 +674,10 @@ for b in node hub miner; do
     sudo install -m 0755 "target/release/$b" "/usr/local/bin/itx-$b"
 done
 
-sudo cp deploy/itx-*.service /etc/systemd/system/
+sudo cp deploy/itx-*.service deploy/itx-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now itx-node itx-hub itx-miner
+# the backup timer is enabled in §7.1, once its recipient and destination exist
 ```
 
 The units' `ExecStart` lines and `deploy/itx-restore-drill.sh` both expect the
@@ -1356,12 +1357,43 @@ work. Run the second one on a schedule, not once.
 age-keygen -o ~/itx-restore-key.txt          # keep this offline
 # -> public key: age1ql3z7...
 
-# on the hub box, nightly
-/usr/local/bin/itx-backup.sh --recipient age1ql3z7... --dest /var/backups/itx
+# on the hub box, once: the recipient and the off-box destination ...
+sudo install -d -m 700 /etc/itx
+printf 'ITX_BACKUP_RECIPIENT=age1ql3z7...\nITX_BACKUP_REMOTE=backup@vault.example.net:/srv/itx-backups/\n' \
+  | sudo tee /etc/itx/backup.env >/dev/null
+sudo chmod 600 /etc/itx/backup.env
+# ... then the schedule. Nightly at 03:17 UTC, persistent across a box that was off.
+sudo systemctl enable --now itx-backup.timer
+sudo systemctl start itx-backup.service && sudo journalctl -u itx-backup -o cat -n 30
 ```
+
+The last line runs it once by hand, which is the only way to learn tonight
+rather than in sixty days that the recipient is mistyped or the remote refuses
+the key. `deploy/itx-backup.service` reads both values from that file and ships
+unedited; `deploy/itx-backup.timer` is the schedule. Nothing else schedules a
+backup — there is no cron line to add, and until 2026-09-15 there was nothing
+to enable either.
 
 A nightly run stops `itx-hub` for the length of the copy — seconds — and leaves
 `itx-node` alone. §7.2 is why that asymmetry matters and is not a detail.
+
+**Off the box, or it is not a backup.** `ITX_BACKUP_REMOTE` is an rsync
+destination over ssh, and the script copies each finished archive and its
+manifest there before it prunes anything, failing the run — non-zero exit, in
+the journal, on the timer's status — if the copy does not land. The failure
+mode this closes is the one §7.6 exists for: a box that is gone, and every
+archive with it. On the receiving side give this box its own ssh key and
+restrict it to writing into that one directory, so a compromised hub cannot
+read back or delete what it already sent:
+
+```
+# ~backup/.ssh/authorized_keys on the vault, one line
+command="rrsync -wo /srv/itx-backups",restrict ssh-ed25519 AAAA... itx-hub-backup
+```
+
+(`rrsync` ships with rsync on Debian and Ubuntu, under `/usr/bin/rrsync` or
+`/usr/share/doc/rsync/scripts/`.) Without a remote the script still runs and
+says, on every run, that the archive stayed on the box.
 
 The box holds only the *public* key, so it can write backups it cannot read
 back. That matters more than it first appears: if the hub is compromised, the

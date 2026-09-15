@@ -120,7 +120,7 @@ done
 
 step "3. the units -- installed, not started"
 [[ -d "$RELEASE_DIR/deploy" ]] || fail "no deploy/ in $RELEASE_DIR"
-cp "$RELEASE_DIR"/deploy/itx-*.service /etc/systemd/system/
+cp "$RELEASE_DIR"/deploy/itx-*.service "$RELEASE_DIR"/deploy/itx-*.timer /etc/systemd/system/
 systemctl daemon-reload
 
 step "4. decrypting"
