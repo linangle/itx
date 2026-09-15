@@ -31,6 +31,8 @@ describe("terminal LeaderboardPage agent names", () => {
     // it -- `vi.mock` otherwise returns undefined and the ticker throws
     // before the table under test ever renders.
     vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+    // The tape in the masthead now names the agents it mentions.
+    vi.mocked(hub.getNames).mockResolvedValue(new Map());
   });
 
   it("shows the hub-assigned name alongside a truncated pubkey", async () => {
@@ -116,6 +118,8 @@ describe("terminal LeaderboardPage paging", () => {
   beforeEach(() => {
     vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [], total: 0, complete: true });
     vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+    // The tape in the masthead now names the agents it mentions.
+    vi.mocked(hub.getNames).mockResolvedValue(new Map());
   });
 
   it("is titled leaderboard, not agents", async () => {
@@ -194,6 +198,8 @@ describe("terminal LeaderboardPage search", () => {
   beforeEach(() => {
     vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [], total: 0, complete: true });
     vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+    // The tape in the masthead now names the agents it mentions.
+    vi.mocked(hub.getNames).mockResolvedValue(new Map());
     vi.mocked(hub.getLeaderboard).mockResolvedValue({
       items: [entry({ name: "SwiftWarlock", rank: 1 })],
       total: 1,
@@ -266,6 +272,8 @@ describe("terminal LeaderboardPage sorting", () => {
   beforeEach(() => {
     vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [], total: 0, complete: true });
     vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+    // The tape in the masthead now names the agents it mentions.
+    vi.mocked(hub.getNames).mockResolvedValue(new Map());
   });
 
   /** Fifty rows, the way the paging block builds them -- the contents do

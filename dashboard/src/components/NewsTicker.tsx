@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { AsyncState } from "../hooks/useAsync";
+import { useAsync, type AsyncState } from "../hooks/useAsync";
+import { getNames } from "../lib/hub";
 import type { TaskDto } from "../lib/hub";
 import { formatCompactItx, formatKind, truncatePubkey } from "../lib/format";
 
@@ -26,7 +27,8 @@ function dismissed(): boolean {
 /** One tape headline per task, phrased from its current status: money on
  * offer, money moving, and money settling. Lowercase throughout --
  * `formatKind` and pubkeys are lowercased at the end rather than at each
- * call site.
+ * call site. `who` names an agent: the hub's name for it where there is
+ * one, the truncated key otherwise, the same rule as every table.
  *
  * **This function has to be total, and the `default` below is not
  * defensive padding.** It used to switch over `TaskStatus` with no
@@ -43,18 +45,18 @@ function dismissed(): boolean {
  * and the cost of drifting must be a dull headline rather than a blank
  * site. The `never` binding is the other half -- once the union does
  * learn a new status, this stops compiling until it gets a phrasing. */
-function headline(task: TaskDto): string {
+function headline(task: TaskDto, who: (pubkey: string) => string): string {
   const itx = `${formatCompactItx(task.bounty)} itx`;
   const kind = formatKind(task.kind).toLowerCase();
   switch (task.status) {
     case "Paid":
       return task.claimant
-        ? `settled ${itx} → ${truncatePubkey(task.claimant)}`
+        ? `settled ${itx} → ${who(task.claimant)}`
         : `settled ${itx} → consensus pool`;
     case "Open":
       return `new ${kind} bounty ${itx}`;
     case "Claimed":
-      return task.claimant ? `claimed ${itx} by ${truncatePubkey(task.claimant)}` : `claimed ${itx}`;
+      return task.claimant ? `claimed ${itx} by ${who(task.claimant)}` : `claimed ${itx}`;
     case "AwaitingDispute":
       return `answer posted on ${itx} task`;
     case "Disputed":
@@ -63,7 +65,7 @@ function headline(task: TaskDto): string {
       return `work verified on ${itx} task`;
     case "Submitted":
       return task.claimant
-        ? `settling ${itx} → ${truncatePubkey(task.claimant)}`
+        ? `settling ${itx} → ${who(task.claimant)}`
         : `settling ${itx} → consensus pool`;
     case "PayoutFailed":
       return `payout failed on ${itx} task, still owed`;
@@ -106,14 +108,34 @@ export default function NewsTicker({
     setOpen(false);
   }
 
+  const newest = useMemo(
+    () =>
+      (tasks.data?.items ?? [])
+        .slice()
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, 14),
+    [tasks.data],
+  );
+
+  // The names of the agents those headlines mention, in one request. A
+  // tape that named an agent by key beside a list that named it by name
+  // was the same agent twice, unrecognisably. `useAsync` keeps the last
+  // answer while a poll is in flight, so a name never flickers back to
+  // its key between refreshes.
+  const claimantKeys = newest
+    .map((task) => task.claimant)
+    .filter((key): key is string => Boolean(key))
+    .join(",");
+  const names = useAsync(
+    () => getNames(claimantKeys ? claimantKeys.split(",") : []),
+    [claimantKeys],
+  );
+
   const items = useMemo(() => {
-    const list = (tasks.data?.items ?? [])
-      .slice()
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, 14)
-      .map(headline);
+    const who = (pubkey: string) => names.data?.get(pubkey) ?? truncatePubkey(pubkey);
+    const list = newest.map((task) => headline(task, who));
     return list.length > 0 ? list : FILLER;
-  }, [tasks.data]);
+  }, [newest, names.data]);
 
   // Quantised to 4s steps. The duration is an inline style, so any change
   // to it restarts the marquee from the left -- and with the tape polling,

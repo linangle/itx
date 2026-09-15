@@ -1,7 +1,16 @@
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import NewsTicker from "./NewsTicker";
+import * as hub from "../lib/hub";
 import type { TaskDto, TaskStatus } from "../lib/hub";
+
+// The tape now asks the hub for the names of the agents it mentions.
+// Only that call is mocked: the rest of the module is real, and the
+// default answer is "no names", which is what every existing case wants.
+vi.mock("../lib/hub", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/hub")>()),
+  getNames: vi.fn(async () => new Map<string, string | null>()),
+}));
 import type { AsyncState } from "../hooks/useAsync";
 
 /** Every status the hub can put on a task, copied from `TaskStatus` in
@@ -100,5 +109,22 @@ describe("NewsTicker", () => {
       expect(item.textContent).toMatch(/itx/i);
       expect(item.textContent).not.toContain("undefined");
     }
+  });
+});
+
+describe("names", () => {
+  it("names a claimant the hub has a name for, the way the tables do", async () => {
+    vi.mocked(hub.getNames).mockResolvedValueOnce(new Map([[KEY, "SourHeron"]]));
+    render(<NewsTicker tasks={state([task("Paid", { claimant: KEY })])} />);
+    // Two halves of the tape, so two copies of the headline.
+    const named = await screen.findAllByText(/→ SourHeron/);
+    expect(named.length).toBeGreaterThan(0);
+    expect(vi.mocked(hub.getNames)).toHaveBeenCalledWith([KEY]);
+  });
+
+  it("falls back to the truncated key for an agent the hub has not named", async () => {
+    const { container } = render(<NewsTicker tasks={state([task("Paid", { claimant: KEY })])} />);
+    await vi.waitFor(() => expect(vi.mocked(hub.getNames)).toHaveBeenCalled());
+    expect(container.textContent).toContain("02aaaa…beef");
   });
 });

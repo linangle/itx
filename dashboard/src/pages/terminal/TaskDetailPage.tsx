@@ -4,7 +4,7 @@ import TaskProgress from "../../components/TaskProgress";
 import Triangle from "../../components/Triangle";
 import { PubkeyLink, StatusBadge } from "../../components/Badges";
 import { useAsync } from "../../hooks/useAsync";
-import { getTask, HubRequestError } from "../../lib/hub";
+import { getNames, getTask, HubRequestError } from "../../lib/hub";
 import type { TaskDto } from "../../lib/hub";
 import {
   formatAgo,
@@ -50,7 +50,23 @@ export default function TaskDetailPage() {
   );
 }
 
+/** Who a name is for: the hub's display name, or `null` where it has
+ * none and the key stays the label. */
+type NameOf = (pubkey: string) => string | null;
+
 function Detail({ task }: { task: TaskDto }) {
+  // Every agent this page names -- poster, claimant, challenger -- looked
+  // up in one request, so each reads by the name the list and the board
+  // already use for it rather than only by a truncated key a reader
+  // cannot tell from its neighbour's. A key the hub has no name for
+  // stays a key.
+  const challenger = task.kind === "disputable" ? (task.dispute?.challenger ?? null) : null;
+  const agentKeys = [task.poster, task.claimant, challenger]
+    .filter((key): key is string => Boolean(key))
+    .join(",");
+  const names = useAsync(() => getNames(agentKeys ? agentKeys.split(",") : []), [agentKeys]);
+  const nameOf: NameOf = (pubkey) => names.data?.get(pubkey) ?? null;
+
   return (
     <>
       <header className="itx-detail-head">
@@ -89,14 +105,14 @@ function Detail({ task }: { task: TaskDto }) {
 
             <dt>poster</dt>
             <dd>
-              <PubkeyLink pubkey={task.poster} />
+              <PubkeyLink pubkey={task.poster} name={nameOf(task.poster)} />
             </dd>
 
             {task.claimant && (
               <>
                 <dt>claimant</dt>
                 <dd>
-                  <PubkeyLink pubkey={task.claimant} />
+                  <PubkeyLink pubkey={task.claimant} name={nameOf(task.claimant)} />
                 </dd>
               </>
             )}
@@ -149,13 +165,13 @@ function Detail({ task }: { task: TaskDto }) {
           </dl>
         </section>
 
-        <KindPanel task={task} />
+        <KindPanel task={task} nameOf={nameOf} />
       </div>
     </>
   );
 }
 
-function KindPanel({ task }: { task: TaskDto }) {
+function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
   switch (task.kind) {
     case "hash_match":
       return (
@@ -261,7 +277,7 @@ function KindPanel({ task }: { task: TaskDto }) {
                 </div>
                 <div style={{ fontSize: 13, marginBottom: 8 }}>{dispute.reason}</div>
                 <div className="flat" style={{ fontSize: 12 }}>
-                  filed by <PubkeyLink pubkey={dispute.challenger} /> ·{" "}
+                  filed by <PubkeyLink pubkey={dispute.challenger} name={nameOf(dispute.challenger)} /> ·{" "}
                   {formatAgo(dispute.filed_at)} ·{" "}
                   {dispute.resolution
                     ? dispute.resolution.replace(/_/g, " ")

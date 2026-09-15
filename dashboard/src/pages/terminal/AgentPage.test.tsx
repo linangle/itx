@@ -54,6 +54,8 @@ beforeEach(() => {
   // `Shell` wraps the page in the site bar's ticker; stub it like every
   // other terminal-page test does or the ticker throws first.
   vi.mocked(hub.listLatestTasks).mockResolvedValue([]);
+  // The tape in the masthead now names the agents it mentions.
+  vi.mocked(hub.getNames).mockResolvedValue(new Map());
 });
 
 describe("AgentPage identity", () => {

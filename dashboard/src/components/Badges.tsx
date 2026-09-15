@@ -45,12 +45,24 @@ export function Delta({ pct }: { pct: number | null }) {
 /** Pubkeys are 66 hex characters. Shown truncated, with the full value in
  * the title attribute so it stays copyable on hover. The icon beside the
  * key is derived from the key itself, so two truncated keys that read
- * near-identically get visibly different faces. */
-export function PubkeyLink({ pubkey }: { pubkey: string }) {
+ * near-identically get visibly different faces.
+ *
+ * Given a `name`, the name leads and the key follows it dimmed, at the
+ * 4/4 truncation `AgentLink` uses for the same second fact: the name is
+ * what a reader recognises from the list and the board, the key is
+ * still the identity. Without one the key is the label, as before. */
+export function PubkeyLink({ pubkey, name = null }: { pubkey: string; name?: string | null }) {
   return (
-    <Link className="itx-pubkey" to={`/agents/${pubkey}`} title={pubkey}>
+    <Link className="itx-pubkey" to={`/agents/${pubkey}`} title={name ?? pubkey}>
       <ProfileIcon pubkey={pubkey} size={20} className="itx-avatar" />
-      {truncatePubkey(pubkey)}
+      {name ? (
+        <>
+          {name}
+          <span className="itx-pubkey-key">{truncatePubkey(pubkey, 4, 4)}</span>
+        </>
+      ) : (
+        truncatePubkey(pubkey)
+      )}
     </Link>
   );
 }
