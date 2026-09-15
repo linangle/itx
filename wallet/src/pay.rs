@@ -88,6 +88,24 @@ pub struct PayArgs {
 }
 
 pub async fn run(args: PayArgs) -> Result<()> {
+    // --- never probe the node ------------------------------------------
+    //
+    // The interlock below is the one bare TCP connect in this tool, and
+    // it is harmless only because it is aimed at the hub. Aimed at the
+    // node -- `--hub-addr 127.0.0.1:9000`, one flag away -- it is exactly
+    // the connect-and-hang-up the node bans an address for, on the first
+    // offence, for an hour; and the address it bans is the hub's and the
+    // miner's too. Refuse before touching a socket.
+    if same_endpoint(&args.hub_addr, &args.node) {
+        bail!(
+            "--hub-addr {} is the node's address. The hub check opens a bare TCP connection \
+             and closes it, which the node treats as a severe strike and answers with a \
+             one-hour ban of this address -- the hub and the miner included. Point \
+             --hub-addr at the hub (127.0.0.1:9100 by default), not at --node.",
+            args.hub_addr
+        );
+    }
+
     // --- the interlock -------------------------------------------------
     //
     // A TCP connect rather than a `/health` request, and rather than
@@ -268,6 +286,17 @@ async fn hub_is_listening(addr: &str) -> bool {
     matches!(timeout(Duration::from_secs(2), TcpStream::connect(addr)).await, Ok(Ok(_)))
 }
 
+/// Whether two `host:port` strings name one endpoint: compared as socket
+/// addresses when both parse (a v4-mapped v6 address counts as its v4
+/// form), as trimmed text otherwise.
+fn same_endpoint(a: &str, b: &str) -> bool {
+    use std::net::SocketAddr;
+    match (a.trim().parse::<SocketAddr>(), b.trim().parse::<SocketAddr>()) {
+        (Ok(a), Ok(b)) => a.ip().to_canonical() == b.ip().to_canonical() && a.port() == b.port(),
+        _ => a.trim() == b.trim(),
+    }
+}
+
 fn parse_pubkey(hex_str: &str) -> Result<PublicKey> {
     let bytes = hex::decode(hex_str.trim()).context("not hexadecimal")?;
     PublicKey::from_sec1_bytes(&bytes).map_err(|e| anyhow::anyhow!("not a public key: {e}"))
@@ -308,6 +337,61 @@ async fn balance_of(stream: &mut TcpStream, pubkey: &PublicKey) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DEFAULT_FEE` has to equal the hub's `HUB_TRANSACTION_FEE` -- its
+    /// own comment says why at length. The hub is a binary crate, so this
+    /// reads the constant out of its source rather than importing it.
+    #[test]
+    fn the_default_fee_is_the_hubs_flat_fee() {
+        let source = include_str!("../../hub/src/handlers.rs");
+        let line = source
+            .lines()
+            .find(|l| l.contains("const HUB_TRANSACTION_FEE"))
+            .expect("the hub declares HUB_TRANSACTION_FEE");
+        let value: u64 = line
+            .split('=')
+            .nth(1)
+            .expect("a declaration with a value")
+            .trim()
+            .trim_end_matches(';')
+            .replace('_', "")
+            .parse()
+            .expect("a literal");
+        assert_eq!(DEFAULT_FEE, value, "wallet/src/pay.rs DEFAULT_FEE must match hub/src/handlers.rs HUB_TRANSACTION_FEE");
+    }
+
+    #[test]
+    fn the_node_address_is_recognised_however_it_is_spelled() {
+        assert!(same_endpoint("127.0.0.1:9000", "127.0.0.1:9000"));
+        assert!(same_endpoint(" 127.0.0.1:9000\n", "127.0.0.1:9000"));
+        assert!(same_endpoint("[::ffff:127.0.0.1]:9000", "127.0.0.1:9000"));
+        assert!(!same_endpoint("127.0.0.1:9100", "127.0.0.1:9000"));
+        assert!(same_endpoint("node.internal:9000", "node.internal:9000"));
+        assert!(!same_endpoint("node.internal:9100", "node.internal:9000"));
+    }
+
+    /// The interlock's probe is a bare connect-and-close, which is the
+    /// one thing the node bans an address for on sight. Aimed at the node
+    /// by mistake it must be refused before any socket is opened -- so
+    /// the error names the node, not the missing key file it would have
+    /// reached next.
+    #[tokio::test]
+    async fn pay_refuses_to_probe_the_node_before_opening_any_socket() {
+        let err = run(PayArgs {
+            node: "127.0.0.1:1".to_string(),
+            hub_addr: "127.0.0.1:1".to_string(),
+            from: PathBuf::from("/nonexistent/operator.priv.cbor"),
+            to: String::new(),
+            amount: 1,
+            fee: DEFAULT_FEE,
+            wait_seconds: 0,
+            yes: true,
+            force: false,
+        })
+        .await
+        .expect_err("the node's own address must be refused");
+        assert!(err.to_string().contains("node's address"), "{err}");
+    }
 
     #[test]
     fn a_pubkey_round_trips_through_the_hex_the_hub_prints() {
