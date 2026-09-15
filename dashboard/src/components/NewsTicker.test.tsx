@@ -13,6 +13,24 @@ vi.mock("../lib/hub", async (importOriginal) => ({
 }));
 import type { AsyncState } from "../hooks/useAsync";
 
+describe("a browser that refuses storage", () => {
+  // Private-mode Safari and a "block all cookies" Chrome throw on the
+  // sessionStorage getter itself. The theme and the column hooks
+  // already guard theirs; this one sits inside the masthead on every
+  // screen, and a throw in a state initialiser is a throw in render.
+  it("still renders the tape", () => {
+    const blocked = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    try {
+      render(<NewsTicker tasks={{ data: { items: [] }, error: null, loading: false, stale: false } as AsyncState<{ items: TaskDto[] }>} />);
+      expect(screen.getByRole("button", { name: /hide the market ticker/i })).toBeInTheDocument();
+    } finally {
+      blocked.mockRestore();
+    }
+  });
+});
+
 /** Every status the hub can put on a task, copied from `TaskStatus` in
  * `hub/src/board.rs`. Listed literally rather than derived, because a
  * type has no runtime members and deriving it from the union under test

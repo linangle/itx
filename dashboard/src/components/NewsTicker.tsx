@@ -21,7 +21,23 @@ const FILLER = Array.from({ length: 18 }, () => "news");
 const DISMISS_KEY = "itx-news-dismissed";
 
 function dismissed(): boolean {
-  return sessionStorage.getItem(DISMISS_KEY) === "1";
+  // Guarded like the theme and column hooks: private-mode Safari and a
+  // "block all cookies" Chrome throw on the getter itself, and this
+  // runs in a state initialiser inside the masthead on every screen,
+  // so an unguarded throw was a blank site for that visitor everywhere.
+  try {
+    return sessionStorage.getItem(DISMISS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function remember_dismissed(): void {
+  try {
+    sessionStorage.setItem(DISMISS_KEY, "1");
+  } catch {
+    // Nothing to remember it in; the tape closes for this page anyway.
+  }
 }
 
 /** One tape headline per task, phrased from its current status: money on
@@ -104,7 +120,7 @@ export default function NewsTicker({
   const [open, setOpen] = useState(() => !dismissed());
 
   function close() {
-    sessionStorage.setItem(DISMISS_KEY, "1");
+    remember_dismissed();
     setOpen(false);
   }
 

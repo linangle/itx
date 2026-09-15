@@ -42,8 +42,20 @@ const SEQUENCES: Record<TaskDto["kind"], { label: string; statuses: TaskStatus[]
   ],
 };
 
+/** For a kind this build does not know. `TaskDto["kind"]` is a union
+ * maintained by hand against the hub, and it drifts -- `TaskStatus` did,
+ * and the tape and the badges were hardened for it while this indexed
+ * a table by kind with nothing behind a miss, so a fourth kind threw in
+ * render and, with no boundary, blanked every task page. Every status
+ * lands somewhere in these three. */
+const GENERIC: { label: string; statuses: TaskStatus[] }[] = [
+  { label: "posted", statuses: ["Open"] },
+  { label: "in progress", statuses: ["Claimed", "AwaitingDispute", "Disputed", "Verified", "Submitted"] },
+  { label: "paid", statuses: ["Paid"] },
+];
+
 export default function TaskProgress({ task }: { task: TaskDto }) {
-  const steps = SEQUENCES[task.kind];
+  const steps = SEQUENCES[task.kind] ?? GENERIC;
   const currentIndex = steps.findIndex((step) => step.statuses.includes(task.status));
   // Both off-path terminals derail the last marker; only the label
   // differs, and the difference matters -- "closed" means nobody was

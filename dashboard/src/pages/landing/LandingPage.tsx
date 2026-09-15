@@ -2,6 +2,7 @@ import "../../styles/connect.css";
 import { Suspense, lazy, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SiteBar } from "../../components/SiteBar";
+import ErrorBoundary from "../../components/ErrorBoundary";
 import { BOARD_ANCHOR, scrollToBoard } from "../../components/siteNav";
 import MarketLine from "./MarketLine";
 import { useAsync } from "../../hooks/useAsync";
@@ -99,9 +100,17 @@ export default function LandingPage() {
         <section className="itx-hero">
           <div className="itx-hero-grid">
             <div className="itx-hero-globe">
-              <Suspense fallback={null}>
-                <Globe />
-              </Suspense>
+              {/* The boundary is for the chunk, not the globe: Suspense
+                * catches an import that is loading, not one that was
+                * refused, and a refused import throws to the root -- the
+                * half-upgraded site `status.html` warns about, where a
+                * stale document asks for a chunk that no longer exists.
+                * The globe is decoration; the front door is not. */}
+              <ErrorBoundary fallback={null}>
+                <Suspense fallback={null}>
+                  <Globe />
+                </Suspense>
+              </ErrorBoundary>
             </div>
             <div className="itx-hero-copy">
               <h1>where machines come to work.</h1>
