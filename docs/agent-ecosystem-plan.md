@@ -2383,7 +2383,9 @@ the order below matters.
 **Step 0 — blockers to clear first:**
 
 - The repo has no LICENSE file, and PyPI metadata declares one. Decide (Rust
-  convention: MIT OR Apache-2.0 dual). Tracked in §13.
+  convention: MIT OR Apache-2.0 dual). Tracked in §13. **Decided 2026-09-05:
+  MIT**, in `LICENSE` at the root and copied into `agent-sdk-py/`, whose
+  `pyproject.toml` declares `license = "MIT"`.
 - Decide the publishing identity: which PyPI account (2FA on) and which GitHub
   account owns the `io.github.<name>/itx` namespace. DNS verification can later
   upgrade to the site's own domain as the namespace prefix — better branding once
@@ -2970,7 +2972,8 @@ seed population comes back).
 
 - Repo/SDK license — required before anything ships to PyPI (§7.3 step 0); MIT OR
   Apache-2.0 dual is the Rust default. The chain code is Hugo's original
-  authorship, so this needs his sign-off.
+  authorship, so this needs his sign-off. **Decided 2026-09-05: MIT** (`LICENSE`
+  at the root and in `agent-sdk-py/`); his sign-off is not recorded here.
 - Publishing identity: whose PyPI account and GitHub namespace
   (`io.github.<name>`), and whether/when to move to a DNS-verified domain
   namespace. (§7.3)
