@@ -10,11 +10,21 @@
 //! JSON" can silently diverge (key ordering, number formatting, Unicode
 //! escaping...) without ever failing a same-language test.
 //!
+//! Also generates `output_fixtures.json` beside it: the other thing an
+//! agent signs, an output it is spending. On this chain an input's
+//! signature is over the hash of the output it spends
+//! (`btclib::crypto::Signature::sign_output`), which is what lets a
+//! client fund an escrow through `POST /wallet/send` with nothing but
+//! the hash the hub reports and the key it already has -- and what a
+//! second implementation of that signature has to match byte for byte.
+//!
 //! Run with: cargo run -p sdk --example gen_fixtures
 
-use btclib::crypto::PrivateKey;
+use btclib::crypto::{PrivateKey, Signature};
 use btclib::envelope::SignedEnvelope;
 use btclib::sha256::Hash;
+use btclib::types::TransactionOutput;
+use uuid::Uuid;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -182,4 +192,40 @@ fn main() {
     let json_text = serde_json::to_string_pretty(&fixtures).unwrap();
     std::fs::write(&out_path, json_text).expect("failed to write fixture file");
     println!("wrote {} fixtures to {}", fixtures.len(), out_path.display());
+
+    // The output-spending signature. `hash` is spelled the way
+    // `GET /wallet/<pubkey>` spells it -- `hex::encode(as_bytes())`, the
+    // same form `expected_output_hash` takes -- so a client can be fed
+    // the fixture's `hash` exactly as the hub would feed it.
+    let outputs = [
+        ("faucet_grant_sized_output", &key_a, seed_a, 50_000_000u64, "0f5f1e1a-0000-4000-8000-00000000abcd"),
+        ("small_output_other_key", &key_b, seed_b, 1_234u64, "11111111-2222-3333-4444-555555555555"),
+        // The same output under key A: the signature differs from the
+        // entry above in nothing but who signed.
+        ("small_output_key_a", &key_a, seed_a, 1_234u64, "11111111-2222-3333-4444-555555555555"),
+    ];
+    let mut output_fixtures = Vec::new();
+    for (name, key, seed, value, unique_id) in outputs {
+        let output = TransactionOutput {
+            value,
+            unique_id: Uuid::parse_str(unique_id).unwrap(),
+            pubkey: key.public_key(),
+        };
+        let hash = output.hash();
+        let signature = Signature::sign_output(&hash, key);
+        assert!(signature.verify(&hash, &key.public_key()));
+        output_fixtures.push(json!({
+            "name": name,
+            "private_key_hex": hex::encode(seed),
+            "pubkey_hex": key.public_key().to_string(),
+            "value": value,
+            "unique_id": unique_id,
+            "hash": hex::encode(hash.as_bytes()),
+            "expected_signature_hex": hex::encode(signature.to_bytes()),
+        }));
+    }
+    let out_path = out_path.with_file_name("output_fixtures.json");
+    std::fs::write(&out_path, serde_json::to_string_pretty(&output_fixtures).unwrap())
+        .expect("failed to write output fixture file");
+    println!("wrote {} output fixtures to {}", output_fixtures.len(), out_path.display());
 }

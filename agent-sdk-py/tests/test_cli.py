@@ -274,3 +274,85 @@ def test_a_base_url_with_a_path_prefix_is_reported_as_json(env, monkeypatch, cap
 
     payload = json.loads(capsys.readouterr().err)
     assert "no path, query or fragment" in payload["error"]
+
+
+# -- wallet, post, confirm, send ------------------------------------------
+#
+# The demand side. These exist so that anyone can put work on the board,
+# which before them needed a node port no stranger can reach.
+
+import hashlib  # noqa: E402
+
+ESCROW = {"escrow_id": "e1", "deposit_address": "02" + "ee" * 32, "required_amount": 1_500, "expires_at": "x"}
+
+
+def test_wallet_reads_this_identitys_own_wallet(env):
+    client, run, home = env
+    client.get_wallet.return_value = {"balance": 5}
+    assert run("wallet") == {"balance": 5}
+    agent = Agent.from_private_key_hex((home / ".itx" / "agent.key").read_text().strip())
+    client.get_wallet.assert_called_once_with(agent.pubkey_hex)
+
+
+def test_post_reserves_pays_and_waits_for_the_block(env):
+    client, run, _ = env
+    client.create_task_escrow.return_value = ESCROW
+    client.fund_escrow.return_value = {"tx_hash": "dd" * 32}
+    client.wait_for_task_funding.return_value = {"id": "t1", "status": "Open"}
+
+    result = run("post", "--description", "reverse it", "--bounty", "500", "--answer", "tset", "--capability", "text/reversal")
+
+    args = client.create_task_escrow.call_args[0]
+    assert args[1:] == ("reverse it", 500, hashlib.sha256(b"tset").hexdigest(), 0, ["text/reversal"]), \
+        "only the answer's hash goes to the hub"
+    assert client.fund_escrow.call_args[0][1] == ESCROW
+    assert client.wait_for_task_funding.call_args[0][1] == "e1"
+    assert result == {"reservation": ESCROW, "sent": {"tx_hash": "dd" * 32}, "task": {"id": "t1", "status": "Open"}}
+
+
+def test_post_no_wait_stops_after_paying_and_says_how_to_finish(env):
+    client, run, _ = env
+    client.create_task_escrow.return_value = ESCROW
+    client.fund_escrow.return_value = {"tx_hash": "dd" * 32}
+    result = run("post", "--description", "d", "--bounty", "5", "--expected-output-hash", "ab" * 32, "--no-wait")
+    client.wait_for_task_funding.assert_not_called()
+    assert result["task"] is None
+    assert "itx-agent confirm e1" in result["next"]
+
+
+def test_post_knows_each_kinds_flags(env):
+    client, run, _ = env
+    client.create_consensus_task_escrow.return_value = ESCROW
+    client.create_disputable_task_escrow.return_value = ESCROW
+    client.fund_escrow.return_value = {}
+    client.wait_for_task_funding.return_value = {}
+
+    run("post", "--kind", "consensus", "--description", "d", "--bounty", "9", "--num-assignees", "3",
+        "--join-window-minutes", "10", "--submission-window-minutes", "20", "--min-reputation", "2")
+    assert client.create_consensus_task_escrow.call_args[0][1:] == ("d", 9, 3, 10, 20, 2, None)
+
+    run("post", "--kind", "disputable", "--description", "d", "--bounty", "9", "--dispute-window-minutes", "30")
+    assert client.create_disputable_task_escrow.call_args[0][1:] == ("d", 9, 30, 0, None)
+
+    with pytest.raises(ValueError, match="consensus task needs --num-assignees"):
+        run("post", "--kind", "consensus", "--description", "d", "--bounty", "9")
+    with pytest.raises(ValueError, match="disputable task needs"):
+        run("post", "--kind", "disputable", "--description", "d", "--bounty", "9")
+    with pytest.raises(ValueError, match="exactly one of"):
+        run("post", "--description", "d", "--bounty", "9")
+    with pytest.raises(ValueError, match="exactly one of"):
+        run("post", "--description", "d", "--bounty", "9", "--answer", "a", "--expected-output-hash", "ab" * 32)
+    # None of the refusals reserved anything.
+    assert client.create_task_escrow.call_count == 0
+    assert client.fund_escrow.call_count == 2
+
+
+def test_confirm_and_send_pass_their_arguments_through(env):
+    client, run, _ = env
+    client.confirm_task_escrow.return_value = {"id": "t1"}
+    assert run("confirm", "e1") == {"id": "t1"}
+    assert client.confirm_task_escrow.call_args[0][1] == "e1"
+
+    client.send.return_value = {"tx_hash": "dd" * 32}
+    assert run("send", "03" + "cd" * 32, "250") == {"tx_hash": "dd" * 32}
+    assert client.send.call_args[0][1:] == ("03" + "cd" * 32, 250)

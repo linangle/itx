@@ -2119,6 +2119,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

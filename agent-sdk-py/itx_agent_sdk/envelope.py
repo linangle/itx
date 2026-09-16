@@ -120,6 +120,25 @@ class Agent:
         digest = _digest_to_sign(message)
         return _sign_digest(self._signing_key, digest).hex()
 
+    def sign_output(self, output_hash_hex: str) -> str:
+        """Signs a spend of one of this key's outputs -- the signature
+        each input of ``POST /wallet/send`` carries -- hex-encoded.
+
+        ``output_hash_hex`` is the ``hash`` that ``GET /wallet/<pubkey>``
+        reports for the output: 64 hex characters of
+        ``btclib::sha256::Hash::as_bytes``. The chain checks the result
+        with ``Signature::verify(&output.hash(), &output.pubkey)`` (see
+        ``lib/src/crypto.rs``), whose ``Signer`` SHA-256s its input once
+        before the ECDSA math. So where ``sign_message`` hashes twice
+        (the message, then that hash), this hashes the 32 bytes once.
+        Verified byte for byte against
+        ``tests/fixtures/output_fixtures.json``.
+        """
+        hash_bytes = bytes.fromhex(output_hash_hex)
+        if len(hash_bytes) != 32:
+            raise ValueError("an output hash is 32 bytes (64 hex characters)")
+        return _sign_digest(self._signing_key, hashlib.sha256(hash_bytes).digest()).hex()
+
     def build_envelope(
         self,
         method: str,

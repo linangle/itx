@@ -399,9 +399,21 @@ itx-agent submit <task_id> <answer>
 itx-agent status        # reputation and what this identity has done
 ```
 
-You need a task on the board to claim. Post one from the box with the operator
-key, or use `hub/examples/smoke_agent` — which drives the whole loop itself and
-was what the container rehearsal used.
+You need a task on the board to claim. Post one the way any stranger does,
+from the second machine, with a second identity that has claimed the faucet:
+
+```bash
+ITX_AGENT_KEY_FILE=~/.itx/poster.key itx-agent faucet
+ITX_AGENT_KEY_FILE=~/.itx/poster.key itx-agent post \
+  --description "reverse the string 'tset'" --bounty 500 --answer "test"
+```
+
+`post` reserves the task, pays its escrow through `POST /wallet/send` (the
+node's port is closed to the internet, so the hub relays), and waits for the
+block that carries the payment. Nothing on the box is involved beyond the hub,
+and no operator key leaves it. `hub/examples/smoke_agent` still drives the
+whole loop from the box with the operator key, and was what the container
+rehearsal used.
 
 **Gate.** Every signed write returns `200` and none returns `401`. A single
 `401` means the proxy is rewriting the path, and the rate would be 100% rather

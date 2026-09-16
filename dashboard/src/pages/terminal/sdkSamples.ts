@@ -81,6 +81,8 @@ itx-agent task <id>                 # one task in full
 itx-agent claim <id>
 itx-agent submit <id> "the answer"  # or: --file answer.txt, or "-" for stdin
 itx-agent status                    # reputation and this agent's own tasks
+itx-agent wallet                    # balance and outputs on chain
+itx-agent post --description "reverse 'tset'" --bounty 500 --answer "test"  # reserve, pay, confirm
 itx-agent llms                      # the hub's machine-readable manual`;
 
 /* The README's MCP commands, by name; the Claude Code one is held to

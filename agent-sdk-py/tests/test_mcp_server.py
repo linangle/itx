@@ -28,6 +28,7 @@ OTHER = "03" + "cd" * 32
 # annotated destructive, or `test_money_tools_are_marked_destructive`
 # fails -- the point is that the list is reviewed, not inferred.
 MONEY_OR_REPUTATION_TOOLS = {
+    "send_coins",
     "post_task",
     "post_consensus_task",
     "post_disputable_task",
@@ -41,6 +42,8 @@ MONEY_OR_REPUTATION_TOOLS = {
 # assertion below catches a tool added without a test entry.
 TOOL_CALLS: Dict[str, Dict[str, Any]] = {
     "claim_faucet": {},
+    "get_wallet": {},
+    "send_coins": {"to_pubkey": OTHER, "amount": 5},
     "post_task": {"description": "d", "bounty": 10, "expected_output_hash": "ab" * 32},
     "post_consensus_task": {
         "description": "d",
@@ -109,6 +112,12 @@ class FakeHub:
 
     def faucet_claim(self, agent, challenge_id=None, solution=None):
         return {"amount": 50_000_000}
+
+    def get_wallet(self, pubkey_hex):
+        return {"pubkey": pubkey_hex, "balance": 50_000_000, "pending": 0, "outputs": [{"hash": "aa" * 32, "value": 50_000_000, "pending": False}]}
+
+    def send(self, agent, to_pubkey_hex, amount, fee=1_000):
+        return {"tx_hash": "dd" * 32, "fee": fee, "outputs": [{"hash": "bb" * 32, "pubkey": to_pubkey_hex, "value": amount}]}
 
     def create_task_escrow(self, agent, *a, **k):
         return dict(self.ESCROW)
@@ -393,6 +402,8 @@ def test_the_window_refreshes_once_it_has_elapsed():
         ("POST", "/tasks", "chain"),
         ("POST", "/tasks/consensus", "chain"),
         ("POST", "/faucet", "chain"),
+        ("POST", "/wallet/send", "chain"),
+        ("GET", "/wallet/02ab", "read"),
         ("POST", "/tasks/escrow/e1/confirm", "chain"),
         ("POST", "/tasks/t1/submit", "chain"),
         ("POST", "/tasks/t1/dispute/confirm", "chain"),

@@ -36,6 +36,47 @@ HUB_MAX_TASKS_PAGE_SIZE = 200
 # the recent activity a question like "what is my status" is about.
 MAX_BOARD_SCAN = 1000
 
+# The flat fee every transaction on this chain pays the miner of its block,
+# as the hub enforces it on what it relays: `HUB_TRANSACTION_FEE` in
+# `hub/src/handlers.rs`. `HubClient.send` pays exactly this much unless
+# told otherwise; paying less is a 400.
+HUB_TRANSACTION_FEE = 1_000
+
+
+class InsufficientFunds(ValueError):
+    """A spend that this key's unpending outputs cannot cover. Raised
+    before anything is signed or sent; `available` is what could be
+    spent right now and `needed` is the amount plus the fee."""
+
+    def __init__(self, available: int, needed: int):
+        super().__init__(
+            f"insufficient funds: {available} spendable now, {needed} needed (the amount plus the fee); "
+            "outputs a transaction the node is holding already spends do not count until the next block"
+        )
+        self.available = available
+        self.needed = needed
+
+
+def plan_spend(outputs: List[dict], needed: int) -> List[dict]:
+    """Which of a wallet's outputs a spend of ``needed`` units takes: the
+    ones nothing has spent yet, largest first, until they cover it. Pure,
+    so it is testable without a hub. Largest first is also the order the
+    hub lists them in and the policy its own wallet uses, so a spend takes
+    as few inputs as it can and leaves the small change where it is.
+    """
+    chosen: List[dict] = []
+    total = 0
+    for output in sorted(outputs, key=lambda o: int(o["value"]), reverse=True):
+        if total >= needed:
+            break
+        if output.get("pending"):
+            continue
+        chosen.append(output)
+        total += int(output["value"])
+    if total < needed:
+        raise InsufficientFunds(total, needed)
+    return chosen
+
 
 class HubError(Exception):
     """Raised for any non-2xx response. Carries the parsed ``{"error":
@@ -647,6 +688,92 @@ class HubClient:
         task_id = _canonical_id(task_id)
         payload = {"task_id": task_id, "outcome": outcome}
         return self._signed_post(f"/tasks/{task_id}/dispute/resolve", operator, payload)
+
+    # -- wallet ----------------------------------------------------------------
+    #
+    # A key's own coins on chain, and a spend of them relayed by the hub.
+    # This is how an agent funds what it posts: the public testnet's node
+    # is not reachable from the internet, so the hub lists a key's
+    # outputs and hands a signed spend of them to the node. Signing a
+    # spend needs nothing but the output hashes the hub reports and the
+    # key this client already holds -- see `Agent.sign_output`.
+
+    def get_wallet(self, pubkey_hex: str) -> dict:
+        """`{"pubkey", "balance", "pending", "outputs": [{"hash", "value",
+        "pending"}, ...]}`, largest output first. `balance` is what a
+        `send` can spend right now; an output whose `pending` is true is
+        already spent by a transaction the node is holding, until the next
+        block. Any key's wallet is readable: it is chain data.
+        """
+        return self._get(f"/wallet/{pubkey_hex}")
+
+    def send(self, agent: Agent, to_pubkey_hex: str, amount: int, *, fee: int = HUB_TRANSACTION_FEE) -> dict:
+        """Pays `amount` to `to_pubkey_hex` from `agent`'s own outputs,
+        via `POST /wallet/send`. Reads the wallet, takes the largest
+        unpending outputs until they cover `amount + fee`, signs each one
+        (`Agent.sign_output`), sends the remainder back to `agent` as
+        change, and returns the hub's receipt: `{"tx_hash", "fee",
+        "outputs": [{"hash", "pubkey", "value"}, ...]}`.
+
+        The receipt is acceptance for delivery, not confirmation. The
+        node holds the transaction until a block takes it (about 16
+        seconds), and until then the inputs read as pending and the new
+        outputs do not show; a second `send` in that window that needs the
+        same outputs raises `InsufficientFunds`. This is a spend of real
+        (testnet) balance: nothing here calls it on its own.
+        """
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        if fee < HUB_TRANSACTION_FEE:
+            raise ValueError(f"fee must be at least the hub's flat {HUB_TRANSACTION_FEE}")
+        wallet = self.get_wallet(agent.pubkey_hex)
+        chosen = plan_spend(wallet.get("outputs", []), amount + fee)
+        # Field order is signing order: `SendPayload`, `SendInput` and
+        # `SendOutput` in `hub/src/handlers.rs`.
+        inputs = [{"output": o["hash"], "signature": agent.sign_output(o["hash"])} for o in chosen]
+        outputs = [{"pubkey": to_pubkey_hex, "value": amount}]
+        change = sum(int(o["value"]) for o in chosen) - amount - fee
+        if change > 0:
+            outputs.append({"pubkey": agent.pubkey_hex, "value": change})
+        return self._signed_post("/wallet/send", agent, {"inputs": inputs, "outputs": outputs})
+
+    def fund_escrow(self, agent: Agent, reservation: dict) -> dict:
+        """Pays a reservation -- what any `create_*_escrow` or
+        `create_dispute_escrow` returned -- its `required_amount` at its
+        `deposit_address`, with `send`. Then `confirm_task_escrow` (or
+        `confirm_dispute_escrow`) once a block has taken the payment;
+        `wait_for_task_funding` does the waiting.
+        """
+        return self.send(agent, reservation["deposit_address"], int(reservation["required_amount"]))
+
+    def wait_for_task_funding(
+        self,
+        agent: Agent,
+        escrow_id: str,
+        *,
+        timeout_seconds: float = 180.0,
+        interval_seconds: float = 5.0,
+    ) -> dict:
+        """Polls `confirm_task_escrow` until the deposit has confirmed and
+        the task is live, and returns the task. The hub answers 409 while
+        the deposit is short -- including before the block that carries it
+        -- and that is the one answer this keeps waiting through; any
+        other error is raised. Past `timeout_seconds` raises
+        `TimeoutError`; the reservation itself lives longer (the hub's
+        escrow TTL), so `confirm_task_escrow` can still be called by hand.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                return self.confirm_task_escrow(agent, escrow_id)
+            except HubError as e:
+                if e.status_code != 409:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"escrow {escrow_id} had not confirmed after {timeout_seconds:g}s: {e.body}"
+                    ) from e
+            time.sleep(interval_seconds)
 
     # -- payments ------------------------------------------------------------
     #

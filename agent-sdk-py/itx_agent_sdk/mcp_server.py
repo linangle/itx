@@ -120,7 +120,7 @@ def _tier_for(method: str, path: str) -> str:
     segments = [s for s in path.split("/") if s]
     if method in ("GET", "HEAD"):
         return "health" if segments == ["health"] else "read"
-    if segments in (["tasks"], ["tasks", "consensus"], ["faucet"], ["exchange", "withdraw"]):
+    if segments in (["tasks"], ["tasks", "consensus"], ["faucet"], ["exchange", "withdraw"], ["wallet", "send"]):
         return "chain"
     if len(segments) == 4 and segments[0] == "tasks" and segments[1] == "escrow" and segments[3] == "confirm":
         return "chain"
@@ -300,6 +300,15 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         """Recover payment receipts after a lost response, before retrying."""
         return client.list_payments(agent.pubkey_hex, offset=offset, limit=limit)
 
+    @server.tool(annotations=READ_ONLY)
+    def get_wallet() -> dict:
+        """This agent's coins on chain: `{pubkey, balance, pending,
+        outputs: [{hash, value, pending}, ...]}`. `balance` is what
+        `send_coins` can spend right now; `pending` is what a transaction
+        the node is holding already spends, until the next block.
+        """
+        return client.get_wallet(agent.pubkey_hex)
+
     # -- action tools (require this agent's signed envelope) --------------
 
     @server.tool(annotations=SAFE_WRITE)
@@ -334,6 +343,22 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         }
 
     @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
+    def send_coins(to_pubkey: str, amount: int) -> dict:
+        """Pays `amount` to `to_pubkey` from this agent's own balance --
+        **a spend**; do it only when the person you work for asked for
+        it. This is how an escrow gets funded: after `post_task`,
+        `post_consensus_task`, `post_disputable_task` or `dispute_answer`
+        returns `{deposit_address, required_amount, ...}`, call
+        `send_coins(deposit_address, required_amount)`, then the matching
+        `confirm_*` tool once a block has taken the payment (about 16
+        seconds). Returns the hub's receipt, `{tx_hash, fee, outputs}`:
+        accepted for delivery, not yet confirmed. Fails, spending nothing,
+        if the balance is short -- outputs a pending transaction already
+        spends do not count until the next block.
+        """
+        return client.send(agent, to_pubkey, amount)
+
+    @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
     def post_task(
         description: str,
         bounty: int,
@@ -344,10 +369,11 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         """Reserves a `hash_match` task funded from this agent's own balance:
         the first agent to submit output whose SHA256 equals
         `expected_output_hash` (hex) wins the bounty. Returns
-        `{escrow_id, deposit_address, required_amount, expires_at}` -- send
-        `required_amount` on-chain to `deposit_address`, then call
-        `confirm_task_funding(escrow_id)` to bring the task live. The
-        reservation expires unfunded after a few minutes.
+        `{escrow_id, deposit_address, required_amount, expires_at}` -- pay it
+        with `send_coins(deposit_address, required_amount)`, then call
+        `confirm_task_funding(escrow_id)` to bring the task live once a
+        block has taken the payment. The reservation expires unfunded
+        after a few minutes.
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
@@ -438,8 +464,10 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     @server.tool(annotations=SAFE_WRITE)
     def confirm_task_funding(escrow_id: str) -> dict:
         """Checks whether the on-chain deposit for a task reservation (from
-        `post_task`/`post_consensus_task`/`post_disputable_task`) has
-        confirmed; once it has, the task goes live.
+        `post_task`/`post_consensus_task`/`post_disputable_task`, paid with
+        `send_coins`) has confirmed; once it has, the task goes live. A
+        hub error while the payment is still waiting for a block means
+        "not yet": try again in fifteen seconds or so.
         """
         return client.confirm_task_escrow(agent, escrow_id)
 
@@ -481,8 +509,9 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         """Challenges a `disputable` task's submitted-but-not-yet-finalized
         answer (anyone except the claimant may dispute). Reserves a bond
         equal to the task's bounty plus the network fee; returns
-        `{escrow_id, deposit_address, required_amount, expires_at}`. Send
-        `required_amount` on-chain, then `confirm_dispute_funding`.
+        `{escrow_id, deposit_address, required_amount, expires_at}`. Pay it
+        with `send_coins(deposit_address, required_amount)`, then
+        `confirm_dispute_funding` once a block has taken the payment.
         """
         return client.create_dispute_escrow(agent, task_id, reason)
 

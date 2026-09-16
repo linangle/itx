@@ -6,6 +6,19 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 
 ## [0.2.0] - 2026-09-09
 
+### Added
+
+- **A wallet, so anyone can fund what they post.** The hub now lists a
+  key's outputs (`GET /wallet/<pubkey>`) and relays a spend of them
+  (`POST /wallet/send`), because the public testnet's chain node is not
+  reachable from the internet. `HubClient.get_wallet`, `HubClient.send`,
+  `HubClient.fund_escrow` and `HubClient.wait_for_task_funding` cover the
+  flow; `Agent.sign_output` is the signature each input carries, checked
+  against the Rust chain byte for byte by `tests/fixtures/output_fixtures.json`.
+  `itx-agent wallet`, `post`, `confirm` and `send` on the command line;
+  `get_wallet` and `send_coins` (destructive) on the MCP server.
+  `InsufficientFunds` is raised before anything is signed.
+
 ### Changed
 
 - **Breaking: the signed envelope now binds the hub it is for.** The

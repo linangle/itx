@@ -684,3 +684,130 @@ def test_scan_passes_the_filters_through():
     client.list_tasks_page = list_tasks_page
     client.list_tasks_scan(capability="python", status="all")
     assert seen == [("python", "all")]
+
+
+# -- wallet ---------------------------------------------------------------
+
+from itx_agent_sdk.client import HUB_TRANSACTION_FEE, InsufficientFunds, plan_spend  # noqa: E402
+
+OUT_A = "aa" * 32
+OUT_B = "bb" * 32
+OUT_C = "cc" * 32
+
+
+def _wallet(agent: Agent) -> dict:
+    return {
+        "pubkey": agent.pubkey_hex,
+        "balance": 9_000,
+        "pending": 3_000,
+        "outputs": [
+            {"hash": OUT_A, "value": 7_000, "pending": False},
+            {"hash": OUT_B, "value": 3_000, "pending": True},
+            {"hash": OUT_C, "value": 2_000, "pending": False},
+        ],
+    }
+
+
+def test_get_wallet_reads_the_wallet_route():
+    client = make_client_with_mock_session()
+    client.session.get.return_value = mock_response({"pubkey": "02" + "00" * 32, "balance": 0, "pending": 0, "outputs": []})
+    client.get_wallet("02" + "00" * 32)
+    client.session.get.assert_called_once_with("http://hub.test/wallet/02" + "00" * 32, params=None, timeout=ANY)
+
+
+def test_plan_spend_takes_the_largest_unpending_outputs_until_covered():
+    outputs = _wallet(Agent.generate())["outputs"]
+    assert [o["hash"] for o in plan_spend(outputs, 7_000)] == [OUT_A]
+    assert [o["hash"] for o in plan_spend(outputs, 7_001)] == [OUT_A, OUT_C], "the pending one is skipped, not spent"
+    # Order on the wire does not matter: the plan sorts.
+    assert [o["hash"] for o in plan_spend(list(reversed(outputs)), 7_001)] == [OUT_A, OUT_C]
+    with pytest.raises(InsufficientFunds) as excinfo:
+        plan_spend(outputs, 9_001)
+    assert excinfo.value.available == 9_000 and excinfo.value.needed == 9_001
+
+
+def test_send_signs_each_input_pays_the_recipient_and_returns_the_change():
+    client = make_client_with_mock_session()
+    agent = Agent.generate()
+    client.session.get.return_value = mock_response(_wallet(agent))
+    client.session.post.return_value = mock_response({"tx_hash": "dd" * 32, "fee": HUB_TRANSACTION_FEE, "outputs": []})
+
+    to = "03" + "cd" * 32
+    client.send(agent, to, 6_500)
+
+    args, kwargs = client.session.post.call_args
+    assert args[0] == "http://hub.test/wallet/send"
+    payload = kwargs["json"]["payload"]
+    assert list(payload.keys()) == ["inputs", "outputs"], "field order is signing order"
+    assert [list(i.keys()) for i in payload["inputs"]] == [["output", "signature"]] * 2
+    assert [i["output"] for i in payload["inputs"]] == [OUT_A, OUT_C], "7000 alone is short of 6500 + fee"
+    for i in payload["inputs"]:
+        assert i["signature"] == agent.sign_output(i["output"]), "each input signed by the spending key"
+    assert payload["outputs"] == [
+        {"pubkey": to, "value": 6_500},
+        {"pubkey": agent.pubkey_hex, "value": 9_000 - 6_500 - HUB_TRANSACTION_FEE},
+    ]
+
+
+def test_send_with_nothing_left_over_adds_no_change_output():
+    client = make_client_with_mock_session()
+    agent = Agent.generate()
+    client.session.get.return_value = mock_response(_wallet(agent))
+    client.session.post.return_value = mock_response({"tx_hash": "dd" * 32, "fee": HUB_TRANSACTION_FEE, "outputs": []})
+
+    client.send(agent, "03" + "cd" * 32, 7_000 - HUB_TRANSACTION_FEE)
+
+    payload = client.session.post.call_args.kwargs["json"]["payload"]
+    assert [i["output"] for i in payload["inputs"]] == [OUT_A]
+    assert len(payload["outputs"]) == 1
+
+
+def test_send_refuses_before_signing_or_posting_when_the_balance_is_short():
+    client = make_client_with_mock_session()
+    agent = Agent.generate()
+    client.session.get.return_value = mock_response(_wallet(agent))
+    with pytest.raises(InsufficientFunds):
+        client.send(agent, "03" + "cd" * 32, 9_000)
+    client.session.post.assert_not_called()
+    with pytest.raises(ValueError):
+        client.send(agent, "03" + "cd" * 32, 0)
+    with pytest.raises(ValueError):
+        client.send(agent, "03" + "cd" * 32, 100, fee=HUB_TRANSACTION_FEE - 1)
+
+
+def test_fund_escrow_pays_the_reservation_its_required_amount():
+    client = make_client_with_mock_session()
+    agent = Agent.generate()
+    client.session.get.return_value = mock_response(_wallet(agent))
+    client.session.post.return_value = mock_response({"tx_hash": "dd" * 32, "fee": HUB_TRANSACTION_FEE, "outputs": []})
+
+    client.fund_escrow(agent, {"escrow_id": "e1", "deposit_address": "02" + "ee" * 32, "required_amount": 2_000})
+
+    payload = client.session.post.call_args.kwargs["json"]["payload"]
+    assert payload["outputs"][0] == {"pubkey": "02" + "ee" * 32, "value": 2_000}
+
+
+def test_wait_for_task_funding_waits_through_409s_and_raises_anything_else(monkeypatch):
+    client = make_client_with_mock_session()
+    agent = Agent.generate()
+    monkeypatch.setattr("itx_agent_sdk.client.time.sleep", lambda s: None)
+    client.session.post.side_effect = [
+        mock_response({"error": "escrow underfunded"}, status_code=409),
+        mock_response({"error": "escrow underfunded"}, status_code=409),
+        mock_response({"id": "t1", "status": "Open"}),
+    ]
+    assert client.wait_for_task_funding(agent, "e1") == {"id": "t1", "status": "Open"}
+    assert client.session.post.call_count == 3
+
+    client.session.post.side_effect = [mock_response({"error": "not yours"}, status_code=403)]
+    with pytest.raises(HubError):
+        client.wait_for_task_funding(agent, "e1")
+
+    ticks = iter([0.0, 0.0, 10.0])
+    monkeypatch.setattr("itx_agent_sdk.client.time.monotonic", lambda: next(ticks))
+    client.session.post.side_effect = [
+        mock_response({"error": "escrow underfunded"}, status_code=409),
+        mock_response({"error": "escrow underfunded"}, status_code=409),
+    ]
+    with pytest.raises(TimeoutError):
+        client.wait_for_task_funding(agent, "e1", timeout_seconds=5)

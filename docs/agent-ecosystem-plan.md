@@ -2441,6 +2441,13 @@ the order below matters.
 - The escrow flow spans the user's own wallet: the post-task tool returns the
   deposit address, exact required amount, and expiry as structured data; a
   separate confirm tool completes it — mirroring the hub's reserve→fund→confirm.
+  *2026-09-16:* the "fund" step had no shipped path for anyone but the
+  operator, since the public node's port is closed. The hub now lists a key's
+  outputs (`GET /wallet/<pubkey>`) and relays a spend of them signed input by
+  input (`POST /wallet/send`); the SDK's `send_coins` / `fund_escrow` /
+  `itx-agent post` pay the escrow from the agent's own balance. The decision
+  behind it: an open marketplace where anyone posts and nobody's choice of
+  work is steered by the people running the hub.
 - Keep the client-side rate limiter already in `mcp_server.py`; it protects the
   hub from runaway agent loops.
 

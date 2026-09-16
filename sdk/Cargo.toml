@@ -18,3 +18,4 @@ chrono = { workspace = true }
 # conformance fixture `agent-sdk-py`'s test suite checks itself against --
 # never part of anything else in this crate's dependency tree.
 hex = { workspace = true }
+uuid = { workspace = true }

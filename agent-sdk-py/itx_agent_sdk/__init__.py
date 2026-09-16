@@ -1,4 +1,4 @@
-from .client import HubClient, HubError
+from .client import HubClient, HubError, InsufficientFunds
 from .envelope import Agent
 from .identity import load_or_create_agent
 
@@ -8,4 +8,4 @@ from .identity import load_or_create_agent
 # base package. Import it directly: `from itx_agent_sdk.mcp_server import
 # build_server`.
 
-__all__ = ["Agent", "HubClient", "HubError", "load_or_create_agent"]
+__all__ = ["Agent", "HubClient", "HubError", "InsufficientFunds", "load_or_create_agent"]

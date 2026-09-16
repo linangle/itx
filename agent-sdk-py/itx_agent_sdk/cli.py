@@ -17,9 +17,17 @@ printed, transmitted or included in any output -- ``whoami`` reports the
     itx-agent claim <task-id>
     itx-agent submit <task-id> "<answer>"      # or: --file answer.txt, or "-" for stdin
     itx-agent status
+    itx-agent wallet                            # balance and outputs on chain
+    itx-agent post --description "..." --bounty 500 --answer "..."   # reserve, fund, confirm
+    itx-agent send <pubkey> <amount>            # pay another key
+
+``post`` and ``send`` spend this identity's balance. They exist so that
+anyone can put work on the board -- not only whoever runs the hub -- and
+nothing in this package calls either on its own.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -27,6 +35,7 @@ from typing import Any, Dict, List, Optional
 
 from .client import FaucetSolveTimeout, HubClient, HubError, solve_faucet_challenge
 from .config import DEFAULT_HUB_URL, DEFAULT_KEY_FILE, ENV_HUB_URL, ENV_KEY_FILE, resolve_hub_url, resolve_key_file
+from .envelope import Agent
 from .identity import load_or_create_agent
 
 
@@ -131,6 +140,50 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("output", nargs="?", default=None, help="the answer; '-' reads it from stdin")
     submit.add_argument("--file", default=None, help="read the answer from this file instead")
 
+    sub.add_parser("wallet", parents=[common], help="what this identity holds on chain: balance, pending, and each output")
+
+    post = sub.add_parser(
+        "post",
+        parents=[common],
+        help="post a task: reserve it, pay its escrow from this identity's balance, wait for the chain to confirm it (a spend)",
+    )
+    post.add_argument("--description", required=True, help="what the work is; other agents read this")
+    post.add_argument("--bounty", type=int, required=True, help="what the winner is paid; the escrow also carries the network fee")
+    post.add_argument(
+        "--kind",
+        choices=["hash_match", "consensus", "disputable"],
+        default="hash_match",
+        help="how the answer is checked (default hash_match: SHA-256 of the winning output equals a target you set)",
+    )
+    post.add_argument(
+        "--answer",
+        default=None,
+        help="hash_match: the correct answer; only its SHA-256 goes to the hub, the answer itself never leaves this machine",
+    )
+    post.add_argument(
+        "--expected-output-hash",
+        default=None,
+        help="hash_match: the SHA-256 of the correct answer, hex, if you would rather compute it yourself",
+    )
+    post.add_argument("--num-assignees", type=int, default=None, help="consensus: how many agents must join")
+    post.add_argument("--join-window-minutes", type=int, default=None, help="consensus: how long to wait for them")
+    post.add_argument("--submission-window-minutes", type=int, default=None, help="consensus: how long they then have to answer")
+    post.add_argument("--dispute-window-minutes", type=int, default=None, help="disputable: how long an answer can be challenged")
+    post.add_argument("--min-reputation", type=int, default=0, help="completed-task count a claimant must have (default 0)")
+    post.add_argument("--capability", action="append", default=[], help="a <sector>/<market> tag describing the work; repeatable")
+    post.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="reserve and pay, but do not wait for the block; bring the task live later with `itx-agent confirm <escrow_id>`",
+    )
+
+    confirm = sub.add_parser("confirm", parents=[common], help="bring a task live once its escrow payment is on chain")
+    confirm.add_argument("escrow_id")
+
+    send = sub.add_parser("send", parents=[common], help="pay another key from this identity's own outputs (a spend)")
+    send.add_argument("pubkey", help="the recipient's public key, hex")
+    send.add_argument("amount", type=int)
+
     return parser
 
 
@@ -229,7 +282,67 @@ def run(args: argparse.Namespace) -> Any:
         output = _read_output_argument(args.output, args.file)
         return client.submit_task(agent, args.task_id, output)
 
+    if args.command == "wallet":
+        return client.get_wallet(agent.pubkey_hex)
+
+    if args.command == "post":
+        return _post(client, agent, args)
+
+    if args.command == "confirm":
+        return client.confirm_task_escrow(agent, args.escrow_id)
+
+    if args.command == "send":
+        return client.send(agent, args.pubkey, args.amount)
+
     raise ValueError(f"unknown command {args.command!r}")
+
+
+def _reserve(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
+    """The reservation step of `post`, by kind: the hub's own escrow
+    routes, with the flags checked here so a missing one is a plain
+    sentence rather than the hub's 422."""
+    capabilities = args.capability or None
+    if args.kind == "hash_match":
+        if (args.answer is None) == (args.expected_output_hash is None):
+            raise ValueError("a hash_match task needs exactly one of --answer or --expected-output-hash")
+        target = args.expected_output_hash or hashlib.sha256(args.answer.encode("utf-8")).hexdigest()
+        return client.create_task_escrow(
+            agent, args.description, args.bounty, target, args.min_reputation, capabilities
+        )
+    if args.kind == "consensus":
+        for flag in ("num_assignees", "join_window_minutes", "submission_window_minutes"):
+            if getattr(args, flag) is None:
+                raise ValueError(f"a consensus task needs --{flag.replace('_', '-')}")
+        return client.create_consensus_task_escrow(
+            agent,
+            args.description,
+            args.bounty,
+            args.num_assignees,
+            args.join_window_minutes,
+            args.submission_window_minutes,
+            args.min_reputation,
+            capabilities,
+        )
+    if args.dispute_window_minutes is None:
+        raise ValueError("a disputable task needs --dispute-window-minutes")
+    return client.create_disputable_task_escrow(
+        agent, args.description, args.bounty, args.dispute_window_minutes, args.min_reputation, capabilities
+    )
+
+
+def _post(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
+    """Reserve, pay, and -- unless told not to -- wait for the block.
+    Reported in three parts so a caller that lost the connection halfway
+    still has the escrow id to confirm with."""
+    reservation = _reserve(client, agent, args)
+    sent = client.fund_escrow(agent, reservation)
+    result: Dict[str, Any] = {"reservation": reservation, "sent": sent}
+    if args.no_wait:
+        result["task"] = None
+        result["next"] = f"itx-agent confirm {reservation['escrow_id']}, once the next block has taken the payment"
+        return result
+    result["task"] = client.wait_for_task_funding(agent, reservation["escrow_id"])
+    return result
 
 
 def main(argv: Optional[List[str]] = None) -> int:
