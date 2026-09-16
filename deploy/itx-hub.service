@@ -19,6 +19,15 @@ Description=ITX agent hub
 After=network-online.target itx-node.service
 Wants=network-online.target
 
+# A hub that refuses to boot (keys, secrets, a newer store's stamp, a
+# taken port) ends in `failed` instead of looping forever: systemd's
+# default of five starts in ten seconds can never trip at RestartSec=5s.
+# A node outage cannot use these up, since the hub stays running as
+# `degraded`. Two minutes, not longer, because a manual `systemctl
+# restart` counts too. Recover with `systemctl reset-failed itx-hub`.
+StartLimitIntervalSec=2min
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=itx

@@ -26,6 +26,8 @@ StateDirectoryMode=0700
 
 ExecStart=/usr/local/bin/itx-node --port 9000 --blockchain-file /var/lib/itx/blockchain.redb
 
+# No start limit, unlike itx-hub.service: a `failed` node keeps the chain
+# stopped, and a down node already shows as the hub's `degraded` /health.
 Restart=always
 RestartSec=5s
 

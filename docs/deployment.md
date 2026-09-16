@@ -940,6 +940,11 @@ binary opening a newer store silently ignored every table it did not know, which
 made in-flight payouts invisible and redeemed faucet challenges replayable (plan
 §6.5c). It is a deliberate trade, and this is the half of it you pay.
 
+The retrying stops after five starts inside two minutes, leaving the unit
+`failed` (`Result: start-limit-hit`), which is the state an alert on unit state
+and `systemctl is-failed itx-hub` look for. Once you have fixed the cause, run
+`sudo systemctl reset-failed itx-hub` and then start it.
+
 **The procedure.**
 
 ```bash
@@ -1098,6 +1103,10 @@ Error: store was created by schema version 6, this build expects 5
 `systemctl is-active` reports `activating`, not `failed` — the unit never
 settles long enough to be called failed, so a check that looks for `failed` sees
 nothing wrong while the hub is down. `/health` answers nothing at all.
+(2026-09-16: the reason is systemd's default start limit, five in ten seconds,
+which a five-second restart delay can never reach. The hub unit now sets five
+in two minutes, so the same refusal should read `failed` about 25 s in; that
+follows from the limit and has not been re-measured on a real systemd.)
 
 **The real rollback took 1 s** and cost exactly what it should: a task posted,
 claimed, worked and paid after the backup was simply gone from the board, along
@@ -2415,7 +2424,8 @@ Read the banner first; it usually says which.
   previous binary back after an upgrade that moved the stamp, and the newer
   build restamped `hub.redb` the moment it opened it. The old binary will never
   open that store, no flag changes it, and `Restart=always` will retry it every
-  five seconds until someone intervenes.
+  five seconds, five times, and then leave the unit `failed`. Once you have
+  fixed it, `sudo systemctl reset-failed itx-hub` before starting it again.
 
   Two ways out, and the first is usually right:
 

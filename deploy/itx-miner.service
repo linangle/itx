@@ -43,6 +43,9 @@ ExecStart=/usr/local/bin/itx-miner \
 # answers. That is the intended shape -- After= orders them but does not
 # wait for the node's listener -- but it does mean "miner unit flapping"
 # usually means "node is down", not "miner is broken".
+#
+# No start limit, unlike itx-hub.service: the miner has no reconnection,
+# so a limit would trip on a long node restart and leave mining stopped.
 Restart=always
 RestartSec=5s
 
