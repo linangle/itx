@@ -1429,8 +1429,11 @@ fn build_router(state: Arc<AppState>) -> Router {
     };
 
     router
-        .layer(cors)
         .layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit::middleware))
+        // Outside the rate limiter, so its 429 carries the allow-origin
+        // header too. Inside it, the browser hid that 429 from the site,
+        // which then told a rate-limited visitor it couldn't reach the hub.
+        .layer(cors)
         // Gzip for any client that asks (every browser does). The task
         // list is repeated field names and 66-character hex keys -- the
         // best case for gzip. Outermost, so it compresses the response
@@ -4279,8 +4282,22 @@ mod tests {
             assert_eq!(status, reqwest::StatusCode::OK, "request within the limit must succeed");
         }
 
-        let status = hub.client.get(format!("{}/llms.txt", hub.base_url)).send().await.unwrap().status();
-        assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS, "one past the limit must be rejected");
+        // Sent the way the site sends it, cross-origin, because a 429
+        // without an allow-origin header reaches the page as a network
+        // failure rather than as a 429.
+        let resp = hub
+            .client
+            .get(format!("{}/llms.txt", hub.base_url))
+            .header("origin", "https://itx.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS, "one past the limit must be rejected");
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            Some("*"),
+            "the rate limiter's 429 must be readable by a cross-origin page"
+        );
     }
 
     /// The bypass this closes: before trusted-proxy handling, one header
