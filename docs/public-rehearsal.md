@@ -8,9 +8,9 @@ Everything else has been rehearsed on containers — the fresh-host recovery
 from the release tarball with the firewall applied and the proxy serving both
 hostnames (§11, "The throwaway deployment"). Those runs found and fixed a
 `/metrics` endpoint answering the internet, a `caddy validate` that broke the
-first `systemctl start`, an `nft -c` that had never been run, and a bundle check
-that could never pass. What they could not touch is anything downstream of a
-publicly resolvable name:
+first `systemctl start`, an `nft -c` that failed on a minimal image, and a
+bundle check that could never pass. What they could not touch is anything
+downstream of a publicly resolvable name:
 
 | Still unproven | Why a container could not do it |
 |---|---|

@@ -4,11 +4,12 @@ How to run a public ITX stack — hub, node, miner — without handing away the
 treasury. Companion configs live in `deploy/`; every one of them is meant to be
 copied and edited, not read as a sketch.
 
-Grounding: written against the tree at `5d19d38` (2026-09-05) and revised after
-an audit on 2026-09-06. Every claim about hub or node behaviour below was read
-out of the source or reproduced on a local stack. Where the code does not yet
-support something this document needs, it says so rather than describing the
-config that would work if it did. §11 says which claims were run and which were
+Grounding: written against the tree of 2026-09-05, revised after an audit on
+2026-09-06, and corrected in place as the code has changed since;
+`git log docs/deployment.md` is the record. Every claim about hub or node
+behaviour below was read out of the source or reproduced on a local stack. Where
+the code does not yet support something this document needs, it says so rather
+than describing the config that would work if it did. §11 says which claims were run and which were
 only reasoned, and the audit pass added to both lists.
 
 Companion reading: `docs/agent-ecosystem-plan.md` §3.2 (transport), §3.7 (blast
@@ -1817,9 +1818,9 @@ expected rather than a sign the store is thin.
 #### What it did not cover
 
 - **The rollback half.** The checklist pairs this rehearsal with exercising a
-  backup-based rollback of an upgrade (§5.2). That was not done: no upgrade was
-  performed, no schema stamp was moved, and no pre-upgrade backup was restored
-  over a newer store. §5.2's procedure is still written from the code.
+  backup-based rollback of an upgrade (§5.2), and this run did not do it: no
+  upgrade was performed here. It was performed separately the same day, on its
+  own throwaway stack, and is written up in §5.4.
 - **Architecture.** Built and run on `aarch64`. The release artifact is
   `x86_64`. Nothing here is architecture-sensitive in an interesting way, but
   nobody has run the x86_64 binaries either.
@@ -3020,7 +3021,7 @@ rather than parsed, and it found four things:
 |---|---|---|
 | **`/metrics` is blocked from the internet** | curled `https://hub.<domain>/metrics` from another machine | **200 — it was never blocked.** `respond` loses to the catch-all `handle`; see §4.9. Fixed and re-checked: `404` off-box, `200` on the box |
 | **The documented proxy install works** | `sudo caddy validate` then `systemctl start caddy`, in that order, on a fresh box | **the unit failed** — validate had created the access log as root. §4.9 |
-| **`nft -c -f` accepts the ruleset** | ran it, for the first time ever | failed on a minimal image for want of `/etc/protocols`; passes with `netbase`. The file is correct; §3 now says so |
+| **`nft -c -f` accepts the ruleset** | ran it on the box, the first time outside CI's Ubuntu runner | failed on a minimal image for want of `/etc/protocols`; passes with `netbase`. The file is correct; §3 now says so |
 | **§5.1's bundle check can pass** | ran it on a clean build | it cannot: `:910` matches `DEFAULT_HUB_URL`, which is compiled in on purpose. Now `:9101` |
 
 And confirmed the following, none of which had been observed outside a laptop:
@@ -3065,15 +3066,15 @@ did not yet put it under load.
 done on macOS:
 
 - `deploy/nftables.conf` and `deploy/ufw.sh` — the rules follow from §2's
-  topology, but no Linux host was available to apply them, and `nft` is not
-  installed on the machine the checks were done on, so **not even `nft -c -f`
-  was run against the current file.** Run it on the real host before committing
-  to it, and verify from off-box per §3 — including the `ssh -6` line, which is
-  the one that would have caught the IPv4-only SSH rule.
-- `deploy/nginx.conf` — `nginx -t` was not run either; nginx is not installed
-  here. The `listen 443 ssl http2` form, the removal of `ssl_stapling`, the
-  `charset utf-8` on the `security.txt` location and the `256k` body cap are all
-  reasoned from the directive documentation, not from a parse.
+  topology. CI has run `nft -c -f` against the ruleset on every push since
+  2026-09-08, and the throwaway deployment above applied it on Debian 12; what
+  is still unrun is `ufw.sh`, and either of them on the real host. Apply it
+  there before committing to it, and verify from off-box per §3 — including the
+  `ssh -6` line, which is the one that would have caught the IPv4-only SSH rule.
+- `deploy/nginx.conf` — CI has run `nginx -t` against it, with Ubuntu's packaged
+  nginx, on every push since 2026-09-08, so the directives parse. What is still
+  reasoned is its certificate path: certbot, its renewal timer and the
+  `/.well-known/acme-challenge/` location have never run (public rehearsal §6).
 - ~~The systemd units have not been loaded by a running systemd.~~ **Done**
   2026-09-11 (§7.6): all three install, enable, start, stop and restart on
   Debian 12, including `StateDirectory=itx itx/secrets` and
@@ -3096,7 +3097,9 @@ done on macOS:
   `MANIFEST.txt` for `redb copy method: reflink` to see which branch you got.
 - The restore drill's step 0 (`unshare --net`) — Linux only, never executed
   here. Its argument-passing shape (`sh -c '… exec "$@"' sh "$0" "$@"`) was
-  checked with a stub script; the namespace itself was not.
+  checked with a stub script; the namespace itself was not. That check missed
+  that the option loop had already shifted `"$@"` away, so the re-exec received
+  no arguments; fixed on 2026-09-15 and re-checked with a stand-in `unshare`.
 - The `journalctl … | grep -E ' (WARN|ERROR) '` recipe in §8.4. The log format
   it assumes was read out of tracing-subscriber 0.3.23's source (`fmt_layer.rs`
   gates ANSI on the `ansi` feature and honours `NO_COLOR`; `format/mod.rs`
