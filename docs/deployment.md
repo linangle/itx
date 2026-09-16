@@ -658,6 +658,16 @@ is not what decides.
 
 `deploy/itx-node.service`, `deploy/itx-hub.service`, `deploy/itx-miner.service`.
 
+**Check the clock before installing anything.** The hub refuses a signed request
+whose timestamp is more than 120 seconds from its own clock, so a box with a
+drifted clock answers every signed request `401`, and the error reads as the
+client's fault. Nothing in the units installs or waits for time sync.
+
+```bash
+timedatectl    # must say "System clock synchronized: yes"; if not:
+sudo apt-get install -y systemd-timesyncd && sudo timedatectl set-ntp true
+```
+
 ```bash
 sudo useradd --system --home /var/lib/itx --shell /usr/sbin/nologin itx
 sudo mkdir -p /var/lib/itx/secrets

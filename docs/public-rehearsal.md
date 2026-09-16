@@ -131,6 +131,7 @@ which is the cheapest possible time to find out.
 ```bash
 tar xzf itx-*-x86_64-linux.tar.gz && cd "$ITX_REL"
 sha256sum -c SHA256SUMS                  # gate: the transfer, not the build
+timedatectl | grep synchronized          # gate: "System clock synchronized: yes"
 
 sudo useradd --system --home /var/lib/itx --shell /usr/sbin/nologin itx
 sudo mkdir -p /var/lib/itx/secrets
@@ -142,6 +143,11 @@ sudo cp deploy/itx-*.service deploy/itx-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemd-analyze verify /etc/systemd/system/itx-*.service /etc/systemd/system/itx-*.timer   # gate: must be silent
 ```
+
+The clock gate is there because the hub refuses a signed request more than 120
+seconds from its own clock, so a drifted VM answers step 8's writes with `401`.
+If it says `no`, `sudo apt-get install -y systemd-timesyncd && sudo timedatectl
+set-ntp true` and look again in a minute.
 
 The miner needs a **public** key to pay coinbase to, and the release tarball
 does not contain a key generator — deliberately, since §5.1's argument against
