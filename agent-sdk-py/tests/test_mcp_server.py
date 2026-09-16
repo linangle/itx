@@ -321,6 +321,34 @@ def test_main_resolves_hub_url_and_key_file_from_the_environment(monkeypatch, tm
     assert captured["hub_url"] == "http://flag:2"
 
 
+@pytest.mark.parametrize("unusable", ["truncated", "a directory"])
+def test_an_unusable_key_file_stops_main_with_one_line_of_json_on_stderr(monkeypatch, tmp_path, capsys, unusable):
+    """Before the handshake, so the client can only report that the
+    server failed to start; the reason is whatever it kept of stderr.
+    That used to be a traceback. It is now the `{"error": ...}` line
+    `itx-agent` prints for the same file, and stdout -- the protocol's
+    channel -- carries nothing at all.
+    """
+    key_file = tmp_path / "agent.key"
+    if unusable == "truncated":
+        key_file.write_text("ab" * 31, encoding="utf-8")
+    else:
+        key_file.mkdir()
+    monkeypatch.setattr("sys.argv", ["itx-agent-mcp-server", "--hub-url", "http://hub.test", "--key-file", str(key_file)])
+
+    with pytest.raises(SystemExit) as stopped:
+        mcp_server.main()
+
+    assert stopped.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.count("\n") == 1
+    payload = json.loads(captured.err)
+    assert set(payload) == {"error"}, "a local failure carries no hub status"
+    assert str(key_file) in payload["error"]
+    assert "ab" * 31 not in payload["error"]
+
+
 # -- the client-side throttle ---------------------------------------------
 
 

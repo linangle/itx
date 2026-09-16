@@ -345,19 +345,25 @@ def _post(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
     return result
 
 
+def report_error(error: Dict[str, Any], indent: Optional[int] = None) -> int:
+    """Writes one failure to stderr as the ``{"error": ...}`` JSON the
+    skill and any script parse, and returns the exit status that goes
+    with it. The MCP server's ``main`` reports through this too, for the
+    failures it shares with this command -- see there."""
+    json.dump(error, sys.stderr, indent=indent)
+    sys.stderr.write("\n")
+    return 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     indent = None if args.compact else 2
     try:
         result = run(args)
     except HubError as e:
-        json.dump({"error": e.body, "status": e.status_code}, sys.stderr, indent=indent)
-        sys.stderr.write("\n")
-        return 1
+        return report_error({"error": e.body, "status": e.status_code}, indent)
     except (ValueError, OSError) as e:
-        json.dump({"error": str(e)}, sys.stderr, indent=indent)
-        sys.stderr.write("\n")
-        return 1
+        return report_error({"error": str(e)}, indent)
     if isinstance(result, str):
         sys.stdout.write(result)
         if not result.endswith("\n"):

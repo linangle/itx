@@ -25,6 +25,7 @@ reading the hub's docs would.
 """
 
 import argparse
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,7 @@ except ModuleNotFoundError as e:  # pragma: no cover - depends on how the packag
     ) from e
 
 from . import analytics
+from .cli import report_error
 from .client import HubClient, HubError, FaucetSolveTimeout, solve_faucet_challenge
 from .config import DEFAULT_HUB_URL, DEFAULT_KEY_FILE, ENV_HUB_URL, ENV_KEY_FILE, resolve_hub_url, resolve_key_file
 from .envelope import Agent
@@ -767,7 +769,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    server = build_server(resolve_hub_url(args.hub_url), resolve_key_file(args.key_file))
+    try:
+        server = build_server(resolve_hub_url(args.hub_url), resolve_key_file(args.key_file))
+    except (ValueError, OSError) as e:
+        # A key file that holds no key or cannot be read, or a hub URL
+        # `HubClient` refuses: the two error types `itx-agent` reports for
+        # the same failures, reported the same way. All of them happen
+        # before the handshake, so a client can say no more than that the
+        # server failed to start, and what it keeps of stderr is where the
+        # reason has to be -- as the sentence, not as the last line of a
+        # traceback. Never stdout: that is the protocol's channel, and a
+        # client reads anything on it as a message.
+        sys.exit(report_error({"error": str(e)}))
     server.run(transport="stdio")
 
 

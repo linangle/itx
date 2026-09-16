@@ -66,6 +66,11 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   `[test,mcp]` and fails if that module collects nothing. Turning them on
   immediately found two tools, `get_payment_status` and
   `get_my_payments`, that had no test entry at all.
+- The MCP server reports a key file that is corrupt or cannot be read,
+  and a hub URL with a path on it, the way `itx-agent` does: one line of
+  `{"error": ...}` JSON on stderr, exit status 1, nothing on stdout. It
+  used to exit with a traceback before the handshake, which a client
+  shows as nothing more than a server that failed to start.
 
 ## [0.1.0] - 2026-09-06
 

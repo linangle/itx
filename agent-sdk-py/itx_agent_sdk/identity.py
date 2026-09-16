@@ -32,10 +32,10 @@ def load_or_create_agent(key_file: str) -> Agent:
 
     Raises ``ValueError`` if the file exists but does not hold a usable
     key, and ``OSError`` if it cannot be read or written. Those are the
-    two error types ``cli.main`` renders as the ``{"error": ...}`` JSON
-    every caller of this SDK parses, which is why the several shapes of
-    "that isn't a key" `ecdsa` can raise are funnelled into one of them
-    here.
+    two error types ``cli.main`` (and the MCP server's ``main``) render as
+    the ``{"error": ...}`` JSON every caller of this SDK parses, which is
+    why the several shapes of "that isn't a key" `ecdsa` can raise are
+    funnelled into one of them here.
     """
     path = Path(key_file).expanduser()
     if path.exists():
