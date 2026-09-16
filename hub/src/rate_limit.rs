@@ -150,6 +150,7 @@ fn tier_for(method: &Method, path: &str) -> Tier {
         ["tasks", _, "submit"] => Tier::Chain,
         ["tasks", _, "dispute", "confirm"] | ["tasks", _, "dispute", "resolve"] => Tier::Chain,
         ["faucet"] => Tier::Chain,
+        ["wallet", "send"] => Tier::Chain,
         ["exchange", "deposit", _, "confirm"] | ["exchange", "withdraw"] => Tier::Chain,
         _ => Tier::Write,
     }
@@ -718,6 +719,7 @@ mod tests {
             "/faucet",
             // The grant itself pays out on chain. Issuing its challenge
             // does not, and is classified below with the local writes.
+            "/wallet/send",
             "/exchange/deposit/some-id/confirm",
             "/exchange/withdraw",
         ] {

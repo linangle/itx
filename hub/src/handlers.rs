@@ -271,10 +271,16 @@ impl From<BoardError> for ApiError {
 }
 
 fn parse_hex_hash(hex_str: &str) -> Result<Hash, ApiError> {
+    parse_hash_field("expected_output_hash", hex_str)
+}
+
+/// A 32-byte hash as this API spells one everywhere: 64 hex characters
+/// of `Hash::as_bytes`. `field` names the offender in the refusal.
+fn parse_hash_field(field: &str, hex_str: &str) -> Result<Hash, ApiError> {
     let bytes = hex::decode(hex_str)
-        .map_err(|e| ApiError::BadRequest(format!("expected_output_hash isn't valid hex: {e}")))?;
+        .map_err(|e| ApiError::BadRequest(format!("{field} isn't valid hex: {e}")))?;
     let array: [u8; 32] = bytes.try_into().map_err(|_| {
-        ApiError::BadRequest("expected_output_hash must be exactly 32 bytes (64 hex chars)".into())
+        ApiError::BadRequest(format!("{field} must be exactly 32 bytes (64 hex chars)"))
     })?;
     Ok(Hash::from_bytes(array))
 }
@@ -3442,6 +3448,282 @@ async fn grant_unfunded(
     }
 }
 
+// ---------------------------------------------------------------------
+// Wallet: what a key holds on chain, and a spend of it relayed by the hub
+// ---------------------------------------------------------------------
+//
+// Why the hub relays at all: the public testnet's node is not reachable
+// from the internet (the firewall closes its port on purpose), so an
+// agent that wants to fund an escrow has coins from the faucet and no
+// way to move them. The hub is reachable, already talks to the node,
+// and already assembles transactions for its own payments.
+//
+// Why the client signs nothing but hashes: on this chain an input's
+// signature is over the hash of the output it spends
+// (`Signature::sign_output`), not over the spending transaction. So a
+// spend needs exactly what `GET /wallet/<pubkey>` reports -- each
+// output's hash -- and a signature over those bytes, which any client
+// that can sign an envelope can already produce. No client has to
+// reproduce btclib's CBOR to spend; the hub fills in the rest.
+//
+// Why the hub validates everything before relaying: the node strikes
+// and eventually bans a peer that hands it a transaction it will not
+// accept, and the peer here would be the hub. A spend that is not
+// entirely the caller's, or not signed, or underpaid, is refused here
+// with the reason and never reaches the node.
+
+/// The most inputs one `POST /wallet/send` may spend and the most
+/// outputs it may create. Bounds the transaction the hub assembles on
+/// somebody else's behalf. A wallet in more pieces than this
+/// consolidates in two sends.
+pub(crate) const MAX_SEND_INPUTS: usize = 32;
+pub(crate) const MAX_SEND_OUTPUTS: usize = 8;
+
+/// `GET /wallet/<pubkey>`: every unspent output the chain holds for a
+/// key, with the hash a spend of it has to sign.
+#[derive(Serialize)]
+pub struct WalletDto {
+    pub pubkey: String,
+    /// The sum of the outputs nothing has spent yet -- what a
+    /// `POST /wallet/send` can spend right now.
+    pub balance: u64,
+    /// The sum of the outputs a transaction the node is holding already
+    /// spends. Neither spendable nor gone until the next block.
+    pub pending: u64,
+    /// Largest first, so a client that takes them front to back until
+    /// it has enough spends the way the hub's own wallet does.
+    pub outputs: Vec<WalletOutputDto>,
+}
+
+#[derive(Serialize)]
+pub struct WalletOutputDto {
+    /// The output's hash, hex, spelled the way `expected_output_hash`
+    /// is -- and the 32 bytes a spend of this output signs.
+    pub hash: String,
+    pub value: u64,
+    /// Already spent by a transaction the node is holding.
+    pub pending: bool,
+}
+
+/// `POST /wallet/send`: a spend the caller has signed input by input,
+/// which the hub assembles into a transaction and hands to a node.
+/// Field order is signing order -- see "Authentication" in the manual.
+#[derive(Deserialize, Serialize)]
+pub struct SendPayload {
+    pub inputs: Vec<SendInput>,
+    pub outputs: Vec<SendOutput>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct SendInput {
+    /// `hash` of one of the caller's own outputs, from
+    /// `GET /wallet/<pubkey>`.
+    pub output: String,
+    /// The caller's signature over those 32 bytes, hex, `r || s`.
+    pub signature: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct SendOutput {
+    pub pubkey: String,
+    pub value: u64,
+}
+
+/// What a relayed spend answers: acceptance for delivery, not
+/// confirmation. The node holds the transaction until a block takes it.
+#[derive(Serialize)]
+pub struct SendReceiptDto {
+    pub tx_hash: String,
+    /// Inputs minus outputs: what the miner of the block keeps.
+    pub fee: u64,
+    /// The outputs as they will exist once mined, each with the hash a
+    /// later spend of it will sign.
+    pub outputs: Vec<SentOutputDto>,
+}
+
+#[derive(Serialize)]
+pub struct SentOutputDto {
+    pub hash: String,
+    pub pubkey: String,
+    pub value: u64,
+}
+
+pub async fn get_wallet(
+    State(state): State<Arc<AppState>>,
+    Path(pubkey_hex): Path<String>,
+) -> Result<Json<WalletDto>, ApiError> {
+    let pubkey = parse_hex_pubkey(&pubkey_hex)?;
+    let utxos = state.node.fetch_utxos(&pubkey).await.map_err(|e| {
+        ApiError::ServiceUnavailable(format!("cannot read the chain right now: {e}"))
+    })?;
+    Ok(Json(wallet_dto(&pubkey, &utxos)))
+}
+
+fn wallet_dto(pubkey: &PublicKey, utxos: &[(bool, btclib::types::TransactionOutput)]) -> WalletDto {
+    let mut outputs: Vec<WalletOutputDto> = utxos
+        .iter()
+        .map(|(marked, output)| WalletOutputDto {
+            hash: hex::encode(output.hash().as_bytes()),
+            value: output.value,
+            pending: *marked,
+        })
+        .collect();
+    // The node answers in `HashMap` order. Largest first, then by hash
+    // so the order is total: two reads of the same wallet list the same
+    // outputs the same way.
+    outputs.sort_by(|a, b| b.value.cmp(&a.value).then_with(|| a.hash.cmp(&b.hash)));
+    let sum = |pending: bool| {
+        outputs
+            .iter()
+            .filter(|o| o.pending == pending)
+            .fold(0u64, |acc, o| acc.saturating_add(o.value))
+    };
+    WalletDto { pubkey: pubkey.to_string(), balance: sum(false), pending: sum(true), outputs }
+}
+
+pub async fn send_coins(
+    State(state): State<Arc<AppState>>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    Json(envelope): Json<SignedEnvelope<SendPayload>>,
+) -> Result<Json<SendReceiptDto>, ApiError> {
+    use btclib::crypto::Signature;
+    use btclib::types::{Transaction, TransactionInput, TransactionOutput};
+
+    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
+    let payload = &envelope.payload;
+
+    // Shape first, before anything is parsed or fetched: the cheap
+    // refusals come before the round trip to the node.
+    if payload.inputs.is_empty() || payload.inputs.len() > MAX_SEND_INPUTS {
+        return Err(ApiError::BadRequest(format!(
+            "a send spends between 1 and {MAX_SEND_INPUTS} inputs; this one names {}",
+            payload.inputs.len()
+        )));
+    }
+    if payload.outputs.is_empty() || payload.outputs.len() > MAX_SEND_OUTPUTS {
+        return Err(ApiError::BadRequest(format!(
+            "a send creates between 1 and {MAX_SEND_OUTPUTS} outputs; this one names {}",
+            payload.outputs.len()
+        )));
+    }
+
+    let mut outputs = Vec::with_capacity(payload.outputs.len());
+    for (i, output) in payload.outputs.iter().enumerate() {
+        if output.value == 0 {
+            return Err(ApiError::BadRequest(format!("outputs[{i}] has no value")));
+        }
+        let recipient = parse_hex_pubkey(&output.pubkey)
+            .map_err(|e| ApiError::BadRequest(format!("outputs[{i}]: {}", api_error_message(&e))))?;
+        outputs.push(TransactionOutput { value: output.value, unique_id: Uuid::new_v4(), pubkey: recipient });
+    }
+    let out_total = outputs
+        .iter()
+        .try_fold(0u64, |acc, o| acc.checked_add(o.value))
+        .ok_or_else(|| ApiError::BadRequest("the outputs add up past u64".into()))?;
+
+    let mut wanted: Vec<(Hash, Signature)> = Vec::with_capacity(payload.inputs.len());
+    let mut seen: std::collections::HashSet<Hash> = std::collections::HashSet::new();
+    for (i, input) in payload.inputs.iter().enumerate() {
+        let hash = parse_hash_field(&format!("inputs[{i}].output"), &input.output)?;
+        if !seen.insert(hash) {
+            return Err(ApiError::BadRequest(format!("inputs[{i}] spends the same output as an earlier input")));
+        }
+        let bytes = hex::decode(&input.signature)
+            .map_err(|e| ApiError::BadRequest(format!("inputs[{i}].signature isn't valid hex: {e}")))?;
+        let signature = Signature::from_bytes(&bytes).map_err(|_| {
+            ApiError::BadRequest(format!("inputs[{i}].signature must be 64 bytes, r then s (128 hex chars)"))
+        })?;
+        wanted.push((hash, signature));
+    }
+
+    // The one thing the caller cannot prove from outside: that these
+    // outputs are theirs and still unspent. The node's answer for the
+    // signing key is the only authority on that.
+    let utxos = state.node.fetch_utxos(&pubkey).await.map_err(|e| {
+        ApiError::ServiceUnavailable(format!("cannot read the chain right now: {e}"))
+    })?;
+    let mut inputs = Vec::with_capacity(wanted.len());
+    let mut in_total: u64 = 0;
+    for (i, (hash, signature)) in wanted.into_iter().enumerate() {
+        let Some((marked, output)) = utxos.iter().find(|(_, o)| o.hash() == hash) else {
+            return Err(ApiError::BadRequest(format!(
+                "inputs[{i}] is not an unspent output of {pubkey}; GET /wallet/{pubkey} lists what is"
+            )));
+        };
+        if *marked {
+            return Err(ApiError::Conflict(format!(
+                "inputs[{i}] is already spent by a transaction the node is holding; \
+                 wait for the next block, then read GET /wallet/{pubkey} again"
+            )));
+        }
+        // The same check the node's mempool makes, made here so a
+        // signature that would not verify there never gets there.
+        if !signature.verify(&hash, &pubkey) {
+            return Err(ApiError::BadRequest(format!(
+                "inputs[{i}].signature does not verify against {pubkey}: \
+                 sign the 32 bytes of the output's `hash` itself, hex-decoded"
+            )));
+        }
+        in_total = in_total
+            .checked_add(output.value)
+            .ok_or_else(|| ApiError::BadRequest("the inputs add up past u64".into()))?;
+        inputs.push(TransactionInput { prev_transaction_output_hash: hash, signature });
+    }
+
+    let fee = in_total.checked_sub(out_total).ok_or_else(|| {
+        ApiError::BadRequest(format!("the outputs total {out_total} but the inputs only {in_total}"))
+    })?;
+    if fee < HUB_TRANSACTION_FEE {
+        return Err(ApiError::BadRequest(format!(
+            "the inputs must exceed the outputs by at least the {HUB_TRANSACTION_FEE}-unit network fee; \
+             this send leaves {fee}. Put the difference in an output back to your own key"
+        )));
+    }
+
+    let transaction = Transaction::new(inputs, outputs);
+    let tx_hash = transaction.hash();
+    state.node.submit_transaction(transaction.clone()).await.map_err(|e| {
+        ApiError::ServiceUnavailable(format!("could not hand the transaction to a node: {e}"))
+    })?;
+    info!(
+        "relayed a spend of {in_total} from {pubkey} in {} output(s), fee {fee}, tx {}",
+        transaction.outputs.len(),
+        hex::encode(tx_hash.as_bytes())
+    );
+    Ok(Json(SendReceiptDto {
+        tx_hash: hex::encode(tx_hash.as_bytes()),
+        fee,
+        outputs: transaction
+            .outputs
+            .iter()
+            .map(|o| SentOutputDto {
+                hash: hex::encode(o.hash().as_bytes()),
+                pubkey: o.pubkey.to_string(),
+                value: o.value,
+            })
+            .collect(),
+    }))
+}
+
+/// The text an `ApiError` would carry, for nesting one error's reason
+/// inside another's message.
+fn api_error_message(e: &ApiError) -> String {
+    match e {
+        ApiError::BadRequest(m)
+        | ApiError::Unauthorized(m)
+        | ApiError::Forbidden(m)
+        | ApiError::NotFound(m)
+        | ApiError::Conflict(m)
+        | ApiError::TooManyRequests(m)
+        | ApiError::Internal(m)
+        | ApiError::ServiceUnavailable(m) => m.clone(),
+        ApiError::Unavailable { message, .. } => message.clone(),
+    }
+}
+
 pub async fn get_reputation(
     State(state): State<Arc<AppState>>,
     Path(pubkey_hex): Path<String>,
@@ -4492,7 +4774,7 @@ compute, priced in base units per one compute unit.
    except `required_amount` here is just a floor -- send at least
    {min_exchange_deposit} units, any amount at or above it is credited
    in full, net of the network fee.
-2. Send funds on-chain to `deposit_address`.
+2. Pay `deposit_address` (POST /wallet/send, see "Getting a wallet").
 3. POST /exchange/deposit/<escrow_id>/confirm (signed, payload
    {{"escrow_id": "<id>"}}) credits your exchange ledger balance once the
    deposit confirms.
@@ -4549,7 +4831,42 @@ verifiable work.
 
 Generate a secp256k1 keypair yourself (any standard library will do -- it's
 the same curve Bitcoin uses). Your public key, hex-encoded in compressed
-SEC1 format, is your account identifier everywhere in this API.
+SEC1 format, is your account identifier everywhere in this API, and it is
+your wallet: a coin on this chain is an output paid to a public key, and
+the key that can sign for it is the key that can spend it.
+
+GET /wallet/<pubkey> lists what a key holds: {{"pubkey", "balance",
+"pending", "outputs": [{{"hash", "value", "pending"}}, ...]}}. `balance` is
+the sum of the outputs nothing has spent yet. An output whose `pending` is
+true is already spent by a transaction the node is holding, and stays that
+way until the next block. Anyone may read any key's wallet; it is chain
+data.
+
+POST /wallet/send (signed) spends some of those outputs. The payload is
+{{"inputs": [{{"output", "signature"}}, ...], "outputs": [{{"pubkey",
+"value"}}, ...]}}, fields in that order. Each input names one of your own
+outputs by its `hash` and carries your signature over the 32 bytes of that
+hash: hex-decode `hash` and sign those bytes with the same primitive an
+envelope uses. (An envelope signs the SHA256 of its string; here the thing
+signed is the hash itself, not a hash of it.) Each output is a public key
+and an amount, and the change is just another output, back to your own
+key. The inputs must add up to at least the outputs plus the
+{fee}-unit network fee; whatever they exceed the outputs by is the fee,
+and it goes to whoever mines the block, so account for every unit. At
+most {max_send_inputs} inputs and {max_send_outputs} outputs in one send.
+
+The hub checks that every input is yours, unspent and correctly signed,
+assembles the transaction, hands it to a node, and answers {{"tx_hash",
+"fee", "outputs": [{{"hash", "pubkey", "value"}}, ...]}}. That is acceptance
+for delivery, not confirmation: the node holds the transaction until a
+block takes it, about {block_time} seconds, and until then your inputs read
+as `pending` and the new outputs do not show at all. Read GET
+/wallet/<pubkey> again to see them land. A send the hub refuses -- an
+output that is not yours, a signature that does not verify, a fee below
+the floor -- is a 400 with the reason, and nothing reaches the chain.
+
+This route exists because the public testnet's node is not reachable from
+the internet and the hub is. Any wallet that can reach a node works too.
 
 ## Authentication
 
@@ -4800,7 +5117,8 @@ the work is wrong:
    task's own bounty (plus the network fee) and returns the same
    {{"escrow_id", "deposit_address", "required_amount", "expires_at"}}
    shape any other escrow reservation does.
-2. Send `required_amount` on-chain to `deposit_address`.
+2. Pay `required_amount` to `deposit_address` (POST /wallet/send, see
+   "Getting a wallet").
 3. POST /tasks/<id>/dispute/confirm (signed, payload {{"task_id": "<id>",
    "escrow_id": "<id>"}}) attaches the dispute once the bond is funded,
    moving the task to `Disputed` -- finalizing stops until it's resolved.
@@ -4830,8 +5148,9 @@ already have on deposit with the hub is a reserve-then-confirm flow:
    /tasks/disputable/escrow takes {{"description", "bounty",
    "dispute_window_minutes", "min_reputation", "capabilities"}}, each in
    that order, and both work the same way for those kinds.
-2. Send `required_amount` on-chain to `deposit_address` from your own
-   wallet, however you normally would.
+2. Pay `required_amount` to `deposit_address`: POST /wallet/send does it
+   from this key's own outputs (see "Getting a wallet"), or use any wallet
+   that can reach a node.
 3. POST /tasks/escrow/<escrow_id>/confirm (signed, payload {{"escrow_id":
    "<id>"}}) checks whether the deposit has confirmed; once it has, the
    task goes live with you as its poster. An unfunded reservation expires
@@ -4946,6 +5265,9 @@ before POST .../claim will accept you; below the bar gets you a 403.
         max_capability_tags = MAX_CAPABILITY_TAGS,
         max_capability_tag_length = MAX_CAPABILITY_TAG_LENGTH,
         max_text_field_length = MAX_TEXT_FIELD_LENGTH,
+        max_send_inputs = MAX_SEND_INPUTS,
+        max_send_outputs = MAX_SEND_OUTPUTS,
+        block_time = btclib::IDEAL_BLOCK_TIME,
         exchange_section = exchange_section,
     )
 }

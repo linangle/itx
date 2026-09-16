@@ -472,6 +472,8 @@ pub fn route_template(path: &str) -> &'static str {
         // grant behind it is not.
         ["faucet", "challenge"] => "/faucet/challenge",
         ["reputation", _] => "/reputation/:pubkey",
+        ["wallet", "send"] => "/wallet/send",
+        ["wallet", _] => "/wallet/:pubkey",
         ["leaderboard"] => "/leaderboard",
         ["board", "summary"] => "/board/summary",
         ["board", "series"] => "/board/series",
@@ -781,6 +783,8 @@ mod tests {
             ("POST", "/tasks/escrow/some-id/confirm"),
             ("POST", "/faucet"),
             ("POST", "/faucet/challenge"),
+            ("GET", "/wallet/some-pubkey"),
+            ("POST", "/wallet/send"),
             ("GET", "/leaderboard"),
             ("GET", "/board/summary"),
             ("GET", "/board/series"),

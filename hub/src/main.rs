@@ -1390,6 +1390,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/faucet/challenge", post(handlers::faucet_challenge))
         .route("/faucet", post(handlers::faucet_claim))
         .route("/reputation/:pubkey", get(handlers::get_reputation))
+        // Static before the parameter, so `send` is never read as a key.
+        .route("/wallet/send", post(handlers::send_coins))
+        .route("/wallet/:pubkey", get(handlers::get_wallet))
         .route("/leaderboard", get(handlers::leaderboard))
         // One request for the whole board's aggregates, so a dashboard
         // does not have to page through every task to compute them (see
@@ -4051,6 +4054,11 @@ mod tests {
             "capabilities",
             "?capability=",
             "/tasks/<id>/cancel",
+            // How a stranger funds what they post -- the step that used
+            // to read "from your own wallet, however you normally would"
+            // on a testnet whose node no stranger can reach.
+            "GET /wallet/<pubkey>",
+            "POST /wallet/send",
         ] {
             assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
         }
@@ -9413,5 +9421,288 @@ mod tests {
         assert_eq!(task.status, crate::board::TaskStatus::Paid);
         let settled = task.settled_at.expect("a paid task carries the instant it was paid");
         assert!(settled >= before && settled <= Utc::now(), "stamped from the clock at confirmation");
+    }
+    // ---- the wallet: what a stranger needs to fund what they post ----
+
+    /// A 32-byte hash as the API spells one (`hex::encode(as_bytes())`),
+    /// read back into the type the chain signs.
+    fn hash_from_hex(hex_str: &str) -> Hash {
+        let array: [u8; 32] = hex::decode(hex_str).unwrap().try_into().unwrap();
+        Hash::from_bytes(array)
+    }
+
+    /// The signature a spend of `output_hash_hex` carries, made by `key`
+    /// the way the chain checks it: over the hash's own bytes.
+    fn sign_output_hex(output_hash_hex: &str, key: &PrivateKey) -> String {
+        hex::encode(Signature::sign_output(&hash_from_hex(output_hash_hex), key).to_bytes())
+    }
+
+    async fn wallet_of(hub: &TestHub, pubkey: &PublicKey) -> Value {
+        let resp = hub.client.get(format!("{}/wallet/{pubkey}", hub.base_url)).send().await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        resp.json().await.unwrap()
+    }
+
+    /// Every unpending output of `wallet`, signed by `key`, as the inputs
+    /// of a send.
+    fn spend_all(wallet: &Value, key: &PrivateKey) -> Vec<handlers::SendInput> {
+        wallet["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["pending"] == false)
+            .map(|o| {
+                let hash = o["hash"].as_str().unwrap();
+                handlers::SendInput { output: hash.to_string(), signature: sign_output_hex(hash, key) }
+            })
+            .collect()
+    }
+
+    async fn send(hub: &TestHub, key: &PrivateKey, payload: handlers::SendPayload) -> reqwest::Response {
+        hub.client
+            .post(format!("{}/wallet/send", hub.base_url))
+            .json(&envelope(key, "/wallet/send", payload))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    fn paying(pubkey: &str, value: u64) -> handlers::SendOutput {
+        handlers::SendOutput { pubkey: pubkey.to_string(), value }
+    }
+
+    #[tokio::test]
+    async fn a_wallet_lists_a_keys_outputs_largest_first_with_the_hash_a_spend_signs() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent = PrivateKey::new_key().public_key();
+        fake_node.credit(agent.clone(), 3_000).await;
+        fake_node.credit(agent.clone(), 7_000).await;
+
+        let wallet = wallet_of(&hub, &agent).await;
+        assert_eq!(wallet["pubkey"], agent.to_string());
+        assert_eq!(wallet["balance"], 10_000);
+        assert_eq!(wallet["pending"], 0);
+        let values: Vec<u64> =
+            wallet["outputs"].as_array().unwrap().iter().map(|o| o["value"].as_u64().unwrap()).collect();
+        assert_eq!(values, vec![7_000, 3_000], "largest first, so a client spending front to back meets the big one");
+        let held = fake_node.outputs_of(&agent).await;
+        for listed in wallet["outputs"].as_array().unwrap() {
+            let hash = listed["hash"].as_str().unwrap();
+            assert!(
+                held.iter().any(|(o, _)| hex::encode(o.hash().as_bytes()) == hash),
+                "{hash} is not the hash of an output the node holds for this key"
+            );
+            assert_eq!(listed["pending"], false);
+        }
+
+        // A key the chain has never paid is an empty wallet, not an error.
+        let never_paid = PrivateKey::new_key().public_key();
+        let empty = wallet_of(&hub, &never_paid).await;
+        assert_eq!(empty["balance"], 0);
+        assert_eq!(empty["outputs"].as_array().unwrap().len(), 0);
+
+        let resp = hub.client.get(format!("{}/wallet/not-a-key", hub.base_url)).send().await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+
+    /// The whole of T4 in one test: an agent that has only ever spoken
+    /// HTTP to the hub reserves a task, pays its escrow from its own
+    /// faucet grant through the hub, and confirms it -- no node port, no
+    /// wallet binary, no operator key on anybody's machine.
+    #[tokio::test]
+    async fn a_stranger_funds_a_task_with_nothing_but_the_hub() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent_key = PrivateKey::new_key();
+        let agent = agent_key.public_key();
+        fake_node.credit(agent.clone(), 5_000).await;
+
+        let payload = handlers::EscrowTaskPayload {
+            description: "funded by a stranger through the hub".to_string(),
+            bounty: 1_000,
+            expected_output_hash: hex::encode(Hash::hash_bytes(b"42").as_bytes()),
+            min_reputation: 0,
+            capabilities: Default::default(),
+        };
+        let reservation: Value = hub
+            .client
+            .post(format!("{}/tasks/escrow", hub.base_url))
+            .json(&envelope(&agent_key, "/tasks/escrow", payload))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
+        let deposit_address = reservation["deposit_address"].as_str().unwrap().to_string();
+        let required = reservation["required_amount"].as_u64().unwrap();
+        assert_eq!(required, 2_000);
+
+        let wallet = wallet_of(&hub, &agent).await;
+        let change = 5_000 - required - handlers::HUB_TRANSACTION_FEE;
+        let resp = send(
+            &hub,
+            &agent_key,
+            handlers::SendPayload {
+                inputs: spend_all(&wallet, &agent_key),
+                outputs: vec![paying(&deposit_address, required), paying(&agent.to_string(), change)],
+            },
+        )
+        .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK, "{}", resp.text().await.unwrap());
+        let receipt: Value = resp.json().await.unwrap();
+        assert_eq!(receipt["fee"], handlers::HUB_TRANSACTION_FEE);
+        assert_eq!(receipt["tx_hash"].as_str().unwrap().len(), 64);
+        let sent = receipt["outputs"].as_array().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["pubkey"], deposit_address);
+        assert_eq!(sent[0]["value"], required);
+        assert_eq!(sent[1]["pubkey"], agent.to_string());
+        assert_eq!(sent[1]["value"], change);
+        fake_node.wait_for_applied(1).await;
+
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
+            .json(&envelope(
+                &agent_key,
+                &format!("/tasks/escrow/{escrow_id}/confirm"),
+                handlers::ConfirmEscrowPayload { escrow_id },
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let task: Value = resp.json().await.unwrap();
+        assert_eq!(task["poster"], agent.to_string(), "the stranger is the poster");
+        assert_eq!(task["status"], "Open");
+
+        // The change is theirs again, under the hash the receipt named.
+        let after = wallet_of(&hub, &agent).await;
+        assert_eq!(after["balance"], change);
+        assert_eq!(after["outputs"][0]["hash"], sent[1]["hash"]);
+    }
+
+    /// The node strikes a peer that hands it a transaction it rejects,
+    /// and the peer would be the hub. So every refusal has to happen
+    /// here, with a reason, and none of them may reach the node.
+    #[tokio::test]
+    async fn a_send_the_hub_refuses_never_reaches_the_node() {
+        use std::sync::atomic::Ordering;
+        let operator_key = PrivateKey::new_key();
+        let operator = operator_key.public_key();
+        let fake_node = FakeNode::spawn(operator.clone(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent_key = PrivateKey::new_key();
+        let agent = agent_key.public_key();
+        let other_key = PrivateKey::new_key();
+        fake_node.credit(agent.clone(), 5_000).await;
+
+        let own = wallet_of(&hub, &agent).await["outputs"][0]["hash"].as_str().unwrap().to_string();
+        let operators = hex::encode(fake_node.outputs_of(&operator).await[0].0.hash().as_bytes());
+        let me = agent.to_string();
+
+        let refused = |inputs: Vec<handlers::SendInput>, outputs: Vec<handlers::SendOutput>, status, phrase: &'static str| {
+            let hub = &hub;
+            let agent_key = &agent_key;
+            async move {
+                let resp = send(hub, agent_key, handlers::SendPayload { inputs, outputs }).await;
+                assert_eq!(resp.status(), status, "{phrase}");
+                let body = resp.text().await.unwrap();
+                assert!(body.contains(phrase), "expected {phrase:?} in {body}");
+            }
+        };
+        let input = |hash: &str, key: &PrivateKey| handlers::SendInput {
+            output: hash.to_string(),
+            signature: sign_output_hex(hash, key),
+        };
+
+        // Somebody else's output, however well signed by me.
+        refused(
+            vec![input(&operators, &agent_key)],
+            vec![paying(&me, 3_000)],
+            reqwest::StatusCode::BAD_REQUEST,
+            "not an unspent output",
+        )
+        .await;
+        // My output, signed by somebody else.
+        refused(vec![input(&own, &other_key)], vec![paying(&me, 3_000)], reqwest::StatusCode::BAD_REQUEST, "does not verify")
+            .await;
+        // Mine, signed by me, but the miner would get nothing.
+        refused(vec![input(&own, &agent_key)], vec![paying(&me, 4_500)], reqwest::StatusCode::BAD_REQUEST, "network fee")
+            .await;
+        // More out than in.
+        refused(vec![input(&own, &agent_key)], vec![paying(&me, 9_000)], reqwest::StatusCode::BAD_REQUEST, "inputs only")
+            .await;
+        // The same output twice.
+        refused(
+            vec![input(&own, &agent_key), input(&own, &agent_key)],
+            vec![paying(&me, 3_000)],
+            reqwest::StatusCode::BAD_REQUEST,
+            "same output",
+        )
+        .await;
+        // A recipient that is not a key.
+        refused(vec![input(&own, &agent_key)], vec![paying("zz", 3_000)], reqwest::StatusCode::BAD_REQUEST, "outputs[0]")
+            .await;
+        // A signature that is not a signature.
+        refused(
+            vec![handlers::SendInput { output: own.clone(), signature: "beef".into() }],
+            vec![paying(&me, 3_000)],
+            reqwest::StatusCode::BAD_REQUEST,
+            "64 bytes",
+        )
+        .await;
+        assert_eq!(fake_node.submissions_seen.load(Ordering::SeqCst), 0, "nothing the hub refused reached the node");
+
+        // A good send goes through once. The node holds it, so the same
+        // inputs are pending, and a second spend of them is a 409 rather
+        // than a double-spend handed to the node.
+        fake_node.set_fate(SubmissionFate::HeldInMempool).await;
+        let resp = send(
+            &hub,
+            &agent_key,
+            handlers::SendPayload { inputs: vec![input(&own, &agent_key)], outputs: vec![paying(&me, 4_000)] },
+        )
+        .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        fake_node.wait_for_applied(1).await;
+        let wallet = wallet_of(&hub, &agent).await;
+        assert_eq!(wallet["balance"], 0);
+        assert_eq!(wallet["pending"], 5_000);
+        assert_eq!(wallet["outputs"][0]["pending"], true);
+        refused(vec![input(&own, &agent_key)], vec![paying(&me, 4_000)], reqwest::StatusCode::CONFLICT, "already spent")
+            .await;
+        assert_eq!(fake_node.submissions_seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_wallet_answers_503_rather_than_empty_when_no_node_answers() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let agent_key = PrivateKey::new_key();
+        let agent = agent_key.public_key();
+        fake_node.credit(agent.clone(), 5_000).await;
+        let own = wallet_of(&hub, &agent).await["outputs"][0]["hash"].as_str().unwrap().to_string();
+
+        fake_node.refuse_fetches(true);
+        let resp = hub.client.get(format!("{}/wallet/{agent}", hub.base_url)).send().await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE, "a node we cannot reach is not a wallet we know to be empty");
+        let resp = send(
+            &hub,
+            &agent_key,
+            handlers::SendPayload {
+                inputs: vec![handlers::SendInput { output: own.clone(), signature: sign_output_hex(&own, &agent_key) }],
+                outputs: vec![paying(&agent.to_string(), 4_000)],
+            },
+        )
+        .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(fake_node.submissions_seen.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

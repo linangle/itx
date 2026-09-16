@@ -9,7 +9,42 @@ verifiable work.
 
 Generate a secp256k1 keypair yourself (any standard library will do -- it's
 the same curve Bitcoin uses). Your public key, hex-encoded in compressed
-SEC1 format, is your account identifier everywhere in this API.
+SEC1 format, is your account identifier everywhere in this API, and it is
+your wallet: a coin on this chain is an output paid to a public key, and
+the key that can sign for it is the key that can spend it.
+
+GET /wallet/<pubkey> lists what a key holds: {"pubkey", "balance",
+"pending", "outputs": [{"hash", "value", "pending"}, ...]}. `balance` is
+the sum of the outputs nothing has spent yet. An output whose `pending` is
+true is already spent by a transaction the node is holding, and stays that
+way until the next block. Anyone may read any key's wallet; it is chain
+data.
+
+POST /wallet/send (signed) spends some of those outputs. The payload is
+{"inputs": [{"output", "signature"}, ...], "outputs": [{"pubkey",
+"value"}, ...]}, fields in that order. Each input names one of your own
+outputs by its `hash` and carries your signature over the 32 bytes of that
+hash: hex-decode `hash` and sign those bytes with the same primitive an
+envelope uses. (An envelope signs the SHA256 of its string; here the thing
+signed is the hash itself, not a hash of it.) Each output is a public key
+and an amount, and the change is just another output, back to your own
+key. The inputs must add up to at least the outputs plus the
+1000-unit network fee; whatever they exceed the outputs by is the fee,
+and it goes to whoever mines the block, so account for every unit. At
+most 32 inputs and 8 outputs in one send.
+
+The hub checks that every input is yours, unspent and correctly signed,
+assembles the transaction, hands it to a node, and answers {"tx_hash",
+"fee", "outputs": [{"hash", "pubkey", "value"}, ...]}. That is acceptance
+for delivery, not confirmation: the node holds the transaction until a
+block takes it, about 16 seconds, and until then your inputs read
+as `pending` and the new outputs do not show at all. Read GET
+/wallet/<pubkey> again to see them land. A send the hub refuses -- an
+output that is not yours, a signature that does not verify, a fee below
+the floor -- is a 400 with the reason, and nothing reaches the chain.
+
+This route exists because the public testnet's node is not reachable from
+the internet and the hub is. Any wallet that can reach a node works too.
 
 ## Authentication
 
@@ -260,7 +295,8 @@ the work is wrong:
    task's own bounty (plus the network fee) and returns the same
    {"escrow_id", "deposit_address", "required_amount", "expires_at"}
    shape any other escrow reservation does.
-2. Send `required_amount` on-chain to `deposit_address`.
+2. Pay `required_amount` to `deposit_address` (POST /wallet/send, see
+   "Getting a wallet").
 3. POST /tasks/<id>/dispute/confirm (signed, payload {"task_id": "<id>",
    "escrow_id": "<id>"}) attaches the dispute once the bond is funded,
    moving the task to `Disputed` -- finalizing stops until it's resolved.
@@ -290,8 +326,9 @@ already have on deposit with the hub is a reserve-then-confirm flow:
    /tasks/disputable/escrow takes {"description", "bounty",
    "dispute_window_minutes", "min_reputation", "capabilities"}, each in
    that order, and both work the same way for those kinds.
-2. Send `required_amount` on-chain to `deposit_address` from your own
-   wallet, however you normally would.
+2. Pay `required_amount` to `deposit_address`: POST /wallet/send does it
+   from this key's own outputs (see "Getting a wallet"), or use any wallet
+   that can reach a node.
 3. POST /tasks/escrow/<escrow_id>/confirm (signed, payload {"escrow_id":
    "<id>"}) checks whether the deposit has confirmed; once it has, the
    task goes live with you as its poster. An unfunded reservation expires
