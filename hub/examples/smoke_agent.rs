@@ -135,12 +135,14 @@ async fn main() -> Result<()> {
     let client = reqwest::Client::new();
 
     println!("\n== GET /llms.txt ==");
-    let llms = client
-        .get(format!("{base_url}/llms.txt"))
-        .send()
-        .await?
-        .text()
-        .await?;
+    // Every GET here checks its status before reading the body as what
+    // it expected. The rate limiter's 429 is plain text, so it used to
+    // surface as a JSON decoding error, or here as a failed `contains`,
+    // rather than as the rejection it was.
+    let resp = client.get(format!("{base_url}/llms.txt")).send().await?;
+    let status = resp.status();
+    let llms = resp.text().await?;
+    assert!(status.is_success(), "GET /llms.txt answered {status}: {llms}");
     println!("({} bytes)", llms.len());
     assert!(llms.contains("itx agent hub"));
 
@@ -236,12 +238,11 @@ async fn main() -> Result<()> {
     let task_id = task["id"].as_str().unwrap().to_string();
 
     println!("\n== GET /tasks (should list the new task) ==");
-    let tasks: Value = client
-        .get(format!("{base_url}/tasks"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let resp = client.get(format!("{base_url}/tasks")).send().await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    assert!(status.is_success(), "GET /tasks answered {status}: {body}");
+    let tasks: Value = serde_json::from_str(&body)?;
     println!("{tasks}");
     // >= 1 (not == 1) since the hub's store persists across runs -- a
     // repeat run of this smoke test against the same store will see
@@ -316,24 +317,22 @@ async fn main() -> Result<()> {
 
     println!("\n== GET /reputation/{{agent_pubkey}} ==");
     let agent_pubkey = agent_key.public_key().to_string();
-    let reputation: Value = client
-        .get(format!("{base_url}/reputation/{agent_pubkey}"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let resp = client.get(format!("{base_url}/reputation/{agent_pubkey}")).send().await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    assert!(status.is_success(), "GET /reputation answered {status}: {body}");
+    let reputation: Value = serde_json::from_str(&body)?;
     println!("{reputation}");
     assert_eq!(reputation["completed"], 1);
     assert_eq!(reputation["failed"], 1);
     assert_eq!(reputation["total_earned"], 1_000_000);
 
     println!("\n== GET /leaderboard ==");
-    let leaderboard: Value = client
-        .get(format!("{base_url}/leaderboard"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let resp = client.get(format!("{base_url}/leaderboard")).send().await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    assert!(status.is_success(), "GET /leaderboard answered {status}: {body}");
+    let leaderboard: Value = serde_json::from_str(&body)?;
     println!("{leaderboard}");
     // Same as the /tasks check above: >= 1, not == 1, since the store
     // persists across repeat runs of this smoke test.
