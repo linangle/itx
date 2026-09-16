@@ -85,10 +85,11 @@ still exits non-zero.
 
 **`escrow-refund` is the one drill here that can assert.** Every other drill
 samples something — a race, a window, a rate — and so a clean run is weak
-evidence; `escrow-restart` says as much in its own report, returning
-*inconclusive* rather than clean when it finds nothing. `escrow-refund` asks
-whether a refunded deposit's status survives a restart, which is not a race: it
-either persists or it does not, on every restart, so one run is a verdict.
+evidence; `exchange-restart`'s hard-kill phase says as much in its own report,
+returning *inconclusive* rather than clean when it finds nothing.
+`escrow-refund` asks whether a refunded deposit's status survives a restart,
+which is not a race: it either persists or it does not, on every restart, so
+one run is a verdict.
 It exists because seven drills that all sampled missed the worst defect the hub
 has had (plan §6.5c). When adding a drill, prefer a question shaped like this
 one's.
@@ -155,7 +156,7 @@ worth knowing:
 
 - **`Inconclusive` is never a failure on its own.** It is the absence of an
   answer, not a bad one, and for a sampling drill it is the expected post-fix
-  outcome — `escrow-restart` cannot observe the absence of a race. A drill that
+  outcome — `exchange-restart` cannot observe the absence of a race. A drill that
   wants an undecided run to be loud says so with a finding, as `escrow-refund`
   does when no sweep pass completed inside its window.
 - **The exit code and `compare` both derive from this**, rather than from
@@ -235,10 +236,11 @@ healthy, a healthy baseline is what makes it a gate.
   exits 0, baseline against a pre-fix run reports `confirmed -> refuted` and
   exits 1.
 - **A sampling drill** (`escrow-restart`) baselines on its healthy run too,
-  which is what closed §6.5b's refuted-to-refuted gap. Its SIGKILL half sits at
-  `inconclusive` when healthy, so the bug returning reads as `refuted` — a
-  problem where the baseline was not one. Against the old pre-fix baseline that
-  same regression compared refuted-to-refuted and exited 0.
+  which is what closed §6.5b's refuted-to-refuted gap. Its SIGKILL half now
+  sits at `confirmed` when healthy (see its entry under Results), so the bug
+  returning reads as `confirmed -> refuted` — a problem where the baseline was
+  not one. Against the old pre-fix baseline that same regression compared
+  refuted-to-refuted and exited 0.
 - **A pessimistic-claim drill** (`node-crash`) baselines on its healthy run,
   which reports **refuted**, and declares `healthy_when(Verdict::Refuted)` so
   the comparison scores it the right way round.
@@ -324,7 +326,7 @@ failure, refuting it is the good news, and the "healthy" column says so.
 | Drill | Plan item | The claim it tests | Healthy |
 |---|---|---|---|
 | `node-crash` | §6.5 | Killing the node with payouts in the mempool loses money the hub still reports as paid | **refuted** |
-| `escrow-restart` | §6.5b | An interrupted escrow confirmation leaves a state a client can act on: no deposit funds two tasks, none is stranded | confirmed (SIGKILL half can only reach inconclusive) |
+| `escrow-restart` | §6.5b | An interrupted escrow confirmation leaves a state a client can act on: no deposit funds two tasks, none is stranded | confirmed (SIGKILL half: inconclusive if the kill interrupted nothing) |
 | `replay-storm` | §3.3 | The replay guard's durable half closes the post-restart window; nothing verifies twice | confirmed |
 | `rate-limit-tiers` | §3.4 | Saturating one tier leaves health, reads, writes and chain writes independently available | confirmed |
 | `quota-isolation` | §3.4 | The per-key quota is charged to the identity, so exhausting one key does not refuse another | confirmed |
@@ -398,10 +400,9 @@ example of what that looks like, run against a hand-edited "fixed" report:
   gone: Killing the node with payouts in the mempool destroyed 6000000 ITX ...
 ```
 
-`escrow-restart` is the exception, and the reason is worth reading before
-trusting it: its hard-kill phase samples a race rather than proving one, so a
-run that finds nothing reports **inconclusive** and must not be read as a fix
-being verified. See its entry below.
+`escrow-restart` was the exception until 2026-09-09: its hard-kill phase sampled
+a race rather than proving one, so a run that found nothing reported
+**inconclusive**. Its entry below says what it reports now and why.
 
 Every baseline records `dirty`, which is scoped to `*.rs` and `*.toml` rather
 than the whole tree — a run writes its own report into the repo, so a
@@ -522,6 +523,15 @@ absence of an interval is not something a sampling run can observe. There is no
 deterministic verdict for this drill to give. The deterministic evidence lives
 in `hub/src/store.rs`'s tests, where the failure can be injected between the two
 writes on every run.
+
+**Changed 2026-09-09** (`34fd0dd`). With one write transaction there is no
+interval left to miss, so the hard-kill phase now reports **confirmed** when the
+kill interrupted confirmations and none duplicated or stranded, **inconclusive**
+only when every confirmation had already answered, and **refuted** otherwise.
+The checked-in baseline, a post-fix run since 2026-09-07, reads `confirmed`. A
+confirmed run still cannot show the commit has not been split again, since a
+reopened window is hit only by chance, so the store tests remain the evidence
+for that.
 
 **`replay-storm`.** Thirty envelopes spent, the hub `SIGKILL`ed so nothing
 could flush on the way out, all thirty replayed the instant `/health` answered.
