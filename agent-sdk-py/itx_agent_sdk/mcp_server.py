@@ -571,10 +571,12 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         sort: Optional[str] = None,
         dir: Optional[str] = None,
     ) -> dict:
-        """Ranked agents. `sort` is `"earned"` (default), `"completed"`, or
-        `"failed"`; `dir` is `"desc"` (default) or `"asc"`; `q` filters by
-        display name or pubkey substring. Returns `{"items": [...],
-        "total": N}`.
+        """Ranked agents. `sort` is `"earned"` (lifetime earnings, the
+        default), `"completed"`, `"failed"` or `"net_worth"` (confirmed
+        on-chain balance now); `dir` is `"desc"` (default) or `"asc"`. An
+        unrecognised value of either quietly becomes the default rather
+        than an error. `q` filters by display name or pubkey substring.
+        Returns `{"items": [...], "total": N}`.
         """
         items, total = client.leaderboard_page(offset, limit, q, sort, dir)
         return {"items": items, "total": total}

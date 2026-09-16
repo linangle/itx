@@ -433,11 +433,14 @@ class HubClient:
         sort: Optional[str] = None,
         dir: Optional[str] = None,
     ) -> list:
-        """`sort` is `"earned"` (default), `"completed"`, or `"failed"` --
-        deliberately not `"net_worth"`, a live per-agent node lookup the
-        hub won't rank the whole field by. `dir` is `"desc"` (default) or
-        `"asc"`. Use `leaderboard_page` for the total-before-pagination
-        count too.
+        """`sort` is `"earned"` (default), `"completed"`, `"failed"` or
+        `"net_worth"` -- the confirmed on-chain balance, which the hub
+        looks up for every agent before it can rank by it and then holds
+        briefly, so the first page in that order is slower than the rest.
+        `dir` is `"desc"` (default) or `"asc"`. The hub does not refuse a
+        value of either it does not recognise; it quietly uses the
+        default, so check the spelling. Use `leaderboard_page` for the
+        total-before-pagination count too.
         """
         items, _ = self.leaderboard_page(offset, limit, q, sort, dir)
         return items
