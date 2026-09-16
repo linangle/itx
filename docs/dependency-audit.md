@@ -47,15 +47,19 @@ bump can be the fix, and the crate is unmaintained. The real remedy is
 replacement (`ouroboros`, `yoke`) by whoever depends on it — which is
 not us.
 
-*Why it does not matter here.* Traced 2026-09-08:
+*Why it does not matter here.* Traced 2026-09-08, and unchanged on
+2026-09-16:
 
 ```
 owning_ref v0.4.1 -> cursive_core 0.3.7 -> cursive 0.20.0 -> wallet
 ```
 
 `cargo tree -p hub`, `-p node`, `-p miner` and `-p console` return **zero
-paths**. It reaches only the wallet's terminal UI, which is not in the
-release artifact and never runs on a server. Both cursive call sites
+paths**. It reaches only the wallet's terminal UI. The wallet binary has been
+in the release artifact since 2026-09-11 and runbook §5 installs it on the hub
+box as `itx-wallet`, so `owning_ref` is compiled into something on the server;
+but the one thing the runbook runs there is `itx-wallet pay` (§9.10), which
+returns before any `cursive` code is reached. Both cursive call sites
 (`views/named_view.rs:46`, `views/text_view.rs:159`) use `OwningHandle`
 in its intended pattern — owner and guard bundled, guard never escaping —
 so the hole is what the API permits, not what cursive does.
@@ -71,9 +75,9 @@ so the hole is what the API permits, not what cursive does.
   is the whole argument; if a hub dependency ever pulls it in, the
   ignore is wrong that day. Re-run the `cargo tree -i owning_ref` check
   before trusting this section.
-- **The wallet TUI starts being shipped or run somewhere exposed.** It is
-  currently a local operator tool. If it becomes something a stranger's
-  input reaches, reassess.
+- **The wallet TUI starts being run somewhere exposed.** The binary already
+  ships, for `pay`; the TUI is still a local operator tool. If it becomes
+  something a stranger's input reaches, reassess.
 
 ## Not ignored: everything else
 

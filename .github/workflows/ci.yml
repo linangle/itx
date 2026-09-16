@@ -311,8 +311,9 @@ jobs:
         # no fixed version and never will -- the holes are in its API, so
         # a fix would break every caller, and the crate is unmaintained.
         # It reaches this tree only through `cursive` in the wallet's
-        # terminal UI: zero paths from hub, node, miner or console, and
-        # the wallet is not in the release artifact. See
+        # terminal UI: zero paths from hub, node, miner or console. The
+        # wallet binary does ship, for `itx-wallet pay`, which returns
+        # before any `cursive` code runs. See
         # `docs/dependency-audit.md` for the full argument and for what
         # would make this line wrong.
         run: |
