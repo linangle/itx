@@ -71,7 +71,7 @@ The internal interface is \textbf{\texttt{itx-console}}: a read-only program eac
 
 This manual is for Angelina and Hugo, the two people who watch and run the live ITX stack. It is a working guide: what to look at, what normal looks like, what to do when it doesn't. The full reasoning lives in the repo's \code{docs/deployment.md} (about 3,100 lines). Section numbers like \textbf{\S8.3} below point into that file. If this manual and the code disagree, the code wins, then \code{deployment.md}.
 
-\textbf{Covered:} getting into the console, reading each panel, the signals of abuse and breakage, what to do about each, routine checks, and how the two of you split an incident.
+\textbf{Covered:} getting into the console, reading each panel, the signals of abuse and breakage, what to do about each, routine checks and maintenance windows, and how the two of you split an incident.
 
 \textbf{Not covered:} building releases from scratch, the chain protocol's design, publishing the Python SDK. Those have their own documents (\code{docs/public-rehearsal.md}, \code{docs/agent-ecosystem-plan.md}).
 
@@ -608,6 +608,7 @@ sudo journalctl -u itx-hub -b --no-pager | head -40
 
 % ---------------------------------------------------------------------------
 \section{Routine operations}
+\label{sec:routine}
 
 A daily check takes about 5 minutes and is mostly the console. The weekly and monthly checks prove the things the console can't see: the firewall, the backups and the certificates.
 
@@ -714,6 +715,118 @@ curl -s localhost:9100/metrics | grep -E 'reconciliation_disagreements|payments_
 \end{enumerate}
 
 \textbf{Rollback is only free if the release didn't change the store's schema.} If it did, rolling back means restoring \code{hub.redb} (only that file, never \code{blockchain.redb}) from step 1's backup and losing everything since. Read \S5.2 before doing it.
+
+% ---------------------------------------------------------------------------
+\section{Maintenance windows}
+
+Planned work on the hub alone is playbook P10. This section covers the rest: taking the whole server down, starting it cold, updating the site, setting up backups once, and rotating a key.
+
+\subsection{Rebooting the server, or patching the OS}
+
+\textbf{Going down}, in this order:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \code{sudo touch /var/www/itx/maintenance.flag}
+  \item \code{sudo systemctl stop itx-hub} --- it drains, so requests in flight finish.
+  \item \code{sudo systemctl stop itx-miner itx-node}
+  \item Reboot or patch.
+\end{enumerate}
+
+\textbf{Coming back:} the three units are enabled, so systemd starts them in the right order by itself (node first, then miner and hub). Starting by hand, use the same order and wait for the node's \code{Listening on} line before starting the hub.
+
+\textbf{Then check, in this order:}
+
+\begin{checklist}
+  \item \textbf{The banner} --- \code{sudo journalctl -u itx-hub -n 40 --no-pager}. Confirm the three addresses (operator, exchange custody, escrow secret path), the \code{trusting X-Forwarded-For only from: 127.0.0.1, ::1} line, the restored-record counts, and \code{restored N replay-guard signature(s)}. A \code{replay log unreadable} warning is an incident, not a warm-up message: go to P7.
+  \item \textbf{The chain is moving} --- \code{curl -s localhost:9100/health} twice, a minute apart.
+  \item \textbf{Bounty payouts recover themselves} --- \code{?status=submitted} drains over a few minutes; \code{?status=payoutfailed} is empty (else P2).
+  \item \textbf{The three that don't recover} --- faucet grants, escrow refunds and withdrawals from the outage window. The node's mempool was discarded with it, and nothing re-sends these. Check each against the recipient's balance by hand (P3).
+  \item \textbf{The backup timer survived} --- \code{systemctl list-timers itx-backup.timer} shows a next run.
+  \item \textbf{Both consoles reconnect.}
+\end{checklist}
+
+\textbf{Removing the flag is last:} \code{sudo rm /var/www/itx/maintenance.flag}, only once \code{/health} answers, so the site never says it's back before the hub is.
+
+\subsection{Upgrading the node or the miner}
+
+The hub upgrade is in Section~\ref{sec:routine}. For the other two: install the binary from the release, restart that one unit.
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{The miner} is cheap to restart; nothing is lost.
+  \item \textbf{The node is not.} Restarting it discards the mempool, so run the whole check list above afterwards. The chain itself is safe --- \code{blockchain.redb} is on disk --- but anything sent and not yet mined is gone.
+\end{itemize}
+
+\subsection{Updating the site}
+
+Static files, no service to restart, and nothing secret in them. Install the \code{site/} directory from the release tarball rather than a local build:
+
+\begin{lstlisting}[language=bash]
+sudo cp -r site/. /var/www/itx/
+sudo chown -R root:root /var/www/itx
+\end{lstlisting}
+
+Then \textbf{point it at our hub}. The tarball ships with the example hostname, which the site treats as unset and falls back to loopback, so a page that loads can still reach nothing. Edit the one line in \code{/var/www/itx/index.html}:
+
+\begin{lstlisting}[language=html]
+<meta name="itx-hub-url" content="https://hub.<domain>" />
+\end{lstlisting}
+
+Check from a machine with nothing on port 9100 --- not the server, not the laptop you built on:
+
+\begin{lstlisting}[language=bash]
+curl -sI https://<domain> | head -1               # 200
+curl -s  https://<domain> | grep itx-hub-url      # our hub, not the example
+curl -s  https://<domain>/health                  # answered by the hub
+\end{lstlisting}
+
+\subsection{Setting up backups (once)}
+
+Until this is done there is no rollback plan and no recovery from a lost server.
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Make the key off the server}, on a machine that isn't the hub, and keep it offline: \code{age-keygen -o ~/itx-restore-key.txt}. It prints the public key. \textbf{The private half must never be on the server} --- that's the whole point: the server can write backups it cannot read back.
+  \item \textbf{On the server}, write the recipient and the off-box destination:
+\begin{lstlisting}[language=bash]
+sudo install -d -m 700 /etc/itx
+printf 'ITX_BACKUP_RECIPIENT=age1...\nITX_BACKUP_REMOTE=backup@vault.example.net:/srv/itx-backups/\n' \
+  | sudo tee /etc/itx/backup.env >/dev/null
+sudo chmod 600 /etc/itx/backup.env
+\end{lstlisting}
+  \item \textbf{Enable the schedule and run it once by hand}, so a mistyped recipient or a refused ssh key is found tonight rather than in two months:
+\begin{lstlisting}[language=bash]
+sudo systemctl enable --now itx-backup.timer
+sudo systemctl start itx-backup.service && sudo journalctl -u itx-backup -o cat -n 30
+\end{lstlisting}
+  \item \textbf{Restrict the vault's key} to writing into that one directory, so a compromised server can't read back or delete what it already sent.
+  \item \textbf{Record the escrow secret's fingerprint} somewhere outside the backup system. The monthly drill needs it, and it's the only thing that catches a tampered archive.
+\end{enumerate}
+
+A nightly run stops the hub for a few seconds and leaves the node alone. That asymmetry is deliberate: stopping the node would destroy payments in flight.
+
+\subsection{Rotating a key}
+
+\textbf{Escrow secret --- plan a window, not a routine.} A new secret derives new addresses, and there's no migration: deposits taken under the old one still need the old one.
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Stop accepting new escrow deposits.
+  \item Wait out the escrow window, then check that none are left. The count only appears in the startup banner, so it needs a restart. Non-zero means wait another window; don't swap the file.
+\begin{lstlisting}[language=bash]
+sudo systemctl restart itx-hub
+sudo journalctl -u itx-hub -b --no-pager | grep 'pending escrow deposit'
+\end{lstlisting}
+  \item Swap the file and restart.
+  \item \textbf{Keep the old secret archived} for as long as you keep backups from before the rotation. Restoring an old \code{hub.redb} needs the secret that matches it.
+\end{enumerate}
+
+\textbf{Operator or custody key:} rotation doesn't revoke anything. The new key is a new address, and funds at the old one have to be moved deliberately (in a compromise, see P1 step 4 first).
+
+\textbf{After any restore or manual copy of a secret}, check the permissions --- \code{cp} and \code{tar} don't reliably keep them and nothing re-checks at startup:
+
+\begin{lstlisting}[language=bash]
+sudo find /var/lib/itx/secrets -type f ! -perm 600 -ls    # expect no output
+\end{lstlisting}
+
+\textbf{Never move a secret} over anything but \code{scp}. Not chat, not a ticket, not a paste bin, not CI logs.
 
 % ---------------------------------------------------------------------------
 \section{Incidents: who does what}
