@@ -13,7 +13,7 @@ use std::sync::{
 use std::thread;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::{interval, timeout, Duration};
+use tokio::time::{interval, timeout, Duration, Instant};
 use tracing_subscriber::prelude::*;
 
 /// How many nonce attempts one `mine()` call makes -- also the size of
@@ -24,6 +24,18 @@ const STEPS_PER_CALL: usize = 2_000_000;
 /// it and moving to the next -- so one unreachable node can't stall (or,
 /// without a bound at all, hang forever on) submission to the rest.
 const SUBMIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a link waits before dialling a node again after a failed
+/// attempt, and the ceiling that wait climbs to on repeated failures.
+///
+/// The floor is short because the ordinary case this exists for is a node
+/// restarting -- an upgrade, a reboot, a maintenance window -- and it is
+/// back within seconds. The ceiling exists so a node that is down for an
+/// afternoon is dialled a couple of times a minute rather than twelve,
+/// and so a mistyped address is not a connection attempt every five
+/// seconds forever.
+const RECONNECT_BACKOFF_START: Duration = Duration::from_secs(1);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// The nonce a mining thread should start its search from, given its
 /// index among `N` threads all mining the same cloned template in
@@ -106,13 +118,98 @@ struct Cli {
     public_key_file: String,
 }
 
+/// One configured node address, and the connection to it if there is one
+/// right now.
+///
+/// **The miner used to hold connections rather than addresses**, opened
+/// once at startup and never reopened: any node restart, ban or closed
+/// socket ended `run()` and the process exited. It survived only because
+/// `Restart=always` started it again five seconds later, which meant
+/// every node restart cost a miner restart and the mining pass in
+/// progress -- and during a maintenance window, with the node down for
+/// longer than that, a treasury host whose miner was in a restart cycle
+/// rather than waiting. Keeping the address is what lets a link be
+/// reopened instead.
+struct NodeLink {
+    address: String,
+    stream: Option<TcpStream>,
+    /// How long to wait after the *next* failure. Doubles up to
+    /// `RECONNECT_BACKOFF_MAX`, and is reset by a successful connection.
+    backoff: Duration,
+    /// When dialling is allowed again. `Instant::now()` means "on the
+    /// next attempt", which is what a lost connection sets it to: a node
+    /// that just closed a socket may already be back.
+    next_attempt: Instant,
+}
+
 struct Miner {
     public_key: PublicKey,
-    streams: Vec<Mutex<TcpStream>>,
+    links: Vec<Mutex<NodeLink>>,
     current_template: Arc<std::sync::Mutex<Option<Block>>>,
     mining: Arc<AtomicBool>,
     mined_block_sender: flume::Sender<Block>,
     mined_block_receiver: flume::Receiver<Block>,
+}
+
+impl NodeLink {
+    fn new(address: String) -> Self {
+        NodeLink {
+            address,
+            stream: None,
+            backoff: RECONNECT_BACKOFF_START,
+            next_attempt: Instant::now(),
+        }
+    }
+
+    /// The live connection to this node, dialling if there is not one and
+    /// the backoff has elapsed. `None` means there is no usable
+    /// connection right now and the caller should move on -- the reason
+    /// has already been logged here, so a caller that simply carries on
+    /// is not swallowing it.
+    ///
+    /// **Dials only when the caller is about to send something.** A bare
+    /// TCP connect that opens and closes without completing the p2p
+    /// handshake is a severe violation the node bans for an hour
+    /// (`node/src/ban.rs`), so a reconnect loop that probed for liveness
+    /// would ban the miner from its own node.
+    async fn connected(&mut self) -> Option<&mut TcpStream> {
+        if self.stream.is_none() {
+            if Instant::now() < self.next_attempt {
+                return None;
+            }
+            match Miner::connect_and_handshake(&self.address).await {
+                Ok(stream) => {
+                    println!("connected to node {}", self.address);
+                    self.stream = Some(stream);
+                    self.backoff = RECONNECT_BACKOFF_START;
+                }
+                Err(e) => {
+                    warn!(
+                        "cannot reach node {}: {e}; trying again in {}s",
+                        self.address,
+                        self.backoff.as_secs()
+                    );
+                    self.next_attempt = Instant::now() + self.backoff;
+                    self.backoff = (self.backoff * 2).min(RECONNECT_BACKOFF_MAX);
+                    return None;
+                }
+            }
+        }
+        self.stream.as_mut()
+    }
+
+    /// Forgets a connection that has failed, so the next call to
+    /// `connected` opens a new one. A half-used socket is not reusable:
+    /// the peer may have read half a message before going away, and
+    /// anything written onto it after that is framed against nothing.
+    fn disconnect(&mut self, reason: &str) {
+        if self.stream.take().is_some() {
+            warn!("lost the connection to node {}: {reason}", self.address);
+        }
+        // Not backed off: this is the first failure of a connection that
+        // was working a moment ago, and the node may already be back.
+        self.next_attempt = Instant::now();
+    }
 }
 
 impl Miner {
@@ -124,33 +221,31 @@ impl Miner {
         Ok(stream)
     }
 
-    /// Connects to every address, in order. A failure on the first
-    /// (primary, used as the template source) is fatal -- there's no
-    /// point running with no template source at all. A failure on any
-    /// other (secondary) address is logged and that address is simply
-    /// dropped from the submission list -- the whole point of having
-    /// several is redundancy, so one being briefly unreachable at
-    /// startup shouldn't stop the miner from running against the rest.
+    /// Opens a link to every address, in order, and tries each one once.
+    ///
+    /// **An address that does not answer is no longer fatal, not even the
+    /// first.** It was: with no template source there is nothing to mine,
+    /// so the miner exited and systemd restarted it. But the case that
+    /// produces an unreachable primary at startup is almost always the
+    /// node still coming up -- a reboot, an upgrade, the two units
+    /// starting together -- and exiting turns "wait a moment" into a
+    /// restart loop that competes with the thing it is waiting for. The
+    /// link retries on its own; a genuinely wrong address says so in the
+    /// log on every attempt instead of taking the process down.
     async fn new(addresses: Vec<String>, public_key: PublicKey) -> Result<Self> {
         if addresses.is_empty() {
             return Err(anyhow!("at least one node address is required"));
         }
-        let mut streams = Vec::new();
-        for (i, address) in addresses.iter().enumerate() {
-            match Self::connect_and_handshake(address).await {
-                Ok(stream) => streams.push(Mutex::new(stream)),
-                Err(e) if i == 0 => {
-                    return Err(anyhow!("failed to connect to primary node {address}: {e}"));
-                }
-                Err(e) => {
-                    warn!("failed to connect to secondary node {address}, skipping it: {e}");
-                }
-            }
+        let mut links = Vec::new();
+        for address in addresses {
+            let mut link = NodeLink::new(address);
+            link.connected().await;
+            links.push(Mutex::new(link));
         }
         let (mined_block_sender, mined_block_receiver) = flume::unbounded();
         Ok(Self {
             public_key,
-            streams,
+            links,
             current_template: Arc::new(std::sync::Mutex::new(None)),
             mining: Arc::new(AtomicBool::new(false)),
             mined_block_sender,
@@ -174,7 +269,14 @@ impl Miner {
             let receiver_clone = self.mined_block_receiver.clone();
             tokio::select! {
                 _ = template_interval.tick() => {
-                    self.fetch_template().await?;
+                    // Not `?`. A node that is restarting, or a socket
+                    // that closed, is an ordinary event in the life of
+                    // this process, and ending `run()` over it is what
+                    // T22 was. The link retries on the next tick.
+                    if let Err(e) = self.fetch_template().await {
+                        warn!("no fresh template: {e}");
+                        self.stop_mining_on_a_stale_template();
+                    }
                 }
                 Ok(mined_block) = receiver_clone.recv_async() => {
                     self.submit_block(mined_block).await;
@@ -218,14 +320,27 @@ impl Miner {
         // Template fetch/validate deliberately only ever talks to the
         // primary (index 0) node -- there's no multi-source-template
         // feature here, only multi-target submission (see `submit_block`).
-        let mut stream_lock = self.streams[0].lock().await;
-        message.send_async(&mut *stream_lock).await?;
-        drop(stream_lock);
+        let mut link = self.links[0].lock().await;
+        if link.connected().await.is_none() {
+            return Err(anyhow!("no connection to the primary node {}", link.address));
+        }
 
-        let mut stream_lock = self.streams[0].lock().await;
-        match Message::receive_async(&mut *stream_lock).await? {
-            Message::Template(template) => {
-                drop(stream_lock);
+        // Held across both halves of the exchange, where this used to
+        // take the lock twice: the reply belongs to the request, and a
+        // second caller that slipped in between would read the other's
+        // template off the socket.
+        // Annotated, because the two halves fail with different
+        // ciborium error types (serialize, then deserialize) and only a
+        // common one lets both use `?` here.
+        let exchange: Result<Message> = async {
+            let stream = link.stream.as_mut().expect("connected() just returned one");
+            message.send_async(&mut *stream).await?;
+            Ok(Message::receive_async(&mut *stream).await?)
+        }
+        .await;
+
+        match exchange {
+            Ok(Message::Template(template)) => {
                 println!(
                     "Received new template with target: {}",
                     template.header.target
@@ -234,8 +349,33 @@ impl Miner {
                 self.mining.store(true, Ordering::Relaxed);
                 Ok(())
             }
-            _ => Err(anyhow!("Unexpected message received when fetching template")),
+            Ok(_) => {
+                // The socket is still open but the conversation is out of
+                // step, which nothing here can resynchronise.
+                link.disconnect("unexpected message in reply to a template request");
+                Err(anyhow!("Unexpected message received when fetching template"))
+            }
+            Err(e) => {
+                link.disconnect(&e.to_string());
+                Err(e)
+            }
         }
+    }
+
+    /// Stops mining and drops the template, whenever the primary node
+    /// cannot be reached.
+    ///
+    /// **Dropping it is the point, not stopping.** A template names the
+    /// tip it extends, and the node that has just gone away is the node
+    /// that decides what the tip is; mining on across a restart means
+    /// submitting a block built on the old one when it comes back. The
+    /// node rejects that, and a rejected block is a strike -- three in
+    /// ten minutes bans the miner from its own node for an hour
+    /// (`node/src/ban.rs`, whose comment names this exact case). Idling
+    /// costs a few seconds of hashing; the ban costs an hour of blocks.
+    fn stop_mining_on_a_stale_template(&self) {
+        self.mining.store(false, Ordering::Relaxed);
+        *self.current_template.lock().unwrap() = None;
     }
 
     /// Submits `block` to every configured node, independently -- a dead
@@ -243,14 +383,22 @@ impl Miner {
     /// `select!` arm that calls this, crash) submission to the rest,
     /// since the whole point of multiple targets is redundancy.
     async fn submit_block(&self, block: Block) {
-        println!("submitting mined block to {} node(s)", self.streams.len());
+        println!("submitting mined block to {} node(s)", self.links.len());
         let message = Message::SubmitTemplate(block);
-        for (i, stream) in self.streams.iter().enumerate() {
-            let mut stream_lock = stream.lock().await;
-            match timeout(SUBMIT_TIMEOUT, message.send_async(&mut *stream_lock)).await {
+        for link in self.links.iter() {
+            let mut link = link.lock().await;
+            // Reconnects here too: a node that was unreachable when the
+            // last template was fetched may be back, and this is a block
+            // -- there is no second chance to deliver it.
+            if link.connected().await.is_none() {
+                continue;
+            }
+            let stream = link.stream.as_mut().expect("connected() just returned one");
+            let sent = timeout(SUBMIT_TIMEOUT, message.send_async(&mut *stream)).await;
+            match sent {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => warn!("failed to submit block to node {i}: {e}"),
-                Err(_) => warn!("timed out submitting block to node {i}"),
+                Ok(Err(e)) => link.disconnect(&format!("submitting a block failed: {e}")),
+                Err(_) => link.disconnect("timed out submitting a block"),
             }
         }
         self.mining.store(false, Ordering::Relaxed);
@@ -284,6 +432,22 @@ mod tests {
     use chrono::Utc;
     use tokio::net::TcpListener;
     use uuid::Uuid;
+
+    /// A template paying `pubkey`, which is all a miner reads off one
+    /// here: `FakeMinerPeer::spawn_template_source` answers with this.
+    fn template_for(pubkey: &PublicKey) -> Block {
+        let coinbase = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: 1,
+                unique_id: Uuid::new_v4(),
+                pubkey: pubkey.clone(),
+            }],
+        );
+        let merkle_root = MerkleRoot::calculate(&[coinbase.clone()]);
+        let header = BlockHeader::new(Utc::now(), 0, Hash::zero(), merkle_root, btclib::MIN_TARGET);
+        Block::new(header, vec![coinbase])
+    }
 
     fn dummy_block(target: btclib::U256) -> Block {
         let private_key = PrivateKey::new_key();
@@ -349,17 +513,33 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn miner_new_fails_if_the_primary_node_is_unreachable() {
-        let dead = dead_address().await;
-        let public_key = PrivateKey::new_key().public_key();
-
-        let result = Miner::new(vec![dead], public_key).await;
-        assert!(result.is_err(), "no template source at all must be fatal");
+    /// Every link the miner has, and whether it is connected right now.
+    async fn connected_links(miner: &Miner) -> Vec<bool> {
+        let mut states = Vec::new();
+        for link in &miner.links {
+            states.push(link.lock().await.stream.is_some());
+        }
+        states
     }
 
     #[tokio::test]
-    async fn miner_new_tolerates_an_unreachable_secondary_node() {
+    async fn miner_new_waits_for_an_unreachable_primary_rather_than_exiting() {
+        let dead = dead_address().await;
+        let public_key = PrivateKey::new_key().public_key();
+
+        // Starting the miner and the node together is the ordinary case
+        // -- a reboot, an upgrade -- and exiting here turned "wait a
+        // moment" into a restart loop.
+        let miner = Miner::new(vec![dead], public_key).await.unwrap();
+        assert_eq!(connected_links(&miner).await, vec![false], "the link is kept, unconnected");
+        assert!(
+            miner.fetch_template().await.is_err(),
+            "and a template cannot be fetched over it yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn miner_new_keeps_an_unreachable_secondary_for_later() {
         let primary = FakeMinerPeer::spawn_healthy().await;
         let dead_secondary = dead_address().await;
         let public_key = PrivateKey::new_key().public_key();
@@ -368,7 +548,42 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(miner.streams.len(), 1, "the dead secondary must be dropped, not fatal");
+        // Kept, where the dead secondary used to be dropped from the
+        // list outright: an address that is unreachable at startup is
+        // the one most likely to come back.
+        assert_eq!(connected_links(&miner).await, vec![true, false]);
+    }
+
+    /// T22: the miner used to hold one connection opened at startup, so
+    /// any node restart ended `run()` and the process exited. It now
+    /// reopens the link and carries on -- which is what a maintenance
+    /// window on the node looks like from here.
+    #[tokio::test]
+    async fn the_miner_reconnects_after_the_node_goes_away() {
+        let node = FakeMinerPeer::spawn_template_source().await;
+        let public_key = PrivateKey::new_key().public_key();
+        let miner = Miner::new(vec![node.addr.clone()], public_key).await.unwrap();
+
+        miner.fetch_template().await.expect("a template over the first connection");
+        assert!(miner.mining.load(Ordering::Relaxed));
+        assert!(miner.current_template.lock().unwrap().is_some());
+
+        // The node goes away mid-life, as it does when it restarts.
+        node.close_current_connection().await;
+        let err = miner.fetch_template().await.expect_err("the dead socket must fail");
+        miner.stop_mining_on_a_stale_template();
+        assert_eq!(connected_links(&miner).await, vec![false], "and the link is dropped: {err}");
+        assert!(!miner.mining.load(Ordering::Relaxed), "nothing is mined against a stale tip");
+        assert!(
+            miner.current_template.lock().unwrap().is_none(),
+            "the template goes with it -- a block built on the old tip is a strike"
+        );
+
+        // And the next attempt opens a new connection to the same
+        // address, with no restart of anything.
+        miner.fetch_template().await.expect("a template over a reopened connection");
+        assert_eq!(connected_links(&miner).await, vec![true]);
+        assert!(miner.mining.load(Ordering::Relaxed));
     }
 
     /// A minimal fake node/miner peer for exercising `Miner`'s connection
@@ -377,6 +592,9 @@ mod tests {
     struct FakeMinerPeer {
         addr: String,
         received: Arc<Mutex<Vec<Block>>>,
+        /// Present only on `spawn_template_source`: sending on it makes
+        /// the fake drop whichever connection it is serving.
+        close: Option<flume::Sender<()>>,
     }
 
     impl FakeMinerPeer {
@@ -406,7 +624,7 @@ mod tests {
                     }
                 }
             });
-            FakeMinerPeer { addr, received }
+            FakeMinerPeer { addr, received, close: None }
         }
 
         /// `Message::send_async` doesn't wait for the peer to actually
@@ -427,6 +645,55 @@ mod tests {
             self.received.lock().await.clone()
         }
 
+        /// Answers `FetchTemplate` with a template, over as many
+        /// successive connections as the miner opens -- the shape of a
+        /// real node across a restart. `close_current_connection` is how
+        /// the test takes the current one away.
+        async fn spawn_template_source() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let (close_tx, close_rx) = flume::unbounded::<()>();
+            tokio::spawn(async move {
+                // The accept loop is the point: one connection at a time,
+                // but a new one whenever the miner dials again.
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    if btclib::network::perform_handshake_acceptor(&mut socket).await.is_err() {
+                        continue;
+                    }
+                    loop {
+                        tokio::select! {
+                            // Drop this socket and go back to accepting.
+                            Ok(()) = close_rx.recv_async() => break,
+                            received = Message::receive_async(&mut socket) => {
+                                match received {
+                                    Ok(Message::FetchTemplate(pubkey)) => {
+                                        let template = template_for(&pubkey);
+                                        if Message::Template(template).send_async(&mut socket).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            FakeMinerPeer { addr, received, close: Some(close_tx) }
+        }
+
+        /// Takes the connection the miner is currently using away from
+        /// it, the way a node restart does.
+        async fn close_current_connection(&self) {
+            self.close.as_ref().expect("this fake was not spawned with a close channel").send(()).unwrap();
+            // The miner does not learn the socket is gone until it next
+            // writes to it, so nothing is asserted here -- this only has
+            // to have happened before the next `fetch_template`.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
         /// Completes the handshake, then immediately drops the
         /// connection -- simulating a peer that was reachable when
         /// `Miner::new` connected but is gone by the time a block is
@@ -444,6 +711,7 @@ mod tests {
             FakeMinerPeer {
                 addr,
                 received: Arc::new(Mutex::new(Vec::new())),
+                close: None,
             }
         }
     }
@@ -461,7 +729,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(miner.streams.len(), 3, "all three connected fine at startup");
+        assert_eq!(connected_links(&miner).await, vec![true, true, true], "all three connected at startup");
 
         // give the flaky fake a moment to actually close its side after
         // the handshake before we submit

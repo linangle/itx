@@ -37,15 +37,18 @@ ExecStart=/usr/local/bin/itx-miner \
     --addresses 127.0.0.1:9000 \
     --public-key-file /var/lib/itx/miner.pub.pem
 
-# The miner refuses to start if its PRIMARY node address is unreachable
-# (miner/src/main.rs, Miner::new returns an error rather than retrying),
-# so a miner brought up before the node restart-loops here until the node
-# answers. That is the intended shape -- After= orders them but does not
-# wait for the node's listener -- but it does mean "miner unit flapping"
-# usually means "node is down", not "miner is broken".
+# The miner waits for its node rather than exiting when it cannot reach
+# it (miner/src/main.rs, NodeLink): it retries with a backoff, stops
+# mining while it has no fresh template, and picks up again when the node
+# answers. So a miner started before the node, or running through a node
+# restart or a maintenance window, stays up and idle rather than
+# restart-looping -- which is why "miner unit flapping" now genuinely
+# means the miner is broken, and "chain height is not moving" is read
+# from the miner's own log (§9.6).
 #
-# No start limit, unlike itx-hub.service: the miner has no reconnection,
-# so a limit would trip on a long node restart and leave mining stopped.
+# No start limit, unlike itx-hub.service: nothing here should exit for a
+# reason a restart would fix, so a limit would only turn a real crash
+# loop into mining that stays stopped.
 Restart=always
 RestartSec=5s
 

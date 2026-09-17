@@ -1712,8 +1712,12 @@ the node exposes no query for it (`FetchTemplate` would reveal it, but only to
 something that speaks the wire protocol), and a bare TCP probe of port 9000 gets
 the box banned for an hour (§8.1).
 
-The miner restart-loops while the node is down and recovers on its own; that is
-expected and needs no handling (see `deploy/itx-miner.service`).
+The miner stays up while the node is down, idle and retrying, and picks up a
+fresh template when the node answers; that needs no handling (see
+`deploy/itx-miner.service`). It deliberately drops the template it was mining
+when the connection goes, so nothing is submitted against the tip the node had
+before it restarted -- a block the node rejects is a strike, and three inside
+ten minutes ban the box from its own node for an hour (§8.1).
 
 ### 7.3 The manifest, and why the escrow secret gets its own line
 
@@ -2633,8 +2637,12 @@ Read the banner first; it usually says which.
 
 ### 9.6 Chain height has stopped advancing
 
-1. Is the miner running? `systemctl status itx-miner`. If it is restart-looping,
-   the node is down or unreachable — go to §9.2.
+1. Is the miner running? `systemctl status itx-miner`. It no longer exits when
+   the node goes away, so a *flapping* miner is now a real crash — but an
+   `active` miner proves nothing on its own, since it idles while it cannot
+   reach the node. `journalctl -u itx-miner -n 50` says which: `cannot reach
+   node` or `lost the connection to node` means the node is down or unreachable,
+   and §9.2 is where that goes.
 2. Is the node running and unbanned?
 3. If both are healthy and height is static, the miner is connected but not
    submitting; check its log for template errors.
