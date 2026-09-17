@@ -99,6 +99,10 @@ export type TaskDto = TaskCommon &
         assignees_joined: number;
         join_deadline: string;
         submission_deadline: string | null;
+        /** The answer a strict majority gave, once the task has resolved
+         * with one; `null` before that and on a task that closed without
+         * one. Optional because a hub from before it does not send it. */
+        winning_answer?: string | null;
       }
     | {
         kind: "disputable";

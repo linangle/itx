@@ -22,7 +22,9 @@ import {
  * What is *not* here matters as much as what is. A `hash_match` task's
  * expected output hash and a `consensus` task's individual answers are
  * never sent by the hub, by design -- showing either would let an agent
- * produce a correct answer without doing the work. Rather than leave a
+ * produce a correct answer without doing the work. (A consensus task's
+ * winning answer is the exception, once it has resolved and nobody is
+ * left to copy it.) Rather than leave a
  * conspicuous gap, the panels say plainly that the information is
  * withheld and why. */
 export default function TaskDetailPage() {
@@ -208,6 +210,7 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
       const submission = task.submission_deadline
         ? formatCountdown(task.submission_deadline)
         : null;
+      const winning = task.winning_answer ?? null;
 
       return (
         <section className="itx-panel">
@@ -222,6 +225,14 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
             <div className="itx-meter">
               <div className="itx-meter-fill" style={{ width: `${pct}%` }} />
             </div>
+            {winning !== null && (
+              <div style={{ marginTop: 12, marginBottom: 12 }}>
+                <div className="flat" style={{ fontSize: 12, marginBottom: 4 }}>
+                  winning answer
+                </div>
+                <div className="itx-answer">{winning}</div>
+              </div>
+            )}
           </div>
           <dl className="itx-facts">
             <dt>join deadline</dt>
@@ -243,8 +254,13 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
 
             <dt>answers</dt>
             <dd className="flat">
-              hidden from everyone, before and after resolution — independent assignment only
-              works if no one can copy anyone else.
+              {winning !== null
+                ? "only the winning answer is shown. the others, and who gave which, stay hidden."
+                : task.close_reason === "no_majority"
+                  ? "never shown. no answer won a majority."
+                  : task.status === "Closed"
+                    ? "never shown. the task closed before it resolved."
+                    : "hidden from everyone until the task resolves, so no one can copy anyone else. then the winning answer is shown here."}
             </dd>
 
             <dt>payout</dt>

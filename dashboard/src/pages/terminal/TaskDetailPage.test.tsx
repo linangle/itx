@@ -147,3 +147,42 @@ it("does not call a contest paid before its payment lands", async () => {
   expect(await screen.findByText(/the payout failed, so the shares are still owed/)).toBeInTheDocument();
   expect(screen.queryByText(/every share is paid/)).toBeNull();
 });
+
+function consensus(): hub.TaskDto {
+  return {
+    ...fresh(),
+    status: "Claimed",
+    kind: "consensus",
+    num_assignees: 3,
+    assignees_joined: 3,
+    join_deadline: "2026-09-16T12:00:00Z",
+    submission_deadline: new Date(Date.now() + 2.5 * 3_600_000).toISOString(),
+    winning_answer: null,
+  } as hub.TaskDto;
+}
+
+it("keeps a consensus task's answers hidden until it resolves", async () => {
+  vi.mocked(hub.getTask).mockResolvedValue(consensus());
+  show();
+  expect(await screen.findByText(/hidden from everyone until the task resolves/)).toBeInTheDocument();
+  expect(screen.queryByText("winning answer")).toBeNull();
+});
+
+it("shows a resolved consensus task's winning answer, and says when there is none", async () => {
+  vi.mocked(hub.getTask).mockResolvedValue({ ...consensus(), status: "Paid", winning_answer: "positive" } as hub.TaskDto);
+  const { unmount } = show();
+  expect(await screen.findByText("positive")).toBeInTheDocument();
+  expect(screen.getByText("winning answer")).toBeInTheDocument();
+  expect(screen.getByText(/only the winning answer is shown/)).toBeInTheDocument();
+  unmount();
+
+  vi.mocked(hub.getTask).mockResolvedValue({ ...consensus(), status: "Closed", close_reason: "no_majority" } as hub.TaskDto);
+  const tied = show();
+  expect(await screen.findByText(/no answer won a majority/)).toBeInTheDocument();
+  expect(screen.queryByText("winning answer")).toBeNull();
+  tied.unmount();
+
+  vi.mocked(hub.getTask).mockResolvedValue({ ...consensus(), status: "Closed", close_reason: "understaffed" } as hub.TaskDto);
+  show();
+  expect(await screen.findByText(/the task closed before it resolved/)).toBeInTheDocument();
+});

@@ -762,6 +762,13 @@ const CONTEST_ANSWERS = [
   "The figure is 41,112 once the duplicated March rows are removed.",
 ];
 
+/** What a resolved consensus task's winning answer says, by index --
+ * short, since assignees agree only when their answers match exactly. */
+const CONSENSUS_ANSWERS = ["yes", "no issues found", "positive", "3"];
+
+/** Statuses a consensus task reaches only by resolving with a majority. */
+const RESOLVED = ["Verified", "Submitted", "Paid", "PayoutFailed"];
+
 const STATUSES = [
   "Open",
   "Open",
@@ -834,6 +841,7 @@ function makeTask(index) {
       assignees_joined: status === "Open" ? Math.floor(random() * num_assignees) : num_assignees,
       join_deadline: new Date(NOW - ageDays * DAY + DAY).toISOString(),
       submission_deadline: status === "Open" ? null : new Date(NOW - ageDays * DAY + 2 * DAY).toISOString(),
+      winning_answer: RESOLVED.includes(status) ? CONSENSUS_ANSWERS[index % CONSENSUS_ANSWERS.length] : null,
     };
   }
 
@@ -1442,6 +1450,9 @@ function advance(task) {
         return true;
       }
       task.status = "Verified";
+      if (task.kind === "consensus") {
+        task.winning_answer = CONSENSUS_ANSWERS[Number(task.id.slice(-12)) % CONSENSUS_ANSWERS.length];
+      }
       return true;
 
     case "AwaitingDispute":
@@ -1512,6 +1523,7 @@ function tick() {
       task.assignees_joined = 0;
       task.join_deadline = new Date(Date.now() + DAY).toISOString();
       task.submission_deadline = null;
+      task.winning_answer = null;
     }
     if (task.kind === "disputable") {
       task.answer = null;
