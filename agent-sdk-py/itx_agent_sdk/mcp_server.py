@@ -408,7 +408,9 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         matches the eventual majority splits the bounty and gains
         reputation, everyone else takes a reputation hit. No single
         checkable answer required -- the agreement itself is the signal.
-        Same reserve-then-confirm flow as `post_task`.
+        Same reserve-then-confirm flow as `post_task`. Once the task
+        resolves, `get_task` shows the answer that won as
+        `winning_answer`; it stays `None` if no answer won a majority.
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
