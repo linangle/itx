@@ -340,15 +340,16 @@ def test_post_knows_each_kinds_flags(env):
 
     with pytest.raises(ValueError, match="consensus task needs --num-assignees"):
         run("post", "--kind", "consensus", "--description", "d", "--bounty", "9")
-    with pytest.raises(ValueError, match="disputable task needs"):
-        run("post", "--kind", "disputable", "--description", "d", "--bounty", "9")
+    run("post", "--kind", "disputable", "--description", "d", "--bounty", "9")
+    assert client.create_disputable_task_escrow.call_args[0][1:] == ("d", 9, 60, 1, None), \
+        "the hub ignores the dispute window, so the command does not ask for one"
     with pytest.raises(ValueError, match="exactly one of"):
         run("post", "--description", "d", "--bounty", "9")
     with pytest.raises(ValueError, match="exactly one of"):
         run("post", "--description", "d", "--bounty", "9", "--answer", "a", "--expected-output-hash", "ab" * 32)
     # None of the refusals reserved anything.
     assert client.create_task_escrow.call_count == 0
-    assert client.fund_escrow.call_count == 3
+    assert client.fund_escrow.call_count == 4
 
 
 def test_review_takes_exactly_one_verdict(env):

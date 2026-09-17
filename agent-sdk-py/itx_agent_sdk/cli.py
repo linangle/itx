@@ -173,8 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
     post.add_argument(
         "--dispute-window-minutes",
         type=int,
-        default=None,
-        help="disputable: still required by the hub, and ignored -- the answer is paid on submission",
+        default=60,
+        help="disputable: still part of the signed payload, and ignored -- the answer is paid on submission",
     )
     post.add_argument(
         "--min-reputation",
@@ -357,8 +357,6 @@ def _reserve(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
             min_reputation,
             capabilities,
         )
-    if args.dispute_window_minutes is None:
-        raise ValueError("a disputable task needs --dispute-window-minutes")
     return client.create_disputable_task_escrow(
         agent, args.description, args.bounty, args.dispute_window_minutes, min_reputation, capabilities
     )

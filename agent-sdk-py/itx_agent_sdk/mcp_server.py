@@ -437,7 +437,7 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     def post_disputable_task(
         description: str,
         bounty: int,
-        dispute_window_minutes: int,
+        dispute_window_minutes: int = 60,
         min_reputation: int = 1,
         capabilities: Optional[List[str]] = None,
     ) -> dict:
@@ -451,8 +451,8 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         `min_reputation` defaults to 1 for this kind (0 for the others):
         because the answer is paid unchecked, a key with no completed work
         should not be able to claim it. Pass 0 to let anyone claim, at
-        your own risk. `dispute_window_minutes` is still required by the
-        hub, must be positive, and is ignored.
+        your own risk. `dispute_window_minutes` is ignored by the hub;
+        leave it out.
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --

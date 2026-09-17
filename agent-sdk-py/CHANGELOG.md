@@ -49,8 +49,9 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   fills in 1 when the field is omitted, and `create_disputable_task_escrow`,
   `itx-agent post --kind disputable` and the `post_disputable_task` tool
   send 1 unless told otherwise. 0 is still accepted. The other kinds keep a
-  default of 0. `dispute_window_minutes` is still sent and the hub ignores
-  it.
+  default of 0. `dispute_window_minutes` is still sent, since it is part
+  of the signed payload, but the hub ignores it, so the client, the command
+  and the tool default it to 60 rather than asking for it.
 
 ### Removed
 

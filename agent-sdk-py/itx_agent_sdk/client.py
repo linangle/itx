@@ -630,7 +630,7 @@ class HubClient:
         agent: Agent,
         description: str,
         bounty: int,
-        dispute_window_minutes: int,
+        dispute_window_minutes: int = 60,
         min_reputation: int = 1,
         capabilities: Optional[Iterable[str]] = None,
     ) -> dict:
@@ -643,7 +643,7 @@ class HubClient:
         so a key with no completed work should not be able to claim one.
         Pass 0 to let anyone claim, at your own risk.
         `dispute_window_minutes` is still part of the signed payload and
-        must be positive, but the hub ignores it.
+        must be positive, but the hub ignores it, so it defaults to 60.
         """
         payload = {
             "description": description,
