@@ -71,6 +71,22 @@ pub enum BoardError {
     ZeroWithdrawal,
     #[error("insufficient balance: {available} available, {required} required")]
     InsufficientBalance { available: u64, required: u64 },
+    #[error("only this task's poster can close it or pick an answer")]
+    NotPoster,
+    #[error("a task's own poster may not answer it")]
+    PosterCannotAnswerOwnTask,
+    #[error("open-ended tasks take no claim: submit your answer directly with POST /tasks/<id>/submit")]
+    ContestTakesNoClaim,
+    #[error("submissions to this task are closed")]
+    SubmissionsClosed,
+    #[error("this task already has the most answers it takes ({max})", max = MAX_CONTEST_ANSWERS)]
+    ContestFull,
+    #[error("this task is not waiting for its poster to pick an answer")]
+    NotAwaitingPick,
+    #[error("the window to pick an answer for this task has passed")]
+    PickWindowClosed,
+    #[error("that key did not answer this task")]
+    NotAnAnswer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +102,13 @@ pub enum TaskStatus {
     /// `Disputable`-only: a challenger's bond is posted and confirmed,
     /// awaiting the operator's resolution. See `Dispute`.
     Disputed,
+    /// `Disputable`-only: the poster closed submissions on a contest with
+    /// at least one answer, every answer is now public, and the poster
+    /// has until `pick_deadline` to pick the one it pays (see
+    /// `TaskBoard::close_contest`). Not `Open`, because nothing may be
+    /// added once the work can be read, and not `Verified`, because
+    /// nobody is owed anything until a pick or a split names them.
+    AwaitingPick,
     /// A winner (or, for a `Consensus` task, at least one) has been determined; payout to them is in flight but not yet confirmed submitted to the chain.
     Verified,
     /// Every payout this task owes has been handed to the node, and the
@@ -117,11 +140,11 @@ pub enum TaskStatus {
     /// hub cannot determine stays `Submitted` and keeps alerting. Only
     /// proven loss lands here.
     PayoutFailed,
-    /// A terminal status covering three distinct causes, none of which
+    /// A terminal status covering several distinct causes, none of which
     /// owe a payout or dock anyone's reputation -- see `Task::close_reason`
-    /// for which cause it was. The first two only ever apply to a
-    /// `Consensus` task; the third (an operator cancellation) applies to
-    /// either kind.
+    /// for which cause it was. Two only ever apply to a `Consensus` task,
+    /// two only to a `Disputable` one, and an operator cancellation
+    /// applies to any kind.
     Closed,
 }
 
@@ -143,6 +166,13 @@ pub enum CloseReason {
     /// abandoned claim/assignment the operator didn't want to wait out.
     /// Not anyone's fault, same as the other two causes.
     CancelledByOperator,
+    /// `Disputable`-only: the poster closed submissions before anyone
+    /// answered, so there is nothing to pick and the escrow goes back.
+    NoAnswers,
+    /// `Disputable`-only: the submission deadline passed and the poster
+    /// never closed submissions. Nobody has seen the work, so the escrow
+    /// goes back and the answers stay hidden.
+    NeverClosed,
 }
 
 /// One assignee's participation in a `Consensus` task: their answer (once
@@ -161,6 +191,28 @@ pub struct ConsensusAssignment {
     pub share: Option<u64>,
 }
 
+/// How many answers one `Disputable` contest takes (the plan's decisions
+/// log, 2026-09-16/17). A cap because every answer can end up paid a
+/// share of one transaction, and because a poster should be able to read
+/// everything it is choosing between.
+pub const MAX_CONTEST_ANSWERS: usize = 10;
+
+/// One answer to a `Disputable` contest: who gave it, what it was, when,
+/// and -- once the contest settles -- what it is paid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContestAnswer {
+    pub pubkey: PublicKey,
+    pub answer: String,
+    pub submitted_at: DateTime<Utc>,
+    /// Fixed once, when the contest settles: the whole bounty on the
+    /// picked answer, an even share on every answer when the pick
+    /// deadline passes, `None` otherwise. Stored rather than recomputed
+    /// for the same reason `ConsensusAssignment::share` is.
+    #[serde(default)]
+    pub share: Option<u64>,
+    #[serde(default)]
+    pub paid: bool,
+}
 
 /// `Consensus` is for open-ended tasks with no single checkable answer:
 /// `num_assignees` independent agents are each assigned the same task and
@@ -212,11 +264,15 @@ pub enum TaskKind {
     /// total-trust role (it already gates all task creation and
     /// custodies every escrow).
     ///
-    /// Since 2026-09-16 that describes only tasks answered before then.
-    /// Submitting now pays the answer at once (see
-    /// `TaskBoard::accept_disputable_answer`), so `dispute_deadline` and
-    /// `dispute` stay `None` on every task answered since; the fields and
-    /// the dispute machinery remain for a store that holds an older one.
+    /// Since 2026-09-16/17 that describes only tasks answered before then.
+    /// A new one is a contest the poster judges (the plan's decisions
+    /// log): answers arrive with no claim (`TaskBoard::submit_contest_answer`),
+    /// unread until the poster closes submissions (`close_contest`), and
+    /// the poster picks the one it pays (`pick_answer`), or the bounty is
+    /// split among them all if it does not (`split_unpicked_contests`).
+    /// `answer`, `dispute_deadline` and `dispute` stay `None` on a contest;
+    /// they and the dispute machinery remain for a store that holds an
+    /// older task.
     Disputable {
         /// Set once, by `submit_disputable_answer`.
         answer: Option<String>,
@@ -224,6 +280,11 @@ pub enum TaskKind {
         /// Stored as a window, not a fixed deadline, for the same reason
         /// `Consensus::submission_window_minutes` is: the anchor moment
         /// (submission) isn't known at task-creation time.
+        ///
+        /// On a contest, the length of both of its windows: submissions
+        /// close this long after the task went live (see
+        /// `Task::submission_deadline`), and the poster has this long
+        /// after closing them to pick.
         dispute_window_minutes: i64,
         /// `None` until `submit_disputable_answer` sets it, atomically
         /// with the `Claimed` -> `AwaitingDispute` transition.
@@ -232,6 +293,24 @@ pub enum TaskKind {
         /// `TaskBoard::confirm_dispute_bond`), atomically with the
         /// `AwaitingDispute` -> `Disputed` transition.
         dispute: Option<Dispute>,
+        /// A contest's answers, in the order they arrived. Empty on a task
+        /// answered before contests, which is how the payout code below
+        /// tells the two apart. `#[serde(default)]`, like the two fields
+        /// after it, so a store written before contests loads.
+        #[serde(default)]
+        answers: Vec<ContestAnswer>,
+        /// `None` until the poster closes submissions on a contest that
+        /// has answers, then `dispute_window_minutes` from that moment.
+        /// Also the one thing that makes the answers visible (see
+        /// `handlers::TaskDto`): a contest that never got here was never
+        /// read, so its answers stay hidden for good.
+        #[serde(default)]
+        pick_deadline: Option<DateTime<Utc>>,
+        /// The answerer the poster picked. `None` on a split, which is
+        /// what keeps a split share from counting as a completed task
+        /// (see `TaskBoard::mark_recipient_paid`).
+        #[serde(default)]
+        picked: Option<PublicKey>,
     },
 }
 
@@ -658,6 +737,13 @@ impl Task {
                 .iter()
                 .filter_map(|(pk, a)| a.share.map(|share| (pk.clone(), share)))
                 .collect(),
+            // A contest names its recipients by share, the way a consensus
+            // task does: the picked answer, or every answer once a split
+            // fixed theirs.
+            TaskKind::Disputable { answers, .. } if !answers.is_empty() => answers
+                .iter()
+                .filter_map(|a| a.share.map(|share| (a.pubkey.clone(), share)))
+                .collect(),
             // Only the *bounty* leg -- drawn from the task's own escrow,
             // same as HashMatch. A resolved dispute's *bond* leg lives in
             // a different escrow entirely and is settled separately (see
@@ -719,6 +805,9 @@ impl Task {
             TaskKind::Consensus { assignees, .. } => {
                 assignees.get(recipient).is_some_and(|a| a.paid)
             }
+            TaskKind::Disputable { answers, .. } if !answers.is_empty() => {
+                answers.iter().any(|a| a.pubkey == *recipient && a.paid)
+            }
             // Bounty leg only, same scope as pending_payouts() above --
             // the bond leg is tracked by the bond's own PendingDeposit
             // status, not here.
@@ -754,6 +843,21 @@ impl Task {
         match &self.kind {
             TaskKind::HashMatch { .. } | TaskKind::Disputable { .. } => vec![],
             TaskKind::Consensus { assignees, .. } => assignees.keys().cloned().collect(),
+        }
+    }
+
+    /// `Disputable` only: when a contest stops taking answers --
+    /// `dispute_window_minutes` after the task went live, which is
+    /// `created_at`, since a `Disputable` task is created the moment its
+    /// escrow confirms. Derived rather than stored so that a task written
+    /// before contests has one too, and is refunded by the same sweep as
+    /// any other contest nobody closed.
+    pub fn submission_deadline(&self) -> Option<DateTime<Utc>> {
+        match &self.kind {
+            TaskKind::Disputable { dispute_window_minutes, .. } => {
+                Some(self.created_at + chrono::Duration::minutes(*dispute_window_minutes))
+            }
+            TaskKind::HashMatch { .. } | TaskKind::Consensus { .. } => None,
         }
     }
 }
@@ -1160,8 +1264,8 @@ impl TaskBoard {
         task
     }
 
-    /// Creates an open-ended task judged by operator-arbitrated dispute
-    /// rather than a mechanical check -- see `TaskKind::Disputable`.
+    /// Creates an open-ended task, a contest its poster judges rather than
+    /// a mechanical check -- see `TaskKind::Disputable`.
     pub fn create_disputable_task(
         &mut self,
         poster: PublicKey,
@@ -1178,6 +1282,9 @@ impl TaskBoard {
                 dispute_window_minutes,
                 dispute_deadline: None,
                 dispute: None,
+                answers: Vec::new(),
+                pick_deadline: None,
+                picked: None,
             },
             poster,
             status: TaskStatus::Open,
@@ -1627,9 +1734,11 @@ impl TaskBoard {
             .collect()
     }
 
-    /// `HashMatch`/`Disputable` only -- both are single-claimant, unlike
-    /// `Consensus`, which takes on multiple simultaneous assignees via
-    /// `join_consensus_task` instead.
+    /// `HashMatch` only -- single-claimant, unlike `Consensus`, which takes
+    /// on multiple simultaneous assignees via `join_consensus_task`
+    /// instead. A `Disputable` task was claimed the same way until it
+    /// became a contest; it now takes no claim at all, and is refused with
+    /// a sentence saying to submit directly (see `submit_contest_answer`).
     pub fn claim_task(
         &mut self,
         id: Uuid,
@@ -1637,8 +1746,10 @@ impl TaskBoard {
         deadline: DateTime<Utc>,
     ) -> Result<(), BoardError> {
         let task = self.tasks.get(&id).ok_or(BoardError::NotFound)?;
-        if !matches!(task.kind, TaskKind::HashMatch { .. } | TaskKind::Disputable { .. }) {
-            return Err(BoardError::WrongTaskKind);
+        match task.kind {
+            TaskKind::HashMatch { .. } => {}
+            TaskKind::Disputable { .. } => return Err(BoardError::ContestTakesNoClaim),
+            TaskKind::Consensus { .. } => return Err(BoardError::WrongTaskKind),
         }
         if task.status != TaskStatus::Open {
             return Err(BoardError::NotOpen);
@@ -1751,35 +1862,201 @@ impl TaskBoard {
         }
     }
 
-    /// `Disputable` only, and what submitting one does: records
-    /// `submitter`'s answer and moves the task straight to `Verified`
-    /// (`Claimed` -> `Verified`), so the ordinary settlement machinery
-    /// pays the claimant exactly as it pays a correct `HashMatch` answer.
+    /// `Disputable` only: enters `submitter`'s answer in the contest. No
+    /// claim comes first and the task stays `Open`: any eligible key but
+    /// the poster answers once, up to `MAX_CONTEST_ANSWERS` answers, until
+    /// the submission deadline or the poster's close, whichever comes
+    /// first.
     ///
-    /// No dispute window opens and `dispute_deadline` stays `None`. The
-    /// window was only worth having if a dispute could be settled, and
-    /// one could not: a filed dispute had no deadline, only the operator
-    /// could resolve it, and no shipped tool could sign the ruling (the
-    /// plan's decisions log, 2026-09-16). A poster of open-ended work now
-    /// pays for the answer it gets.
-    pub fn accept_disputable_answer(
+    /// Nothing is paid or credited here. The answer waits, unread by
+    /// anyone, for the poster to close submissions (see `close_contest`).
+    /// The dispute this kind used to take had no deadline, only the
+    /// operator could resolve it, and no shipped tool could sign the
+    /// ruling (the plan's decisions log, 2026-09-16/17), so the poster
+    /// judges instead -- under rules that stop it reading the work before
+    /// it is committed to paying for some of it.
+    pub fn submit_contest_answer(
         &mut self,
         id: Uuid,
         submitter: PublicKey,
         answer: String,
+        now: DateTime<Utc>,
     ) -> Result<(), BoardError> {
+        let task = self.tasks.get(&id).ok_or(BoardError::NotFound)?;
+        if !matches!(task.kind, TaskKind::Disputable { .. }) {
+            return Err(BoardError::WrongTaskKind);
+        }
+        if task.status != TaskStatus::Open {
+            return Err(BoardError::SubmissionsClosed);
+        }
+        // Defensive, like `submit_consensus_answer`'s deadline check: an
+        // answer landing between the deadline and the sweep that refunds
+        // the contest would otherwise enter one that is already over.
+        if task.submission_deadline().is_some_and(|deadline| now > deadline) {
+            return Err(BoardError::SubmissionWindowExpired);
+        }
+        // The poster reads every answer once it closes submissions, so an
+        // answer of its own would be one it could pick to take the bounty
+        // back. It can still enter from a second key; the hub cannot tell
+        // that key from a stranger's (the decisions log's known hole).
+        if task.poster == submitter {
+            return Err(BoardError::PosterCannotAnswerOwnTask);
+        }
+        self.check_min_reputation(task, &submitter)?;
+
+        let task = self.tasks.get_mut(&id).expect("existence and kind already checked above");
+        let TaskKind::Disputable { answers, .. } = &mut task.kind else {
+            unreachable!("kind already checked above");
+        };
+        if answers.iter().any(|a| a.pubkey == submitter) {
+            return Err(BoardError::AlreadySubmitted);
+        }
+        if answers.len() >= MAX_CONTEST_ANSWERS {
+            return Err(BoardError::ContestFull);
+        }
+        answers.push(ContestAnswer { pubkey: submitter, answer, submitted_at: now, share: None, paid: false });
+        Ok(())
+    }
+
+    /// `Disputable` only, and only its poster: closes a contest's
+    /// submissions for good. With no answers the task is `Closed`
+    /// (`CloseReason::NoAnswers`) and the caller refunds its escrow;
+    /// otherwise it moves to `AwaitingPick`, its answers become visible,
+    /// and the poster has `dispute_window_minutes` from `now` to pick one.
+    ///
+    /// Final, because from here the answers can be read: one added after
+    /// that could be a copy of the others.
+    pub fn close_contest(&mut self, id: Uuid, caller: &PublicKey, now: DateTime<Utc>) -> Result<(), BoardError> {
         let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
-        let TaskKind::Disputable { answer: stored_answer, .. } = &mut task.kind else {
+        let submission_deadline = task.submission_deadline();
+        let TaskKind::Disputable { answers, dispute_window_minutes, pick_deadline, .. } = &mut task.kind else {
             return Err(BoardError::WrongTaskKind);
         };
-        if task.status != TaskStatus::Claimed {
-            return Err(BoardError::NotClaimed);
+        if task.poster != *caller {
+            return Err(BoardError::NotPoster);
         }
-        if task.claimant.as_ref() != Some(&submitter) {
-            return Err(BoardError::NotClaimant);
+        if task.status != TaskStatus::Open {
+            return Err(BoardError::NotOpen);
         }
-        *stored_answer = Some(answer);
+        // Past its deadline a contest is the sweep's to refund, answers
+        // unread. Closing it now would show the poster work it is about to
+        // get its money back for.
+        if submission_deadline.is_some_and(|deadline| now > deadline) {
+            return Err(BoardError::SubmissionWindowExpired);
+        }
+        if answers.is_empty() {
+            task.status = TaskStatus::Closed;
+            task.close_reason = Some(CloseReason::NoAnswers);
+        } else {
+            *pick_deadline = Some(now + chrono::Duration::minutes(*dispute_window_minutes));
+            task.status = TaskStatus::AwaitingPick;
+        }
+        Ok(())
+    }
+
+    /// `Disputable` only, and only its poster: picks the answer the
+    /// bounty goes to, before the pick deadline (`AwaitingPick` ->
+    /// `Verified`). The ordinary settlement machinery then pays `answerer`
+    /// the whole bounty and credits it as a completed task.
+    pub fn pick_answer(
+        &mut self,
+        id: Uuid,
+        caller: &PublicKey,
+        answerer: &PublicKey,
+        now: DateTime<Utc>,
+    ) -> Result<(), BoardError> {
+        let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
+        let bounty = task.bounty;
+        let TaskKind::Disputable { answers, pick_deadline, picked, .. } = &mut task.kind else {
+            return Err(BoardError::WrongTaskKind);
+        };
+        if task.poster != *caller {
+            return Err(BoardError::NotPoster);
+        }
+        if task.status != TaskStatus::AwaitingPick {
+            return Err(BoardError::NotAwaitingPick);
+        }
+        // Defensive, as in `submit_contest_answer`: a pick landing between
+        // the deadline and the sweep's split would take from every other
+        // answerer a share that is already theirs.
+        if pick_deadline.is_some_and(|deadline| now > deadline) {
+            return Err(BoardError::PickWindowClosed);
+        }
+        let answer = answers.iter_mut().find(|a| a.pubkey == *answerer).ok_or(BoardError::NotAnAnswer)?;
+        answer.share = Some(bounty);
+        *picked = Some(answerer.clone());
         task.status = TaskStatus::Verified;
+        Ok(())
+    }
+
+    /// Closes every contest still `Open` past its submission deadline
+    /// (`CloseReason::NeverClosed`), whether or not it has answers, so the
+    /// caller refunds its escrow -- the contest's counterpart of
+    /// `cancel_understaffed_consensus_tasks`. The poster never closed, so
+    /// nobody has read the work, and nothing here makes it readable:
+    /// `pick_deadline` stays `None`. Returns the ids closed this way.
+    pub fn close_unclosed_contests(&mut self, now: DateTime<Utc>) -> Vec<Uuid> {
+        let mut closed = Vec::new();
+        for task in self.tasks.values_mut() {
+            if task.status == TaskStatus::Open && task.submission_deadline().is_some_and(|deadline| now > deadline) {
+                task.status = TaskStatus::Closed;
+                task.close_reason = Some(CloseReason::NeverClosed);
+                closed.push(task.id);
+            }
+        }
+        closed
+    }
+
+    /// Splits the bounty of every `AwaitingPick` contest past its pick
+    /// deadline evenly among its answers (`AwaitingPick` -> `Verified`),
+    /// so the settlement pass pays them all in one transaction. The poster
+    /// has read the work, so it pays for it.
+    ///
+    /// Each share is fixed here, once, as `resolve_consensus` fixes a
+    /// winner's, and the remainder of the division is left unallocated: an
+    /// escrow payout sends whatever it does not pay out back to the poster
+    /// as change, which is where a consensus task's remainder goes too.
+    /// `picked` stays `None`, which is what keeps `mark_recipient_paid`
+    /// from crediting a split share as a completed task. Returns the ids
+    /// split this way.
+    pub fn split_unpicked_contests(&mut self, now: DateTime<Utc>) -> Vec<Uuid> {
+        let mut split = Vec::new();
+        for task in self.tasks.values_mut() {
+            if task.status != TaskStatus::AwaitingPick {
+                continue;
+            }
+            let bounty = task.bounty;
+            let TaskKind::Disputable { answers, pick_deadline, .. } = &mut task.kind else {
+                continue;
+            };
+            if !pick_deadline.is_some_and(|deadline| now > deadline) {
+                continue;
+            }
+            let share = bounty / (answers.len() as u64).max(1);
+            for answer in answers.iter_mut() {
+                answer.share = Some(share);
+            }
+            task.status = TaskStatus::Verified;
+            split.push(task.id);
+        }
+        split
+    }
+
+    /// What `claim_task` did for a `Disputable` task before contests: the
+    /// claim a task awaiting a dispute was answered under. Nothing in the
+    /// hub claims one now; the tests that build that legacy state use
+    /// this in its place.
+    #[cfg(test)]
+    pub fn claim_legacy_disputable_task(
+        &mut self,
+        id: Uuid,
+        claimant: PublicKey,
+        deadline: DateTime<Utc>,
+    ) -> Result<(), BoardError> {
+        let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
+        task.status = TaskStatus::Claimed;
+        task.claimant = Some(claimant);
+        task.claim_deadline = Some(deadline);
         Ok(())
     }
 
@@ -1789,7 +2066,7 @@ impl TaskBoard {
     /// as `Consensus::submission_window_minutes`.
     ///
     /// What submitting did before 2026-09-16 (see
-    /// `accept_disputable_answer`). Nothing in the hub calls it now; it
+    /// `submit_contest_answer`). Nothing in the hub calls it now; it
     /// stays for the tests below that build a task awaiting a dispute,
     /// which is still a state a store written before then can hold.
     #[cfg(test)]
@@ -2072,6 +2349,13 @@ impl TaskBoard {
             return Err(BoardError::NotVerified);
         }
 
+        // Whether this payment counts as a completed task. Every one does
+        // except a contest's split share: its poster closed and never
+        // picked, so nobody judged the answer, and answering tasks whose
+        // posters go quiet must not build reputation (the plan's decisions
+        // log, 2026-09-16/17). The payment still counts toward
+        // `total_earned`, since it was earned.
+        let mut credited = true;
         let now_fully_paid = match &mut task.kind {
             TaskKind::HashMatch { .. } => {
                 if task.claimant.as_ref() != Some(recipient) {
@@ -2092,6 +2376,20 @@ impl TaskBoard {
                 // "fully paid" just means every one of them is now marked
                 // paid too -- no need to recompute the majority again.
                 assignees.values().all(|a| a.share.is_none() || a.paid)
+            }
+            // A contest, the same way as a consensus task: every share
+            // was fixed by the pick or the split.
+            TaskKind::Disputable { answers, picked, .. } if !answers.is_empty() => {
+                let answer = answers.iter_mut().find(|a| a.pubkey == *recipient).ok_or(BoardError::NotClaimant)?;
+                if answer.share.is_none() {
+                    return Err(BoardError::NotClaimant);
+                }
+                if answer.paid {
+                    return Ok(false);
+                }
+                answer.paid = true;
+                credited = picked.is_some();
+                answers.iter().all(|a| a.share.is_none() || a.paid)
             }
             // Bounty leg only -- same scope as pending_payouts()/
             // is_recipient_paid() above. `recipient` must be whichever
@@ -2127,7 +2425,9 @@ impl TaskBoard {
             task.settled_at.get_or_insert_with(Utc::now);
         }
         let rep = self.reputation.entry(recipient.clone()).or_default();
-        rep.completed += 1;
+        if credited {
+            rep.completed += 1;
+        }
         rep.total_earned += amount;
         Ok(now_fully_paid)
     }
@@ -3853,7 +4153,7 @@ mod tests {
         dispute_window_minutes: i64,
     ) -> Uuid {
         let task = board.create_disputable_task(poster, "open-ended work".to_string(), bounty, dispute_window_minutes);
-        board.claim_task(task.id, claimant.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
+        board.claim_legacy_disputable_task(task.id, claimant.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
         board.submit_disputable_answer(task.id, claimant, "my answer".to_string(), Utc::now()).unwrap();
         assert_eq!(board.get_task(task.id).unwrap().status, TaskStatus::AwaitingDispute);
         task.id
@@ -3900,7 +4200,7 @@ mod tests {
         let task = board.create_disputable_task(pubkey(), "t".to_string(), 10, 30);
         let claimant = pubkey();
         let impostor = pubkey();
-        board.claim_task(task.id, claimant, Utc::now() + chrono::Duration::minutes(30)).unwrap();
+        board.claim_legacy_disputable_task(task.id, claimant, Utc::now() + chrono::Duration::minutes(30)).unwrap();
 
         assert!(matches!(
             board.submit_disputable_answer(task.id, impostor, "answer".to_string(), Utc::now()),
@@ -3908,25 +4208,47 @@ mod tests {
         ));
     }
 
+    /// A contest's two settlements, as the board sees them: a pick owes
+    /// the picked answer the whole bounty and credits it as completed; a
+    /// split fixes an even share on every answer, leaves the remainder
+    /// unallocated, and credits `total_earned` without `completed`.
     #[test]
-    fn accepting_a_disputable_answer_verifies_the_task_for_its_claimant_with_no_window() {
+    fn a_picked_answer_is_credited_and_a_split_share_is_paid_but_not_credited() {
         let mut board = TaskBoard::new();
-        let task = board.create_disputable_task(pubkey(), "open-ended work".to_string(), 900, 30);
-        let claimant = pubkey();
-        board.claim_task(task.id, claimant.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
+        let now = Utc::now();
+        let poster = pubkey();
+        let (first, second, third) = (pubkey(), pubkey(), pubkey());
 
-        assert!(matches!(
-            board.accept_disputable_answer(task.id, pubkey(), "not mine to give".to_string()),
-            Err(BoardError::NotClaimant)
-        ));
-        board.accept_disputable_answer(task.id, claimant.clone(), "my answer".to_string()).unwrap();
+        let picked = board.create_disputable_task(poster.clone(), "open-ended work".to_string(), 900, 30);
+        board.submit_contest_answer(picked.id, first.clone(), "a".to_string(), now).unwrap();
+        board.submit_contest_answer(picked.id, second.clone(), "b".to_string(), now).unwrap();
+        board.close_contest(picked.id, &poster, now).unwrap();
+        board.pick_answer(picked.id, &poster, &second, now).unwrap();
+        assert_eq!(board.get_task(picked.id).unwrap().pending_payouts(), vec![(second.clone(), 900)]);
+        assert!(board.mark_recipient_paid(picked.id, &second, 900).unwrap());
+        assert_eq!((board.reputation(&second).completed, board.reputation(&second).total_earned), (1, 900));
 
-        let task = board.get_task(task.id).unwrap();
-        assert_eq!(task.status, TaskStatus::Verified);
-        assert_eq!(task.pending_payouts(), vec![(claimant, 900)]);
-        let TaskKind::Disputable { answer, dispute_deadline, .. } = &task.kind else { unreachable!() };
-        assert_eq!(answer.as_deref(), Some("my answer"));
-        assert!(dispute_deadline.is_none(), "no dispute window opens");
+        let split = board.create_disputable_task(poster.clone(), "open-ended work".to_string(), 1_000, 30);
+        for answerer in [&first, &second, &third] {
+            board.submit_contest_answer(split.id, answerer.clone(), "c".to_string(), now).unwrap();
+        }
+        board.close_contest(split.id, &poster, now).unwrap();
+        assert!(board.split_unpicked_contests(now).is_empty(), "not before the pick deadline");
+        assert_eq!(board.split_unpicked_contests(now + chrono::Duration::minutes(31)), vec![split.id]);
+
+        let mut owed = board.get_task(split.id).unwrap().pending_payouts();
+        owed.sort_by_key(|(pk, _)| pk.to_string());
+        let mut expected = vec![(first.clone(), 333), (second.clone(), 333), (third.clone(), 333)];
+        expected.sort_by_key(|(pk, _)| pk.to_string());
+        assert_eq!(owed, expected, "the one-unit remainder is allocated to nobody");
+
+        assert!(!board.mark_recipient_paid(split.id, &first, 333).unwrap());
+        assert!(!board.mark_recipient_paid(split.id, &first, 333).unwrap(), "a repeat credits nothing");
+        assert!(!board.mark_recipient_paid(split.id, &second, 333).unwrap());
+        assert!(board.mark_recipient_paid(split.id, &third, 333).unwrap());
+        assert_eq!(board.get_task(split.id).unwrap().status, TaskStatus::Paid);
+        assert_eq!((board.reputation(&first).completed, board.reputation(&first).total_earned), (0, 333));
+        assert_eq!((board.reputation(&second).completed, board.reputation(&second).total_earned), (1, 1_233));
     }
 
     #[test]

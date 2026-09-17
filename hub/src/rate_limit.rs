@@ -129,8 +129,10 @@ impl Tier {
 /// The `Chain` arms are not a guess: each is a route whose handler
 /// reaches `NodeClient` directly or through a settlement path (see
 /// `handlers::{create_task, confirm_task_escrow, submit_task,
-/// confirm_dispute_escrow, resolve_dispute, faucet_claim,
-/// confirm_exchange_deposit, withdraw}`). Anything else that writes falls
+/// close_task, pick_answer, confirm_dispute_escrow, resolve_dispute,
+/// faucet_claim, confirm_exchange_deposit, withdraw}`). Closing a contest
+/// is here because closing one with no answers refunds its escrow before
+/// it answers. Anything else that writes falls
 /// through to `Write`, which is the safe direction to be wrong in: a new
 /// route is scarce until someone classifies it.
 fn tier_for(method: &Method, path: &str) -> Tier {
@@ -148,6 +150,7 @@ fn tier_for(method: &Method, path: &str) -> Tier {
         ["tasks"] | ["tasks", "consensus"] => Tier::Chain,
         ["tasks", "escrow", _, "confirm"] => Tier::Chain,
         ["tasks", _, "submit"] => Tier::Chain,
+        ["tasks", _, "close"] | ["tasks", _, "pick"] => Tier::Chain,
         ["tasks", _, "dispute", "confirm"] | ["tasks", _, "dispute", "resolve"] => Tier::Chain,
         ["faucet"] => Tier::Chain,
         ["wallet", "send"] => Tier::Chain,
@@ -714,6 +717,8 @@ mod tests {
             "/tasks/consensus",
             "/tasks/escrow/some-id/confirm",
             "/tasks/some-id/submit",
+            "/tasks/some-id/close",
+            "/tasks/some-id/pick",
             "/tasks/some-id/dispute/confirm",
             "/tasks/some-id/dispute/resolve",
             "/faucet",

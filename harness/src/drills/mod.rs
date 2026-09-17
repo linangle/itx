@@ -137,7 +137,7 @@ pub const ALL: &[&str] = &[
 /// make that a rewrite instead of a re-listing.
 ///
 /// `escrow-refund` settles a dispute bond, and since 2026-09-16 nothing
-/// can file a dispute: an open-ended task pays on submission (the plan's
+/// can file a dispute: an open-ended task is a contest its poster judges (the plan's
 /// decisions log). What it guarded, a settled bond not being settled
 /// again after a restart, is still true of a store holding an older
 /// dispute, and `a_settled_legacy_dispute_bond_is_not_settled_again_after_a_restart`
@@ -151,7 +151,7 @@ pub const RETIRED: &[(&str, &str)] = &[
     ),
     (
         "escrow-refund",
-        "settles a dispute bond, and since 2026-09-16 open-ended tasks pay on submission, so no \
+        "settles a dispute bond, and since 2026-09-16 open-ended tasks are contests their posters judge, so no \
          dispute can be filed over HTTP. The bond-resettlement invariant is pinned by a hub test \
          against seeded legacy state.",
     ),

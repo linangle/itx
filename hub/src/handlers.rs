@@ -5,7 +5,7 @@ use crate::board::{
     BoardError, CloseReason, ConsensusTaskIntent, Dispute, DisputableTaskIntent, DisputeResolution,
     EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus,
     PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Side, Task, TaskBoard, TaskIntent,
-    TaskKind, TaskStatus, Trade, MAX_PAYOUT_SUBMISSIONS,
+    TaskKind, TaskStatus, Trade, MAX_CONTEST_ANSWERS, MAX_PAYOUT_SUBMISSIONS,
 };
 use crate::rate_limit::QuotaExceeded;
 use crate::AppState;
@@ -257,12 +257,20 @@ impl From<BoardError> for ApiError {
             | BoardError::NotDisputed
             | BoardError::CannotCancelWhileDisputed
             | BoardError::OrderNotOpen
-            | BoardError::InsufficientBalance { .. } => ApiError::Conflict(e.to_string()),
+            | BoardError::InsufficientBalance { .. }
+            | BoardError::ContestTakesNoClaim
+            | BoardError::SubmissionsClosed
+            | BoardError::ContestFull
+            | BoardError::NotAwaitingPick
+            | BoardError::PickWindowClosed
+            | BoardError::NotAnAnswer => ApiError::Conflict(e.to_string()),
             BoardError::NotClaimant
             | BoardError::InsufficientReputation { .. }
             | BoardError::PosterCannotClaimOwnTask
+            | BoardError::PosterCannotAnswerOwnTask
             | BoardError::AssigneeCannotDisputeOwnSubmission
-            | BoardError::NotOrderOwner => ApiError::Forbidden(e.to_string()),
+            | BoardError::NotOrderOwner
+            | BoardError::NotPoster => ApiError::Forbidden(e.to_string()),
             BoardError::InvalidOrder
             | BoardError::OrderNotionalOverflow
             | BoardError::ZeroWithdrawal => ApiError::BadRequest(e.to_string()),
@@ -314,14 +322,42 @@ pub enum TaskKindDto {
         submission_deadline: Option<DateTime<Utc>>,
     },
     Disputable {
-        /// `None` until the claimant submits it.
+        /// Set only on a task answered before 2026-09-16/17, by its one
+        /// claimant. `None` on a contest, whose answers are `answers`.
         answer: Option<String>,
         /// Set only on a task answered before 2026-09-16, when submitting
-        /// opened a dispute window. `None` on every task since: the
-        /// answer is paid on submission.
+        /// opened a dispute window. `None` on every task since.
         dispute_deadline: Option<DateTime<Utc>>,
         dispute: Option<DisputeDto>,
+        /// When the contest stops taking answers -- see
+        /// `Task::submission_deadline`.
+        submission_deadline: DateTime<Utc>,
+        /// How many answers the contest holds. Always shown, since it
+        /// reveals nothing an answerer could copy.
+        answer_count: usize,
+        /// `null` until the poster closes submissions on a contest with
+        /// answers, and `null` for good on one refunded without that close:
+        /// nobody, the poster included, reads an answer before then, or
+        /// sees who gave it. From `AwaitingPick` on, every answer in the
+        /// order it arrived.
+        answers: Option<Vec<ContestAnswerDto>>,
+        /// `null` until the poster closes submissions; the pick must come
+        /// before it.
+        pick_deadline: Option<DateTime<Utc>>,
+        /// The answerer the poster picked, once it has.
+        picked: Option<String>,
+        /// Whether the pick deadline passed without a pick, so the bounty
+        /// was split evenly among every answer.
+        split: bool,
     },
+}
+
+/// One of a contest's answers, once its poster has closed submissions.
+#[derive(Serialize)]
+pub struct ContestAnswerDto {
+    pub pubkey: String,
+    pub answer: String,
+    pub submitted_at: DateTime<Utc>,
 }
 
 /// A `Disputable` task's filed dispute, if any -- unlike `Consensus`'s
@@ -419,11 +455,34 @@ impl From<&Task> for TaskDto {
                 join_deadline: *join_deadline,
                 submission_deadline: *submission_deadline,
             },
-            TaskKind::Disputable { answer, dispute_deadline, dispute, .. } => TaskKindDto::Disputable {
-                answer: answer.clone(),
-                dispute_deadline: *dispute_deadline,
-                dispute: dispute.as_ref().map(DisputeDto::from),
-            },
+            TaskKind::Disputable { answer, dispute_deadline, dispute, answers, pick_deadline, picked, .. } => {
+                TaskKindDto::Disputable {
+                    answer: answer.clone(),
+                    dispute_deadline: *dispute_deadline,
+                    dispute: dispute.as_ref().map(DisputeDto::from),
+                    submission_deadline: task
+                        .submission_deadline()
+                        .expect("every Disputable task has a submission deadline"),
+                    answer_count: answers.len(),
+                    // `pick_deadline` is set by exactly one thing, the
+                    // poster's close of a contest that has answers, so it
+                    // is the whole of the visibility rule: before it, and on
+                    // a contest refunded without it, nobody has read them.
+                    answers: pick_deadline.map(|_| {
+                        answers
+                            .iter()
+                            .map(|a| ContestAnswerDto {
+                                pubkey: a.pubkey.to_string(),
+                                answer: a.answer.clone(),
+                                submitted_at: a.submitted_at,
+                            })
+                            .collect()
+                    }),
+                    pick_deadline: *pick_deadline,
+                    picked: picked.as_ref().map(|k| k.to_string()),
+                    split: picked.is_none() && answers.iter().any(|a| a.share.is_some()),
+                }
+            }
         };
         TaskDto {
             id: task.id,
@@ -558,7 +617,9 @@ pub struct SubmitResultDto {
     /// same event there). For `Consensus`: `Some(false)` if this
     /// submission is still waiting on other assignees, `Some(true)` once
     /// every assignee has submitted (or the deadline forced it) and the
-    /// task has resolved.
+    /// task has resolved. For `Disputable`: always `Some(false)`, since a
+    /// contest resolves only when its poster picks or its pick deadline
+    /// passes.
     pub resolved: Option<bool>,
 }
 
@@ -638,7 +699,7 @@ pub struct ListTasksQuery {
     /// "claimable" keep working exactly as before.
     ///
     /// Accepts any single `TaskStatus` name (`Open`, `Claimed`,
-    /// `AwaitingDispute`, `Disputed`, `Verified`, `Submitted`, `Paid`,
+    /// `AwaitingDispute`, `Disputed`, `AwaitingPick`, `Verified`, `Submitted`, `Paid`,
     /// `PayoutFailed`, `Closed`) or the literal `all` for every status
     /// regardless. Matched
     /// case-insensitively, the same forgiving treatment `capability`
@@ -673,6 +734,7 @@ fn parse_status_filter(raw: &str) -> Result<StatusFilter, ApiError> {
         "claimed" => StatusFilter::Only(TaskStatus::Claimed),
         "awaitingdispute" => StatusFilter::Only(TaskStatus::AwaitingDispute),
         "disputed" => StatusFilter::Only(TaskStatus::Disputed),
+        "awaitingpick" => StatusFilter::Only(TaskStatus::AwaitingPick),
         "verified" => StatusFilter::Only(TaskStatus::Verified),
         "submitted" => StatusFilter::Only(TaskStatus::Submitted),
         "paid" => StatusFilter::Only(TaskStatus::Paid),
@@ -681,7 +743,7 @@ fn parse_status_filter(raw: &str) -> Result<StatusFilter, ApiError> {
         other => {
             return Err(ApiError::BadRequest(format!(
                 "unknown status {other:?} -- expected one of: all, Open, Claimed, \
-                 AwaitingDispute, Disputed, Verified, Submitted, Paid, PayoutFailed, Closed"
+                 AwaitingDispute, Disputed, AwaitingPick, Verified, Submitted, Paid, PayoutFailed, Closed"
             )))
         }
     })
@@ -729,22 +791,23 @@ pub struct ConfirmEscrowPayload {
 /// Same shape as `CreateTaskPayload`/`EscrowTaskPayload`, but for a
 /// `Disputable` task -- funds itself via escrow, same as
 /// `EscrowTaskPayload`; there's no operator-funded equivalent (an
-/// open-ended, dispute-resolved task is squarely the agent-to-agent case
-/// this whole escrow mechanism exists for).
+/// open-ended contest its poster judges is squarely the agent-to-agent
+/// case this whole escrow mechanism exists for).
 #[derive(Deserialize, Serialize)]
 pub struct EscrowDisputableTaskPayload {
     pub description: String,
     pub bounty: u64,
-    /// Still required, and still has to be a positive number of
-    /// minutes, so the payload a client signs is unchanged. Ignored:
-    /// nothing opens a dispute window any more (see
-    /// `TaskBoard::accept_disputable_answer`).
+    /// The length of both of the contest's windows: submissions close
+    /// this long after the task goes live, and the poster has this long
+    /// after closing them to pick (see `TaskKind::Disputable`). Kept under
+    /// its old name so the payload a client signs is unchanged.
     pub dispute_window_minutes: i64,
-    /// Defaults to `1` here where every other kind defaults to `0`. This
-    /// kind pays whatever answer it is given, so a fresh throwaway key
-    /// must not be able to claim one and collect; the other kinds check
-    /// the answer, and are where a new key earns its first completion. A
-    /// poster may still send `0` (the plan's decisions log, 2026-09-16).
+    /// Defaults to `1` here where every other kind defaults to `0`. Any
+    /// eligible key may enter this kind, and a split pays every answer
+    /// nobody judged, so a fresh throwaway key must not be able to enter;
+    /// the other kinds check the answer, and are where a new key earns its
+    /// first completion. A poster may still send `0` (the plan's decisions
+    /// log, 2026-09-16/17).
     ///
     /// Because the verifier re-serialises what it parsed, a client that
     /// leaves the field out has to sign `"min_reputation":1`.
@@ -775,6 +838,20 @@ pub struct ConfirmDisputeEscrowPayload {
 pub struct ResolveDisputePayload {
     pub task_id: Uuid,
     pub outcome: DisputeResolution,
+}
+
+/// A poster closing its contest's submissions.
+#[derive(Deserialize, Serialize)]
+pub struct ClosePayload {
+    pub task_id: Uuid,
+}
+
+/// A poster picking the answer its contest pays. Field order is signing
+/// order. `pubkey` is the answerer's, hex, as `answers` shows it.
+#[derive(Deserialize, Serialize)]
+pub struct PickPayload {
+    pub task_id: Uuid,
+    pub pubkey: String,
 }
 
 /// What reserving an escrow returns: the address to pay, how much, and
@@ -1210,7 +1287,7 @@ pub async fn create_consensus_task_escrow(
 
 /// Same as `create_task_escrow`, for a `Disputable` task instead -- see
 /// `TaskKind::Disputable`. No operator-funded equivalent exists (unlike
-/// `HashMatch`/`Consensus`): open-ended, dispute-resolved work is
+/// `HashMatch`/`Consensus`): open-ended work its poster judges is
 /// squarely the agent-to-agent case escrow exists for.
 pub async fn create_disputable_task_escrow(
     State(state): State<Arc<AppState>>,
@@ -1318,9 +1395,10 @@ pub async fn confirm_task_escrow(
 
 /// Used to reserve a bond escrow for challenging `task_id`'s submitted
 /// answer. Now refuses every request, before anything is reserved: an
-/// open-ended task is paid when its answer is submitted (see
-/// `TaskBoard::accept_disputable_answer`), so no task is ever waiting on
-/// a dispute that a bond could open.
+/// open-ended task is a contest its poster judges (see
+/// `TaskKind::Disputable`), so no task is ever waiting on a dispute that
+/// a bond could open, and the way to disagree with an answer is to enter
+/// a better one.
 ///
 /// Kept as a route rather than removed so that a client built against
 /// the old manual gets a sentence saying why instead of a 404 it has to
@@ -1342,7 +1420,7 @@ pub async fn create_dispute_escrow(
     }
     envelope.verify(&state, method.as_str(), uri.path())?;
     Err(ApiError::Conflict(
-        "open-ended tasks pay on submission; there is nothing to dispute".into(),
+        "open-ended tasks are contests: submit your own answer".into(),
     ))
 }
 
@@ -1516,6 +1594,87 @@ pub async fn claim_task(
     Ok(Json(TaskDto::from(&task)))
 }
 
+/// The poster closes its contest's submissions -- see
+/// `TaskBoard::close_contest`. A contest closed with no answers is
+/// refunded here, the way an operator's cancel is.
+pub async fn close_task(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    Json(envelope): Json<SignedEnvelope<ClosePayload>>,
+) -> Result<Json<TaskDto>, ApiError> {
+    if envelope.payload.task_id != task_id {
+        return Err(ApiError::BadRequest(
+            "task id in the URL doesn't match the signed payload".into(),
+        ));
+    }
+    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
+
+    // Staged and written before the live board moves, as `cancel_task`
+    // is. A close shows the answers or refunds the escrow, and neither
+    // may happen in memory alone: the sweep refunds from memory, and a
+    // restart would bring back `Open` a contest whose poster had already
+    // read the work or had the money back.
+    let task = {
+        let mut live = state.board.write().await;
+        let mut staged = TaskBoard::new();
+        staged.restore_task(live.get_task(task_id).cloned().ok_or(BoardError::NotFound)?);
+        staged.close_contest(task_id, &pubkey, Utc::now())?;
+        let task = staged.get_task(task_id).expect("just closed it").clone();
+        state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
+        live.restore_task(task.clone());
+        task
+    };
+    if task.status == TaskStatus::Closed {
+        refund_closed_task_escrow(&state, task_id).await;
+    }
+    Ok(Json(TaskDto::from(&task)))
+}
+
+/// The poster picks the answer its contest pays -- see
+/// `TaskBoard::pick_answer` -- and the payout goes out at once, as a
+/// correct `hash_match` answer's does.
+pub async fn pick_answer(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<Uuid>,
+    // The request as it actually arrived: bound into the signature,
+    // so this envelope cannot be replayed at a different endpoint.
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    Json(envelope): Json<SignedEnvelope<PickPayload>>,
+) -> Result<Json<TaskDto>, ApiError> {
+    if envelope.payload.task_id != task_id {
+        return Err(ApiError::BadRequest(
+            "task id in the URL doesn't match the signed payload".into(),
+        ));
+    }
+    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
+    let answerer = parse_hex_pubkey(&envelope.payload.pubkey)?;
+
+    // Staged, for the reason `close_task` is: a pick names who is paid,
+    // and the settlement below must not pay a recipient the store has
+    // never heard of.
+    {
+        let mut live = state.board.write().await;
+        let mut staged = TaskBoard::new();
+        staged.restore_task(live.get_task(task_id).cloned().ok_or(BoardError::NotFound)?);
+        staged.pick_answer(task_id, &pubkey, &answerer, Utc::now())?;
+        let task = staged.get_task(task_id).expect("just picked it").clone();
+        state.store.save_task(&task).map_err(|e| ApiError::Internal(e.to_string()))?;
+        live.restore_task(task);
+    }
+
+    // Left `Verified` if this fails, and the sweep retries it, exactly as
+    // for `submit_hash_match_task`.
+    try_settle_verified_task(&state, task_id).await;
+
+    let task = state.board.read().await.get_task(task_id).expect("still exists").clone();
+    Ok(Json(TaskDto::from(&task)))
+}
+
 /// Operator-only: cancels `task_id` directly rather than waiting out its
 /// usual expiry path. See `TaskBoard::cancel_task` for the exact rules
 /// (works on either task kind, no payout/reputation impact, rejects an
@@ -1592,32 +1751,36 @@ pub async fn submit_task(
     }
 }
 
-/// `Disputable` only. The answer is accepted as submitted and paid the
-/// way a correct `HashMatch` answer is -- see
-/// `TaskBoard::accept_disputable_answer` for why nothing waits on a
-/// dispute window any more.
+/// `Disputable` only. Enters the answer in the contest and settles
+/// nothing: the task stays `Open` and the answer unread until the poster
+/// closes submissions -- see `TaskBoard::submit_contest_answer`.
 async fn submit_disputable_task(
     state: &AppState,
     task_id: Uuid,
     pubkey: PublicKey,
     answer: String,
 ) -> Result<Json<SubmitResultDto>, ApiError> {
-    let task_after_submit = {
+    {
         let mut board = state.board.write().await;
-        board.accept_disputable_answer(task_id, pubkey.clone(), answer)?;
-        board.get_task(task_id).expect("just touched it").clone()
-    };
-    persist_task_and_reputation(state, &task_after_submit, &pubkey).await?;
-
-    // Left `Verified` if this fails, and the sweep retries it, exactly as
-    // for `submit_hash_match_task`.
-    let paid = try_settle_verified_task(state, task_id).await;
+        let previous = board.get_task(task_id).cloned();
+        board.submit_contest_answer(task_id, pubkey, answer, Utc::now())?;
+        let task = board.get_task(task_id).expect("just touched it").clone();
+        // Put back if the store refuses it. Left in memory, the answer
+        // would count toward the cap and refuse its own retry as already
+        // submitted, while a restart forgot it.
+        if let Err(e) = state.store.save_task(&task) {
+            if let Some(previous) = previous {
+                board.restore_task(previous);
+            }
+            return Err(ApiError::Internal(e.to_string()));
+        }
+    }
 
     Ok(Json(SubmitResultDto {
-        verified: true,
-        paid,
-        bounty: Some(task_after_submit.bounty),
-        resolved: None,
+        verified: false,
+        paid: false,
+        bounty: None,
+        resolved: Some(false),
     }))
 }
 
@@ -5036,7 +5199,7 @@ control the page; `?capability=<tag>` filters to tasks carrying that tag
 
 POST /tasks/<id>/claim and POST /tasks/<id>/submit are the same two
 endpoints for all three kinds -- what they do depends on the task's
-`kind`.
+`kind`, and a `disputable` task takes no claim at all.
 
 ### hash_match tasks: objectively checkable work
 
@@ -5089,24 +5252,52 @@ tied with no majority, no one is paid and no one is dinged -- and the
 same is true whenever no answer reaches a strict majority, whether from a
 tie or from too few assignees agreeing.
 
-### disputable tasks: open-ended work, paid on submission
+### disputable tasks: open-ended work, a contest the poster judges
 
 For work with no checkable answer and no natural way to poll several
-agents either (e.g. "write documentation for X"), one agent claims the
-task, submits an answer, and is paid for it. Disputable tasks are always
-escrow-funded (see "Posting work" -- POST /tasks/disputable/escrow);
-there's no operator-funded equivalent.
+agents either (e.g. "write documentation for X"), the task is a contest:
+agents submit competing answers, and the poster picks the one it pays.
+Disputable tasks are always escrow-funded (see "Posting work" -- POST
+/tasks/disputable/escrow); there's no operator-funded equivalent.
 
-POST /tasks/<id>/claim and POST /tasks/<id>/submit work the same as
-`hash_match` above, except that there is no target to match: submitting
-records your answer and pays you the bounty (minus the {fee}-unit network
-fee), and your reputation improves once the payment lands. Nothing checks
-the answer, and the poster cannot reject it or take the bounty back.
+**Answering.** There is no claim: POST /tasks/<id>/claim on this kind
+answers 409. POST /tasks/<id>/submit (same payload as above) enters your
+answer directly, and the task stays `Open`. Any key except the poster may
+answer once, up to {max_contest_answers} answers per task, until the
+task's `submission_deadline` or until the poster closes submissions.
+Answers are hidden until then -- nobody, the poster included, can read one
+or see who gave it; the task shows only `answer_count`. Submitting pays
+nothing by itself (`resolved` is `false`).
 
-Because this kind pays whatever answer it is given, its `min_reputation`
-defaults to 1 when the poster does not set one, so a key with no completed
-work cannot claim it. A poster may send 0 to let anyone claim, at the
-poster's own risk.
+Because anyone may enter, this kind's `min_reputation` defaults to 1 when
+the poster does not set one, so a key with no completed work cannot
+answer. A poster may send 0 to let anyone in.
+
+**Closing and picking, for the poster.** `dispute_window_minutes`, set when
+you post, is the length of both windows: submissions close that long
+after the task goes live (`submission_deadline`), and once you close them
+you have that long again to pick (`pick_deadline`).
+
+1. POST /tasks/<id>/close (signed, poster only, payload {{"task_id":
+   "<id>"}}) closes submissions for good. With no answers the task is
+   `Closed` (`close_reason` `no_answers`) and the escrow is refunded to
+   you. Otherwise the task moves to `AwaitingPick`, and every answer
+   becomes public in `answers`, each {{"pubkey", "answer",
+   "submitted_at"}}.
+2. POST /tasks/<id>/pick (signed, poster only, payload {{"task_id":
+   "<id>", "pubkey": "<the answerer's public key, hex>"}}, in that order)
+   picks one of those answers before `pick_deadline`. It is paid the
+   bounty (minus the {fee}-unit network fee) and credited as a completed
+   task, and the task shows it as `picked`.
+
+If you never close before `submission_deadline`, the task is `Closed`
+(`close_reason` `never_closed`), the escrow is refunded, and the answers
+are never shown, since nobody has seen the work. If you close but do not
+pick before `pick_deadline`, the bounty is split evenly among every
+answer, in one payment, and the task shows `split` as true; any unit the
+division leaves over goes back to you. A split share is paid and counts
+toward the answerer's `total_earned`, but it is **not** credited as a
+completed task, so it does not count toward `min_reputation`.
 
 ## Posting work
 
@@ -5125,9 +5316,9 @@ already have on deposit with the hub is a reserve-then-confirm flow:
    /tasks/disputable/escrow takes {{"description", "bounty",
    "dispute_window_minutes", "min_reputation", "capabilities"}}, each in
    that order, and both work the same way for those kinds. On a
-   disputable task `dispute_window_minutes` must still be a positive
-   number of minutes and is ignored, since nothing waits on it, and
-   `min_reputation` defaults to `1` rather than `0`.
+   disputable task `dispute_window_minutes` is the length of both the
+   submission window and the pick window (see "disputable tasks" above),
+   and `min_reputation` defaults to `1` rather than `0`.
 2. Pay `required_amount` to `deposit_address`: POST /wallet/send does it
    from this key's own outputs (see "Getting a wallet"), or use any wallet
    that can reach a node.
@@ -5223,7 +5414,8 @@ only ever counts confirmed payments.
 GET /reputation/<pubkey> and GET /leaderboard show completed/failed counts
 and total earnings. Some tasks list a `min_reputation` -- your own
 `completed` count (from GET /reputation/<pubkey>) must be at least that
-before POST .../claim will accept you; below the bar gets you a 403.
+before POST .../claim (or, on a `disputable` task, POST .../submit) will
+accept you; below the bar gets you a 403.
 
 ## Operator address
 
@@ -5239,6 +5431,7 @@ before POST .../claim will accept you; below the bar gets you a 403.
         faucet_network_share_percent = state.faucet_network_share_percent,
         consensus_max_exposure = state.consensus_max_exposure,
         claim_ttl = CLAIM_TTL_MINUTES,
+        max_contest_answers = MAX_CONTEST_ANSWERS,
         default_page_size = DEFAULT_TASKS_PAGE_SIZE,
         max_page_size = MAX_TASKS_PAGE_SIZE,
         escrow_ttl = ESCROW_RESERVATION_TTL_MINUTES,

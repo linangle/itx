@@ -697,6 +697,30 @@ async fn run_sweep_once(state: &Arc<AppState>, now: chrono::DateTime<chrono::Utc
         info!("sweep: finalized unchallenged disputable task {task_id} past its dispute window");
     }
 
+    let unclosed = {
+        let mut board = board_write_timed(state).await;
+        board.close_unclosed_contests(now)
+    };
+    for task_id in unclosed {
+        persist_task_by_id(state, task_id, "unclosed contest").await;
+        // Never closed, so never read: the escrow goes back to its poster
+        // however many answers the contest holds, the way an understaffed
+        // consensus task's does.
+        handlers::refund_closed_task_escrow(state, task_id).await;
+        info!("sweep: refunded contest {task_id}, not closed before its submission deadline");
+    }
+
+    // Before the settlement pass below, which pays every share this fixes
+    // in one transaction on this same sweep.
+    let split = {
+        let mut board = board_write_timed(state).await;
+        board.split_unpicked_contests(now)
+    };
+    for task_id in split {
+        persist_task_by_id(state, task_id, "split contest").await;
+        info!("sweep: split the bounty of contest {task_id}, not picked before its pick deadline");
+    }
+
     // Refunds that did not go out when their task closed. Each close
     // path above -- and the operator's cancel, and a submission that
     // ties -- refunds inline, once, and `disburse_escrow` returns
@@ -1384,6 +1408,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/tasks/:id/claim", post(handlers::claim_task))
         .route("/tasks/:id/submit", post(handlers::submit_task))
         .route("/tasks/:id/cancel", post(handlers::cancel_task))
+        .route("/tasks/:id/close", post(handlers::close_task))
+        .route("/tasks/:id/pick", post(handlers::pick_answer))
         .route("/tasks/:id/dispute/escrow", post(handlers::create_dispute_escrow))
         .route("/tasks/:id/dispute/confirm", post(handlers::confirm_dispute_escrow))
         .route("/tasks/:id/dispute/resolve", post(handlers::resolve_dispute))
@@ -4025,11 +4051,11 @@ mod tests {
         assert!(body.contains("rolling 24 hours"));
     }
 
-    /// Disputes went on 2026-09-16: an open-ended task pays on
-    /// submission. The manual an agent follows must say so, and must not
-    /// walk it into a route that now refuses.
+    /// Disputes went on 2026-09-16/17: an open-ended task is a contest
+    /// its poster closes and picks. The manual an agent follows must
+    /// describe that, and must not walk it into a route that refuses.
     #[tokio::test]
-    async fn llms_txt_mentions_every_task_kind_and_the_escrow_flows_and_no_dispute_flow() {
+    async fn llms_txt_mentions_every_task_kind_and_the_escrow_and_contest_flows_and_no_dispute_flow() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
@@ -4052,8 +4078,16 @@ mod tests {
             "/tasks/consensus/escrow",
             "/tasks/disputable/escrow",
             "/tasks/escrow/<escrow_id>/confirm",
-            "paid on submission",
-            "the poster cannot reject it",
+            "There is no claim",
+            "POST /tasks/<id>/close",
+            "POST /tasks/<id>/pick",
+            "\"pubkey\": \"<the answerer's public key, hex>\"",
+            "AwaitingPick",
+            "answer_count",
+            "pick_deadline",
+            "never_closed",
+            "**not** credited",
+            "length of both windows",
             "defaults to 1",
             "capabilities",
             "?capability=",
@@ -4066,8 +4100,8 @@ mod tests {
         ] {
             assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
         }
-        for gone in ["/dispute/", "challenger_wins", "assignee_wins", "Disputed"] {
-            assert!(!llms.contains(gone), "llms.txt still describes the dispute flow: {gone:?}");
+        for gone in ["/dispute/", "challenger_wins", "assignee_wins", "Disputed", "paid on submission", "is ignored"] {
+            assert!(!llms.contains(gone), "llms.txt still describes a flow that is gone: {gone:?}");
         }
     }
 
@@ -7467,24 +7501,55 @@ mod tests {
         task["id"].as_str().unwrap().parse().unwrap()
     }
 
-    /// Claims `task_id` as `assignee_key` and submits "my answer",
-    /// returning the submit response's body.
-    async fn claim_and_submit(hub: &TestHub, task_id: Uuid, assignee_key: &PrivateKey) -> Value {
-        hub.client
-            .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
-            .json(&envelope(assignee_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
-            .send()
-            .await
-            .unwrap()
-            .error_for_status()
-            .unwrap();
+    /// Signs `{task_id, output}` for `POST /tasks/<id>/submit` as `key`
+    /// and returns the response.
+    async fn submit_answer(hub: &TestHub, task_id: Uuid, key: &PrivateKey, output: &str) -> reqwest::Response {
         hub.client
             .post(format!("{}/tasks/{task_id}/submit", hub.base_url))
-            .json(&envelope(assignee_key, &format!("/tasks/{task_id}/submit"), handlers::SubmitPayload { task_id, output: "my answer".to_string() }))
+            .json(&envelope(
+                key,
+                &format!("/tasks/{task_id}/submit"),
+                handlers::SubmitPayload { task_id, output: output.to_string() },
+            ))
             .send()
             .await
             .unwrap()
-            .error_for_status()
+    }
+
+    /// Signs `{task_id}` for `POST /tasks/<id>/close` as `key`.
+    async fn close_contest(hub: &TestHub, task_id: Uuid, key: &PrivateKey) -> reqwest::Response {
+        hub.client
+            .post(format!("{}/tasks/{task_id}/close", hub.base_url))
+            .json(&envelope(key, &format!("/tasks/{task_id}/close"), handlers::ClosePayload { task_id }))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Signs `{task_id, pubkey}` for `POST /tasks/<id>/pick` as `key`,
+    /// picking `answerer`'s answer.
+    async fn pick_answer(hub: &TestHub, task_id: Uuid, key: &PrivateKey, answerer: &PrivateKey) -> reqwest::Response {
+        hub.client
+            .post(format!("{}/tasks/{task_id}/pick", hub.base_url))
+            .json(&envelope(
+                key,
+                &format!("/tasks/{task_id}/pick"),
+                handlers::PickPayload { task_id, pubkey: answerer.public_key().to_string() },
+            ))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    async fn error_of(resp: reqwest::Response) -> String {
+        resp.json::<Value>().await.unwrap()["error"].as_str().unwrap().to_string()
+    }
+
+    async fn reputation_json(hub: &TestHub, key: &PrivateKey) -> Value {
+        hub.client
+            .get(format!("{}/reputation/{}", hub.base_url, key.public_key()))
+            .send()
+            .await
             .unwrap()
             .json()
             .await
@@ -7502,90 +7567,99 @@ mod tests {
             .unwrap()
     }
 
-    /// An open-ended task pays the answer it is given when it is given:
-    /// the payout is on the wire by the time the submit returns, as a
-    /// correct `hash_match` answer's is, and nothing waits on a window or
-    /// a sweep. Confirming it is the ordinary resolution step.
-    #[tokio::test]
-    async fn submitting_to_a_funded_disputable_task_pays_the_claimant_with_no_window_and_no_sweep() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-
-        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
-        let result = claim_and_submit(&hub, task_id, &assignee_key).await;
-        assert_eq!(result["verified"], true);
-        assert_eq!(result["paid"], true, "sent at submission -- see SubmitResultDto::paid");
-        assert_eq!(result["bounty"], 900);
-        assert_eq!(result["resolved"], Value::Null, "the same answer a hash_match submission gets");
-
-        let submitted = fake_node.wait_for_submitted_count(1).await;
-        assert_eq!(submitted.len(), 1);
-        assert!(submitted[0].outputs.iter().any(|o| o.pubkey == assignee_key.public_key() && o.value == 900));
-
-        let task = get_task_json(&hub, task_id).await;
-        assert_eq!(task["status"], "Submitted");
-        assert_eq!(task["answer"], "my answer");
-        assert_eq!(task["dispute_deadline"], Value::Null, "no dispute window is opened");
-
-        confirm_submitted_payouts(&hub.state, &fake_node).await;
-        assert_eq!(get_task_json(&hub, task_id).await["status"], "Paid");
-        let reputation: Value = hub
-            .client
-            .get(format!("{}/reputation/{}", hub.base_url, assignee_key.public_key()))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(reputation["completed"], 1);
-        assert_eq!(reputation["total_earned"], 900);
+    /// Moves a contest's clock back by `minutes` -- when it went live, and
+    /// its pick deadline if it has one -- which is what waiting that long
+    /// does, for handlers that read the real clock.
+    async fn wind_contest_back(hub: &TestHub, task_id: Uuid, minutes: i64) {
+        let mut board = hub.state.board.write().await;
+        let mut task = board.get_task(task_id).unwrap().clone();
+        task.created_at -= chrono::Duration::minutes(minutes);
+        if let board::TaskKind::Disputable { pick_deadline: Some(deadline), .. } = &mut task.kind {
+            *deadline -= chrono::Duration::minutes(minutes);
+        }
+        board.restore_task(task);
     }
 
-    /// The route stays so an old client is told why, and it must refuse
-    /// before reserving: a reservation is an address somebody may pay.
+    /// Answering a contest: no claim first, one answer per key, not the
+    /// poster's, at most ten -- and a claim is refused with a sentence
+    /// saying to submit instead. Every refusal leaves the count where it
+    /// was.
     #[tokio::test]
-    async fn a_dispute_escrow_is_refused_and_reserves_nothing() {
+    async fn a_contest_takes_one_answer_per_key_with_no_claim_up_to_ten() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-
         let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
-        claim_and_submit(&hub, task_id, &assignee_key).await;
-        let deposits_before = hub.state.board.read().await.all_pending_deposits().count();
-        assert_eq!(deposits_before, 1, "the task's own escrow");
+
+        let answerers: Vec<PrivateKey> = (0..11).map(|_| PrivateKey::new_key()).collect();
+        let resp = submit_answer(&hub, task_id, &answerers[0], "no claim needed").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let result: Value = resp.json().await.unwrap();
+        assert_eq!((result["verified"].clone(), result["paid"].clone()), (json!(false), json!(false)));
+        assert_eq!(result["resolved"], false, "nothing resolves until the poster acts");
 
         let resp = hub
             .client
-            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
-            .json(&envelope(
-                &poster_key,
-                &format!("/tasks/{task_id}/dispute/escrow"),
-                handlers::DisputeEscrowPayload { task_id, reason: "not what I asked for".to_string() },
-            ))
+            .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
+            .json(&envelope(&answerers[1], &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
             .send()
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
-        let body: Value = resp.json().await.unwrap();
-        assert!(
-            body["error"].as_str().unwrap().contains("there is nothing to dispute"),
-            "the refusal has to say why: {body}"
-        );
+        assert!(error_of(resp).await.contains("submit your answer directly"));
 
-        assert_eq!(hub.state.board.read().await.all_pending_deposits().count(), deposits_before);
-        assert_eq!(hub.state.store.load_all_pending_deposits().unwrap().len(), deposits_before);
+        let resp = submit_answer(&hub, task_id, &poster_key, "my own").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+        assert!(error_of(resp).await.contains("poster may not answer"));
+
+        let resp = submit_answer(&hub, task_id, &answerers[0], "a second go").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        assert!(error_of(resp).await.contains("already submitted"));
+
+        for answerer in &answerers[1..10] {
+            assert_eq!(submit_answer(&hub, task_id, answerer, "another").await.status(), reqwest::StatusCode::OK);
+        }
+        let resp = submit_answer(&hub, task_id, &answerers[10], "the eleventh").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        assert!(error_of(resp).await.contains("most answers it takes (10)"));
+
+        let task = get_task_json(&hub, task_id).await;
+        assert_eq!(task["status"], "Open");
+        assert_eq!(task["answer_count"], 10);
+        assert_eq!(task["claimant"], Value::Null);
     }
 
-    /// This kind pays whatever answer it gets, so its `min_reputation`
-    /// defaults to 1 -- and because the verifier re-serialises what it
-    /// parsed, the default is inside the signed string. Built by hand the
-    /// way a client that omits the field has to build it.
+    /// While a contest is open nobody reads an answer, the poster
+    /// included, or learns who gave one: the task and the list carry the
+    /// count and nothing else.
+    #[tokio::test]
+    async fn an_open_contest_shows_how_many_answers_it_has_and_nothing_of_them() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let answerer = PrivateKey::new_key();
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        submit_answer(&hub, task_id, &answerer, "the secret answer").await.error_for_status().unwrap();
+
+        let listed: Value = hub.client.get(format!("{}/tasks", hub.base_url)).send().await.unwrap().json().await.unwrap();
+        let row = listed.as_array().unwrap().iter().find(|t| t["id"] == task_id.to_string()).unwrap().clone();
+        for task in [get_task_json(&hub, task_id).await, row] {
+            assert_eq!(task["answer_count"], 1);
+            assert_eq!(task["answers"], Value::Null);
+            assert!(task["submission_deadline"].is_string());
+            let text = task.to_string();
+            assert!(!text.contains("the secret answer"), "an answer leaked: {text}");
+            assert!(!text.contains(&answerer.public_key().to_string()), "an answerer leaked: {text}");
+        }
+    }
+
+    /// `min_reputation` defaults to 1 on this kind, and because the
+    /// verifier re-serialises what it parsed, the default is inside the
+    /// signed string. Built by hand the way a client that omits the field
+    /// has to build it. A fresh key is refused the gated contest and
+    /// answers one posted with 0.
     #[tokio::test]
     async fn a_disputable_task_defaults_min_reputation_to_one_and_accepts_zero() {
         let operator_key = PrivateKey::new_key();
@@ -7618,25 +7692,301 @@ mod tests {
         let gated = confirm_funded_reservation(&hub, &fake_node, &poster_key, &reservation).await;
         assert_eq!(get_task_json(&hub, gated).await["min_reputation"], 1);
 
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{gated}/claim", hub.base_url))
-            .json(&envelope(&fresh_key, &format!("/tasks/{gated}/claim"), handlers::ClaimPayload { task_id: gated }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "a key with no completed work cannot claim one");
+        let resp = submit_answer(&hub, gated, &fresh_key, "an answer").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "a key with no completed work cannot enter");
+        assert!(error_of(resp).await.contains("requires at least 1 completed tasks, you have 0"));
+        assert_eq!(get_task_json(&hub, gated).await["answer_count"], 0);
 
         let open = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
         assert_eq!(get_task_json(&hub, open).await["min_reputation"], 0);
+        let resp = submit_answer(&hub, open, &fresh_key, "an answer").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK, "a poster who sends 0 lets anyone in");
+    }
+
+    /// Closing: only the poster; with no answers it refunds the escrow on
+    /// the spot; with answers it waits for a pick and shows them all.
+    #[tokio::test]
+    async fn closing_a_contest_refunds_it_empty_and_shows_its_answers_otherwise() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let (first, second) = (PrivateKey::new_key(), PrivateKey::new_key());
+
+        let empty = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        let resp = close_contest(&hub, empty, &first).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+        assert!(error_of(resp).await.contains("only this task's poster"));
+        let resp = close_contest(&hub, empty, &poster_key).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let task: Value = resp.json().await.unwrap();
+        assert_eq!((task["status"].clone(), task["close_reason"].clone()), (json!("Closed"), json!("no_answers")));
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert!(
+            submitted[0].outputs.iter().any(|o| o.pubkey == poster_key.public_key() && o.value == 900),
+            "the escrow goes back to the poster, less the network fee"
+        );
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        submit_answer(&hub, task_id, &first, "first answer").await.error_for_status().unwrap();
+        submit_answer(&hub, task_id, &second, "second answer").await.error_for_status().unwrap();
+        assert_eq!(close_contest(&hub, task_id, &second).await.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(get_task_json(&hub, task_id).await["answers"], Value::Null, "a refused close shows nothing");
+
+        let resp = close_contest(&hub, task_id, &poster_key).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let task = get_task_json(&hub, task_id).await;
+        assert_eq!(task["status"], "AwaitingPick");
+        assert!(task["pick_deadline"].is_string());
+        let answers = task["answers"].as_array().unwrap();
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[0]["pubkey"], first.public_key().to_string());
+        assert_eq!(answers[0]["answer"], "first answer");
+        assert!(answers[0]["submitted_at"].is_string());
+        assert_eq!(answers[1]["answer"], "second answer");
+        assert_eq!((task["picked"].clone(), task["split"].clone()), (Value::Null, json!(false)));
+        assert_eq!(fake_node.submitted_transactions().await.len(), 1, "closing with answers moves no money");
+
+        let resp = submit_answer(&hub, task_id, &PrivateKey::new_key(), "too late").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT, "closing is final");
+        assert!(error_of(resp).await.contains("submissions to this task are closed"));
+        assert_eq!(close_contest(&hub, task_id, &poster_key).await.status(), reqwest::StatusCode::CONFLICT);
+    }
+
+    /// Picking: only the poster, only an answer the contest holds, only
+    /// before the pick deadline. The pick is paid the bounty and credited
+    /// as a completed task.
+    #[tokio::test]
+    async fn the_picked_answer_is_paid_and_credited() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let (first, second, stranger) = (PrivateKey::new_key(), PrivateKey::new_key(), PrivateKey::new_key());
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        submit_answer(&hub, task_id, &first, "first answer").await.error_for_status().unwrap();
+        submit_answer(&hub, task_id, &second, "second answer").await.error_for_status().unwrap();
+
+        let resp = pick_answer(&hub, task_id, &poster_key, &second).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT, "nothing to pick before the close");
+        assert!(error_of(resp).await.contains("not waiting for its poster to pick"));
+        close_contest(&hub, task_id, &poster_key).await.error_for_status().unwrap();
+
+        let resp = pick_answer(&hub, task_id, &first, &first).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+        let resp = pick_answer(&hub, task_id, &poster_key, &stranger).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        assert!(error_of(resp).await.contains("did not answer this task"));
+        assert_eq!(get_task_json(&hub, task_id).await["status"], "AwaitingPick", "no refusal settles anything");
+
+        let resp = pick_answer(&hub, task_id, &poster_key, &second).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(submitted.len(), 1);
+        assert!(submitted[0].outputs.iter().any(|o| o.pubkey == second.public_key() && o.value == 900));
+        assert!(!submitted[0].outputs.iter().any(|o| o.pubkey == first.public_key()));
+
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+        let task = get_task_json(&hub, task_id).await;
+        assert_eq!(task["status"], "Paid");
+        assert_eq!((task["picked"].clone(), task["split"].clone()), (json!(second.public_key().to_string()), json!(false)));
+        let winner = reputation_json(&hub, &second).await;
+        assert_eq!((winner["completed"].clone(), winner["total_earned"].clone()), (json!(1), json!(900)));
+        assert_eq!(reputation_json(&hub, &first).await["total_earned"], 0);
+
+        // A second contest, picked too late.
+        let late = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        submit_answer(&hub, late, &first, "an answer").await.error_for_status().unwrap();
+        close_contest(&hub, late, &poster_key).await.error_for_status().unwrap();
+        wind_contest_back(&hub, late, 31).await;
+        let resp = pick_answer(&hub, late, &poster_key, &first).await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        assert!(error_of(resp).await.contains("window to pick an answer for this task has passed"));
+    }
+
+    /// A contest nobody closed before its deadline takes no more answers,
+    /// and the sweep refunds it -- with its answers still hidden, since
+    /// nobody has seen them. A poster cannot close it late to read them.
+    #[tokio::test]
+    async fn an_unclosed_contest_is_refunded_past_its_deadline_and_its_answers_stay_hidden() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let answerer = PrivateKey::new_key();
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        submit_answer(&hub, task_id, &answerer, "unread work").await.error_for_status().unwrap();
+        wind_contest_back(&hub, task_id, 31).await;
+
+        let resp = submit_answer(&hub, task_id, &PrivateKey::new_key(), "too late").await;
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        assert!(error_of(resp).await.contains("window to submit an answer for this task has passed"));
+        assert_eq!(close_contest(&hub, task_id, &poster_key).await.status(), reqwest::StatusCode::CONFLICT);
+
+        run_sweep_once(&hub.state, Utc::now()).await;
+
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(submitted.len(), 1);
+        assert!(submitted[0].outputs.iter().any(|o| o.pubkey == poster_key.public_key() && o.value == 900));
+        assert!(!submitted[0].outputs.iter().any(|o| o.pubkey == answerer.public_key()));
+
+        let task = get_task_json(&hub, task_id).await;
+        assert_eq!((task["status"].clone(), task["close_reason"].clone()), (json!("Closed"), json!("never_closed")));
+        assert_eq!(task["answer_count"], 1);
+        assert_eq!(task["answers"], Value::Null);
+        assert!(!task.to_string().contains("unread work"));
+
+        let restored = board_as_a_restart_would_load_it(&hub);
+        let restored = handlers::TaskDto::from(restored.get_task(task_id).unwrap());
+        assert!(
+            !serde_json::to_string(&restored).unwrap().contains("unread work"),
+            "and a restart does not show them either"
+        );
+    }
+
+    /// A contest closed and never picked is split: one transaction pays
+    /// every answer an even share, the remainder goes back to the poster,
+    /// and each share adds to `total_earned` without being credited as a
+    /// completed task.
+    #[tokio::test]
+    async fn an_unpicked_contest_is_split_in_one_transaction_and_not_credited() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let answerers: Vec<PrivateKey> = (0..3).map(|_| PrivateKey::new_key()).collect();
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 1_000, 0).await;
+        for answerer in &answerers {
+            submit_answer(&hub, task_id, answerer, "an answer").await.error_for_status().unwrap();
+        }
+        close_contest(&hub, task_id, &poster_key).await.error_for_status().unwrap();
+
+        run_sweep_once(&hub.state, Utc::now()).await;
+        assert_eq!(get_task_json(&hub, task_id).await["status"], "AwaitingPick", "not before the pick deadline");
+
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(31)).await;
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(submitted.len(), 1, "every share in one transaction");
+        for answerer in &answerers {
+            assert!(submitted[0].outputs.iter().any(|o| o.pubkey == answerer.public_key() && o.value == 333));
+        }
+        assert!(
+            submitted[0].outputs.iter().any(|o| o.pubkey == poster_key.public_key() && o.value == 1),
+            "the unit the division leaves over goes back to the poster as change"
+        );
+
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+        let task = get_task_json(&hub, task_id).await;
+        assert_eq!(task["status"], "Paid");
+        assert_eq!((task["picked"].clone(), task["split"].clone()), (Value::Null, json!(true)));
+        for answerer in &answerers {
+            let reputation = reputation_json(&hub, answerer).await;
+            assert_eq!(reputation["total_earned"], 333);
+            assert_eq!(reputation["completed"], 0, "a split share is paid, not credited");
+        }
+    }
+
+    /// What a contest has become has to survive a restart: its answers,
+    /// its close and its pick deadline -- and a split whose payout was on
+    /// the wire when the hub went down is resolved, not sent again.
+    #[tokio::test]
+    async fn a_contests_answers_close_and_split_survive_a_restart_without_paying_twice() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let answerers: Vec<PrivateKey> = (0..2).map(|_| PrivateKey::new_key()).collect();
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        for answerer in &answerers {
+            submit_answer(&hub, task_id, answerer, "kept").await.error_for_status().unwrap();
+        }
+        close_contest(&hub, task_id, &poster_key).await.error_for_status().unwrap();
+
+        let live = hub.state.board.read().await.get_task(task_id).unwrap().clone();
+        let restored = board_as_a_restart_would_load_it(&hub);
+        let task = restored.get_task(task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::AwaitingPick);
+        let (board::TaskKind::Disputable { answers, pick_deadline, .. }, board::TaskKind::Disputable { pick_deadline: live_deadline, .. }) =
+            (&task.kind, &live.kind)
+        else {
+            unreachable!()
+        };
+        assert_eq!(answers.iter().map(|a| a.answer.as_str()).collect::<Vec<_>>(), vec!["kept", "kept"]);
+        assert_eq!(answers[1].pubkey, answerers[1].public_key());
+        assert!(pick_deadline.is_some());
+        assert_eq!(pick_deadline, live_deadline);
+
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(31)).await;
+        fake_node.wait_for_submitted_count(1).await;
+
+        // The hub goes down with the split on the wire.
+        let restored = board_as_a_restart_would_load_it(&hub);
+        assert_eq!(restored.get_task(task_id).unwrap().status, TaskStatus::Submitted);
+        assert_eq!(restored.payout_attempts_for_task(task_id).len(), 2, "one attempt per share, both recorded");
+        assert!(restored.unsubmitted_payouts(task_id).is_empty(), "nothing is left to send");
+        *hub.state.board.write().await = restored;
+
+        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(32)).await;
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+        assert_eq!(fake_node.submitted_transactions().await.len(), 1, "the split was paid once");
+        assert_eq!(get_task_json(&hub, task_id).await["status"], "Paid");
+        for answerer in &answerers {
+            assert_eq!(reputation_json(&hub, answerer).await["total_earned"], 450, "and credited once");
+        }
+    }
+
+    /// The bytes a client signs for a pick, pinned to the literal the
+    /// Python SDK's own test pins, so the two cannot drift apart without
+    /// one of them failing. Close is `{task_id}` alone, like claim.
+    #[test]
+    fn close_and_pick_payloads_sign_in_field_order() {
+        let task_id: Uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301".parse().unwrap();
+        assert_eq!(
+            serde_json::to_string(&handlers::ClosePayload { task_id }).unwrap(),
+            r#"{"task_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&handlers::PickPayload { task_id, pubkey: "02ab".to_string() }).unwrap(),
+            r#"{"task_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","pubkey":"02ab"}"#
+        );
+    }
+
+    /// The route stays so an old client is told why, and it must refuse
+    /// before reserving: a reservation is an address somebody may pay.
+    #[tokio::test]
+    async fn a_dispute_escrow_is_refused_and_reserves_nothing() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let answerer = PrivateKey::new_key();
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        submit_answer(&hub, task_id, &answerer, "an answer").await.error_for_status().unwrap();
+        let deposits_before = hub.state.board.read().await.all_pending_deposits().count();
+        assert_eq!(deposits_before, 1, "the task's own escrow");
+
         let resp = hub
             .client
-            .post(format!("{}/tasks/{open}/claim", hub.base_url))
-            .json(&envelope(&fresh_key, &format!("/tasks/{open}/claim"), handlers::ClaimPayload { task_id: open }))
+            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
+            .json(&envelope(
+                &poster_key,
+                &format!("/tasks/{task_id}/dispute/escrow"),
+                handlers::DisputeEscrowPayload { task_id, reason: "not what I asked for".to_string() },
+            ))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::OK, "a poster who sends 0 lets anyone claim");
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        let error = error_of(resp).await;
+        assert!(error.contains("open-ended tasks are contests: submit your own answer"), "the refusal has to say why: {error}");
+
+        assert_eq!(hub.state.board.read().await.all_pending_deposits().count(), deposits_before);
+        assert_eq!(hub.state.store.load_all_pending_deposits().unwrap().len(), deposits_before);
     }
 
     /// A disputable task in a state a store written before 2026-09-16 can
@@ -7668,7 +8018,7 @@ mod tests {
         fake_node.fund(deposit.deposit_pubkey.clone(), required).await;
         let mut board = hub.state.board.write().await;
         let board::EscrowConfirmation::TaskCreated(task) = board.confirm_escrow(deposit.id, required, Utc::now()).unwrap();
-        board.claim_task(task.id, assignee.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
+        board.claim_legacy_disputable_task(task.id, assignee.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
         board.submit_disputable_answer(task.id, assignee.clone(), "my answer".to_string(), Utc::now()).unwrap();
         let deposit = board.get_pending_deposit(deposit.id).unwrap().clone();
         hub.state.store.save_task_and_deposit(board.get_task(task.id).unwrap(), &deposit).unwrap();

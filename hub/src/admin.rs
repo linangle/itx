@@ -342,7 +342,11 @@ fn work_of(board: &TaskBoard, ceiling: u64) -> Work {
         match task.status {
             TaskStatus::Open => w.open += 1,
             TaskStatus::Claimed => w.claimed += 1,
-            TaskStatus::AwaitingDispute | TaskStatus::Disputed | TaskStatus::Verified | TaskStatus::Submitted => {
+            TaskStatus::AwaitingDispute
+            | TaskStatus::Disputed
+            | TaskStatus::AwaitingPick
+            | TaskStatus::Verified
+            | TaskStatus::Submitted => {
                 w.awaiting_settlement += 1
             }
             TaskStatus::Paid => w.paid += 1,
