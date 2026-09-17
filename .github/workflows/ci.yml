@@ -289,6 +289,69 @@ jobs:
             fi
           done
 
+      - name: host access — sshd, fail2ban, unattended upgrades
+        # The three files §3.1 installs on the box. Each is a drop-in
+        # whose whole correctness is *what the tool resolves after reading
+        # it*, not what the file says -- so each is installed the way the
+        # runbook installs it and then read back through the tool's own
+        # resolver.
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y openssh-server fail2ban python3-systemd unattended-upgrades
+
+          # The ordering trap, as a test. A cloud image's own drop-in
+          # turning password auth back on is stood up first; sshd takes
+          # the FIRST value it sees for a keyword, so `01-` winning over
+          # `50-` is the entire reason the file is named that way. Rename
+          # it to 60- and this step fails, which is the point.
+          sudo install -d /etc/ssh/sshd_config.d
+          printf 'PasswordAuthentication yes\nKbdInteractiveAuthentication yes\n' \
+            | sudo tee /etc/ssh/sshd_config.d/50-cloud-init.conf >/dev/null
+          sudo cp deploy/sshd-itx.conf /etc/ssh/sshd_config.d/01-itx.conf
+          sudo sshd -t
+          resolved=$(sudo sshd -T)
+          for want in "passwordauthentication no" \
+                      "kbdinteractiveauthentication no" \
+                      "permitemptypasswords no" \
+                      "permitrootlogin prohibit-password" \
+                      "allowtcpforwarding yes"; do
+            if ! echo "$resolved" | grep -qx "$want"; then
+              echo "::error file=deploy/sshd-itx.conf::sshd resolved something other than '$want'"
+              echo "$resolved" | grep -E "^${want%% *} " || true
+              exit 1
+            fi
+          done
+          echo "sshd resolves to key-only, with the cloud drop-in present"
+
+          sudo cp deploy/fail2ban-itx.local /etc/fail2ban/jail.d/itx.local
+          sudo fail2ban-client -t
+
+          # And the same trick in reverse for apt, which takes the LAST
+          # value -- plus the list-accumulation one: without `#clear` the
+          # origins here would be appended to the package's own, and
+          # "security only" would quietly not be true.
+          sudo cp deploy/apt-unattended-upgrades.conf /etc/apt/apt.conf.d/52-itx-unattended-upgrades
+          dump=$(apt-config dump)
+          for want in 'APT::Periodic::Unattended-Upgrade "1"' \
+                      'APT::Periodic::Update-Package-Lists "1"' \
+                      'Unattended-Upgrade::Automatic-Reboot "false"'; do
+            if ! echo "$dump" | grep -qF "$want"; then
+              echo "::error file=deploy/apt-unattended-upgrades.conf::apt resolved something other than $want"
+              exit 1
+            fi
+          done
+          origins=$(echo "$dump" | grep '^Unattended-Upgrade::Origins-Pattern::' || true)
+          if [ -z "$origins" ]; then
+            echo "::error file=deploy/apt-unattended-upgrades.conf::no origins survived apt's parse"
+            exit 1
+          fi
+          if echo "$origins" | grep -viq 'security'; then
+            echo "::error file=deploy/apt-unattended-upgrades.conf::an origin that is not a security archive is in the resolved list:"
+            echo "$origins" | grep -vi 'security'
+            exit 1
+          fi
+          echo "$origins"
+
   audit:
     name: dependency audit
     runs-on: ubuntu-latest

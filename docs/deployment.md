@@ -236,6 +236,94 @@ want to confirm the node is listening at all, do it from the box itself against
 loopback, and even then prefer reading the node's own log line to opening a
 socket.
 
+### 3.1 The SSH port, which is the other thing answering strangers
+
+The firewall opens exactly two things to the internet: the proxy's ports, and
+SSH. §4 is about the first. This is the second, and it is the one that hands
+out a shell on the box that holds the escrow secret.
+
+Three files, in this order. Each is independently useful and the order is the
+one that cannot lock you out:
+
+```bash
+# 1. keys only. Check and reload, then prove it from a NEW session
+#    before closing this one.
+sudo cp deploy/sshd-itx.conf /etc/ssh/sshd_config.d/01-itx.conf
+sudo sshd -t && sudo systemctl reload ssh
+sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin)'
+
+# 2. nightly security patching
+sudo apt-get install -y unattended-upgrades
+sudo cp deploy/apt-unattended-upgrades.conf /etc/apt/apt.conf.d/52-itx-unattended-upgrades
+sudo unattended-upgrade --dry-run --debug | tail -20
+
+# 3. ban the scanners, to keep the log readable
+sudo apt-get install -y fail2ban python3-systemd
+sudo cp deploy/fail2ban-itx.local /etc/fail2ban/jail.d/itx.local
+sudo fail2ban-client -t && sudo systemctl enable --now fail2ban
+sudo fail2ban-client status sshd
+```
+
+Each file carries its own reasoning in its comments; the two that bite are
+worth repeating here. The SSH drop-in **must** sort before the cloud image's
+own `50-cloud-init.conf`, because sshd takes the first value it sees for a
+keyword and that file often turns password auth back on — hence `01-`. The apt
+file **must** sort after `50unattended-upgrades`, because apt takes the last —
+hence `52-`. Both are installed as drop-ins rather than as edits to the
+distribution's file, so a package upgrade cannot quietly revert them.
+
+`sshd -T` is the check that matters. It prints what sshd resolved after every
+include, so it answers "is password login off" rather than "is there a file
+that says so".
+
+#### Narrowing SSH by source address
+
+The firewall's default accepts SSH from anywhere, rate-limited. Restricting it
+to the addresses you administer from is the single biggest reduction in what
+can reach this box — and the single easiest way to lock yourself out of it, on
+a host where being locked out means no access to the treasury.
+
+Do it with a dead man's switch. Take a copy of the working ruleset, schedule
+its restoration, apply the narrower one, prove the new rules from a **new**
+connection, and only then cancel the timer:
+
+```bash
+# 0. the ruleset that currently works, as the thing to fall back to
+sudo cp /etc/nftables.conf /etc/nftables.conf.working
+
+# 1. the safety net FIRST: in 10 minutes, put the working ruleset back
+sudo systemd-run --on-active=10min --unit=itx-nft-rollback \
+  /usr/sbin/nft -f /etc/nftables.conf.working
+
+# 2. fill in SSH_ALLOWED_V4 and SSH_ALLOWED_V6 in your copy, comment out
+#    the unrestricted rule, uncomment BOTH restricted ones, then:
+sudo nft -c -f /etc/nftables.conf && sudo nft -f /etc/nftables.conf
+
+# 3. from ANOTHER terminal, on the machine you administer from, both families
+ssh -4 -o ConnectTimeout=5 admin@itx.example.com true && echo "ssh v4 ok"
+ssh -6 -o ConnectTimeout=5 admin@itx.example.com true && echo "ssh v6 ok"
+
+# 4. only once both printed: stand the net down
+sudo systemctl stop itx-nft-rollback.timer
+```
+
+Both families or neither — one without the other is the IPv4-only match bug
+§3 describes, and here it locks the door rather than leaving it open.
+
+**Whether to do this at all is a judgement about your own address.** A static
+address or a jump host you control makes it nearly free. A home connection whose
+address changes on a router reboot makes it a lockout waiting for a power cut,
+and key-only SSH with fail2ban is the better trade. What you should not do is
+narrow it to an address you have not checked is stable, and discover the answer
+during an incident.
+
+#### What this does not cover
+
+Nothing here protects the box from a key of yours that leaks. The account with
+sudo is the account that can read `/var/lib/itx/secrets`, and the machine you
+keep that key on is, in practice, part of this deployment. §9.1 is the
+procedure for when that assumption breaks.
+
 ---
 
 ## 4. TLS and the reverse proxy

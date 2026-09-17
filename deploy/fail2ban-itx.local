@@ -1,0 +1,54 @@
+# fail2ban for the SSH port, which is the one service on this box that
+# answers strangers and is not behind the proxy.
+#
+#     sudo apt-get install -y fail2ban python3-systemd
+#     sudo cp deploy/fail2ban-itx.local /etc/fail2ban/jail.d/itx.local
+#     sudo fail2ban-client -t && sudo systemctl enable --now fail2ban
+#     sudo fail2ban-client status sshd
+#
+# **What this is and is not worth.** With `deploy/sshd-itx.conf`
+# installed there are no passwords to guess, so this bans nobody who
+# could have got in anyway. What it buys is quiet: a box with a public
+# address collects thousands of login attempts a day, and they are the
+# noise a real attempt hides in (§8.4 reads these logs). It also cuts off
+# the traffic before sshd forks a process per attempt.
+#
+# It is not a substitute for the key-only config, and on its own it is
+# close to worthless -- a jail over password auth just means the guessing
+# takes longer.
+
+[DEFAULT]
+# Ban in nftables, in fail2ban's own `inet f2b-table`. That table is
+# separate from `table inet itx`, which is why `deploy/nftables.conf`
+# replaces only its own table and never runs `flush ruleset`: a flush
+# would silently unban everything here (§3).
+banaction = nftables[type=multiport]
+banaction_allports = nftables[type=allports]
+
+# Read the journal, not `/var/log/auth.log`. Debian 12 still writes that
+# file, but Ubuntu 24.04 and any host with rsyslog removed do not, and
+# the file backend on such a box starts cleanly and then watches a file
+# that never gets a line -- a jail that is enabled, running, and has
+# never seen an attempt. Needs `python3-systemd`.
+backend = systemd
+
+# Never ban the box from itself, or the proxy's own loopback traffic.
+ignoreip = 127.0.0.1/8 ::1
+
+# Five failures inside ten minutes costs an hour. Deliberately ordinary
+# numbers: the aim is to shed scanner traffic, and a long ban on a small
+# count is how an operator with a stale key locks themselves out of the
+# machine holding the treasury. If you narrow SSH by source address as
+# well (§3.1), your own address is already the only one that can reach
+# the port, and this matters less still.
+findtime = 10m
+maxretry = 5
+bantime = 1h
+
+[sshd]
+enabled = true
+# Covers the attempts a key-only box actually gets: unknown users,
+# clients that disconnect before authenticating, and protocol junk --
+# not just bad passwords, which no longer exist here.
+mode = aggressive
+port = ssh

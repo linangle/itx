@@ -20,6 +20,9 @@ this directory is the artifacts, not the explanation.
 | `itx-restore-drill.sh` | restores a backup into a scratch dir and proves it is the right one. The Tuesday check — nothing live is touched |
 | `itx-recover.sh` | brings the deployment back on a box that has never seen it: installs the release, restores into `/var/lib/itx`, starts the units in an order that works, proves the operator address matches. The incident script. Rehearsed end to end — §7.6 |
 | `security.txt` | RFC 9116 disclosure contact, served by the proxy |
+| `sshd-itx.conf` | key-only SSH, as a drop-in for `/etc/ssh/sshd_config.d/`. **Install it as `01-itx.conf`** — sshd takes the first value it reads for a keyword and cloud images ship a `50-cloud-init.conf` that often turns password auth back on |
+| `apt-unattended-upgrades.conf` | nightly security patching for the distribution's own packages, the sshd and proxy among them. **Install it as `52-itx-unattended-upgrades`** — apt takes the last value, so it has to sort after the package's own file |
+| `fail2ban-itx.local` | bans the addresses that keep failing to log in, into fail2ban's own nftables table. Worth it for the quiet, not for the keys it protects — `sshd-itx.conf` is what does that |
 
 Four things in here are security controls rather than tuning, and each is
 commented where it appears:
@@ -33,6 +36,9 @@ commented where it appears:
   unauthenticated.
 - Backups encrypt to a key whose private half is **not on the box**
   (`itx-backup.sh`).
+- SSH takes **keys only** (`sshd-itx.conf`) — port 22 and the proxy's ports are
+  the whole of what answers strangers, and this is the one that hands out a
+  shell on the box that can read the secrets directory.
 
 Neither proxy config is a whole deployment on its own any more: the apex serves
 `status.html` from the site tarball as its outage and maintenance page, and both

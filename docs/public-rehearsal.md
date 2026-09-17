@@ -124,6 +124,41 @@ ssh "$ITX_SITE" true && echo "ssh survived the ruleset"
 If that fails you are locked out of a box you have not yet put anything on,
 which is the cheapest possible time to find out.
 
+### 2a. The SSH port itself
+
+Same reasoning, one layer up: the firewall decides who may reach port 22, and
+this decides what happens when they do. Do it here, while the box is still
+worth nothing, rather than after the secrets are on it. The files and the
+reasoning are §3.1; this is the order to run them in.
+
+```bash
+sudo cp "$ITX_REL/deploy/sshd-itx.conf" /etc/ssh/sshd_config.d/01-itx.conf
+sudo sshd -t && sudo systemctl reload ssh
+sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin)'
+
+sudo apt-get install -y unattended-upgrades fail2ban python3-systemd
+sudo cp "$ITX_REL/deploy/apt-unattended-upgrades.conf" /etc/apt/apt.conf.d/52-itx-unattended-upgrades
+sudo cp "$ITX_REL/deploy/fail2ban-itx.local" /etc/fail2ban/jail.d/itx.local
+sudo fail2ban-client -t && sudo systemctl enable --now fail2ban
+```
+
+**Gate**, from your laptop and in a session you did not reload sshd from:
+
+```bash
+ssh "$ITX_SITE" true && echo "key login still works"
+# and the thing that must no longer work: a password prompt
+ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no "$ITX_SITE" true \
+  && echo "PASSWORD LOGIN IS STILL ON -- stop and read §3.1" || echo "password auth refused"
+```
+
+The second command is the check that matters, and it is the one a file-only
+inspection cannot make: a cloud image's own drop-in can be turning password
+auth back on underneath yours (§3.1).
+
+Narrowing SSH to your own addresses is §3.1's dead-man's-switch procedure. It is
+optional, and the decision is about whether your own address is stable; do it
+here if you are doing it, with the rollback timer armed.
+
 ---
 
 ## 3. Install the release, per §5
