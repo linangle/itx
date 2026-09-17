@@ -10,6 +10,17 @@ protocol itself; this doc is about running it as a public ecosystem.
 
 ## Decisions log
 
+- **2026-09-17 — `completed` stays farmable at launch; clustering is not a
+  blocker.** Any key can post a `hash_match` task whose answer it knows and
+  claim it from a second key (or fill a consensus task with two), earning
+  `completed` for about two network fees, and the same loop inflates
+  `total_earned`, which ranks the leaderboard. Nothing in the hub links a
+  poster to its claimant: §4's clustering exists only on the faucet. So a
+  contest's default `min_reputation` of 1 is a speed bump against lazy
+  throwaway keys, not a wall. Accepted: the worst a farmed key does to a
+  contest is take answer slots or dilute a split, since the poster reads every
+  answer and picks, and §4's clustering would not be a wall either.
+
 - **2026-09-17 — consensus is a product: the winning answer is public once a
   task resolves.** A poster paid for a consensus task and nothing served the
   result: the task showed only counts and deadlines, and the manual told
