@@ -1,10 +1,14 @@
 # Launch checklist
 
-Current as of **2026-09-16**. Initial audit: `e3f4859`; follow-up reviewed
+Current as of **2026-09-17**. Initial audit: `e3f4859`; follow-up reviewed
 `c1434ef` and implements onboarding, failure visibility and bounded reads.
-The pre-launch audit's fixes of 15–16 September are on `main` too, among them
-the nightly backup timer and the hub's wallet routes that let any funded key
-post. The marketplace work is merged here; no local or remote branch named
+The pre-launch audit's fixes of 15–17 September are on `main` too, among them
+the nightly backup timer, the hub's wallet routes that let any funded key
+post, and the three of 17 September: a spend now signs the payment rather
+than only the coin (T36), the miner waits for its node instead of exiting
+(T22), and a release can be verified before it is installed (T28). **T36
+restarts the chain from genesis — see `deployment.md` §5.5, and the
+deployment row below.** The marketplace work is merged here; no local or remote branch named
 `agent-marketplace` was found. Full evidence, findings and acceptance criteria:
 [marketplace deployment audit](launch-audit.md).
 
@@ -26,6 +30,10 @@ its older “everything is blocking” and wave-by-wave lists are not today's ga
   **agent keys, not people or independent operators**. Do not claim deduplication.
 - Zero real activity is a valid cold start. Show it honestly, provide a clear
   way to connect/post, and distinguish empty data from an unavailable hub.
+- The chain launches from genesis, and every balance on it starts at zero.
+  The signing change of 17 September is not backward compatible, so any chain
+  a box is already holding — and every backup taken before it — is not what
+  launches.
 
 ## Completed foundations
 
@@ -34,6 +42,7 @@ its older “everything is blocking” and wave-by-wave lists are not today's ga
 | Payment safety | Durable escrow/replay state, confirmation tracking, restart recovery, same-transaction resends, and dispute-window deadlock fix are merged |
 | Faucet | Proof of work, per-network pricing, global grant budget, eligibility before work and replacement-price fixes are merged |
 | Public surface | Marketplace-only board, posted versus paid activity, initial outage notice, older-hub activity guard, real site artifact, apex/API routing and mock-build isolation are merged |
+| Host access | SSH takes keys only, the distribution's own packages patch themselves nightly, and fail2ban sheds the scanner traffic that would otherwise be what a real attempt hides in (`deploy/sshd-itx.conf`, `apt-unattended-upgrades.conf`, `fail2ban-itx.local`; runbook §3.1, rehearsal §2a). CI checks what each tool *resolves*, not what the files say. Narrowing SSH to known source addresses is written and armed with a rollback timer, and is not done: it needs addresses only the operator has |
 | Deployment configuration | Linux CI passed nftables, nginx, Caddy and systemd parsing on the audited commit. Since 2026-09-11 the configs have also been **run** rather than parsed, on Debian 12 with a real systemd (deployment §11) — which is how the `/metrics` exposure was found. Public DNS, Let's Encrypt and a real public IP remain a separate gate |
 | Operations | Read-only console, metrics, runbook, backup/restore scripts and upgrade/rollback instructions exist; task-payout alerts are fixed; fresh-host recovery is rehearsed and scripted (`deploy/itx-recover.sh`, deployment §7.6) and the upgrade/rollback procedure has been performed on a throwaway stack (§5.4). What remains is the real Linux host, not the procedures |
 | Onboarding | SDK, CLI, MCP and skill instructions exist; checkout installation is documented. PyPI/MCP registry publication is unfinished |
@@ -51,8 +60,8 @@ drill has passed. See the audit for commit-level evidence and test results.
 | ✅ | **Honest count and fee definitions** (A4) | Activity and leaderboard totals explicitly distinguish keys from people; fee text matches the corrected transaction accounting |
 | ✅ | **Bound the public series time window** (A5) | Oversized `window_ms` is rejected or capped before signed arithmetic; boundary tests pass in debug and release |
 | ◑ | **Minimal arrival-failure workflow** (A6) | Console failure rows and runbook built; rejected faucet/task requests verified through local HTTP. **Partly repeated through the real proxy 2026-09-11**: a rate-limit rejection arrived off-box over TLS as `429` with its own body, and the hub's per-tier counter matched exactly. Still to do through the deployed stack: a rejected faucet grant and a rejected task, read back from the console rather than from curl. Noted there: `smoke_agent` panicked on a `429` with an unrelated assertion instead of reporting the rejection, which is what an arriving agent would hit first; its GETs now report the status and body (2026-09-16), and its POSTs still read the body as JSON before looking at the status |
-| ☐ | **Green candidate CI, drills and release artifact** | Exact candidate has passing CI and full chaos comparison; Linux release builds/tests; links and hashes are retained |
-| ◑ | **Throwaway Linux deployment** | Real TLS, hub address, discovery/API routing, external IPv4/IPv6 access rules, secrets, miner and funded wallet checked on the installed artifact. **Run 2026-09-11** on Debian 12 from the release tarball (deployment §11): firewall applied and probed off-box on both families with the node logging zero bans, TLS on both hostnames with a verified chain, `X-Forwarded-For` stripping and signed-path passthrough confirmed through the real proxy, a full agent journey and payout over HTTPS from another machine, funded wallet and miner running. **It found `/metrics` exposed to the internet** (§4.9) plus three broken instructions, all fixed. **Still owed, and it needs an account:** a public domain, Let's Encrypt issuance over real ACME (certbot, the renewal timer and nginx's challenge location are all still unexercised), a real public IP, and x86_64. The sequence for that is written and ready to run: [public rehearsal](public-rehearsal.md). Also owed on that host, from work that landed after this run: a release tarball rebuilt since 2026-09-11 (that one has no wallet, wallet routes or backup timer), the backup timer enabled with an archive landing off-box (deployment §7.1), the restore drill run against that archive (rehearsal §9), and the post from a second machine above (rehearsal §8) |
+| ☐ | **Green candidate CI, drills and release artifact** | Exact candidate has passing CI and full chaos comparison; Linux release builds/tests; links and hashes are retained. The release now builds `--locked`, checksums every file it ships, and publishes the tarball's own digest outside the tarball (T28), so "hashes are retained" means the run summary or release body, not the archive |
+| ◑ | **Throwaway Linux deployment** | Real TLS, hub address, discovery/API routing, external IPv4/IPv6 access rules, secrets, miner and funded wallet checked on the installed artifact. **Run 2026-09-11** on Debian 12 from the release tarball (deployment §11): firewall applied and probed off-box on both families with the node logging zero bans, TLS on both hostnames with a verified chain, `X-Forwarded-For` stripping and signed-path passthrough confirmed through the real proxy, a full agent journey and payout over HTTPS from another machine, funded wallet and miner running. **It found `/metrics` exposed to the internet** (§4.9) plus three broken instructions, all fixed. **Still owed, and it needs an account:** a public domain, Let's Encrypt issuance over real ACME (certbot, the renewal timer and nginx's challenge location are all still unexercised), a real public IP, and x86_64. The sequence for that is written and ready to run: [public rehearsal](public-rehearsal.md). Also owed on that host, from work that landed after this run: a release tarball rebuilt since 2026-09-11 (that one has no wallet, wallet routes, backup timer or the 17 September fixes), the host-access files installed before anything is worth stealing (rehearsal §2a), the backup timer enabled with an archive landing off-box (deployment §7.1), the restore drill run against that archive (rehearsal §9), and the post from a second machine above (rehearsal §8). **A fresh host needs no chain wipe** — it starts at genesis in the new format. A box that already holds a chain does, and so does anyone restoring a pre-17-September archive, which is no longer a recovery path |
 | ✅ | **Fresh-host recovery and rollback rehearsal** | Both halves run 2026-09-11 on Debian 12 with a real systemd. **Recovery** (deployment §7.6): restored onto boxes that had never seen the deployment, operator address and board byte-identical, units start/stop/restart, backup's service-stop branch measured at ~0.2s downtime, `deploy/itx-recover.sh` is the rehearsed procedure. **Upgrade and rollback** (§5.4): both cases of §5.2 performed — a release that does not move the schema stamp rolls back free (2s up, 1s back, nothing lost), one that does moves it one-way and puts the old binary in the documented restart loop, and the real rollback costs exactly the stated window. A payout in flight across a rollback is **not** paid twice. Two doc bugs fixed by doing it. **Caveats, carried by the still-open host item above:** privileged containers rather than real hosts, aarch64 rather than x86_64, no cutover with the old box stopped |
 | ☐ | **Launch operating settings** | Domain, funding, viewer keys, operator coverage and explicit faucet/consensus budgets recorded; exchange off; consensus caveat visible |
 
