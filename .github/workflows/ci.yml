@@ -108,7 +108,8 @@ jobs:
           collected=$(pytest --collect-only -q tests/test_mcp_server.py | tail -1)
           echo "$collected"
           case "$collected" in
-            *"no tests"*|*"0 tests"*)
+            # Anchored: "40 tests collected" contains "0 tests".
+            "no tests"*|"0 tests"*)
               echo "::error file=agent-sdk-py/tests/test_mcp_server.py::the mcp tests collected nothing -- the [mcp] extra is missing again"
               exit 1 ;;
           esac
