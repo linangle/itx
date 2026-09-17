@@ -64,9 +64,11 @@ stray `node`/`miner`/`hub` processes under the work root and kill them.
 CARGO_TARGET_DIR=~/itx/target cargo run --release -p harness -- drill all --out harness/results
 ```
 
-One at a time, by name: `node-crash`, `escrow-restart`, `escrow-refund`,
-`replay-storm`, `rate-limit-tiers`, `quota-isolation`, `payout-ceiling`,
-`signed-write-cost`.
+One at a time, by name: `node-crash`, `escrow-restart`, `replay-storm`,
+`rate-limit-tiers`, `quota-isolation`, `payout-ceiling`, `signed-write-cost`.
+`exchange-restart` and, since 2026-09-16, `escrow-refund` are retired: the
+second settles a dispute bond, and open-ended tasks no longer take disputes.
+`drill <name>` says why rather than running.
 
 **`exchange-restart` is retired and is not in `drill all`.** It needs `compute`
 to sell, settlement was the only thing that ever minted `compute`, and the

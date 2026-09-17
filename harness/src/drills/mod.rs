@@ -109,7 +109,6 @@ pub async fn wait_until_funded(chain: &ChainView, pubkey: &PublicKey, target: u6
 pub const ALL: &[&str] = &[
     "node-crash",
     "escrow-restart",
-    "escrow-refund",
     "replay-storm",
     "rate-limit-tiers",
     "quota-isolation",
@@ -136,12 +135,27 @@ pub const ALL: &[&str] = &[
 /// the name back in `ALL` and its arm back in `run`, and the checked-in
 /// baseline is still there to compare against. Deleting the drill would
 /// make that a rewrite instead of a re-listing.
-pub const RETIRED: &[(&str, &str)] = &[(
-    "exchange-restart",
-    "needs `compute` to sell, and settlement stopped minting it when the exchange was deferred. \
-     There is no path that credits `compute` any more, so the two-sided book this drill measures \
-     cannot be built. Restore a compute source and put it back in ALL.",
-)];
+///
+/// `escrow-refund` settles a dispute bond, and since 2026-09-16 nothing
+/// can file a dispute: an open-ended task pays on submission (the plan's
+/// decisions log). What it guarded, a settled bond not being settled
+/// again after a restart, is still true of a store holding an older
+/// dispute, and `a_settled_legacy_dispute_bond_is_not_settled_again_after_a_restart`
+/// in the hub pins it against seeded state.
+pub const RETIRED: &[(&str, &str)] = &[
+    (
+        "exchange-restart",
+        "needs `compute` to sell, and settlement stopped minting it when the exchange was deferred. \
+         There is no path that credits `compute` any more, so the two-sided book this drill measures \
+         cannot be built. Restore a compute source and put it back in ALL.",
+    ),
+    (
+        "escrow-refund",
+        "settles a dispute bond, and since 2026-09-16 open-ended tasks pay on submission, so no \
+         dispute can be filed over HTTP. The bond-resettlement invariant is pinned by a hub test \
+         against seeded legacy state.",
+    ),
+];
 
 /// Runs one drill by name.
 pub async fn run(name: &str, repo: &Path, bin_dir: &Path, work_root: &Path) -> Result<Report> {
@@ -149,7 +163,6 @@ pub async fn run(name: &str, repo: &Path, bin_dir: &Path, work_root: &Path) -> R
     match name {
         "node-crash" => node_crash::run(repo, bin_dir, work_dir).await,
         "escrow-restart" => escrow_restart::run(repo, bin_dir, work_dir).await,
-        "escrow-refund" => escrow_refund::run(repo, bin_dir, work_dir).await,
         "replay-storm" => replay_storm::run(repo, bin_dir, work_dir).await,
         "rate-limit-tiers" => rate_limit_tiers::run(repo, bin_dir, work_dir).await,
         "quota-isolation" => quota_isolation::run(repo, bin_dir, work_dir).await,
