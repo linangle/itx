@@ -18,7 +18,7 @@ this directory is the artifacts, not the explanation.
 | `itx-backup.sh` | encrypted backup, to a public key the box cannot read back, copied off the box with `--remote` |
 | `itx-backup.service`, `itx-backup.timer` | the nightly schedule for it. Enable the timer; the recipient and the off-box destination come from `/etc/itx/backup.env` (§7.1) |
 | `itx-restore-drill.sh` | restores a backup into a scratch dir and proves it is the right one. The Tuesday check — nothing live is touched |
-| `itx-recover.sh` | brings the deployment back on a box that has never seen it: installs the release, restores into `/var/lib/itx`, starts the units in an order that works, proves the operator address matches. The incident script. Rehearsed end to end — §7.6 |
+| `itx-recover.sh` | brings the deployment back on a box that has never seen it: checks the release directory against its `SHA256SUMS` before installing a thing, installs the release, restores into `/var/lib/itx`, starts the units in an order that works, proves the operator address matches. The incident script. Rehearsed end to end — §7.6. `--skip-release-checksums` exists and prints a paragraph saying what you gave up |
 | `security.txt` | RFC 9116 disclosure contact, served by the proxy |
 | `sshd-itx.conf` | key-only SSH, as a drop-in for `/etc/ssh/sshd_config.d/`. **Install it as `01-itx.conf`** — sshd takes the first value it reads for a keyword and cloud images ship a `50-cloud-init.conf` that often turns password auth back on |
 | `apt-unattended-upgrades.conf` | nightly security patching for the distribution's own packages, the sshd and proxy among them. **Install it as `52-itx-unattended-upgrades`** — apt takes the last value, so it has to sort after the package's own file |

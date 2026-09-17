@@ -14,12 +14,15 @@
 #                  --identity ~/itx-restore-key.txt \
 #                  --release-dir ./itx-<version>-x86_64-linux \
 #                  [--expect-operator <pubkey>] \
-#                  [--state-dir /var/lib/itx] [--force]
+#                  [--state-dir /var/lib/itx] [--force] \
+#                  [--skip-release-checksums]
 #
 # `--release-dir` is an unpacked release artifact: `itx-node`, `itx-hub`,
-# `itx-miner`, `itx-console` and `deploy/`. `--expect-operator` is the
-# address the old box printed at startup; without it this proves a hub
-# came up, not that YOUR hub came up, and it says so at the end.
+# `itx-miner`, `itx-console`, `deploy/` and the `SHA256SUMS` that covers
+# them, which step 0b checks before anything out of that directory is
+# installed. `--expect-operator` is the address the old box printed at
+# startup; without it this proves a hub came up, not that YOUR hub came
+# up, and it says so at the end.
 #
 # It refuses to run over an existing store unless you pass --force. That
 # refusal is the whole reason this is a script rather than a checklist:
@@ -36,6 +39,7 @@ EXPECT_OPERATOR=""
 STATE_DIR=${ITX_STATE_DIR:-/var/lib/itx}
 USE_GPG=0
 FORCE=0
+SKIP_SUMS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -46,6 +50,7 @@ while [[ $# -gt 0 ]]; do
         --state-dir)       STATE_DIR="$2";       shift 2 ;;
         --gpg)             USE_GPG=1;            shift ;;
         --force)           FORCE=1;              shift ;;
+        --skip-release-checksums) SKIP_SUMS=1;   shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -101,6 +106,42 @@ if [[ -e "$STATE_DIR/hub.redb" || -e "$STATE_DIR/secrets/hub_operator.priv.cbor"
     echo "  WARNING: $STATE_DIR is not empty and --force was given"
 fi
 echo "  nothing running, nothing to overwrite"
+
+# --- 0b. the release directory, before anything out of it runs ---------
+#
+# Step 2 installs five binaries into /usr/local/bin and step 3 copies unit
+# files into /etc/systemd/system, all of it as root, out of a directory
+# this script was simply handed on the command line. Until this check
+# existed nothing verified that directory at all: the release tarball
+# carried a `SHA256SUMS`, §5 told the operator to run it, and the incident
+# script -- the one place where the operator is tired, on a strange box,
+# and has already decided to trust whatever is in front of them -- did not.
+# A check that depends on being remembered mid-incident is not a check.
+#
+# What this proves and what it does not. The manifest ships inside the same
+# tarball as the files it covers, so it catches a truncated download, a
+# `tar x` that ran out of disk, and a file edited after unpacking. It
+# cannot catch an archive that was rewritten wholesale, because its
+# manifest would have been rewritten with it. Only the tarball's own
+# digest settles that, and it is deliberately published where the archive
+# cannot carry it along: the workflow run summary and, for a tag, the
+# release body -- see .github/workflows/release.yml and deployment.md §5.
+step "0b. verifying the release directory against its own manifest"
+if [[ $SKIP_SUMS -eq 1 ]]; then
+    echo "  WARNING: --skip-release-checksums was given. Nothing has checked that"
+    echo "    the five binaries about to be installed into /usr/local/bin, or the"
+    echo "    units about to be copied into /etc/systemd/system, are the ones CI"
+    echo "    built. You are recovering a treasury from an unverified directory."
+    echo "    Write down in the incident log why this was the better option."
+elif [[ ! -f "$RELEASE_DIR/SHA256SUMS" ]]; then
+    fail "no SHA256SUMS in $RELEASE_DIR. Every release tarball carries one at its root; a release directory without it is a repacked, partially unpacked or hand-assembled tree, and nothing here can tell which. Unpack the tarball again -- or, if you know exactly what this directory is, re-run with --skip-release-checksums."
+else
+    # --quiet so a passing run says nothing and a failing one prints only
+    # the files that failed, which is the line an operator needs to read.
+    ( cd "$RELEASE_DIR" && sha256sum -c --quiet SHA256SUMS ) \
+        || fail "the release directory does not match its own SHA256SUMS -- do not install this. The files listed above differ from what CI built. Unpack the tarball again into a clean directory and re-run; if it fails a second time, the download itself is bad and no amount of re-unpacking will fix it."
+    echo "  $(wc -l < "$RELEASE_DIR/SHA256SUMS" | tr -d ' ') files match SHA256SUMS"
+fi
 
 step "1. the itx user and the state directory"
 id -u itx >/dev/null 2>&1 \

@@ -22,6 +22,25 @@
 # load test — a shared target directory had already served one worktree's
 # binary to another. The same question arrives during an incident. The
 # manifest here is what lets an operator answer it.
+#
+# The manifest covers every file in the tarball, not only the binaries.
+# The binaries are not the only thing a deployment runs: `deploy/` holds
+# the scripts an operator executes as root on the treasury host and the
+# unit files systemd then loads, and `site/` is what the public is
+# served. A manifest that stopped at `itx-*` said nothing about any of
+# them, which is to say nothing about most of the attack surface it
+# appeared to cover.
+#
+# # The tarball's own digest cannot live in the tarball
+#
+# `SHA256SUMS` travels inside the archive it attests to, so verifying a
+# rewritten archive against its own rewritten manifest passes. That check
+# is still worth running — it catches a truncated download, a half-done
+# `tar x`, and a file edited after unpacking — but it cannot answer "is
+# this the archive CI built". Only a digest that arrives by a different
+# route can, so the tarball's own SHA-256 is published where the archive
+# cannot reach it: the run summary, and the release body for a tag.
+# `docs/deployment.md` §5 sends the operator to those two places by name.
 
 name: release
 
@@ -53,15 +72,28 @@ jobs:
         # systemd host with a normal glibc; musl would buy portability to
         # Alpine that nothing here wants, and costs a different allocator
         # and a different DNS resolver in the process that moves money.
-        run: cargo build --release --workspace
+        #
+        # `--locked` because this is the build whose bytes get installed on
+        # the treasury host. Without it cargo is free to re-resolve and
+        # rewrite `Cargo.lock` to satisfy the manifests, so the release
+        # would be built from dependency versions no commit in this
+        # repository names — and the checksums below would then record
+        # bytes that cannot be reproduced from the tag they are published
+        # under. It also turns a lock file that has drifted out of step
+        # with `Cargo.toml` into a loud failure here, rather than a
+        # difference nobody sees until an incident.
+        run: cargo build --release --workspace --locked
 
       # The release profile is what ships, and it is not what the test
       # suite runs under. That difference has already mattered once: a
       # bounty's fee wrapped only in release, because `overflow-checks` is
       # off there and on in dev. Running the suite against the profile
       # being shipped is cheap insurance against the next one.
+      # `--locked` here for the same reason as the build, and for one more:
+      # a test run that resolved different dependencies from the build is
+      # not evidence about the build.
       - name: test the profile being shipped
-        run: cargo test --release --workspace -- --test-threads=1
+        run: cargo test --release --workspace --locked -- --test-threads=1
 
       # The site ships with the binaries. It is static files, so the hub
       # box never needs node on it -- which is the point: installing a
@@ -109,10 +141,64 @@ jobs:
           # install step and nothing collides with the binaries.
           cp -r dashboard/dist "dist/${out}/site"
           cp docs/deployment.md docs/launch-checklist.md "dist/${out}/"
-          ( cd "dist/${out}" && sha256sum itx-* > SHA256SUMS )
+          # Every file in the tarball, not `itx-*`. The five binaries were
+          # never the whole of what this artifact asks a host to run:
+          # `deploy/itx-recover.sh` is executed as root during an incident,
+          # `deploy/itx-*.service` is what systemd then loads, and `site/`
+          # is served to the public. Hashing only the binaries produced a
+          # manifest an operator could verify in full and still have no
+          # statement at all about the files that do those three things.
+          #
+          # `-printf '%P\n'` rather than `find`'s default, so the paths are
+          # relative to the release directory and `sha256sum -c SHA256SUMS`
+          # works from inside it — which is where `itx-recover.sh` and §5
+          # both run it from. Sorted under `LC_ALL=C` so the manifest has a
+          # stable order and two builds of the same commit can be diffed;
+          # `xargs -d '\n' -r` so a file name with a space in it (the site
+          # bundle is generated, and nothing promises it will not) is one
+          # argument rather than two.
+          #
+          # `! -name SHA256SUMS` is not defensive tidiness. The shell sets
+          # up the redirect before the pipeline runs, so the file already
+          # exists — empty — by the time `find` walks the tree, and without
+          # the exclusion the manifest would list itself carrying the hash
+          # of nothing, which fails `sha256sum -c` on every release.
+          ( cd "dist/${out}" \
+            && find . -type f ! -name SHA256SUMS -printf '%P\n' \
+               | LC_ALL=C sort \
+               | xargs -d '\n' -r sha256sum > SHA256SUMS )
           ( cd dist && tar czf "${out}.tar.gz" "${out}" )
-          echo "artifact=dist/${out}.tar.gz" >> "$GITHUB_ENV"
-          cat "dist/${out}/SHA256SUMS"
+          # The digest of the archive itself, which deliberately does not
+          # go into the archive. See the header: a manifest inside a
+          # tarball attests to whichever tarball it arrived in.
+          tarball_sha256=$(cd dist && sha256sum "${out}.tar.gz" | cut -d' ' -f1)
+          {
+            echo "artifact=dist/${out}.tar.gz"
+            echo "tarball=${out}.tar.gz"
+            echo "tarball_sha256=${tarball_sha256}"
+          } >> "$GITHUB_ENV"
+          # The manifest is a few hundred lines now that the site is in it,
+          # so the log gets the count and the binaries. This is a
+          # convenience for reading a run, not a channel anyone should
+          # verify against — the two places that are, are below.
+          echo "SHA256SUMS covers $(wc -l < "dist/${out}/SHA256SUMS") files"
+          grep -E '  itx-' "dist/${out}/SHA256SUMS"
+
+      # Published here because it cannot be published inside the thing it
+      # describes, and an operator needs it before they unpack anything.
+      # The run summary is served by GitHub from the run, not from the
+      # file, so an archive substituted anywhere between this runner and
+      # the treasury host cannot bring a matching digest along with it.
+      - name: publish the tarball's digest outside the tarball
+        run: |
+          set -euo pipefail
+          {
+            printf '## `%s`\n\n' "$tarball"
+            printf 'Check the download against this **before** unpacking it — '
+            printf 'the `SHA256SUMS` inside the archive cannot tell you the '
+            printf 'archive is the one CI built (`docs/deployment.md` §5):\n\n'
+            printf '```\n%s  %s\n```\n' "$tarball_sha256" "$tarball"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -125,11 +211,28 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.artifact }}
-          # Written by a human. A generated changelog would be a list of
-          # commit subjects, and the thing an operator needs before
-          # upgrading a treasury host is what changed about *the store*
-          # and whether it can be rolled back — which only a person
-          # knows. See `docs/deployment.md` on the schema stamp being a
-          # one-way door.
+          # The prose of a release is written by a human. A generated
+          # changelog would be a list of commit subjects, and the thing an
+          # operator needs before upgrading a treasury host is what changed
+          # about *the store* and whether it can be rolled back — which
+          # only a person knows. See `docs/deployment.md` on the schema
+          # stamp being a one-way door.
+          #
+          # The digest is the exception, and `append_body` is why it can
+          # be: it is added to whatever a human has written rather than
+          # replacing it. It has to come from the release page and not
+          # from the archive, because it is the only thing an operator can
+          # check a download against without first trusting the download.
+          # Someone reading this in a year and tempted to move it into the
+          # tarball beside `SHA256SUMS`: that is the arrangement this
+          # replaced, and it verifies a forged archive against its own
+          # forged manifest.
+          append_body: true
+          body: |
+            sha256 of the artifact, published here rather than inside it:
+
+            ```
+            ${{ env.tarball_sha256 }}  ${{ env.tarball }}
+            ```
           draft: true
           fail_on_unmatched_files: true

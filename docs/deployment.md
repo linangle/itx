@@ -757,6 +757,34 @@ timedatectl    # must say "System clock synchronized: yes"; if not:
 sudo apt-get install -y systemd-timesyncd && sudo timedatectl set-ntp true
 ```
 
+**Installing a release tarball rather than building here? Two checks first, and
+they answer different questions.**
+
+```bash
+# 1. Is this the archive CI built? Answered by a digest that did NOT travel
+#    with the archive: the release workflow prints it in the run summary, and
+#    a tagged release repeats it in the release body. Compare by eye.
+sha256sum itx-v0.1.0-x86_64-linux.tar.gz
+
+tar xzf itx-v0.1.0-x86_64-linux.tar.gz && cd itx-v0.1.0-x86_64-linux
+
+# 2. Did it arrive and unpack intact? Answered by the manifest inside it,
+#    which covers every file -- binaries, deploy/, site/, the docs.
+sha256sum -c SHA256SUMS
+```
+
+The order is not cosmetic and neither check replaces the other. `SHA256SUMS`
+ships *inside* the tarball, so an archive that was rewritten wholesale would
+arrive with a manifest rewritten to match and pass check 2 perfectly. That is
+what check 1 is for, and it only works because the digest comes from GitHub's
+own record of the run rather than from the file — a different place, which is
+the entire point. Check 2 is still the one that catches what actually goes
+wrong most often: a truncated download, a `tar x` that ran out of disk, a file
+edited on the box and forgotten.
+
+`deploy/itx-recover.sh` runs check 2 itself, before it installs anything, and
+refuses to continue if it fails (§7.6). Nothing can run check 1 for you.
+
 ```bash
 sudo useradd --system --home /var/lib/itx --shell /usr/sbin/nologin itx
 sudo mkdir -p /var/lib/itx/secrets
