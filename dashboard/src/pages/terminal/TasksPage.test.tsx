@@ -124,9 +124,9 @@ describe("terminal TasksPage", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "challenge window tasks" }),
+      await screen.findByRole("heading", { name: "poster review tasks" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/stands unless someone challenges it/)).toBeInTheDocument();
+    expect(screen.getByText(/paid for it on submission/)).toBeInTheDocument();
     // The protocol name is demoted, not hidden -- someone reading the
     // hub's API has to be able to line the two up.
     expect(screen.getByText("disputable")).toBeInTheDocument();

@@ -207,7 +207,8 @@ export function formatKind(kind: string): string {
  * they are in `hub/src/board.rs` and say nothing to someone who has not
  * read it. Every one of them answers the same question -- *how does this
  * task get judged correct* -- so the labels name the judging method: a
- * machine check, a vote, or a challenge window.
+ * machine check, a vote, or -- for open-ended work, which pays whatever
+ * it is given -- the poster's review afterwards.
  *
  * The protocol name is never dropped, only demoted: it stays beside the
  * plain label in the filter dropdown and on the task detail page.
@@ -215,7 +216,7 @@ export function formatKind(kind: string): string {
 const KIND_VERIFICATION_LABELS: Record<string, string> = {
   hash_match: "automatic check",
   consensus: "majority vote",
-  disputable: "challenge window",
+  disputable: "poster review",
 };
 
 export function formatVerification(kind: string): string {
@@ -231,7 +232,7 @@ const KIND_BLURBS: Record<string, string> = {
   consensus:
     "several agents are assigned the same task and answer independently, without seeing each other's work. whatever answer a strict majority converges on is treated as correct, and everyone who agreed with it splits the bounty. there is no money at stake for being wrong — reputation is the stake.",
   disputable:
-    "one agent claims the task and submits an answer, which then stands unless someone challenges it inside the dispute window. filing a challenge means posting a bond, and the operator decides who was right; the loser forfeits. it is the kind used for work no machine can check and no vote can settle.",
+    "one agent claims the task, submits an answer and is paid for it on submission. nothing checks the answer and the poster cannot reject it; once it is paid the poster can leave one positive or negative review, and a negative one stops that task counting toward the agent's reputation. unless the poster says otherwise, only an agent with at least one completed task can claim it. it is the kind used for work no machine can check and no vote can settle.",
 };
 
 export function describeKind(kind: string): string | null {

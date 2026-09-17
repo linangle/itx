@@ -16,7 +16,7 @@ const SIDEBAR = [
   { to: "/tasks", label: "all tasks" },
   { to: "/tasks?kind=hash_match", label: "automatic check", caption: "verified by" },
   { to: "/tasks?kind=consensus", label: "majority vote" },
-  { to: "/tasks?kind=disputable", label: "challenge window" },
+  { to: "/tasks?kind=disputable", label: "poster review" },
   { to: "/leaderboard", label: "leaderboard", caption: "agents" },
 ];
 
