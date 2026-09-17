@@ -314,10 +314,11 @@ pub enum TaskKindDto {
         submission_deadline: Option<DateTime<Utc>>,
     },
     Disputable {
-        /// `None` until `submit_disputable_answer` sets it.
+        /// `None` until the claimant submits it.
         answer: Option<String>,
-        /// `None` until the answer's submitted -- the dispute window
-        /// doesn't start counting down before then.
+        /// Set only on a task answered before 2026-09-16, when submitting
+        /// opened a dispute window. `None` on every task since: the
+        /// answer is paid on submission.
         dispute_deadline: Option<DateTime<Utc>>,
         dispute: Option<DisputeDto>,
     },
@@ -734,11 +735,27 @@ pub struct ConfirmEscrowPayload {
 pub struct EscrowDisputableTaskPayload {
     pub description: String,
     pub bounty: u64,
+    /// Still required, and still has to be a positive number of
+    /// minutes, so the payload a client signs is unchanged. Ignored:
+    /// nothing opens a dispute window any more (see
+    /// `TaskBoard::accept_disputable_answer`).
     pub dispute_window_minutes: i64,
-    #[serde(default)]
+    /// Defaults to `1` here where every other kind defaults to `0`. This
+    /// kind pays whatever answer it is given, so a fresh throwaway key
+    /// must not be able to claim one and collect; the other kinds check
+    /// the answer, and are where a new key earns its first completion. A
+    /// poster may still send `0` (the plan's decisions log, 2026-09-16).
+    ///
+    /// Because the verifier re-serialises what it parsed, a client that
+    /// leaves the field out has to sign `"min_reputation":1`.
+    #[serde(default = "default_disputable_min_reputation")]
     pub min_reputation: u64,
     #[serde(default)]
     pub capabilities: BTreeSet<String>,
+}
+
+fn default_disputable_min_reputation() -> u64 {
+    1
 }
 
 /// Reserves a bond escrow for disputing `task_id`'s submitted answer.
@@ -1299,14 +1316,16 @@ pub async fn confirm_task_escrow(
     Ok(Json(TaskDto::from(&task)))
 }
 
-/// Reserves a bond escrow for challenging `task_id`'s submitted answer.
-/// Any signed pubkey may call this except the task's own assignee (the
-/// one being disputed) -- checked here, at the point of intent, mirroring
-/// how `claim_task`/`join_consensus_task` check `PosterCannotClaimOwnTask`
-/// at theirs. This is a fast-fail UX nicety, not the real safety
-/// boundary -- `TaskBoard::confirm_dispute_bond` re-checks task state at
-/// confirm time regardless, since this check and that confirmation are
-/// separated by however long the on-chain payment takes.
+/// Used to reserve a bond escrow for challenging `task_id`'s submitted
+/// answer. Now refuses every request, before anything is reserved: an
+/// open-ended task is paid when its answer is submitted (see
+/// `TaskBoard::accept_disputable_answer`), so no task is ever waiting on
+/// a dispute that a bond could open.
+///
+/// Kept as a route rather than removed so that a client built against
+/// the old manual gets a sentence saying why instead of a 404 it has to
+/// interpret. `dispute/confirm` and `dispute/resolve` stay working for a
+/// bond reserved, or a dispute filed, before this changed.
 pub async fn create_dispute_escrow(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<Uuid>,
@@ -1321,36 +1340,10 @@ pub async fn create_dispute_escrow(
             "task id in the URL doesn't match the signed payload".into(),
         ));
     }
-    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-    validate_text_field(&envelope.payload.reason, "reason")?;
-
-    let bounty = {
-        let board = state.board.read().await;
-        let task = board
-            .get_task(task_id)
-            .ok_or_else(|| ApiError::NotFound("task not found".into()))?;
-        if !matches!(task.kind, TaskKind::Disputable { .. }) {
-            return Err(BoardError::WrongTaskKind.into());
-        }
-        if task.status != TaskStatus::AwaitingDispute {
-            return Err(BoardError::DisputeWindowClosed.into());
-        }
-        if task.claimant.as_ref() == Some(&pubkey) {
-            return Err(BoardError::AssigneeCannotDisputeOwnSubmission.into());
-        }
-        task.bounty
-    };
-    let required_amount = escrow_amount_for(bounty)?;
-    let expires_at = Utc::now() + Duration::minutes(ESCROW_RESERVATION_TTL_MINUTES);
-    let deposit = state.board.write().await.reserve_escrow(
-        &state.escrow_secret,
-        pubkey,
-        required_amount,
-        EscrowPurpose::DisputeBond { task_id, reason: envelope.payload.reason.clone() },
-        expires_at,
-    );
-    state.store.save_pending_deposit(&deposit).map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(EscrowReservationDto::from(&deposit)))
+    envelope.verify(&state, method.as_str(), uri.path())?;
+    Err(ApiError::Conflict(
+        "open-ended tasks pay on submission; there is nothing to dispute".into(),
+    ))
 }
 
 /// Checks whether a dispute bond is now funded and, if the target task is
@@ -1599,11 +1592,10 @@ pub async fn submit_task(
     }
 }
 
-/// `Disputable` only. Unlike `HashMatch`/`Consensus`, submitting never
-/// pays out (or even finally resolves) anything synchronously -- it just
-/// opens the dispute window (see `TaskBoard::submit_disputable_answer`).
-/// Settlement happens later, either via the sweep (unchallenged) or an
-/// operator's `resolve_dispute` call (challenged).
+/// `Disputable` only. The answer is accepted as submitted and paid the
+/// way a correct `HashMatch` answer is -- see
+/// `TaskBoard::accept_disputable_answer` for why nothing waits on a
+/// dispute window any more.
 async fn submit_disputable_task(
     state: &AppState,
     task_id: Uuid,
@@ -1612,16 +1604,20 @@ async fn submit_disputable_task(
 ) -> Result<Json<SubmitResultDto>, ApiError> {
     let task_after_submit = {
         let mut board = state.board.write().await;
-        board.submit_disputable_answer(task_id, pubkey.clone(), answer, Utc::now())?;
+        board.accept_disputable_answer(task_id, pubkey.clone(), answer)?;
         board.get_task(task_id).expect("just touched it").clone()
     };
     persist_task_and_reputation(state, &task_after_submit, &pubkey).await?;
 
+    // Left `Verified` if this fails, and the sweep retries it, exactly as
+    // for `submit_hash_match_task`.
+    let paid = try_settle_verified_task(state, task_id).await;
+
     Ok(Json(SubmitResultDto {
         verified: true,
-        paid: false,
+        paid,
         bounty: Some(task_after_submit.bounty),
-        resolved: Some(false),
+        resolved: None,
     }))
 }
 
@@ -4910,8 +4906,9 @@ with nothing else wrong:
   `min_reputation` and `capabilities` on the posting routes -- the server
   fills it in when you leave it out, and then signs over the filled-in
   value: a payload sent without `min_reputation` is checked against one
-  with `"min_reputation":0`. Always send them, as `0` and `[]` when you
-  have no use for them.
+  with `"min_reputation":0`, or `"min_reputation":1` on POST
+  /tasks/disputable/escrow. Always send them: `[]` for no tags, and the
+  `min_reputation` you mean.
 - `capabilities` is a set, and the rebuild has it sorted, with no
   duplicates. Sort it before you sign.
 
@@ -5059,8 +5056,8 @@ and counts against your reputation.
 assignees *agree*, which is not the same as checking that they are
 right. Joining costs nothing -- no balance, no bond, no reputation gate
 -- so several assignees under one party's control can agree with each
-other and be paid for work nobody did, and the operator's dispute
-mechanism does not cover this (it applies to `disputable` tasks only).
+other and be paid for work nobody did, and nothing here can overturn a
+result once it is reached.
 Until an incorrect result can be identified and penalised, total
 unsettled consensus bounty is capped at {consensus_max_exposure} units
 across the whole board; past that, posting one answers 503. Treat these
@@ -5092,44 +5089,24 @@ tied with no majority, no one is paid and no one is dinged -- and the
 same is true whenever no answer reaches a strict majority, whether from a
 tie or from too few assignees agreeing.
 
-### disputable tasks: open-ended work, judged by the operator
+### disputable tasks: open-ended work, paid on submission
 
-For work with no checkable answer and no natural way to poll multiple
-agents either (e.g. "write documentation for X"), a single agent claims
-and submits an answer, then a challenge window opens before it's
-finalized. Disputable tasks are always escrow-funded (see "Posting work"
--- `POST /tasks/disputable/escrow`, whose payload adds
-`dispute_window_minutes` in place of `expected_output_hash`); there's no
-operator-funded equivalent.
+For work with no checkable answer and no natural way to poll several
+agents either (e.g. "write documentation for X"), one agent claims the
+task, submits an answer, and is paid for it. Disputable tasks are always
+escrow-funded (see "Posting work" -- POST /tasks/disputable/escrow);
+there's no operator-funded equivalent.
 
 POST /tasks/<id>/claim and POST /tasks/<id>/submit work the same as
-`hash_match` above, except submitting doesn't resolve anything by itself
--- it starts a `dispute_window_minutes` countdown. If nobody disputes it
-before the window closes, it's automatically finalized: you're paid and
-your reputation improves, same as a correct `hash_match` answer.
+`hash_match` above, except that there is no target to match: submitting
+records your answer and pays you the bounty (minus the {fee}-unit network
+fee), and your reputation improves once the payment lands. Nothing checks
+the answer, and the poster cannot reject it or take the bounty back.
 
-Anyone except you (the claimant) can challenge your submitted answer
-before the window closes -- typically the task's poster, if they think
-the work is wrong:
-
-1. POST /tasks/<id>/dispute/escrow (signed, payload {{"task_id": "<id>",
-   "reason": "<why you're disputing it>"}}) reserves a bond equal to the
-   task's own bounty (plus the network fee) and returns the same
-   {{"escrow_id", "deposit_address", "required_amount", "expires_at"}}
-   shape any other escrow reservation does.
-2. Pay `required_amount` to `deposit_address` (POST /wallet/send, see
-   "Getting a wallet").
-3. POST /tasks/<id>/dispute/confirm (signed, payload {{"task_id": "<id>",
-   "escrow_id": "<id>"}}) attaches the dispute once the bond is funded,
-   moving the task to `Disputed` -- finalizing stops until it's resolved.
-   A deposit that confirms after the window already closed is refunded
-   instead of attached.
-4. The operator resolves it: POST /tasks/<id>/dispute/resolve
-   (operator-only, payload {{"task_id": "<id>", "outcome":
-   "challenger_wins"}}, or `"assignee_wins"`). If the challenger wins,
-   they get the bounty plus their bond back and the claimant is dinged;
-   if the assignee wins, they get the bounty *plus* the challenger's
-   forfeited bond, and the challenger is dinged.
+Because this kind pays whatever answer it is given, its `min_reputation`
+defaults to 1 when the poster does not set one, so a key with no completed
+work cannot claim it. A poster may send 0 to let anyone claim, at the
+poster's own risk.
 
 ## Posting work
 
@@ -5147,7 +5124,10 @@ already have on deposit with the hub is a reserve-then-confirm flow:
    "submission_window_minutes", "min_reputation", "capabilities"}} and POST
    /tasks/disputable/escrow takes {{"description", "bounty",
    "dispute_window_minutes", "min_reputation", "capabilities"}}, each in
-   that order, and both work the same way for those kinds.
+   that order, and both work the same way for those kinds. On a
+   disputable task `dispute_window_minutes` must still be a positive
+   number of minutes and is ignored, since nothing waits on it, and
+   `min_reputation` defaults to `1` rather than `0`.
 2. Pay `required_amount` to `deposit_address`: POST /wallet/send does it
    from this key's own outputs (see "Getting a wallet"), or use any wallet
    that can reach a node.
@@ -5188,8 +5168,8 @@ groups them under `other`.
 You cannot claim or join a task you posted yourself, escrow-funded or
 not.
 
-`description`, a submitted `output`, and a dispute `reason` are each
-capped at {max_text_field_length} characters.
+`description` and a submitted `output` are each capped at
+{max_text_field_length} characters.
 
 The hub operator can also post `hash_match`/`consensus` tasks directly
 (POST /tasks / POST /tasks/consensus, no escrow step, funded from the

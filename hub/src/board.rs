@@ -211,6 +211,12 @@ pub enum TaskKind {
     /// party with standing to be one, consistent with its existing
     /// total-trust role (it already gates all task creation and
     /// custodies every escrow).
+    ///
+    /// Since 2026-09-16 that describes only tasks answered before then.
+    /// Submitting now pays the answer at once (see
+    /// `TaskBoard::accept_disputable_answer`), so `dispute_deadline` and
+    /// `dispute` stay `None` on every task answered since; the fields and
+    /// the dispute machinery remain for a store that holds an older one.
     Disputable {
         /// Set once, by `submit_disputable_answer`.
         answer: Option<String>,
@@ -1745,10 +1751,49 @@ impl TaskBoard {
         }
     }
 
+    /// `Disputable` only, and what submitting one does: records
+    /// `submitter`'s answer and moves the task straight to `Verified`
+    /// (`Claimed` -> `Verified`), so the ordinary settlement machinery
+    /// pays the claimant exactly as it pays a correct `HashMatch` answer.
+    ///
+    /// No dispute window opens and `dispute_deadline` stays `None`. The
+    /// window was only worth having if a dispute could be settled, and
+    /// one could not: a filed dispute had no deadline, only the operator
+    /// could resolve it, and no shipped tool could sign the ruling (the
+    /// plan's decisions log, 2026-09-16). A poster of open-ended work now
+    /// pays for the answer it gets, and says what it thought of it with a
+    /// review instead.
+    pub fn accept_disputable_answer(
+        &mut self,
+        id: Uuid,
+        submitter: PublicKey,
+        answer: String,
+    ) -> Result<(), BoardError> {
+        let task = self.tasks.get_mut(&id).ok_or(BoardError::NotFound)?;
+        let TaskKind::Disputable { answer: stored_answer, .. } = &mut task.kind else {
+            return Err(BoardError::WrongTaskKind);
+        };
+        if task.status != TaskStatus::Claimed {
+            return Err(BoardError::NotClaimed);
+        }
+        if task.claimant.as_ref() != Some(&submitter) {
+            return Err(BoardError::NotClaimant);
+        }
+        *stored_answer = Some(answer);
+        task.status = TaskStatus::Verified;
+        Ok(())
+    }
+
     /// `Disputable` only. Records `submitter`'s answer and opens the
     /// dispute window (`Claimed` -> `AwaitingDispute`), anchored *now*
     /// rather than at task-creation time -- the same anchoring reasoning
     /// as `Consensus::submission_window_minutes`.
+    ///
+    /// What submitting did before 2026-09-16 (see
+    /// `accept_disputable_answer`). Nothing in the hub calls it now; it
+    /// stays for the tests below that build a task awaiting a dispute,
+    /// which is still a state a store written before then can hold.
+    #[cfg(test)]
     pub fn submit_disputable_answer(
         &mut self,
         id: Uuid,
@@ -3862,6 +3907,27 @@ mod tests {
             board.submit_disputable_answer(task.id, impostor, "answer".to_string(), Utc::now()),
             Err(BoardError::NotClaimant)
         ));
+    }
+
+    #[test]
+    fn accepting_a_disputable_answer_verifies_the_task_for_its_claimant_with_no_window() {
+        let mut board = TaskBoard::new();
+        let task = board.create_disputable_task(pubkey(), "open-ended work".to_string(), 900, 30);
+        let claimant = pubkey();
+        board.claim_task(task.id, claimant.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
+
+        assert!(matches!(
+            board.accept_disputable_answer(task.id, pubkey(), "not mine to give".to_string()),
+            Err(BoardError::NotClaimant)
+        ));
+        board.accept_disputable_answer(task.id, claimant.clone(), "my answer".to_string()).unwrap();
+
+        let task = board.get_task(task.id).unwrap();
+        assert_eq!(task.status, TaskStatus::Verified);
+        assert_eq!(task.pending_payouts(), vec![(claimant, 900)]);
+        let TaskKind::Disputable { answer, dispute_deadline, .. } = &task.kind else { unreachable!() };
+        assert_eq!(answer.as_deref(), Some("my answer"));
+        assert!(dispute_deadline.is_none(), "no dispute window opens");
     }
 
     #[test]

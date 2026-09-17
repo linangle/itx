@@ -4025,8 +4025,11 @@ mod tests {
         assert!(body.contains("rolling 24 hours"));
     }
 
+    /// Disputes went on 2026-09-16: an open-ended task pays on
+    /// submission. The manual an agent follows must say so, and must not
+    /// walk it into a route that now refuses.
     #[tokio::test]
-    async fn llms_txt_mentions_every_task_kind_and_the_escrow_and_dispute_flows() {
+    async fn llms_txt_mentions_every_task_kind_and_the_escrow_flows_and_no_dispute_flow() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
@@ -4049,11 +4052,9 @@ mod tests {
             "/tasks/consensus/escrow",
             "/tasks/disputable/escrow",
             "/tasks/escrow/<escrow_id>/confirm",
-            "/dispute/escrow",
-            "/dispute/confirm",
-            "/dispute/resolve",
-            "challenger_wins",
-            "assignee_wins",
+            "paid on submission",
+            "the poster cannot reject it",
+            "defaults to 1",
             "capabilities",
             "?capability=",
             "/tasks/<id>/cancel",
@@ -4064,6 +4065,9 @@ mod tests {
             "POST /wallet/send",
         ] {
             assert!(llms.contains(expected), "llms.txt no longer mentions {expected:?}");
+        }
+        for gone in ["/dispute/", "challenger_wins", "assignee_wins", "Disputed"] {
+            assert!(!llms.contains(gone), "llms.txt still describes the dispute flow: {gone:?}");
         }
     }
 
@@ -6880,7 +6884,7 @@ mod tests {
     /// bound; a depositor whose refund had already gone out could confirm
     /// the escrow again, with only the on-chain balance check standing in
     /// the way; and a dispute bond re-credited its winner (see
-    /// `a_settled_dispute_bond_is_not_settled_again_after_a_restart`).
+    /// `a_settled_legacy_dispute_bond_is_not_settled_again_after_a_restart`).
     #[tokio::test]
     async fn a_refunded_escrow_reloads_as_refunded() {
         let operator_key = PrivateKey::new_key();
@@ -7409,22 +7413,21 @@ mod tests {
         );
     }
 
-    /// Creates+confirms an escrow-funded `Disputable` task, claims it, and
-    /// submits an answer -- all via real HTTP calls, landing the task in
-    /// `AwaitingDispute`. Returns the task id.
-    async fn create_confirmed_disputable_task_awaiting_dispute(
+    /// Reserves an escrow-funded `Disputable` task over HTTP with the
+    /// given `min_reputation`, funds it on the fake node and confirms it.
+    /// Returns the task id.
+    async fn create_confirmed_disputable_task(
         hub: &TestHub,
         fake_node: &FakeNode,
         poster_key: &PrivateKey,
-        assignee_key: &PrivateKey,
         bounty: u64,
-        dispute_window_minutes: i64,
+        min_reputation: u64,
     ) -> Uuid {
         let payload = handlers::EscrowDisputableTaskPayload {
-            description: "open-ended, disputable".to_string(),
+            description: "open-ended".to_string(),
             bounty,
-            dispute_window_minutes,
-            min_reputation: 0,
+            dispute_window_minutes: 30,
+            min_reputation,
             capabilities: Default::default(),
         };
         let reservation: Value = hub
@@ -7437,11 +7440,20 @@ mod tests {
             .json()
             .await
             .unwrap();
+        confirm_funded_reservation(hub, fake_node, poster_key, &reservation).await
+    }
+
+    /// Pays a task reservation's `required_amount` on the fake node and
+    /// confirms it over HTTP, returning the task that went live.
+    async fn confirm_funded_reservation(
+        hub: &TestHub,
+        fake_node: &FakeNode,
+        poster_key: &PrivateKey,
+        reservation: &Value,
+    ) -> Uuid {
         let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
         let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
-        let required_amount = reservation["required_amount"].as_u64().unwrap();
-        fake_node.fund(deposit_pubkey, required_amount).await;
-
+        fake_node.fund(deposit_pubkey, reservation["required_amount"].as_u64().unwrap()).await;
         let task: Value = hub
             .client
             .post(format!("{}/tasks/escrow/{escrow_id}/confirm", hub.base_url))
@@ -7452,8 +7464,12 @@ mod tests {
             .json()
             .await
             .unwrap();
-        let task_id: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+        task["id"].as_str().unwrap().parse().unwrap()
+    }
 
+    /// Claims `task_id` as `assignee_key` and submits "my answer",
+    /// returning the submit response's body.
+    async fn claim_and_submit(hub: &TestHub, task_id: Uuid, assignee_key: &PrivateKey) -> Value {
         hub.client
             .post(format!("{}/tasks/{task_id}/claim", hub.base_url))
             .json(&envelope(assignee_key, &format!("/tasks/{task_id}/claim"), handlers::ClaimPayload { task_id }))
@@ -7469,47 +7485,217 @@ mod tests {
             .await
             .unwrap()
             .error_for_status()
-            .unwrap();
-
-        task_id
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
     }
 
-    /// Reserves+confirms a dispute bond against `task_id` from
-    /// `challenger_key` -- real HTTP calls, landing the task in `Disputed`.
-    async fn file_dispute_via_http(
-        hub: &TestHub,
-        fake_node: &FakeNode,
-        task_id: Uuid,
-        challenger_key: &PrivateKey,
-        reason: &str,
-    ) {
-        let reservation: Value = hub
+    async fn get_task_json(hub: &TestHub, task_id: Uuid) -> Value {
+        hub.client
+            .get(format!("{}/tasks/{task_id}", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+
+    /// An open-ended task pays the answer it is given when it is given:
+    /// the payout is on the wire by the time the submit returns, as a
+    /// correct `hash_match` answer's is, and nothing waits on a window or
+    /// a sweep. Confirming it is the ordinary resolution step.
+    #[tokio::test]
+    async fn submitting_to_a_funded_disputable_task_pays_the_claimant_with_no_window_and_no_sweep() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee_key = PrivateKey::new_key();
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        let result = claim_and_submit(&hub, task_id, &assignee_key).await;
+        assert_eq!(result["verified"], true);
+        assert_eq!(result["paid"], true, "sent at submission -- see SubmitResultDto::paid");
+        assert_eq!(result["bounty"], 900);
+        assert_eq!(result["resolved"], Value::Null, "the same answer a hash_match submission gets");
+
+        let submitted = fake_node.wait_for_submitted_count(1).await;
+        assert_eq!(submitted.len(), 1);
+        assert!(submitted[0].outputs.iter().any(|o| o.pubkey == assignee_key.public_key() && o.value == 900));
+
+        let task = get_task_json(&hub, task_id).await;
+        assert_eq!(task["status"], "Submitted");
+        assert_eq!(task["answer"], "my answer");
+        assert_eq!(task["dispute_deadline"], Value::Null, "no dispute window is opened");
+
+        confirm_submitted_payouts(&hub.state, &fake_node).await;
+        assert_eq!(get_task_json(&hub, task_id).await["status"], "Paid");
+        let reputation: Value = hub
             .client
-            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
-            .json(&envelope(challenger_key, &format!("/tasks/{task_id}/dispute/escrow"), handlers::DisputeEscrowPayload { task_id, reason: reason.to_string() }))
+            .get(format!("{}/reputation/{}", hub.base_url, assignee_key.public_key()))
             .send()
             .await
             .unwrap()
             .json()
             .await
             .unwrap();
-        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
-        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
-        let required_amount = reservation["required_amount"].as_u64().unwrap();
-        fake_node.fund(deposit_pubkey, required_amount).await;
-
-        hub.client
-            .post(format!("{}/tasks/{task_id}/dispute/confirm", hub.base_url))
-            .json(&envelope(challenger_key, &format!("/tasks/{task_id}/dispute/confirm"), handlers::ConfirmDisputeEscrowPayload { task_id, escrow_id }))
-            .send()
-            .await
-            .unwrap()
-            .error_for_status()
-            .unwrap();
+        assert_eq!(reputation["completed"], 1);
+        assert_eq!(reputation["total_earned"], 900);
     }
 
+    /// The route stays so an old client is told why, and it must refuse
+    /// before reserving: a reservation is an address somebody may pay.
     #[tokio::test]
-    async fn confirming_a_funded_bond_after_the_dispute_window_closes_does_not_wedge_the_board() {
+    async fn a_dispute_escrow_is_refused_and_reserves_nothing() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let assignee_key = PrivateKey::new_key();
+
+        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        claim_and_submit(&hub, task_id, &assignee_key).await;
+        let deposits_before = hub.state.board.read().await.all_pending_deposits().count();
+        assert_eq!(deposits_before, 1, "the task's own escrow");
+
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
+            .json(&envelope(
+                &poster_key,
+                &format!("/tasks/{task_id}/dispute/escrow"),
+                handlers::DisputeEscrowPayload { task_id, reason: "not what I asked for".to_string() },
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("there is nothing to dispute"),
+            "the refusal has to say why: {body}"
+        );
+
+        assert_eq!(hub.state.board.read().await.all_pending_deposits().count(), deposits_before);
+        assert_eq!(hub.state.store.load_all_pending_deposits().unwrap().len(), deposits_before);
+    }
+
+    /// This kind pays whatever answer it gets, so its `min_reputation`
+    /// defaults to 1 -- and because the verifier re-serialises what it
+    /// parsed, the default is inside the signed string. Built by hand the
+    /// way a client that omits the field has to build it.
+    #[tokio::test]
+    async fn a_disputable_task_defaults_min_reputation_to_one_and_accepts_zero() {
+        let operator_key = PrivateKey::new_key();
+        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
+        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
+        let poster_key = PrivateKey::new_key();
+        let fresh_key = PrivateKey::new_key();
+
+        let pubkey = poster_key.public_key().to_string();
+        let timestamp = Utc::now().to_rfc3339();
+        let hub_id = test_hub_id();
+        let signed = r#"{"description":"x","bounty":900,"dispute_window_minutes":30,"min_reputation":1,"capabilities":[]}"#;
+        let sent = r#"{"description":"x","bounty":900,"dispute_window_minutes":30,"capabilities":[]}"#;
+        let signing_string = format!("{pubkey}:{timestamp}:POST /tasks/disputable/escrow:{hub_id}:{signed}");
+        let signature = Signature::sign_hash(&Hash::hash_bytes(signing_string.as_bytes()), &poster_key);
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/disputable/escrow", hub.base_url))
+            .json(&json!({
+                "pubkey": pubkey,
+                "timestamp": timestamp,
+                "payload": serde_json::from_str::<Value>(sent).unwrap(),
+                "signature": hex::encode(signature.to_bytes()),
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK, "a payload without the field verifies against the default");
+        let reservation: Value = resp.json().await.unwrap();
+        let gated = confirm_funded_reservation(&hub, &fake_node, &poster_key, &reservation).await;
+        assert_eq!(get_task_json(&hub, gated).await["min_reputation"], 1);
+
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/{gated}/claim", hub.base_url))
+            .json(&envelope(&fresh_key, &format!("/tasks/{gated}/claim"), handlers::ClaimPayload { task_id: gated }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "a key with no completed work cannot claim one");
+
+        let open = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
+        assert_eq!(get_task_json(&hub, open).await["min_reputation"], 0);
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/{open}/claim", hub.base_url))
+            .json(&envelope(&fresh_key, &format!("/tasks/{open}/claim"), handlers::ClaimPayload { task_id: open }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK, "a poster who sends 0 lets anyone claim");
+    }
+
+    /// A disputable task in a state a store written before 2026-09-16 can
+    /// still hold: funded, claimed and answered, with its dispute window
+    /// open. Nothing over HTTP produces one any more, so it is built on
+    /// the board and written to the store the way the old handlers left
+    /// it, with its escrow funded on the fake node.
+    async fn seed_legacy_task_awaiting_dispute(
+        hub: &TestHub,
+        fake_node: &FakeNode,
+        poster: &PublicKey,
+        assignee: &PublicKey,
+        bounty: u64,
+    ) -> Uuid {
+        let required = bounty + handlers::HUB_TRANSACTION_FEE;
+        let deposit = hub.state.board.write().await.reserve_escrow(
+            &hub.state.escrow_secret,
+            poster.clone(),
+            required,
+            EscrowPurpose::FundDisputableTask(board::DisputableTaskIntent {
+                description: "legacy disputable".to_string(),
+                bounty,
+                dispute_window_minutes: 30,
+                min_reputation: 0,
+                capabilities: Default::default(),
+            }),
+            Utc::now() + chrono::Duration::minutes(60),
+        );
+        fake_node.fund(deposit.deposit_pubkey.clone(), required).await;
+        let mut board = hub.state.board.write().await;
+        let board::EscrowConfirmation::TaskCreated(task) = board.confirm_escrow(deposit.id, required, Utc::now()).unwrap();
+        board.claim_task(task.id, assignee.clone(), Utc::now() + chrono::Duration::minutes(30)).unwrap();
+        board.submit_disputable_answer(task.id, assignee.clone(), "my answer".to_string(), Utc::now()).unwrap();
+        let deposit = board.get_pending_deposit(deposit.id).unwrap().clone();
+        hub.state.store.save_task_and_deposit(board.get_task(task.id).unwrap(), &deposit).unwrap();
+        task.id
+    }
+
+    /// A bond reserved against `task_id` the way `dispute/escrow` used to
+    /// reserve one, funded on the fake node.
+    async fn seed_legacy_bond(hub: &TestHub, fake_node: &FakeNode, task_id: Uuid, challenger: &PublicKey) -> Uuid {
+        let required = hub.state.board.read().await.get_task(task_id).unwrap().bounty + handlers::HUB_TRANSACTION_FEE;
+        let deposit = hub.state.board.write().await.reserve_escrow(
+            &hub.state.escrow_secret,
+            challenger.clone(),
+            required,
+            EscrowPurpose::DisputeBond { task_id, reason: "legacy dispute".to_string() },
+            Utc::now() + chrono::Duration::minutes(60),
+        );
+        hub.state.store.save_pending_deposit(&deposit).unwrap();
+        fake_node.fund(deposit.deposit_pubkey.clone(), required).await;
+        deposit.id
+    }
+
+    /// A bond reserved before the change can still be confirmed after its
+    /// window closed, and that confirmation's refund arm must not hold the
+    /// board while it refunds.
+    #[tokio::test]
+    async fn confirming_a_legacy_bond_after_the_dispute_window_closes_does_not_wedge_the_board() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
@@ -7517,40 +7703,15 @@ mod tests {
         let assignee_key = PrivateKey::new_key();
         let challenger_key = PrivateKey::new_key();
 
-        let task_id = create_confirmed_disputable_task_awaiting_dispute(
+        let task_id = seed_legacy_task_awaiting_dispute(
             &hub,
             &fake_node,
-            &poster_key,
-            &assignee_key,
+            &poster_key.public_key(),
+            &assignee_key.public_key(),
             900,
-            30,
         )
         .await;
-        let reservation: Value = hub
-            .client
-            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
-            .json(&envelope(
-                &challenger_key,
-                &format!("/tasks/{task_id}/dispute/escrow"),
-                handlers::DisputeEscrowPayload {
-                    task_id,
-                    reason: "too late".to_string(),
-                },
-            ))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let escrow_id: Uuid = reservation["escrow_id"].as_str().unwrap().parse().unwrap();
-        let deposit_pubkey = parse_pubkey(reservation["deposit_address"].as_str().unwrap());
-        fake_node
-            .fund(
-                deposit_pubkey,
-                reservation["required_amount"].as_u64().unwrap(),
-            )
-            .await;
+        let escrow_id = seed_legacy_bond(&hub, &fake_node, task_id, &challenger_key.public_key()).await;
 
         // Advance only the task state, leaving the freshly funded bond
         // reserved so confirmation takes the closed-window refund arm.
@@ -7585,201 +7746,6 @@ mod tests {
         .expect("the board remained wedged after closed-window confirmation")
         .unwrap();
         assert!(response.status().is_success());
-    }
-
-    #[tokio::test]
-    async fn unchallenged_disputable_task_pays_the_claimant_via_sweep() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-
-        let task_id =
-            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
-                .await;
-
-        // simulate the dispute window having elapsed, no dispute filed
-        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(31)).await;
-        // ...and a later one to resolve what that sweep submitted.
-        fake_node.wait_for_submitted_count(1).await;
-        run_sweep_once(&hub.state, Utc::now() + chrono::Duration::minutes(32)).await;
-
-        let task: Value = hub
-            .client
-            .get(format!("{}/tasks/{task_id}", hub.base_url))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(task["status"], "Paid");
-
-        let submitted = fake_node.wait_for_submitted_count(1).await;
-        assert_eq!(submitted.len(), 1);
-        assert!(submitted[0].outputs.iter().any(|o| o.pubkey == assignee_key.public_key() && o.value == 900));
-    }
-
-    #[tokio::test]
-    async fn assignee_cannot_reserve_a_dispute_against_their_own_submission() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-
-        let task_id =
-            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
-                .await;
-
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{task_id}/dispute/escrow", hub.base_url))
-            .json(&envelope(&assignee_key, &format!("/tasks/{task_id}/dispute/escrow"), handlers::DisputeEscrowPayload { task_id, reason: "self-dispute".to_string() }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn full_dispute_flow_challenger_wins_settles_both_legs_to_the_challenger() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-        let challenger_key = PrivateKey::new_key();
-
-        let task_id =
-            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
-                .await;
-        file_dispute_via_http(&hub, &fake_node, task_id, &challenger_key, "wrong answer").await;
-
-        let task: Value = hub
-            .client
-            .get(format!("{}/tasks/{task_id}", hub.base_url))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(task["status"], "Disputed");
-
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
-            .json(&envelope(
-                &hub.operator_key, &format!("/tasks/{task_id}/dispute/resolve"),
-                handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::ChallengerWins },
-            ))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::OK);
-
-        let submitted = fake_node.wait_for_submitted_count(2).await;
-        assert_eq!(submitted.len(), 2, "bounty leg and bond leg are two separate transactions, from two different escrows");
-        let total_to_challenger: u64 = submitted
-            .iter()
-            .flat_map(|tx| &tx.outputs)
-            .filter(|o| o.pubkey == challenger_key.public_key())
-            .map(|o| o.value)
-            .sum();
-        assert_eq!(total_to_challenger, 900 + 900, "bounty (900) plus their own bond back (900, after its own fee)");
-
-        // The bounty payout is only *submitted* at this point.
-        // Reputation, like everything else downstream of a payout, now
-        // waits until the sweep has seen it on chain.
-        confirm_submitted_payouts(&hub.state, &fake_node).await;
-
-        let assignee_rep: Value = hub
-            .client
-            .get(format!("{}/reputation/{}", hub.base_url, assignee_key.public_key()))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(assignee_rep["failed"], 1);
-        let challenger_rep: Value = hub
-            .client
-            .get(format!("{}/reputation/{}", hub.base_url, challenger_key.public_key()))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(challenger_rep["completed"], 1);
-        assert_eq!(challenger_rep["total_earned"], 900, "only the bounty counts as earned -- getting your own bond back doesn't");
-    }
-
-    #[tokio::test]
-    async fn full_dispute_flow_assignee_wins_settles_both_legs_to_the_assignee() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-        let challenger_key = PrivateKey::new_key();
-
-        let task_id =
-            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
-                .await;
-        file_dispute_via_http(&hub, &fake_node, task_id, &challenger_key, "actually correct").await;
-
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
-            .json(&envelope(
-                &hub.operator_key, &format!("/tasks/{task_id}/dispute/resolve"),
-                handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::AssigneeWins },
-            ))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::OK);
-
-        let submitted = fake_node.wait_for_submitted_count(2).await;
-        assert_eq!(submitted.len(), 2);
-        let total_to_assignee: u64 = submitted
-            .iter()
-            .flat_map(|tx| &tx.outputs)
-            .filter(|o| o.pubkey == assignee_key.public_key())
-            .map(|o| o.value)
-            .sum();
-        assert_eq!(total_to_assignee, 900 + 900, "bounty plus the forfeited bond");
-
-        // The bounty payout is only *submitted* at this point.
-        // Reputation, like everything else downstream of a payout, now
-        // waits until the sweep has seen it on chain.
-        confirm_submitted_payouts(&hub.state, &fake_node).await;
-
-        let assignee_rep: Value = hub
-            .client
-            .get(format!("{}/reputation/{}", hub.base_url, assignee_key.public_key()))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(assignee_rep["completed"], 1);
-        assert_eq!(assignee_rep["total_earned"], 900 + 900, "bounty AND the forfeited bond both count as earned this time");
-        let challenger_rep: Value = hub
-            .client
-            .get(format!("{}/reputation/{}", hub.base_url, challenger_key.public_key()))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(challenger_rep["failed"], 1);
     }
 
     /// A fresh `TaskBoard` filled from `hub`'s own store and nothing
@@ -7832,21 +7798,61 @@ mod tests {
     /// ledger survives only because the credit happens to derive from a
     /// live balance rather than the recorded bond amount.
     ///
+    /// No new dispute can be filed since 2026-09-16, but a store written
+    /// before then can hold one filed or waiting to be resolved, and
+    /// `dispute/confirm` and `dispute/resolve` still serve it -- so the
+    /// dispute here is seeded as that store would hold it, and everything
+    /// after the seed goes over HTTP as before. The operator-only check on
+    /// resolving rides along, for the same reason.
+    ///
     /// Asserted against the *restored* board, since what the live one
     /// thinks was never the question.
     #[tokio::test]
-    async fn a_settled_dispute_bond_is_not_settled_again_after_a_restart() {
+    async fn a_settled_legacy_dispute_bond_is_not_settled_again_after_a_restart() {
         let operator_key = PrivateKey::new_key();
         let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
         let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
         let poster_key = PrivateKey::new_key();
         let assignee_key = PrivateKey::new_key();
         let challenger_key = PrivateKey::new_key();
+        let impostor_key = PrivateKey::new_key();
 
-        let task_id =
-            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
-                .await;
-        file_dispute_via_http(&hub, &fake_node, task_id, &challenger_key, "actually correct").await;
+        let task_id = seed_legacy_task_awaiting_dispute(
+            &hub,
+            &fake_node,
+            &poster_key.public_key(),
+            &assignee_key.public_key(),
+            900,
+        )
+        .await;
+        let escrow_id = seed_legacy_bond(&hub, &fake_node, task_id, &challenger_key.public_key()).await;
+        hub.client
+            .post(format!("{}/tasks/{task_id}/dispute/confirm", hub.base_url))
+            .json(&envelope(
+                &challenger_key,
+                &format!("/tasks/{task_id}/dispute/confirm"),
+                handlers::ConfirmDisputeEscrowPayload { task_id, escrow_id },
+            ))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        assert_eq!(get_task_json(&hub, task_id).await["status"], "Disputed");
+
+        let resp = hub
+            .client
+            .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
+            .json(&envelope(
+                &impostor_key, &format!("/tasks/{task_id}/dispute/resolve"),
+                handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::ChallengerWins },
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(get_task_json(&hub, task_id).await["status"], "Disputed", "must not have resolved");
+
         hub.client
             .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
             .json(&envelope(
@@ -7876,45 +7882,6 @@ mod tests {
              was, at every boot for the life of the deployment, each pass a node round trip \
              inside the sweep"
         );
-    }
-
-    #[tokio::test]
-    async fn non_operator_cannot_resolve_dispute() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-        let challenger_key = PrivateKey::new_key();
-        let impostor_key = PrivateKey::new_key();
-
-        let task_id =
-            create_confirmed_disputable_task_awaiting_dispute(&hub, &fake_node, &poster_key, &assignee_key, 900, 30)
-                .await;
-        file_dispute_via_http(&hub, &fake_node, task_id, &challenger_key, "wrong").await;
-
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{task_id}/dispute/resolve", hub.base_url))
-            .json(&envelope(
-                &impostor_key, &format!("/tasks/{task_id}/dispute/resolve"),
-                handlers::ResolveDisputePayload { task_id, outcome: board::DisputeResolution::ChallengerWins },
-            ))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-
-        let task: Value = hub
-            .client
-            .get(format!("{}/tasks/{task_id}", hub.base_url))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(task["status"], "Disputed", "must not have resolved");
     }
 
     // ---- Exchange v1 ----
