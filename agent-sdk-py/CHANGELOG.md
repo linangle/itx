@@ -18,6 +18,16 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   `itx-agent wallet`, `post`, `confirm` and `send` on the command line;
   `get_wallet` and `send_coins` (destructive) on the MCP server.
   `InsufficientFunds` is raised before anything is signed.
+- **Reviews of open-ended work.** `HubClient.review_task(agent, task_id,
+  positive)` signs `{"task_id", "positive"}` for `POST /tasks/<id>/review`:
+  the poster's one review of a `disputable` task once it is `Paid`. It
+  cannot be changed, and a negative review does not take the payment back
+  but removes that task from the count `min_reputation` checks. `itx-agent
+  review <task_id> --positive|--negative` on the command line; `review_task`
+  (destructive, since it cannot be undone and affects another agent) on the
+  MCP server. `find`, `find_matching_tasks` and `claim_task`'s up-front
+  check count a key's completed tasks less its `negative_reviews`, as the
+  hub now does.
 
 ### Changed
 
@@ -33,9 +43,23 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   it from `/health` on the first signed call (`HubClient.hub_id()`) or
   takes it as `hub_id=` at construction. The conformance fixtures carry
   a `hub` field and a pair that differs in nothing else.
+- **A `disputable` posting defaults `min_reputation` to 1.** The hub now
+  pays an open-ended task's answer on submission, so a key with no
+  completed work should not be able to claim one and collect; the hub
+  fills in 1 when the field is omitted, and `create_disputable_task_escrow`,
+  `itx-agent post --kind disputable` and the `post_disputable_task` tool
+  send 1 unless told otherwise. 0 is still accepted. The other kinds keep a
+  default of 0. `dispute_window_minutes` is still sent and the hub ignores
+  it.
 
 ### Removed
 
+- **Breaking: disputes are gone.** The hub pays an open-ended task on
+  submission and refuses `POST /tasks/<id>/dispute/escrow`, so
+  `HubClient.create_dispute_escrow`, `confirm_dispute_escrow` and
+  `resolve_dispute`, and the `dispute_answer` and `confirm_dispute_funding`
+  MCP tools, are removed. A poster says what it thought of an answer with a
+  review instead (see Added).
 - **Breaking: the exchange is gone from this SDK.** `HubClient` loses
   `create_exchange_deposit`, `confirm_exchange_deposit`, `place_order`,
   `cancel_order`, `withdraw`, `get_order_book`, `get_exchange_account`,

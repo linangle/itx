@@ -17,6 +17,7 @@ import pytest
 
 from itx_agent_sdk import Agent, HubClient, HubError
 from itx_agent_sdk.client import FaucetSolveTimeout, solve_faucet_challenge
+from itx_agent_sdk.envelope import _canonical_json
 
 
 # The hub these tests sign for. Supplied to the constructor so no test
@@ -287,26 +288,61 @@ def test_submit_task_url_and_payload():
     assert kwargs["json"]["payload"] == {"task_id": "t1", "output": "42"}
 
 
-def test_dispute_flow_urls_and_payloads():
+def test_create_disputable_task_escrow_defaults_min_reputation_to_one():
+    """The hub's own default for this kind, which pays whatever answer it
+    is given. Sent explicitly either way, because the hub signs over the
+    filled-in value -- see `Agent.build_envelope`.
+    """
     client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"id": "t1"})
-    challenger = Agent.generate()
-    operator = Agent.generate()
+    client.session.post.return_value = mock_response({"escrow_id": "e1"})
+    agent = Agent.generate()
 
-    client.create_dispute_escrow(challenger, "t1", "wrong answer")
+    client.create_disputable_task_escrow(agent, "desc", 900, 30)
     args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/tasks/t1/dispute/escrow"
-    assert kwargs["json"]["payload"] == {"task_id": "t1", "reason": "wrong answer"}
+    assert args[0] == "http://hub.test/tasks/disputable/escrow"
+    payload = kwargs["json"]["payload"]
+    assert list(payload.keys()) == [
+        "description",
+        "bounty",
+        "dispute_window_minutes",
+        "min_reputation",
+        "capabilities",
+    ]
+    assert payload["min_reputation"] == 1
 
-    client.confirm_dispute_escrow(challenger, "t1", "e1")
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/tasks/t1/dispute/confirm"
-    assert kwargs["json"]["payload"] == {"task_id": "t1", "escrow_id": "e1"}
+    client.create_disputable_task_escrow(agent, "desc", 900, 30, min_reputation=0)
+    assert client.session.post.call_args[1]["json"]["payload"]["min_reputation"] == 0
 
-    client.resolve_dispute(operator, "t1", "challenger_wins")
+
+def test_review_task_url_and_payload():
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"id": "t1", "review": {"positive": True}})
+    poster = Agent.generate()
+
+    client.review_task(poster, "t1", True)
+
     args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/tasks/t1/dispute/resolve"
-    assert kwargs["json"]["payload"] == {"task_id": "t1", "outcome": "challenger_wins"}
+    assert args[0] == "http://hub.test/tasks/t1/review"
+    assert kwargs["json"]["payload"] == {"task_id": "t1", "positive": True}
+
+
+def test_review_payload_signs_the_bytes_the_hub_rebuilds():
+    """Conformance for the one new payload: the canonical JSON this
+    client signs is the literal `a_review_payload_signs_task_id_then_positive`
+    in `hub/src/main.rs` pins for `handlers::ReviewPayload`, whose fields
+    are declared `task_id` then `positive`. A reordering on either side
+    fails one of the two tests rather than every review with a 401.
+    """
+    client = make_client_with_mock_session()
+    client.session.post.return_value = mock_response({"id": CANONICAL_ID})
+    poster = Agent.generate()
+
+    client.review_task(poster, CANONICAL_ID, False)
+
+    envelope = client.session.post.call_args[1]["json"]
+    assert _canonical_json(envelope["payload"]) == (
+        '{"task_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","positive":false}'
+    )
 
 
 def test_non_ok_response_raises_hub_error_with_parsed_body():
@@ -559,9 +595,7 @@ def test_every_signed_route_that_carries_an_id_canonicalises_it():
         (lambda: client.submit_task(agent, loud, "42"), f"/tasks/{CANONICAL_ID}/submit"),
         (lambda: client.cancel_task(agent, loud), f"/tasks/{CANONICAL_ID}/cancel"),
         (lambda: client.confirm_task_escrow(agent, loud), f"/tasks/escrow/{CANONICAL_ID}/confirm"),
-        (lambda: client.create_dispute_escrow(agent, loud, "why"), f"/tasks/{CANONICAL_ID}/dispute/escrow"),
-        (lambda: client.confirm_dispute_escrow(agent, loud, loud), f"/tasks/{CANONICAL_ID}/dispute/confirm"),
-        (lambda: client.resolve_dispute(agent, loud, "assignee_wins"), f"/tasks/{CANONICAL_ID}/dispute/resolve"),
+        (lambda: client.review_task(agent, loud, True), f"/tasks/{CANONICAL_ID}/review"),
     ]:
         call()
         args, kwargs = client.session.post.call_args

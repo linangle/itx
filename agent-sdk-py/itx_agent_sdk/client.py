@@ -631,9 +631,20 @@ class HubClient:
         description: str,
         bounty: int,
         dispute_window_minutes: int,
-        min_reputation: int = 0,
+        min_reputation: int = 1,
         capabilities: Optional[Iterable[str]] = None,
     ) -> dict:
+        """An open-ended task: one agent claims it and is paid for its
+        answer on submission, and the poster cannot reject that answer
+        -- only review it once it is paid (`review_task`).
+
+        `min_reputation` defaults to 1 here, where the other kinds default
+        to 0, and so does the hub's: this kind pays whatever it is given,
+        so a key with no completed work should not be able to claim one.
+        Pass 0 to let anyone claim, at your own risk.
+        `dispute_window_minutes` is still part of the signed payload and
+        must be positive, but the hub ignores it.
+        """
         payload = {
             "description": description,
             "bounty": bounty,
@@ -670,27 +681,21 @@ class HubClient:
         payload = {"task_id": task_id}
         return self._signed_post(f"/tasks/{task_id}/cancel", agent, payload)
 
-    # -- disputes ----------------------------------------------------------
+    # -- reviews -----------------------------------------------------------
 
-    def create_dispute_escrow(self, agent: Agent, task_id: str, reason: str) -> dict:
-        task_id = _canonical_id(task_id)
-        payload = {"task_id": task_id, "reason": reason}
-        return self._signed_post(f"/tasks/{task_id}/dispute/escrow", agent, payload)
+    def review_task(self, agent: Agent, task_id: str, positive: bool) -> dict:
+        """Leaves the poster's one review of a paid `disputable` task and
+        returns the task. Only the task's poster, only once the task is
+        `Paid`, and only once: a review cannot be changed. A negative one
+        does not take back the payment, but it removes that task from the
+        count the claimant's `min_reputation` checks use.
 
-    def confirm_dispute_escrow(self, agent: Agent, task_id: str, escrow_id: str) -> dict:
-        task_id = _canonical_id(task_id)
-        payload = {"task_id": task_id, "escrow_id": _canonical_id(escrow_id)}
-        return self._signed_post(f"/tasks/{task_id}/dispute/confirm", agent, payload)
-
-    def resolve_dispute(self, operator: Agent, task_id: str, outcome: str) -> dict:
-        """``outcome`` is ``"challenger_wins"`` or ``"assignee_wins"`` --
-        the hub's `DisputeResolution` enum is `#[serde(rename_all =
-        "snake_case")]`, so these exact strings (not e.g.
-        ``"ChallengerWins"``) are what it expects on the wire.
+        Field order is signing order: `ReviewPayload` in
+        `hub/src/handlers.rs` declares `task_id`, then `positive`.
         """
         task_id = _canonical_id(task_id)
-        payload = {"task_id": task_id, "outcome": outcome}
-        return self._signed_post(f"/tasks/{task_id}/dispute/resolve", operator, payload)
+        payload = {"task_id": task_id, "positive": bool(positive)}
+        return self._signed_post(f"/tasks/{task_id}/review", agent, payload)
 
     # -- wallet ----------------------------------------------------------------
     #
@@ -741,10 +746,9 @@ class HubClient:
         return self._signed_post("/wallet/send", agent, {"inputs": inputs, "outputs": outputs})
 
     def fund_escrow(self, agent: Agent, reservation: dict) -> dict:
-        """Pays a reservation -- what any `create_*_escrow` or
-        `create_dispute_escrow` returned -- its `required_amount` at its
-        `deposit_address`, with `send`. Then `confirm_task_escrow` (or
-        `confirm_dispute_escrow`) once a block has taken the payment;
+        """Pays a reservation -- what any `create_*_escrow` returned --
+        its `required_amount` at its `deposit_address`, with `send`. Then
+        `confirm_task_escrow` once a block has taken the payment;
         `wait_for_task_funding` does the waiting.
         """
         return self.send(agent, reservation["deposit_address"], int(reservation["required_amount"]))

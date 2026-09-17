@@ -34,7 +34,7 @@ MONEY_OR_REPUTATION_TOOLS = {
     "post_disputable_task",
     "claim_task",
     "submit_work",
-    "dispute_answer",
+    "review_task",
 }
 
 # A valid argument set for every tool, so the leak test can call each
@@ -56,8 +56,7 @@ TOOL_CALLS: Dict[str, Dict[str, Any]] = {
     "confirm_task_funding": {"escrow_id": "e1"},
     "claim_task": {"task_id": "t1"},
     "submit_work": {"task_id": "t1", "output": "answer"},
-    "dispute_answer": {"task_id": "t1", "reason": "wrong"},
-    "confirm_dispute_funding": {"task_id": "t1", "escrow_id": "e1"},
+    "review_task": {"task_id": "t1", "positive": False},
     "get_payment_status": {"payment_id": "p1"},
     "get_my_payments": {},
     "get_health": {},
@@ -125,14 +124,11 @@ class FakeHub:
     create_consensus_task_escrow = create_task_escrow
     create_disputable_task_escrow = create_task_escrow
 
-    def create_dispute_escrow(self, agent, task_id, reason):
-        return dict(self.ESCROW)
-
     def confirm_task_escrow(self, agent, escrow_id):
         return {"escrow_id": escrow_id, "status": "Open"}
 
-    def confirm_dispute_escrow(self, agent, task_id, escrow_id):
-        return {"task_id": task_id, "status": "Disputed"}
+    def review_task(self, agent, task_id, positive):
+        return {"id": task_id, "status": "Paid", "review": {"positive": positive}}
 
     def get_task(self, task_id):
         return _task(task_id)
@@ -238,7 +234,7 @@ def test_money_tools_take_explicit_amounts_with_no_defaults(server):
 
 def test_escrow_tools_return_the_deposit_details_as_structured_data(server):
     srv, _, _ = server
-    for name in ("post_task", "post_consensus_task", "post_disputable_task", "dispute_answer"):
+    for name in ("post_task", "post_consensus_task", "post_disputable_task"):
         result = _call(srv, name, TOOL_CALLS[name]).model_dump(by_alias=True)
         assert not result.get("isError"), (name, result)
         structured = result.get("structuredContent") or json.loads(result["content"][0]["text"])
@@ -264,6 +260,25 @@ def test_no_tool_result_description_or_instruction_contains_the_private_key(serv
         dumped = result.model_dump(by_alias=True)
         assert not dumped.get("isError"), (name, dumped)
         assert private_hex not in result.model_dump_json(), name
+
+
+def test_post_disputable_task_defaults_min_reputation_to_one(server):
+    srv, _, _ = server
+    tools = {t.name: t for t in _tools(srv)}
+    for name, default in (("post_disputable_task", 1), ("post_task", 0), ("post_consensus_task", 0)):
+        schema = tools[name].input_schema if hasattr(tools[name], "input_schema") else tools[name].inputSchema
+        assert schema["properties"]["min_reputation"]["default"] == default, name
+
+
+def test_claim_task_does_not_count_a_task_with_a_negative_review(server, monkeypatch):
+    srv, _, _ = server
+    gated = dict(_task("gated"), min_reputation=3)
+    monkeypatch.setattr(FakeHub, "get_task", lambda self, task_id: gated)
+    monkeypatch.setattr(
+        FakeHub, "get_reputation", lambda self, pubkey_hex: {"completed": 3, "failed": 0, "negative_reviews": 1}
+    )
+    with pytest.raises(ToolError, match="has 2"):
+        _call(srv, "claim_task", {"task_id": "gated"})
 
 
 def test_claim_task_refuses_the_agents_own_task_before_hitting_the_hub(server, monkeypatch):
@@ -434,14 +449,12 @@ def test_the_window_refreshes_once_it_has_elapsed():
         ("GET", "/wallet/02ab", "read"),
         ("POST", "/tasks/escrow/e1/confirm", "chain"),
         ("POST", "/tasks/t1/submit", "chain"),
-        ("POST", "/tasks/t1/dispute/confirm", "chain"),
-        ("POST", "/tasks/t1/dispute/resolve", "chain"),
         ("POST", "/exchange/deposit/e1/confirm", "chain"),
         ("POST", "/exchange/withdraw", "chain"),
         ("POST", "/tasks/t1/claim", "write"),
         ("POST", "/tasks/t1/cancel", "write"),
         ("POST", "/tasks/escrow", "write"),
-        ("POST", "/tasks/t1/dispute/escrow", "write"),
+        ("POST", "/tasks/t1/review", "write"),
         ("POST", "/exchange/orders", "write"),
         ("POST", "/exchange/orders/o1/cancel", "write"),
         ("POST", "/exchange/deposit", "write"),

@@ -19,6 +19,7 @@ printed, transmitted or included in any output -- ``whoami`` reports the
     itx-agent status
     itx-agent wallet                            # balance and outputs on chain
     itx-agent post --description "..." --bounty 500 --answer "..."   # reserve, fund, confirm
+    itx-agent review <task-id> --negative       # the poster's one review of a paid disputable task
     itx-agent send <pubkey> <amount>            # pay another key
 
 ``post`` and ``send`` spend this identity's balance. They exist so that
@@ -48,8 +49,9 @@ def eligible_tasks(
 ) -> List[Dict[str, Any]]:
     """Pure filter/rank shared by ``find``: drops tasks this identity
     posted itself (the hub never lets a poster claim its own task) and
-    tasks whose ``min_reputation`` exceeds its ``completed`` count (the
-    hub would 403), optionally floors the bounty, then ranks bounty
+    tasks whose ``min_reputation`` exceeds ``completed`` (the hub would
+    403 -- pass the count the hub checks, ``completed`` less
+    ``negative_reviews``), optionally floors the bounty, then ranks bounty
     descending. Mirrors the MCP server's ``find_matching_tasks`` so a
     shell-driven agent and an MCP-driven one rank the board identically.
     """
@@ -168,8 +170,21 @@ def build_parser() -> argparse.ArgumentParser:
     post.add_argument("--num-assignees", type=int, default=None, help="consensus: how many agents must join")
     post.add_argument("--join-window-minutes", type=int, default=None, help="consensus: how long to wait for them")
     post.add_argument("--submission-window-minutes", type=int, default=None, help="consensus: how long they then have to answer")
-    post.add_argument("--dispute-window-minutes", type=int, default=None, help="disputable: how long an answer can be challenged")
-    post.add_argument("--min-reputation", type=int, default=0, help="completed-task count a claimant must have (default 0)")
+    post.add_argument(
+        "--dispute-window-minutes",
+        type=int,
+        default=None,
+        help="disputable: still required by the hub, and ignored -- the answer is paid on submission",
+    )
+    post.add_argument(
+        "--min-reputation",
+        type=int,
+        default=None,
+        help=(
+            "completed-task count a claimant must have (default 0; 1 for disputable, which pays whatever "
+            "answer it is given, so a key with no completed work cannot claim it -- pass 0 to open it to anyone)"
+        ),
+    )
     post.add_argument("--capability", action="append", default=[], help="a <sector>/<market> tag describing the work; repeatable")
     post.add_argument(
         "--no-wait",
@@ -179,6 +194,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     confirm = sub.add_parser("confirm", parents=[common], help="bring a task live once its escrow payment is on chain")
     confirm.add_argument("escrow_id")
+
+    review = sub.add_parser(
+        "review",
+        parents=[common],
+        help="the poster's one review of a paid disputable task; cannot be changed, and a negative one counts against the claimant",
+    )
+    review.add_argument("task_id")
+    verdict = review.add_mutually_exclusive_group(required=True)
+    verdict.add_argument("--positive", action="store_true")
+    verdict.add_argument("--negative", action="store_true")
 
     send = sub.add_parser("send", parents=[common], help="pay another key from this identity's own outputs (a spend)")
     send.add_argument("pubkey", help="the recipient's public key, hex")
@@ -270,7 +295,8 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "find":
         reputation = client.get_reputation(agent.pubkey_hex)
         items, _ = client.list_tasks_scan(capability=args.capability)
-        return eligible_tasks(items, agent.pubkey_hex, reputation.get("completed", 0), args.min_bounty, args.limit)
+        counted = reputation.get("completed", 0) - reputation.get("negative_reviews", 0)
+        return eligible_tasks(items, agent.pubkey_hex, counted, args.min_bounty, args.limit)
 
     if args.command == "task":
         return client.get_task(args.task_id)
@@ -291,6 +317,9 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "confirm":
         return client.confirm_task_escrow(agent, args.escrow_id)
 
+    if args.command == "review":
+        return client.review_task(agent, args.task_id, args.positive)
+
     if args.command == "send":
         return client.send(agent, args.pubkey, args.amount)
 
@@ -302,12 +331,17 @@ def _reserve(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
     routes, with the flags checked here so a missing one is a plain
     sentence rather than the hub's 422."""
     capabilities = args.capability or None
+    # The hub's own default, per kind: 1 where the answer is paid
+    # unchecked, 0 where it is checked.
+    min_reputation = args.min_reputation
+    if min_reputation is None:
+        min_reputation = 1 if args.kind == "disputable" else 0
     if args.kind == "hash_match":
         if (args.answer is None) == (args.expected_output_hash is None):
             raise ValueError("a hash_match task needs exactly one of --answer or --expected-output-hash")
         target = args.expected_output_hash or hashlib.sha256(args.answer.encode("utf-8")).hexdigest()
         return client.create_task_escrow(
-            agent, args.description, args.bounty, target, args.min_reputation, capabilities
+            agent, args.description, args.bounty, target, min_reputation, capabilities
         )
     if args.kind == "consensus":
         for flag in ("num_assignees", "join_window_minutes", "submission_window_minutes"):
@@ -320,13 +354,13 @@ def _reserve(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
             args.num_assignees,
             args.join_window_minutes,
             args.submission_window_minutes,
-            args.min_reputation,
+            min_reputation,
             capabilities,
         )
     if args.dispute_window_minutes is None:
         raise ValueError("a disputable task needs --dispute-window-minutes")
     return client.create_disputable_task_escrow(
-        agent, args.description, args.bounty, args.dispute_window_minutes, args.min_reputation, capabilities
+        agent, args.description, args.bounty, args.dispute_window_minutes, min_reputation, capabilities
     )
 
 

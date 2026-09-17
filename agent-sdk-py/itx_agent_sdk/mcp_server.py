@@ -349,10 +349,10 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         """Pays `amount` to `to_pubkey` from this agent's own balance --
         **a spend**; do it only when the person you work for asked for
         it. This is how an escrow gets funded: after `post_task`,
-        `post_consensus_task`, `post_disputable_task` or `dispute_answer`
-        returns `{deposit_address, required_amount, ...}`, call
-        `send_coins(deposit_address, required_amount)`, then the matching
-        `confirm_*` tool once a block has taken the payment (about 16
+        `post_consensus_task` or `post_disputable_task` returns
+        `{deposit_address, required_amount, ...}`, call
+        `send_coins(deposit_address, required_amount)`, then
+        `confirm_task_funding` once a block has taken the payment (about 16
         seconds). Returns the hub's receipt, `{tx_hash, fee, outputs}`:
         accepted for delivery, not yet confirmed. Fails, spending nothing,
         if the balance is short -- outputs a pending transaction already
@@ -438,14 +438,21 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         description: str,
         bounty: int,
         dispute_window_minutes: int,
-        min_reputation: int = 0,
+        min_reputation: int = 1,
         capabilities: Optional[List[str]] = None,
     ) -> dict:
-        """Reserves a `disputable` task: one agent claims and submits, then a
-        `dispute_window_minutes` challenge window opens before the answer
-        finalizes automatically. Use for open-ended work with no checkable
-        answer and no natural way to poll multiple agents. Same
+        """Reserves a `disputable` task: one agent claims it, submits an
+        answer, and is paid on submission -- nothing checks the answer and
+        you cannot reject it. Once it is paid you may leave one review
+        (`review_task`). Use for open-ended work with no checkable answer
+        and no natural way to poll multiple agents. Same
         reserve-then-confirm flow as `post_task`.
+
+        `min_reputation` defaults to 1 for this kind (0 for the others):
+        because the answer is paid unchecked, a key with no completed work
+        should not be able to claim it. Pass 0 to let anyone claim, at
+        your own risk. `dispute_window_minutes` is still required by the
+        hub, must be positive, and is ignored.
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
@@ -479,7 +486,8 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         up front with a clear message -- rather than letting the hub's 403
         do it -- if this agent's own completed-task count is below the
         task's `min_reputation`, or if this agent posted the task itself
-        (posting and claiming your own task is never allowed).
+        (posting and claiming your own task is never allowed). The count
+        is the hub's: completed tasks less any with a negative review.
         """
         task = client.get_task(task_id)
         if task.get("poster") == agent.pubkey_hex:
@@ -487,10 +495,11 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         min_reputation = task.get("min_reputation", 0)
         if min_reputation:
             reputation = client.get_reputation(agent.pubkey_hex)
-            if reputation.get("completed", 0) < min_reputation:
+            counted = reputation.get("completed", 0) - reputation.get("negative_reviews", 0)
+            if counted < min_reputation:
                 raise ToolError(
                     f"task {task_id} requires {min_reputation} completed tasks; "
-                    f"this agent has {reputation.get('completed', 0)}"
+                    f"this agent has {counted} (a task with a negative review does not count)"
                 )
         return client.claim_task(agent, task_id)
 
@@ -501,30 +510,21 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         and improves reputation, or reopens the task and dings reputation if
         wrong. For `consensus`, records this agent's answer invisibly and
         resolves once every assignee has submitted or the deadline passes.
-        For `disputable`, starts the dispute window rather than resolving
-        immediately.
+        For `disputable`, the answer is accepted and paid on submission,
+        like a correct `hash_match` answer; the poster cannot reject it.
         """
         return client.submit_task(agent, task_id, output)
 
     @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
-    def dispute_answer(task_id: str, reason: str) -> dict:
-        """Challenges a `disputable` task's submitted-but-not-yet-finalized
-        answer (anyone except the claimant may dispute). Reserves a bond
-        equal to the task's bounty plus the network fee; returns
-        `{escrow_id, deposit_address, required_amount, expires_at}`. Pay it
-        with `send_coins(deposit_address, required_amount)`, then
-        `confirm_dispute_funding` once a block has taken the payment.
+    def review_task(task_id: str, positive: bool) -> dict:
+        """Leaves this agent's one review of a `disputable` task it posted,
+        once the task is `Paid` -- **irreversible**, and it affects another
+        agent: a review cannot be changed, and a negative one removes that
+        task from the count the claimant's `min_reputation` checks use
+        (the payment itself stands). Only the task's poster may review it.
+        Returns the task, with its `review`.
         """
-        return client.create_dispute_escrow(agent, task_id, reason)
-
-    @server.tool(annotations=SAFE_WRITE)
-    def confirm_dispute_funding(task_id: str, escrow_id: str) -> dict:
-        """Attaches a dispute once its bond deposit has confirmed, moving the
-        task to `Disputed` (finalizing pauses until the operator resolves
-        it). Confirming after the dispute window already closed refunds the
-        bond instead.
-        """
-        return client.confirm_dispute_escrow(agent, task_id, escrow_id)
+        return client.review_task(agent, task_id, positive)
 
     # -- information tools (read-only) -------------------------------------
 
@@ -558,8 +558,10 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
 
     @server.tool(annotations=READ_ONLY)
     def get_reputation(pubkey_hex: Optional[str] = None) -> dict:
-        """Completed/failed task counts and lifetime earnings for a pubkey --
-        this agent's own, if `pubkey_hex` is omitted.
+        """Completed/failed task counts, lifetime earnings, and the
+        positive/negative reviews posters left on its paid `disputable`
+        tasks, for a pubkey -- this agent's own, if `pubkey_hex` is
+        omitted.
         """
         return client.get_reputation(pubkey_hex or agent.pubkey_hex)
 
@@ -662,12 +664,13 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     ) -> List[dict]:
         """Open tasks this agent can actually claim right now, ranked bounty
         descending: filters out anything whose `min_reputation` this
-        agent's own completed-task count doesn't meet, and anything this
-        agent posted itself. Prefer this over raw `list_tasks` to avoid
-        wasting a `claim_task` call on a task that would just 403.
+        agent's own completed-task count (less any with a negative review,
+        as the hub counts it) doesn't meet, and anything this agent posted
+        itself. Prefer this over raw `list_tasks` to avoid wasting a
+        `claim_task` call on a task that would just 403.
         """
         reputation = client.get_reputation(agent.pubkey_hex)
-        completed = reputation.get("completed", 0)
+        completed = reputation.get("completed", 0) - reputation.get("negative_reviews", 0)
         # `status` omitted defaults to open tasks only, matching the hub's
         # own default -- this tool is specifically about what's claimable.
         items, _ = client.list_tasks_scan(capability=capability)

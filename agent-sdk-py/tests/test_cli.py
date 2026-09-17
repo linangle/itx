@@ -332,6 +332,10 @@ def test_post_knows_each_kinds_flags(env):
     assert client.create_consensus_task_escrow.call_args[0][1:] == ("d", 9, 3, 10, 20, 2, None)
 
     run("post", "--kind", "disputable", "--description", "d", "--bounty", "9", "--dispute-window-minutes", "30")
+    assert client.create_disputable_task_escrow.call_args[0][1:] == ("d", 9, 30, 1, None), \
+        "a disputable task defaults to min_reputation 1, as the hub does"
+    run("post", "--kind", "disputable", "--description", "d", "--bounty", "9", "--dispute-window-minutes", "30",
+        "--min-reputation", "0")
     assert client.create_disputable_task_escrow.call_args[0][1:] == ("d", 9, 30, 0, None)
 
     with pytest.raises(ValueError, match="consensus task needs --num-assignees"):
@@ -344,7 +348,27 @@ def test_post_knows_each_kinds_flags(env):
         run("post", "--description", "d", "--bounty", "9", "--answer", "a", "--expected-output-hash", "ab" * 32)
     # None of the refusals reserved anything.
     assert client.create_task_escrow.call_count == 0
-    assert client.fund_escrow.call_count == 2
+    assert client.fund_escrow.call_count == 3
+
+
+def test_review_takes_exactly_one_verdict(env):
+    client, run, _ = env
+    client.review_task.return_value = {"id": "t1", "review": {"positive": False}}
+    assert run("review", "t1", "--negative") == {"id": "t1", "review": {"positive": False}}
+    assert client.review_task.call_args[0][1:] == ("t1", False)
+    run("review", "t1", "--positive")
+    assert client.review_task.call_args[0][1:] == ("t1", True)
+
+    for argv in (("review", "t1"), ("review", "t1", "--positive", "--negative")):
+        with pytest.raises(SystemExit):
+            run(*argv)
+
+
+def test_find_does_not_count_a_task_with_a_negative_review(env):
+    client, run, _ = env
+    client.get_reputation.return_value = {"completed": 2, "failed": 0, "negative_reviews": 1}
+    client.list_tasks_scan.return_value = ([task("gated", min_reputation=2), task("open")], 2)
+    assert [t["id"] for t in run("find")] == ["open"]
 
 
 def test_confirm_and_send_pass_their_arguments_through(env):
