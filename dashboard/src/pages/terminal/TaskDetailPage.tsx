@@ -374,16 +374,24 @@ function ContestPanel({ task, nameOf }: { task: DisputableTask; nameOf: NameOf }
           <>
             <dt>outcome</dt>
             <dd>
-              picked <PubkeyLink pubkey={picked} name={nameOf(picked)} />, paid the bounty and
-              credited as a completed task.
+              picked <PubkeyLink pubkey={picked} name={nameOf(picked)} />
+              {task.status === "Paid"
+                ? ", paid the bounty and credited as a completed task."
+                : task.status === "PayoutFailed"
+                  ? ". the payout failed, so the bounty is still owed."
+                  : ". the bounty is on its way, and counts as a completed task once it lands."}
             </dd>
           </>
         ) : split ? (
           <>
             <dt>outcome</dt>
             <dd>
-              not picked in time, so the bounty was split evenly among every answer. a split share
-              is paid but not credited as a completed task.
+              not picked in time, so the bounty was split evenly among every answer.{" "}
+              {task.status === "Paid"
+                ? "every share is paid, and none counts as a completed task."
+                : task.status === "PayoutFailed"
+                  ? "the payout failed, so the shares are still owed."
+                  : "the shares are on their way, and none will count as a completed task."}
             </dd>
           </>
         ) : task.status === "AwaitingPick" ? (

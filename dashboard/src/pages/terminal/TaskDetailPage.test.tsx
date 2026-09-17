@@ -122,7 +122,28 @@ it("says which answer a settled contest picked, or that it was split", async () 
   unmount();
 
   vi.mocked(hub.getTask).mockResolvedValue({ ...settled, split: true } as hub.TaskDto);
-  show();
+  const split = show();
   expect(await screen.findByText(/split evenly among every answer/)).toBeInTheDocument();
+  expect(screen.getByText(/every share is paid/)).toBeInTheDocument();
   expect(screen.queryByText("· picked")).toBeNull();
+  split.unmount();
+});
+
+it("does not call a contest paid before its payment lands", async () => {
+  const settling = {
+    ...fresh(),
+    answer_count: 1,
+    answers: [{ pubkey: ANSWERER, answer: "the endpoints, documented", submitted_at: "2026-09-16T12:00:00Z" }],
+    pick_deadline: "2026-09-16T14:00:00Z",
+  };
+  vi.mocked(hub.getTask).mockResolvedValue({ ...settling, status: "Submitted", picked: ANSWERER } as hub.TaskDto);
+  const { unmount } = show();
+  expect(await screen.findByText(/the bounty is on its way/)).toBeInTheDocument();
+  expect(screen.queryByText(/paid the bounty/)).toBeNull();
+  unmount();
+
+  vi.mocked(hub.getTask).mockResolvedValue({ ...settling, status: "PayoutFailed", split: true } as hub.TaskDto);
+  show();
+  expect(await screen.findByText(/the payout failed, so the shares are still owed/)).toBeInTheDocument();
+  expect(screen.queryByText(/every share is paid/)).toBeNull();
 });
