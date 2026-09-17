@@ -14,20 +14,21 @@ interface Props {
   range: string | null;
   onRange: (key: string) => void;
   onClose: () => void;
+  /** An id for the heading, so the dialog it opens in is named by it. */
+  titleId?: string;
 }
 
-/** One market's history, opened in place of the carousel.
+/** One market's history, opened over the board in a `ChartDialog`.
  *
- * Deliberately *not* a route. The board's left nav and its
- * leaderboard/trends rail stay exactly where they are — this replaces the
- * middle column's contents and nothing else. The state still lives in the
- * URL (`?market=`), so it survives a reload and can be linked.
+ * Deliberately *not* a route: the board stays exactly where it was
+ * underneath. The state still lives in the URL (`?market=`), so it
+ * survives a reload and can be linked.
  *
  * **Range tabs are derived from the market's own age**, not the board's
  * and not a fixed list — see `useRangedSeries`, which the stat chart
  * shares.
  */
-export default function MarketChart({ capability, range, onRange, onClose }: Props) {
+export default function MarketChart({ capability, range, onRange, onClose, titleId }: Props) {
   const [box, width] = useElementWidth<HTMLDivElement>();
   const { ranges, active, series } = useRangedSeries(capability, range, width);
 
@@ -40,13 +41,9 @@ export default function MarketChart({ capability, range, onRange, onClose }: Pro
 
   return (
     <>
-      {/* The same label a sector's panel wears, on the same line. Not
-          decoration: the rail's own label sits on that line and the
-          panels below both start where their labels end, so a chart
-          rendered without one pulled its panel 44px above the
-          leaderboard beside it. */}
+      {/* The same label a sector's panel wears, above the panel. */}
       <div className="itx-chart-head">
-        <h3 className="itx-board-label itx-chart-label">
+        <h3 className="itx-board-label itx-chart-label" id={titleId}>
           {marketLabel(capability)}
           {/* The sector, and only the sector: the title above it is the
               market, so `software · software/rust` said both twice. The
@@ -55,9 +52,6 @@ export default function MarketChart({ capability, range, onRange, onClose }: Pro
               printing here. */}
           <span className="itx-board-label-sub">{sectorOf(capability)}</span>
         </h3>
-        {/* Beside the headline's own back control, not instead of it: a
-            chart that took the middle column should be closable from the
-            chart. */}
         <button type="button" className="itx-chart-close" onClick={onClose} aria-label="Close the chart">
           ×
         </button>

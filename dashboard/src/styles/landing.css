@@ -2713,15 +2713,12 @@ a.itx-board-what:hover {
    come from the one place every other panel gets them. Only what is
    particular to a chart is here. */
 /* An `<h3>`, so the market's name is a heading rather than a styled span
-   -- which means clearing the UA's top margin that a `span` never had.
-   Left in place it pushed the middle column 16px below the rail. */
+   -- which means clearing the UA's top margin that a `span` never had. */
 .itx-chart-label {
   margin-top: 0;
 }
 
-/* The label line above a chart, with the close at its far end. The label
-   keeps its own box, which is what holds the panel level with the
-   leaderboard's. */
+/* The label line above a chart, with the close at its far end. */
 .itx-chart-head {
   display: flex;
   align-items: flex-start;
@@ -2757,46 +2754,69 @@ a.itx-board-what:hover {
 .itx-chart-panel {
   box-sizing: border-box;
   padding: var(--sp-6) var(--pad-panel-x);
-  /* Matches the height of a sector panel, so the tape below does not jump
-     when a market is opened -- and so the rail, which sizes itself from
-     this column, does not resize either. */
+  /* The height of a sector panel, which is the size the chart was drawn
+     for when it opened in the carousel's place. */
   min-height: 394px;
   display: flex;
   flex-direction: column;
 }
 
-/* Sits in the heading line, exactly where the carousel's pager was, and
-   says where it goes rather than just pointing -- "back" alone would
-   leave the reader to remember what they came from. */
-.itx-chart-back {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
-  background: none;
-  border: 0;
+/* The dialog a chart opens in -- see `ChartDialog`. The dialog is only a
+   positioned box: no padding, no fill, so the body inside fills it and a
+   click whose target is the dialog itself landed on the backdrop. */
+.itx-chart-dialog {
+  box-sizing: border-box;
+  width: min(1040px, calc(100vw - 2 * var(--sp-8)));
+  max-width: none;
+  max-height: calc(100dvh - 2 * var(--sp-8));
+  margin: auto;
   padding: 0;
-  font: inherit;
-  font-size: var(--fs-meta);
-  color: var(--ld-sub);
-  cursor: pointer;
-  transition:
-    transform 130ms ease,
-    color 130ms ease;
+  border: 0;
+  background: none;
+  color: inherit;
+  /* A short screen scrolls the chart, not the board behind it. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.itx-chart-back:hover {
-  color: var(--ld-light);
+/* The board, dimmed toward its own ground so the scrim is dark on the
+   dark theme and light on the light one. The fallback is for engines
+   whose backdrop does not inherit custom properties. */
+.itx-chart-dialog::backdrop {
+  background: color-mix(in srgb, var(--ld-dark, #161418) 80%, transparent);
 }
 
-/* The arrow scales, not the words: the whole control growing would shove
-   the header sideways. Same 1.1 the site's other arrows use. */
-.itx-chart-back svg {
-  font-size: 9px;
-  transition: transform 130ms ease;
+/* The one surface: label, figure, ranges and plot in a single panel,
+   rather than the board's label-over-panel, which over a scrim left the
+   label floating on nothing. */
+.itx-chart-dialog-body {
+  box-sizing: border-box;
+  padding: var(--sp-6) var(--pad-panel-x) var(--sp-4);
+  border: 1px solid var(--bd-line);
+  border-radius: var(--r-panel);
+  background: var(--ld-dark);
 }
 
-.itx-chart-back:hover svg {
-  transform: scale(1.1);
+.itx-chart-dialog .itx-chart-panel {
+  padding: var(--sp-4) 0 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+/* The page holds still behind an open chart, so closing it lands the
+   reader where they were. The gutter is kept so hiding the scrollbar does
+   not widen the page and reflow the board underneath. */
+html:has(.itx-chart-dialog[open]) {
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 640px) {
+  .itx-chart-dialog {
+    width: calc(100vw - 2 * var(--sp-6));
+    max-height: calc(100dvh - 2 * var(--sp-6));
+  }
 }
 
 /* The market's name moved out to a label above the panel, where every

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import Sparkline from "../../components/Sparkline";
 import ProfileIcon from "../../components/ProfileIcon";
@@ -7,6 +7,7 @@ import Triangle from "../../components/Triangle";
 import SectorBreakdown from "./SectorBreakdown";
 import StatsRail from "./StatsRail";
 import StatChart from "./StatChart";
+import ChartDialog from "./ChartDialog";
 import MarketActivity from "./MarketActivity";
 import MarketChart from "./MarketChart";
 import { sweepColors } from "./marketHue";
@@ -222,12 +223,12 @@ export default function Board({
   /** Which market's chart is open, and at what range -- in the URL, so a
    * chart is a link someone can send and a reload lands back on it. A
    * search param rather than a route: opening a market must not unmount
-   * the board around it. */
+   * the board around it. The chart opens over the board, in a dialog. */
   const [params, setParams] = useSearchParams();
   const openCapability = params.get("market");
-  /** Which of the board's own figures is charted in the middle, if any
-   * -- the stats rail's entries open these. One thing in the middle at a
-   * time: opening a stat closes a market and the other way round. */
+  /** Which of the board's own figures is charted, if any -- the stats
+   * rail's entries open these. One chart open at a time: opening a stat
+   * closes a market and the other way round. */
   const openStat = params.get("stat");
 
   const openMarket = useCallback(
@@ -254,7 +255,7 @@ export default function Board({
     [params, setParams],
   );
 
-  /** Back to the carousel, from whichever chart has the middle. */
+  /** Back to the board, from whichever chart is open. */
   const closeMarket = useCallback(() => {
     const next = new URLSearchParams(params);
     next.delete("market");
@@ -262,6 +263,9 @@ export default function Board({
     next.delete("range");
     setParams(next);
   }, [params, setParams]);
+
+  /** Names the open chart's dialog after the chart's own heading. */
+  const chartTitleId = useId();
 
   const setRange = useCallback(
     (key: string) => {
@@ -287,9 +291,8 @@ export default function Board({
     return () => observer.disconnect();
     // Re-measured on content changes, not only on resizes: on the first
     // paint the board has no data, so the column is a few pixels tall and
-    // that is what the observer recorded. The open chart, because opening
-    // one replaces the measured box.
-  }, [sectors, openCapability, openStat]);
+    // that is what the observer recorded.
+  }, [sectors]);
 
   // One ordering for every panel -- see `SectorPanel`'s `sort` prop.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
@@ -345,19 +348,9 @@ export default function Board({
 
         {/* Laid out on the same three columns as the board below, with the
           * heading in the middle one: the title starts where the first
-          * market panel starts. The line stays in both modes because it
-          * carries the section's top margin -- hiding it when a market
-          * opened pulled the whole board up by 71px. Only its contents
-          * swap. */}
+          * market panel starts. */}
         <div className="itx-board-head" id="itx-board-overview">
           <div className="itx-board-headline">
-            {openCapability || openStat ? (
-              <button type="button" className="itx-chart-back" onClick={closeMarket}>
-                <Triangle direction="left" />
-                market overview
-              </button>
-            ) : (
-            <>
             <h2 className="itx-board-title">market overview</h2>
 
             {/* Disabled at the ends rather than wrapping: the row is a
@@ -381,8 +374,6 @@ export default function Board({
                 <Triangle direction="right" />
               </button>
             </div>
-            </>
-            )}
           </div>
         </div>
 
@@ -401,27 +392,9 @@ export default function Board({
           {/* The middle column: the carousel, its position indicator and
             * the tape -- the one column here that actually scrolls. */}
           <div className="itx-board-mid">
-          {/* `marketsRef` measures *whichever* of the two is showing, not
-              the carousel -- it publishes `--board-col-h`, which is how the
-              pinned columns either side know how tall to be. On
-              `#itx-board-markets`, which unmounts when a chart opens, the
-              measurement went stale. */}
+          {/* `marketsRef` publishes `--board-col-h`, which is how the
+              pinned columns either side know how tall to be. */}
           <div className="itx-board-feature" ref={marketsRef}>
-          {openCapability ? (
-            <MarketChart
-              capability={openCapability}
-              range={params.get("range")}
-              onRange={setRange}
-              onClose={closeMarket}
-            />
-          ) : openStat ? (
-            <StatChart
-              statKey={openStat}
-              range={params.get("range")}
-              onRange={setRange}
-              onClose={closeMarket}
-            />
-          ) : (
           <div className="itx-board-markets" id="itx-board-markets">
             {/* Which end the row is against, as a pair of flags: whether
              * an edge fades, and how, is the stylesheet's business. */}
@@ -465,8 +438,35 @@ export default function Board({
               <span />
             </div>
           </div>
-          )}
           </div>
+
+          {/* Opened over the board, not in this column: the stats rail is
+            * pinned and the activity tiles are a screen further down, so a
+            * chart put here opened out of sight of whoever asked for it.
+            * See `ChartDialog`. */}
+          {(openCapability || openStat) && (
+            <ChartDialog titleId={chartTitleId} onClose={closeMarket}>
+              {openCapability ? (
+                <MarketChart
+                  capability={openCapability}
+                  range={params.get("range")}
+                  onRange={setRange}
+                  onClose={closeMarket}
+                  titleId={chartTitleId}
+                />
+              ) : (
+                openStat && (
+                  <StatChart
+                    statKey={openStat}
+                    range={params.get("range")}
+                    onRange={setRange}
+                    onClose={closeMarket}
+                    titleId={chartTitleId}
+                  />
+                )
+              )}
+            </ChartDialog>
+          )}
 
           <section aria-label="Latest">
           <div className="itx-board-labels itx-board-labels-latest itx-board-labels-section">

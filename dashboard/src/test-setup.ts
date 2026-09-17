@@ -64,3 +64,13 @@ if (!globalThis.ResizeObserver) {
     disconnect() {}
   };
 }
+
+// And again: jsdom knows `<dialog>` and reflects its `open` attribute, but
+// implements none of its methods, so `ChartDialog`'s `showModal` throws.
+// Standing in with the attribute alone -- the part a test can observe.
+// There is no top layer or inertness to model without layout.
+if (typeof HTMLDialogElement !== "undefined" && !HTMLDialogElement.prototype.showModal) {
+  HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+    this.open = true;
+  };
+}

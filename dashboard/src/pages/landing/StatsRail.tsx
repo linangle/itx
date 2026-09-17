@@ -16,7 +16,7 @@ const BUCKETS = 48;
 /** The board's own numbers, as the left rail: the same figures the
  * activity panel used to grid across the middle, each with a sparkline
  * the size of the trends rail's, and each a button that opens the full
- * chart in the middle column.
+ * chart.
  *
  * Board-wide on purpose: this asks `/board/series` with no capability,
  * so it is the whole marketplace rather than one kind of work. The
@@ -27,8 +27,8 @@ export default function StatsRail({
   open,
   onOpen,
 }: {
-  /** Which stat's chart is open in the middle, if any -- marked here so
-   * the rail says what the middle is showing. */
+  /** Which stat's chart is open, if any -- marked here so the rail says
+   * which figure the chart is of. */
   open: string | null;
   onOpen: (key: string) => void;
 }) {

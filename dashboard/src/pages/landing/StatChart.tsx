@@ -13,15 +13,18 @@ interface Props {
   range: string | null;
   onRange: (key: string) => void;
   onClose: () => void;
+  /** An id for the heading, so the dialog it opens in is named by it. */
+  titleId?: string;
 }
 
-/** One of the board's own figures, opened in place of the carousel --
- * the stats rail's entries lead here. The same shell as a market's chart,
- * drawing the tile's own curve rather than a market's bounty, and its
+/** One of the board's own figures, opened over the board in a
+ * `ChartDialog` -- the stats rail's entries lead here. The same shell as
+ * a market's chart, drawing the tile's own curve rather than a market's
+ * bounty, and its
  * definition where the market chart puts its totals: this is where the
  * note under every figure moved to when the figures moved to the rail.
  */
-export default function StatChart({ statKey, range, onRange, onClose }: Props) {
+export default function StatChart({ statKey, range, onRange, onClose, titleId }: Props) {
   const [box, width] = useElementWidth<HTMLDivElement>();
   const { ranges, active, series } = useRangedSeries(undefined, range, width);
   const data = series.data;
@@ -35,18 +38,10 @@ export default function StatChart({ statKey, range, onRange, onClose }: Props) {
   return (
     <>
       <div className="itx-chart-head">
-        {/* The same label a sector's panel wears, on the same line -- it
-            carries the line's height, so the panel below starts level
-            with the leaderboard's. The key stands in until the hub has
-            named the tile. */}
-        <h3 className="itx-board-label itx-chart-label">
+        {/* The same label a sector's panel wears, above the panel. The
+            key stands in until the hub has named the tile. */}
+        <h3 className="itx-board-label itx-chart-label" id={titleId}>
           {tile?.label ?? statKey.replace(/-/g, " ")}
-          {/* The second line held open, not captioned: a market's chart
-              names its sector here, and a board-wide figure has no such
-              parent to name. */}
-          <span className="itx-board-label-sub" aria-hidden="true">
-            {"\u00a0"}
-          </span>
         </h3>
         <button type="button" className="itx-chart-close" onClick={onClose} aria-label="Close the chart">
           ×

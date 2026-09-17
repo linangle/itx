@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -124,13 +124,6 @@ function renderBoard(
     ...view,
     carousel: within(view.container.querySelector("#itx-board-markets") as HTMLElement),
   };
-}
-
-/** The carousel as it is *now*. `renderBoard` captures the one on first
- * paint, and opening a chart replaces it -- a test that closes a chart
- * and clicks the carousel again has to look it up afresh. */
-function liveCarousel() {
-  return within(document.querySelector("#itx-board-markets") as HTMLElement);
 }
 
 /** A board with markets in three sectors, shared by the blocks below.
@@ -289,19 +282,22 @@ describe("Board", () => {
     expect(screen.queryByRole("columnheader", { name: "agent" })).not.toBeInTheDocument();
   });
 
-  it("opens a market's chart in place, rather than navigating to its tasks", async () => {
+  it("opens a market's chart over the board, rather than navigating to its tasks", async () => {
     const user = userEvent.setup();
     const { carousel } = renderBoard(capabilities);
+    const markets = document.querySelector("#itx-board-markets");
 
     await user.click(await carousel.findByRole("button", { name: "python" }));
 
-    // The chart takes the middle column and the carousel goes with it.
-    // The heading's accessible name carries its sub-line too ("python
-    // coding"), same as a sector panel's label does.
-    expect(await screen.findByRole("heading", { name: /^python/ })).toBeInTheDocument();
-    expect(document.querySelector("#itx-board-markets")).toBeNull();
-    // ...while the rails either side stay exactly where they were. That
-    // is the whole point of doing this in place rather than as a route.
+    // The chart opens in a dialog named by its heading, whose accessible
+    // name carries its sub-line too ("python coding"), same as a sector
+    // panel's label does.
+    const dialog = await screen.findByRole("dialog", { name: /^python/ });
+    expect(dialog).toHaveAttribute("open");
+    // ...while the board underneath stays exactly as it was, carousel
+    // included. That is the whole point of a dialog rather than a route,
+    // or a chart that took the carousel's place.
+    expect(document.querySelector("#itx-board-markets")).toBe(markets);
     expect(screen.getByRole("complementary", { name: /board stats/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/search agents/i)).toBeInTheDocument();
   });
@@ -313,40 +309,57 @@ describe("Board", () => {
     expect(screen.getByTestId("search").textContent).toContain("market=software%2Fpython");
   });
 
-  it("goes back to the carousel from the chart, by either control", async () => {
+  it("closes the chart by its ×, by Escape, and by the backdrop", async () => {
+    const user = userEvent.setup();
+    const { carousel } = renderBoard(capabilities);
+    const closed = () => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByTestId("search").textContent).not.toContain("market=");
+    };
+
+    await user.click(await carousel.findByRole("button", { name: "python" }));
+    await user.click(await screen.findByRole("button", { name: /close the chart/i }));
+    closed();
+
+    // Escape arrives as the dialog's `cancel`: jsdom has no key handling
+    // of its own for a dialog, so the event is sent the way a browser
+    // would send it.
+    await user.click(carousel.getByRole("button", { name: "python" }));
+    fireEvent(await screen.findByRole("dialog"), new Event("cancel", { cancelable: true }));
+    closed();
+
+    // A click whose target is the dialog itself is a click on its
+    // backdrop -- the body inside fills the dialog.
+    await user.click(carousel.getByRole("button", { name: "python" }));
+    await user.click(await screen.findByRole("dialog"));
+    closed();
+  });
+
+  it("keeps the chart open when a click lands inside it", async () => {
     const user = userEvent.setup();
     const { carousel } = renderBoard(capabilities);
     await user.click(await carousel.findByRole("button", { name: "python" }));
-
-    await user.click(await screen.findByRole("button", { name: /market overview/i }));
-    expect(document.querySelector("#itx-board-markets")).not.toBeNull();
-
-    // The chart carries its own close as well as the headline's back.
-    // Re-queried: the carousel is a new element after coming back, and
-    // the one `renderBoard` captured is detached.
-    await user.click(await liveCarousel().findByRole("button", { name: "python" }));
-    await user.click(await screen.findByRole("button", { name: /close the chart/i }));
-    expect(document.querySelector("#itx-board-markets")).not.toBeNull();
-    expect(screen.getByTestId("search").textContent).not.toContain("market=");
+    await user.click(await screen.findByRole("heading", { name: /^python/ }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
   it("opens one of the board's own figures from the stats rail, in the URL", async () => {
     const user = userEvent.setup();
     vi.mocked(hub.getMarketSeries).mockResolvedValue(boardSeries());
-    renderBoard(capabilities);
+    const { carousel } = renderBoard(capabilities);
     const rail = screen.getByRole("complementary", { name: /board stats/i });
     await user.click(await within(rail).findByRole("button", { name: /^bounty paid/ }));
 
-    // The stat's chart takes the middle column the way a market's does,
-    // and it is a link too.
-    expect(await screen.findByRole("heading", { name: /^bounty paid/ })).toBeInTheDocument();
-    expect(document.querySelector("#itx-board-markets")).toBeNull();
+    // The stat's chart opens over the board the way a market's does, and
+    // it is a link too.
+    expect(await screen.findByRole("dialog", { name: /^bounty paid/ })).toBeInTheDocument();
+    expect(document.querySelector("#itx-board-markets")).not.toBeNull();
     expect(screen.getByTestId("search").textContent).toContain("stat=bounty-paid");
     expect(within(rail).getByRole("button", { name: /^bounty paid/ })).toHaveAttribute("aria-pressed", "true");
 
-    // One thing in the middle at a time: a market replaces it.
+    // One chart at a time: a market replaces it.
     await user.click(await screen.findByRole("button", { name: /close the chart/i }));
-    await user.click(await liveCarousel().findByRole("button", { name: "python" }));
+    await user.click(await carousel.findByRole("button", { name: "python" }));
     expect(screen.getByTestId("search").textContent).toContain("market=");
     expect(screen.getByTestId("search").textContent).not.toContain("stat=");
   });

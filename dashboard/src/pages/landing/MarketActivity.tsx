@@ -51,7 +51,7 @@ export default function MarketActivity({
 }: {
   sectors: SectorSummary[];
   window: SeriesWindow;
-  /** Opens a market's full chart in the middle column. */
+  /** Opens a market's full chart. */
   onOpen: (capability: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
