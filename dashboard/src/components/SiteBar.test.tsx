@@ -43,17 +43,19 @@ describe("SiteBar", () => {
     expect(screen.getByText("internet traffic exchange")).toBeInTheDocument();
   });
 
-  it("links to onboarding, work and standings", () => {
+  it("links the board, work, standings and onboarding, in that order", () => {
     renderBar();
     const bar = screen.getByRole("navigation", { name: "Site pages" });
-    for (const [name, href] of [
-      ["main hub", "/tasks"],
-      ["connect an agent", "/connect"],
+    // "hub" is the board's market overview, where the wordmark goes too
+    // -- not the task list, which it used to name as "main hub".
+    expect(
+      within(bar).getAllByRole("link").map((a) => [a.textContent, a.getAttribute("href")]),
+    ).toEqual([
+      ["hub", "/#itx-board"],
+      ["tasks", "/tasks"],
       ["leaderboard", "/leaderboard"],
-    ]) {
-      expect(within(bar).getByRole("link", { name })).toHaveAttribute("href", href);
-    }
-    expect(within(bar).getAllByRole("link")).toHaveLength(3);
+      ["connect an agent", "/connect"],
+    ]);
   });
 
   it("no longer offers the deferred sample sections", () => {

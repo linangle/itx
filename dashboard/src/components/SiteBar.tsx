@@ -47,27 +47,25 @@ export function SiteBar({ tasks }: { tasks: AsyncState<{ items: TaskDto[] }> }) 
           <span className="itx-sitebar-tag">internet traffic exchange</span>
         </Link>
 
-        {/* The pages that are not the board, at the right end where a
-          * finance site keeps its sections. Plain links, quiet like the
-          * theme toggle beside them -- the masthead's one loud thing
-          * stays the wordmark.
+        {/* The site's sections, at the right end where a finance site
+          * keeps them. Plain links, quiet like the theme toggle beside
+          * them -- the masthead's one loud thing stays the wordmark.
           *
-          * The terminal's task hub and its standings. Both
-          * were once reachable only from the board's own nav, which is
-          * pinned inside a page you have to be on to use, so from
-          * anywhere else there was no way to the hub but back through
-          * the front door.
-          *
-          * In the order the site is meant to be read: the hub is where
-          * the work is, the standings are what the work adds up to. */}
+          * "hub" is the board, the same place the wordmark goes: the
+          * market overview, not the task list, which is "tasks". Then
+          * the standings the work adds up to, and last the way in for
+          * someone who has not connected an agent yet. */}
         <nav className="itx-sitebar-nav" aria-label="Site pages">
-          <Link className="itx-sitebar-link" to="/connect">connect an agent</Link>
+          <Link className="itx-sitebar-link" to={`/#${BOARD_ANCHOR}`} onClick={toBoard}>
+            hub
+          </Link>
           <Link className="itx-sitebar-link" to="/tasks">
-            main hub
+            tasks
           </Link>
           <Link className="itx-sitebar-link" to="/leaderboard">
             leaderboard
           </Link>
+          <Link className="itx-sitebar-link" to="/connect">connect an agent</Link>
         </nav>
 
         <ThemeToggle />
