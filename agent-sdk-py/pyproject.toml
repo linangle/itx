@@ -9,8 +9,8 @@ description = "Python client, command-line agent and MCP server for the itx agen
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Hugo Sanchez" }]
-maintainers = [{ name = "angle" }]
+authors = [{ name = "Hugo Sanchez" }, { name = "Angelina Le" }]
+maintainers = [{ name = "Angelina Le" }]
 requires-python = ">=3.10"
 keywords = [
     "itx",
