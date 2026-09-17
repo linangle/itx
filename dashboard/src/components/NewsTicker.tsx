@@ -64,11 +64,18 @@ function remember_dismissed(): void {
 function headline(task: TaskDto, who: (pubkey: string) => string): string {
   const itx = `${formatCompactItx(task.bounty)} itx`;
   const kind = formatKind(task.kind).toLowerCase();
+  // Who a settling or settled task pays: its claimant, a contest's pick
+  // or every answer when it was split, or a consensus task's winners.
+  const payee = task.claimant
+    ? who(task.claimant)
+    : task.kind === "disputable"
+      ? task.picked
+        ? who(task.picked)
+        : "every answer"
+      : "consensus pool";
   switch (task.status) {
     case "Paid":
-      return task.claimant
-        ? `settled ${itx} → ${who(task.claimant)}`
-        : `settled ${itx} → consensus pool`;
+      return `settled ${itx} → ${payee}`;
     case "Open":
       return `new ${kind} bounty ${itx}`;
     case "Claimed":
@@ -77,12 +84,12 @@ function headline(task: TaskDto, who: (pubkey: string) => string): string {
       return `answer posted on ${itx} task`;
     case "Disputed":
       return `dispute filed on ${itx} task`;
+    case "AwaitingPick":
+      return `answers closed on ${itx} task, awaiting the poster's pick`;
     case "Verified":
       return `work verified on ${itx} task`;
     case "Submitted":
-      return task.claimant
-        ? `settling ${itx} → ${who(task.claimant)}`
-        : `settling ${itx} → consensus pool`;
+      return `settling ${itx} → ${payee}`;
     case "PayoutFailed":
       return `payout failed on ${itx} task, still owed`;
     case "Closed":

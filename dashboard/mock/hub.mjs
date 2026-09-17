@@ -754,6 +754,14 @@ const DESCRIPTIONS = CAPABILITIES.flatMap((c) => c.jobs);
  * no blend of its own. The tagged path takes the one on its tag. */
 const UNTAGGED_KINDS = ["hash_match", "hash_match", "consensus", "disputable", "disputable"];
 
+/** What a contest's answers say, by index -- see the disputable branch of
+ * `makeTask`. */
+const CONTEST_ANSWERS = [
+  "See attached working; total is 41,208.",
+  "Draft attached. Sections 2 and 4 cite the source tables directly.",
+  "The figure is 41,112 once the duplicated March rows are removed.",
+];
+
 const STATUSES = [
   "Open",
   "Open",
@@ -826,6 +834,48 @@ function makeTask(index) {
       assignees_joined: status === "Open" ? Math.floor(random() * num_assignees) : num_assignees,
       join_deadline: new Date(NOW - ageDays * DAY + DAY).toISOString(),
       submission_deadline: status === "Open" ? null : new Date(NOW - ageDays * DAY + 2 * DAY).toISOString(),
+    };
+  }
+
+  // A contest, which is how every open-ended task posted now runs. Chosen
+  // by index, like the disputes below, and on indices a dispute never
+  // takes, so no random draw is added or skipped and the seeded stream
+  // under every other fixture stays where it was. The drawn status maps
+  // onto the contest's stages: claimed reads as awaiting the poster's
+  // pick, and a settled one was picked or, one time in four, split.
+  if (kind === "disputable" && index % 6 === 1) {
+    const contestStatus = status === "Claimed" ? "AwaitingPick" : status;
+    const opened = Date.parse(created_at);
+    const closedEmpty = contestStatus === "Closed" && index % 12 === 7;
+    const count = closedEmpty ? 0 : 1 + (index % 5);
+    const answers = Array.from({ length: count }, (_, i) => ({
+      pubkey: DISPUTE_WORKERS[(index + 7 * i) % DISPUTE_WORKERS.length],
+      answer: CONTEST_ANSWERS[(index + i) % CONTEST_ANSWERS.length],
+      submitted_at: new Date(opened + ((i + 1) * HOUR) / 2).toISOString(),
+    }));
+    const read = !["Open", "Closed"].includes(contestStatus);
+    const settled = read && contestStatus !== "AwaitingPick";
+    const split = settled && index % 24 === 19;
+    return {
+      ...base,
+      status: contestStatus,
+      claimant: null,
+      close_reason: contestStatus === "Closed" ? (closedEmpty ? "no_answers" : "never_closed") : null,
+      answer: null,
+      dispute_deadline: null,
+      dispute: null,
+      // Open ones stay open for a while yet, so their countdown reads
+      // forward; the rest closed a day after they went live.
+      submission_deadline: new Date(
+        contestStatus === "Open" ? NOW + (1 + (index % 20)) * HOUR : opened + DAY,
+      ).toISOString(),
+      answer_count: count,
+      answers: read ? answers : null,
+      pick_deadline: read
+        ? new Date(contestStatus === "AwaitingPick" ? NOW + (1 + (index % 12)) * HOUR : opened + 2 * DAY).toISOString()
+        : null,
+      picked: settled && !split ? answers[0].pubkey : null,
+      split,
     };
   }
 
@@ -1356,6 +1406,9 @@ let nextIndex = BACKFILL;
  * claimed before it is verified, verified before it is paid, and only a
  * disputable task that has been answered can be disputed. */
 function advance(task) {
+  // A contest stands still: its stages are seeded by `makeTask`, and
+  // walking it through the dispute states below would contradict them.
+  if (task.kind === "disputable" && "answer_count" in task) return false;
   const now = new Date().toISOString();
   switch (task.status) {
     case "Open":
@@ -1464,6 +1517,14 @@ function tick() {
       task.answer = null;
       task.dispute = null;
       task.dispute_deadline = null;
+      if ("answer_count" in task) {
+        task.answer_count = 0;
+        task.answers = null;
+        task.pick_deadline = null;
+        task.picked = null;
+        task.split = false;
+        task.submission_deadline = new Date(Date.now() + DAY).toISOString();
+      }
     }
     TASKS.push(task);
     if (TASKS.length > MAX_TASKS) TASKS.splice(0, TASKS.length - MAX_TASKS);

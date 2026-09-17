@@ -5,8 +5,8 @@ import type { TaskDto, TaskStatus } from "../lib/hub";
  * Each kind has a genuinely different sequence, so there is no single
  * shared stepper: a `hash_match` task is claimed by one agent and
  * verified on submission, a `consensus` task fills with N assignees
- * before anyone's answer counts, and a `disputable` task is paid for
- * whatever answer it is given.
+ * before anyone's answer counts, and a `disputable` task is a contest its
+ * poster closes and then picks from.
  *
  * `Closed` is deliberately *not* a step. It is an off-path terminal state
  * that can interrupt the sequence at different points depending on kind,
@@ -34,13 +34,15 @@ const SEQUENCES: Record<TaskDto["kind"], { label: string; statuses: TaskStatus[]
     { label: "resolved", statuses: ["Verified", "Submitted"] },
     { label: "paid", statuses: ["Paid"] },
   ],
-  // No dispute step: an answer is paid on submission. A task answered
-  // before that changed can still read `AwaitingDispute` or `Disputed`,
-  // and both sit on "answered", which is what they are.
+  // A contest takes answers while open, is closed by its poster, is
+  // resolved by the pick or the split, and is paid. A task answered before
+  // contests can still read `Claimed` (still waiting on its answer, so
+  // "posted") or `AwaitingDispute`/`Disputed` (answered and waiting, so
+  // "closed").
   disputable: [
-    { label: "posted", statuses: ["Open"] },
-    { label: "claimed", statuses: ["Claimed"] },
-    { label: "answered", statuses: ["AwaitingDispute", "Disputed", "Verified", "Submitted"] },
+    { label: "posted", statuses: ["Open", "Claimed"] },
+    { label: "closed", statuses: ["AwaitingPick", "AwaitingDispute", "Disputed"] },
+    { label: "resolved", statuses: ["Verified", "Submitted"] },
     { label: "paid", statuses: ["Paid"] },
   ],
 };
@@ -53,7 +55,7 @@ const SEQUENCES: Record<TaskDto["kind"], { label: string; statuses: TaskStatus[]
  * lands somewhere in these three. */
 const GENERIC: { label: string; statuses: TaskStatus[] }[] = [
   { label: "posted", statuses: ["Open"] },
-  { label: "in progress", statuses: ["Claimed", "AwaitingDispute", "Disputed", "Verified", "Submitted"] },
+  { label: "in progress", statuses: ["Claimed", "AwaitingDispute", "Disputed", "AwaitingPick", "Verified", "Submitted"] },
   { label: "paid", statuses: ["Paid"] },
 ];
 

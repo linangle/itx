@@ -21,6 +21,9 @@ export type TaskStatus =
   | "Claimed"
   | "AwaitingDispute"
   | "Disputed"
+  // A contest its poster has closed: every answer is public and the
+  // poster has until `pick_deadline` to pick the one it pays.
+  | "AwaitingPick"
   | "Verified"
   // Every payout is on the wire and the hub is waiting for chain
   // evidence. An ordinary task passes through this on its way to `Paid`,
@@ -35,9 +38,24 @@ export type TaskStatus =
 
 export type TaskKind = "hash_match" | "consensus" | "disputable";
 
-export type CloseReason = "no_majority" | "understaffed" | "cancelled_by_operator";
+export type CloseReason =
+  | "no_majority"
+  | "understaffed"
+  | "cancelled_by_operator"
+  // A contest closed by its poster before anyone answered.
+  | "no_answers"
+  // A contest its poster never closed before the submission deadline.
+  | "never_closed";
 
 export type DisputeResolution = "challenger_wins" | "assignee_wins";
+
+/** One of a contest's answers, which the hub sends only once the poster
+ * has closed submissions (`handlers::ContestAnswerDto`). */
+export interface ContestAnswerDto {
+  pubkey: string;
+  answer: string;
+  submitted_at: string;
+}
 
 export interface DisputeDto {
   challenger: string;
@@ -87,6 +105,16 @@ export type TaskDto = TaskCommon &
         answer: string | null;
         dispute_deadline: string | null;
         dispute: DisputeDto | null;
+        /** The contest's fields. Optional because a hub from before
+         * contests does not send them. `answers` is `null` until the
+         * poster closes submissions, and for good on a contest refunded
+         * without that close; `answer_count` is always there. */
+        submission_deadline?: string;
+        answer_count?: number;
+        answers?: ContestAnswerDto[] | null;
+        pick_deadline?: string | null;
+        picked?: string | null;
+        split?: boolean;
       }
   );
 

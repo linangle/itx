@@ -41,6 +41,7 @@ const EVERY_STATUS: TaskStatus[] = [
   "Claimed",
   "AwaitingDispute",
   "Disputed",
+  "AwaitingPick",
   "Verified",
   "Submitted",
   "Paid",

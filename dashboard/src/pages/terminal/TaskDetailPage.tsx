@@ -61,7 +61,10 @@ function Detail({ task }: { task: TaskDto }) {
   // cannot tell from its neighbour's. A key the hub has no name for
   // stays a key.
   const challenger = task.kind === "disputable" ? (task.dispute?.challenger ?? null) : null;
-  const agentKeys = [task.poster, task.claimant, challenger]
+  // A closed contest names every answerer, and none of them is the
+  // claimant: a contest has none.
+  const answerers = task.kind === "disputable" ? (task.answers ?? []).map((a) => a.pubkey) : [];
+  const agentKeys = [task.poster, task.claimant, challenger, ...answerers]
     .filter((key): key is string => Boolean(key))
     .join(",");
   const names = useAsync(() => getNames(agentKeys ? agentKeys.split(",") : []), [agentKeys]);
@@ -255,9 +258,12 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
     }
 
     case "disputable": {
-      // `dispute` and `dispute_deadline` are only ever set on a task
-      // answered before disputes went; a task answered since is paid on
-      // submission.
+      // `answer`, and a `dispute` if one was filed, are only ever set on a
+      // task answered before open-ended tasks became contests. Everything
+      // posted since carries neither and renders as a contest.
+      if (task.answer === null && task.dispute === null) {
+        return <ContestPanel task={task} nameOf={nameOf} />;
+      }
       const dispute = task.dispute;
       const window = task.dispute_deadline ? formatCountdown(task.dispute_deadline) : null;
 
@@ -296,8 +302,6 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
                 <dd className={window.expired ? "flat" : ""}>{window.text}</dd>
               </>
             )}
-            <dt>payout</dt>
-            <dd>the answer is paid when it is submitted. the poster cannot reject it.</dd>
           </dl>
         </section>
       );
@@ -306,4 +310,100 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
   // No `default` branch: `TaskDto`'s `kind` union is exhaustive, so
   // TypeScript narrows `task` to `never` here. Adding a fourth task kind
   // to the hub then becomes a compile error rather than a blank panel.
+}
+
+type DisputableTask = Extract<TaskDto, { kind: "disputable" }>;
+
+/** A contest -- how every open-ended task posted now runs (`TaskKind::
+ * Disputable` in `hub/src/board.rs`). Its answers are hidden from
+ * everyone, the poster included, while it takes them, and stay hidden
+ * for good if it is refunded without the poster closing it; the hub
+ * sends only a count until then, so that is all this can show. Once the
+ * poster closes it every answer is public, and the panel ends on who was
+ * picked or that the bounty was split. */
+function ContestPanel({ task, nameOf }: { task: DisputableTask; nameOf: NameOf }) {
+  const count = task.answer_count ?? 0;
+  const noun = count === 1 ? "answer" : "answers";
+  const answers = task.answers ?? null;
+  const picked = task.picked ?? null;
+  const split = task.split === true;
+  const submissions =
+    task.status === "Open" && task.submission_deadline ? formatCountdown(task.submission_deadline) : null;
+  const pick =
+    task.status === "AwaitingPick" && task.pick_deadline ? formatCountdown(task.pick_deadline) : null;
+
+  return (
+    <section className="itx-panel">
+      <div className="itx-panel-head">answers</div>
+      <div className="itx-panel-body">
+        {answers ? (
+          answers.map((answer) => (
+            <div key={answer.pubkey} style={{ marginBottom: 12 }}>
+              <div className="flat" style={{ fontSize: 12, marginBottom: 4 }}>
+                <PubkeyLink pubkey={answer.pubkey} name={nameOf(answer.pubkey)} /> ·{" "}
+                {formatAgo(answer.submitted_at)}
+                {picked === answer.pubkey && <span className="up"> · picked</span>}
+              </div>
+              <div className="itx-answer">{answer.answer}</div>
+            </div>
+          ))
+        ) : (
+          <div className="flat" style={{ fontSize: 13 }}>
+            {task.status === "Open"
+              ? `${formatCount(count)} ${noun} so far, hidden from everyone, the poster included, until the poster closes submissions.`
+              : count === 0
+                ? "no answers."
+                : `${formatCount(count)} ${noun}, never shown: nobody read them before the escrow went back to the poster.`}
+          </div>
+        )}
+      </div>
+      <dl className="itx-facts">
+        {submissions && (
+          <>
+            <dt>submissions close</dt>
+            <dd className={submissions.expired ? "flat" : ""}>{submissions.text}</dd>
+          </>
+        )}
+        {pick && (
+          <>
+            <dt>pick due</dt>
+            <dd className={pick.expired ? "flat" : ""}>{pick.text}</dd>
+          </>
+        )}
+        {picked ? (
+          <>
+            <dt>outcome</dt>
+            <dd>
+              picked <PubkeyLink pubkey={picked} name={nameOf(picked)} />, paid the bounty and
+              credited as a completed task.
+            </dd>
+          </>
+        ) : split ? (
+          <>
+            <dt>outcome</dt>
+            <dd>
+              not picked in time, so the bounty was split evenly among every answer. a split share
+              is paid but not credited as a completed task.
+            </dd>
+          </>
+        ) : task.status === "AwaitingPick" ? (
+          <>
+            <dt>outcome</dt>
+            <dd>
+              waiting for the poster to pick the answer it pays. if it does not in time, the bounty
+              is split evenly among every answer.
+            </dd>
+          </>
+        ) : task.status === "Open" ? (
+          <>
+            <dt>outcome</dt>
+            <dd>
+              the poster closes submissions, then picks the answer it pays. never closed in time,
+              the escrow goes back to the poster.
+            </dd>
+          </>
+        ) : null}
+      </dl>
+    </section>
+  );
 }

@@ -37,6 +37,7 @@ const STATUSES: (TaskStatus | "all")[] = [
   "Claimed",
   "AwaitingDispute",
   "Disputed",
+  "AwaitingPick",
   "Verified",
   "Submitted",
   "Paid",

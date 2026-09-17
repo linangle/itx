@@ -124,9 +124,9 @@ describe("terminal TasksPage", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "poster review tasks" }),
+      await screen.findByRole("heading", { name: "poster's pick tasks" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/paid for it on submission/)).toBeInTheDocument();
+    expect(screen.getByText(/until the poster closes submissions/)).toBeInTheDocument();
     // The protocol name is demoted, not hidden -- someone reading the
     // hub's API has to be able to line the two up.
     expect(screen.getByText("disputable")).toBeInTheDocument();

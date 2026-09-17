@@ -48,15 +48,19 @@ describe("a task kind this build does not know", () => {
 });
 
 describe("a disputable task", () => {
-  it("has no dispute step, since the answer is paid on submission", () => {
-    const { container } = render(<TaskProgress task={task({ kind: "disputable", status: "Submitted" })} />);
+  it("steps through a contest: posted, closed, resolved, paid", () => {
+    const { container } = render(<TaskProgress task={task({ kind: "disputable", status: "AwaitingPick" })} />);
     const labels = Array.from(container.querySelectorAll(".itx-step-label")).map((el) => el.textContent);
-    expect(labels).toEqual(["posted", "claimed", "answered", "paid"]);
-    expect(container.querySelector(".itx-step.current")?.textContent).toBe("answered");
+    expect(labels).toEqual(["posted", "closed", "resolved", "paid"]);
+    expect(container.querySelector(".itx-step.current")?.textContent).toBe("closed");
   });
 
-  it.each(["AwaitingDispute", "Disputed"])("still places a task answered before that, reading %s", (status) => {
+  it.each([
+    ["Claimed", "posted"],
+    ["AwaitingDispute", "closed"],
+    ["Disputed", "closed"],
+  ])("still places a task answered before contests, reading %s", (status, step) => {
     const { container } = render(<TaskProgress task={task({ kind: "disputable", status })} />);
-    expect(container.querySelector(".itx-step.current")?.textContent).toBe("answered");
+    expect(container.querySelector(".itx-step.current")?.textContent).toBe(step);
   });
 });

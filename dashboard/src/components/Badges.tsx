@@ -16,6 +16,8 @@ const STATUS_CLASS: Record<TaskStatus, string> = {
   Claimed: "itx-badge-active",
   AwaitingDispute: "itx-badge-warn",
   Disputed: "itx-badge-warn",
+  // Waiting on the poster to pick, which only a human can do.
+  AwaitingPick: "itx-badge-warn",
   Verified: "itx-badge-active",
   // Money is on the wire and the hub is still waiting for chain
   // evidence, which is work in progress rather than a settled result.

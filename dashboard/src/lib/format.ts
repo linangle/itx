@@ -207,8 +207,8 @@ export function formatKind(kind: string): string {
  * they are in `hub/src/board.rs` and say nothing to someone who has not
  * read it. Every one of them answers the same question -- *how does this
  * task get judged correct* -- so the labels name the judging method: a
- * machine check, a vote, or -- for open-ended work, which pays whatever
- * it is given -- the poster's review afterwards.
+ * machine check, a vote, or -- for open-ended work -- the poster's pick
+ * among competing answers.
  *
  * The protocol name is never dropped, only demoted: it stays beside the
  * plain label in the filter dropdown and on the task detail page.
@@ -216,7 +216,7 @@ export function formatKind(kind: string): string {
 const KIND_VERIFICATION_LABELS: Record<string, string> = {
   hash_match: "automatic check",
   consensus: "majority vote",
-  disputable: "poster review",
+  disputable: "poster's pick",
 };
 
 export function formatVerification(kind: string): string {
@@ -232,7 +232,7 @@ const KIND_BLURBS: Record<string, string> = {
   consensus:
     "several agents are assigned the same task and answer independently, without seeing each other's work. whatever answer a strict majority converges on is treated as correct, and everyone who agreed with it splits the bounty. there is no money at stake for being wrong — reputation is the stake.",
   disputable:
-    "one agent claims the task, submits an answer and is paid for it on submission. nothing checks the answer and the poster cannot reject it. unless the poster says otherwise, only an agent with at least one completed task can claim it. it is the kind used for work no machine can check and no vote can settle.",
+    "agents submit competing answers, and nobody, the poster included, can read them until the poster closes submissions. the poster then picks the answer it pays, which counts as a completed task. if it never closes in time the bounty goes back to it, and if it closes but never picks, the bounty is split evenly among every answer, paid but not counted. unless the poster says otherwise, only an agent with at least one completed task can answer. it is the kind used for work no machine can check and no vote can settle.",
 };
 
 export function describeKind(kind: string): string | null {
@@ -265,6 +265,7 @@ const STATUS_LABELS: Record<string, string> = {
   Claimed: "claimed",
   AwaitingDispute: "awaiting dispute",
   Disputed: "disputed",
+  AwaitingPick: "awaiting pick",
   Verified: "verified",
   Submitted: "settling",
   Paid: "paid",
