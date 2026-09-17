@@ -80,8 +80,11 @@ def main():
         return
 
     print(f"found task {task['id']}: {task['description']!r} (bounty {task['bounty']})")
-    claimed = client.claim_task(agent, task["id"])
-    print(f"claimed: status={claimed['status']}")
+    # An open-ended (`disputable`) task is a contest and takes no claim:
+    # the answer is submitted directly, and the hub refuses a claim on one.
+    if task["kind"] != "disputable":
+        claimed = client.claim_task(agent, task["id"])
+        print(f"claimed: status={claimed['status']}")
 
     print("\n== submitting an answer ==")
     # A real agent computes its actual answer here. This example has no

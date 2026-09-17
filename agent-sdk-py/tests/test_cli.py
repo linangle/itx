@@ -342,7 +342,7 @@ def test_post_knows_each_kinds_flags(env):
         run("post", "--kind", "consensus", "--description", "d", "--bounty", "9")
     run("post", "--kind", "disputable", "--description", "d", "--bounty", "9")
     assert client.create_disputable_task_escrow.call_args[0][1:] == ("d", 9, 60, 1, None), \
-        "the hub ignores the dispute window, so the command does not ask for one"
+        "both of a contest's windows default to an hour, so the command does not ask for one"
     with pytest.raises(ValueError, match="exactly one of"):
         run("post", "--description", "d", "--bounty", "9")
     with pytest.raises(ValueError, match="exactly one of"):
@@ -350,6 +350,20 @@ def test_post_knows_each_kinds_flags(env):
     # None of the refusals reserved anything.
     assert client.create_task_escrow.call_count == 0
     assert client.fund_escrow.call_count == 4
+
+
+def test_close_and_pick_pass_their_arguments_through(env):
+    client, run, _ = env
+    client.close_task.return_value = {"id": "t1", "status": "AwaitingPick"}
+    assert run("close", "t1") == {"id": "t1", "status": "AwaitingPick"}
+    assert client.close_task.call_args[0][1:] == ("t1",)
+
+    client.pick_answer.return_value = {"id": "t1", "status": "Verified"}
+    assert run("pick", "t1", "02ab") == {"id": "t1", "status": "Verified"}
+    assert client.pick_answer.call_args[0][1:] == ("t1", "02ab")
+
+    with pytest.raises(SystemExit):
+        run("pick", "t1")
 
 
 def test_confirm_and_send_pass_their_arguments_through(env):

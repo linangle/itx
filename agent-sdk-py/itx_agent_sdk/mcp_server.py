@@ -90,7 +90,7 @@ RESERVES_ADDRESS = ToolAnnotations(
 #             (claim, cancel, place/cancel order, reserve escrow)
 #     chain   signed POSTs that reach the chain node or move      20
 #             coins (post a task, confirm any escrow, submit
-#             work, faucet, withdraw)
+#             work, close or pick a contest, faucet, withdraw)
 #
 # and, on top of those, 60 signed requests per *verified pubkey* per
 # window across every route -- an axis a per-IP budget cannot cover,
@@ -126,7 +126,7 @@ def _tier_for(method: str, path: str) -> str:
         return "chain"
     if len(segments) == 4 and segments[0] == "tasks" and segments[1] == "escrow" and segments[3] == "confirm":
         return "chain"
-    if len(segments) == 3 and segments[0] == "tasks" and segments[2] == "submit":
+    if len(segments) == 3 and segments[0] == "tasks" and segments[2] in ("submit", "close", "pick"):
         return "chain"
     if (
         len(segments) == 4
@@ -441,17 +441,20 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         min_reputation: int = 1,
         capabilities: Optional[List[str]] = None,
     ) -> dict:
-        """Reserves a `disputable` task: one agent claims it, submits an
-        answer, and is paid on submission -- nothing checks the answer and
-        you cannot reject it. Use for open-ended work with no checkable
-        answer and no natural way to poll multiple agents. Same
-        reserve-then-confirm flow as `post_task`.
+        """Reserves a `disputable` task, a contest: other agents submit
+        competing answers (no claim, at most ten) that nobody, you
+        included, can read until you close submissions with `close_task`;
+        then you pick the one you pay with `pick_answer`. Never closed in
+        time, the escrow is refunded; closed but not picked in time, the
+        bounty is split evenly among every answer. Use for open-ended work
+        with no checkable answer and no natural way to poll multiple
+        agents. Same reserve-then-confirm flow as `post_task`.
 
-        `min_reputation` defaults to 1 for this kind (0 for the others):
-        because the answer is paid unchecked, a key with no completed work
-        should not be able to claim it. Pass 0 to let anyone claim, at
-        your own risk. `dispute_window_minutes` is ignored by the hub;
-        leave it out.
+        `dispute_window_minutes` (default 60) is the length of both windows:
+        how long the task takes answers, and how long you then have to
+        pick. `min_reputation` defaults to 1 for this kind (0 for the
+        others), so a key with no completed work cannot enter. Pass 0 to
+        let anyone in.
 
         `capabilities`: one to three lowercase tags describing the work
         you are actually asking for, in the form `<sector>/<market>` --
@@ -485,9 +488,12 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         up front with a clear message -- rather than letting the hub's 403
         do it -- if this agent's own completed-task count is below the
         task's `min_reputation`, or if this agent posted the task itself
-        (posting and claiming your own task is never allowed).
+        (posting and claiming your own task is never allowed). A
+        `disputable` task takes no claim: answer it with `submit_work`.
         """
         task = client.get_task(task_id)
+        if task.get("kind") == "disputable":
+            raise ToolError(f"task {task_id} is a disputable contest and takes no claim; answer it with submit_work")
         if task.get("poster") == agent.pubkey_hex:
             raise ToolError(f"task {task_id} was posted by this same agent; cannot claim your own task")
         min_reputation = task.get("min_reputation", 0)
@@ -507,10 +513,32 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         and improves reputation, or reopens the task and dings reputation if
         wrong. For `consensus`, records this agent's answer invisibly and
         resolves once every assignee has submitted or the deadline passes.
-        For `disputable`, the answer is accepted and paid on submission,
-        like a correct `hash_match` answer; the poster cannot reject it.
+        For `disputable`, there is no claim first: this enters one answer in
+        the contest, hidden until the poster closes submissions. It is paid
+        the bounty and credited if the poster picks it, or paid an uncredited
+        share if the poster closes and never picks.
         """
         return client.submit_task(agent, task_id, output)
+
+    @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
+    def close_task(task_id: str) -> dict:
+        """Closes submissions to a `disputable` task this agent posted --
+        **irreversible**. With no answers the task closes and its escrow is
+        refunded. Otherwise every answer becomes readable in the task's
+        `answers`, and `pick_deadline` is when this agent must `pick_answer`
+        by; after it the bounty is split evenly among every answer.
+        """
+        return client.close_task(agent, task_id)
+
+    @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
+    def pick_answer(task_id: str, pubkey: str) -> dict:
+        """Picks the answer a closed `disputable` task this agent posted
+        pays -- **moves the bounty**, and cannot be undone; do it only when
+        the person you work for chose the answer. `pubkey` is the
+        answerer's, as the task's `answers` show it. The pick is paid the
+        bounty and credited as a completed task.
+        """
+        return client.pick_answer(agent, task_id, pubkey)
 
     # -- information tools (read-only) -------------------------------------
 
@@ -650,7 +678,9 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         descending: filters out anything whose `min_reputation` this
         agent's own completed-task count doesn't meet, and anything this
         agent posted itself. Prefer this over raw `list_tasks` to avoid
-        wasting a `claim_task` call on a task that would just 403.
+        wasting a `claim_task` call on a task that would just 403. A
+        `disputable` task in the list is answered with `submit_work`, not
+        claimed.
         """
         reputation = client.get_reputation(agent.pubkey_hex)
         completed = reputation.get("completed", 0)

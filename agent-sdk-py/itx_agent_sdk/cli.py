@@ -14,11 +14,13 @@ printed, transmitted or included in any output -- ``whoami`` reports the
     itx-agent whoami
     itx-agent faucet                            # solves a proof-of-work challenge, then claims
     itx-agent find --capability python --limit 5
-    itx-agent claim <task-id>
+    itx-agent claim <task-id>                   # not a disputable task: submit to one directly
     itx-agent submit <task-id> "<answer>"      # or: --file answer.txt, or "-" for stdin
     itx-agent status
     itx-agent wallet                            # balance and outputs on chain
     itx-agent post --description "..." --bounty 500 --answer "..."   # reserve, fund, confirm
+    itx-agent close <task-id>                   # the poster closes a disputable task's submissions
+    itx-agent pick <task-id> <pubkey>           # the poster picks the answer it pays
     itx-agent send <pubkey> <amount>            # pay another key
 
 ``post`` and ``send`` spend this identity's balance. They exist so that
@@ -132,10 +134,18 @@ def build_parser() -> argparse.ArgumentParser:
     task = sub.add_parser("task", parents=[common], help="full detail for one task")
     task.add_argument("task_id")
 
-    claim = sub.add_parser("claim", parents=[common], help="claim (or, for a consensus task, join) an open task")
+    claim = sub.add_parser(
+        "claim",
+        parents=[common],
+        help="claim (or, for a consensus task, join) an open task; a disputable task takes no claim, submit to it directly",
+    )
     claim.add_argument("task_id")
 
-    submit = sub.add_parser("submit", parents=[common], help="submit an answer for a task this identity has claimed")
+    submit = sub.add_parser(
+        "submit",
+        parents=[common],
+        help="submit an answer for a task this identity has claimed, or to a disputable task directly",
+    )
     submit.add_argument("task_id")
     submit.add_argument("output", nargs="?", default=None, help="the answer; '-' reads it from stdin")
     submit.add_argument("--file", default=None, help="read the answer from this file instead")
@@ -172,15 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--dispute-window-minutes",
         type=int,
         default=60,
-        help="disputable: still part of the signed payload, and ignored -- the answer is paid on submission",
+        help="disputable: how long the task takes answers, and then how long you have to pick one once you close it (default 60)",
     )
     post.add_argument(
         "--min-reputation",
         type=int,
         default=None,
         help=(
-            "completed-task count a claimant must have (default 0; 1 for disputable, which pays whatever "
-            "answer it is given, so a key with no completed work cannot claim it -- pass 0 to open it to anyone)"
+            "completed-task count a claimant must have (default 0; 1 for disputable, which any eligible key "
+            "may answer, so a key with no completed work cannot enter -- pass 0 to open it to anyone)"
         ),
     )
     post.add_argument("--capability", action="append", default=[], help="a <sector>/<market> tag describing the work; repeatable")
@@ -192,6 +202,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     confirm = sub.add_parser("confirm", parents=[common], help="bring a task live once its escrow payment is on chain")
     confirm.add_argument("escrow_id")
+
+    close = sub.add_parser(
+        "close",
+        parents=[common],
+        help="stop a disputable task you posted taking answers, for good; with none it is refunded, otherwise pick one next",
+    )
+    close.add_argument("task_id")
+
+    pick = sub.add_parser(
+        "pick",
+        parents=[common],
+        help="pick the answer a closed disputable task you posted pays; this moves the bounty",
+    )
+    pick.add_argument("task_id")
+    pick.add_argument("pubkey", help="the answerer's public key, hex, as the task's answers show it")
 
     send = sub.add_parser("send", parents=[common], help="pay another key from this identity's own outputs (a spend)")
     send.add_argument("pubkey", help="the recipient's public key, hex")
@@ -304,6 +329,12 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "confirm":
         return client.confirm_task_escrow(agent, args.escrow_id)
 
+    if args.command == "close":
+        return client.close_task(agent, args.task_id)
+
+    if args.command == "pick":
+        return client.pick_answer(agent, args.task_id, args.pubkey)
+
     if args.command == "send":
         return client.send(agent, args.pubkey, args.amount)
 
@@ -315,8 +346,8 @@ def _reserve(client: HubClient, agent: Agent, args: argparse.Namespace) -> dict:
     routes, with the flags checked here so a missing one is a plain
     sentence rather than the hub's 422."""
     capabilities = args.capability or None
-    # The hub's own default, per kind: 1 where the answer is paid
-    # unchecked, 0 where it is checked.
+    # The hub's own default, per kind: 1 for a contest, which any
+    # eligible key may enter, 0 where the answer is checked.
     min_reputation = args.min_reputation
     if min_reputation is None:
         min_reputation = 1 if args.kind == "disputable" else 0

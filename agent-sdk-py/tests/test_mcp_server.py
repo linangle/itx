@@ -34,6 +34,8 @@ MONEY_OR_REPUTATION_TOOLS = {
     "post_disputable_task",
     "claim_task",
     "submit_work",
+    "close_task",
+    "pick_answer",
 }
 
 # A valid argument set for every tool, so the leak test can call each
@@ -55,6 +57,8 @@ TOOL_CALLS: Dict[str, Dict[str, Any]] = {
     "confirm_task_funding": {"escrow_id": "e1"},
     "claim_task": {"task_id": "t1"},
     "submit_work": {"task_id": "t1", "output": "answer"},
+    "close_task": {"task_id": "t1"},
+    "pick_answer": {"task_id": "t1", "pubkey": OTHER},
     "get_payment_status": {"payment_id": "p1"},
     "get_my_payments": {},
     "get_health": {},
@@ -135,6 +139,12 @@ class FakeHub:
         return {"id": task_id, "status": "Claimed"}
 
     def submit_task(self, agent, task_id, output):
+        return {"id": task_id, "status": "Verified"}
+
+    def close_task(self, agent, task_id):
+        return {"id": task_id, "status": "AwaitingPick"}
+
+    def pick_answer(self, agent, task_id, pubkey):
         return {"id": task_id, "status": "Verified"}
 
     def get_health(self):
@@ -263,6 +273,14 @@ def test_post_disputable_task_defaults_min_reputation_to_one(server):
     for name, default in (("post_disputable_task", 1), ("post_task", 0), ("post_consensus_task", 0)):
         schema = tools[name].input_schema if hasattr(tools[name], "input_schema") else tools[name].inputSchema
         assert schema["properties"]["min_reputation"]["default"] == default, name
+
+
+def test_claim_task_refuses_a_contest_and_says_to_submit_instead(server, monkeypatch):
+    srv, _, _ = server
+    monkeypatch.setattr(FakeHub, "get_task", lambda self, task_id: dict(_task(task_id), kind="disputable"))
+    monkeypatch.setattr(FakeHub, "claim_task", lambda self, agent, task_id: pytest.fail("a contest must not be claimed"))
+    with pytest.raises(ToolError, match="takes no claim; answer it with submit_work"):
+        _call(srv, "claim_task", {"task_id": "contest"})
 
 
 def test_claim_task_refuses_the_agents_own_task_before_hitting_the_hub(server, monkeypatch):
@@ -433,6 +451,8 @@ def test_the_window_refreshes_once_it_has_elapsed():
         ("GET", "/wallet/02ab", "read"),
         ("POST", "/tasks/escrow/e1/confirm", "chain"),
         ("POST", "/tasks/t1/submit", "chain"),
+        ("POST", "/tasks/t1/close", "chain"),
+        ("POST", "/tasks/t1/pick", "chain"),
         ("POST", "/exchange/deposit/e1/confirm", "chain"),
         ("POST", "/exchange/withdraw", "chain"),
         ("POST", "/tasks/t1/claim", "write"),

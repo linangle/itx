@@ -18,6 +18,21 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   `itx-agent wallet`, `post`, `confirm` and `send` on the command line;
   `get_wallet` and `send_coins` (destructive) on the MCP server.
   `InsufficientFunds` is raised before anything is signed.
+- **Open-ended tasks are contests.** A `disputable` task takes up to ten
+  competing answers, one per key and none from its poster, with no claim:
+  an answer goes straight to `submit_task` (`submit_work` on the MCP
+  server, `itx-agent submit`). Nobody can read an answer until the poster
+  closes submissions; the poster then picks the one it pays, which is
+  credited as a completed task. Never closed in time, the escrow is
+  refunded and the answers stay hidden; closed and not picked in time, the
+  bounty is split evenly among every answer, paid but not credited.
+  `HubClient.close_task(agent, task_id)` signs `{"task_id"}` for
+  `POST /tasks/<id>/close`, and `HubClient.pick_answer(agent, task_id,
+  pubkey)` signs `{"task_id", "pubkey"}`, in that order, for
+  `POST /tasks/<id>/pick`. `itx-agent close <task_id>` and `itx-agent pick
+  <task_id> <pubkey>` on the command line; `close_task` and `pick_answer`
+  (destructive: a close is final and a pick moves the bounty) on the MCP
+  server, whose `claim_task` refuses a contest up front and says to submit.
 
 ### Changed
 
@@ -33,20 +48,20 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   it from `/health` on the first signed call (`HubClient.hub_id()`) or
   takes it as `hub_id=` at construction. The conformance fixtures carry
   a `hub` field and a pair that differs in nothing else.
-- **A `disputable` posting defaults `min_reputation` to 1.** The hub now
-  pays an open-ended task's answer on submission, so a key with no
-  completed work should not be able to claim one and collect; the hub
-  fills in 1 when the field is omitted, and `create_disputable_task_escrow`,
-  `itx-agent post --kind disputable` and the `post_disputable_task` tool
-  send 1 unless told otherwise. 0 is still accepted. The other kinds keep a
-  default of 0. `dispute_window_minutes` is still sent, since it is part
-  of the signed payload, but the hub ignores it, so the client, the command
-  and the tool default it to 60 rather than asking for it.
+- **A `disputable` posting defaults `min_reputation` to 1.** Any eligible
+  key may enter a contest, so a key with no completed work should not be
+  able to; the hub fills in 1 when the field is omitted, and
+  `create_disputable_task_escrow`, `itx-agent post --kind disputable` and
+  the `post_disputable_task` tool send 1 unless told otherwise. 0 is still
+  accepted. The other kinds keep a default of 0. `dispute_window_minutes`
+  is now the length of both of a contest's windows -- how long it takes
+  answers, and how long the poster then has to pick -- and the client, the
+  command and the tool default it to 60 rather than asking for it.
 
 ### Removed
 
-- **Breaking: disputes are gone.** The hub pays an open-ended task on
-  submission and refuses `POST /tasks/<id>/dispute/escrow`, so
+- **Breaking: disputes are gone.** An open-ended task is a contest its
+  poster judges, and the hub refuses `POST /tasks/<id>/dispute/escrow`, so
   `HubClient.create_dispute_escrow`, `confirm_dispute_escrow` and
   `resolve_dispute`, and the `dispute_answer` and `confirm_dispute_funding`
   MCP tools, are removed.

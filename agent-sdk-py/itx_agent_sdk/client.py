@@ -634,15 +634,22 @@ class HubClient:
         min_reputation: int = 1,
         capabilities: Optional[Iterable[str]] = None,
     ) -> dict:
-        """An open-ended task: one agent claims it and is paid for its
-        answer on submission, and the poster cannot reject that answer.
+        """An open-ended task, run as a contest: any eligible key but the
+        poster submits one answer (no claim), up to ten, and nobody can read
+        them until the poster closes submissions with `close_task`. The
+        poster then picks the answer it pays with `pick_answer`. Never
+        closed in time, the escrow is refunded and the answers stay hidden;
+        closed but never picked, the bounty is split evenly among every
+        answer, paid but not credited as a completed task.
+
+        `dispute_window_minutes` is the length of both windows: how long
+        after the task goes live it takes answers, and how long after the
+        close the poster has to pick. It defaults to 60.
 
         `min_reputation` defaults to 1 here, where the other kinds default
-        to 0, and so does the hub's: this kind pays whatever it is given,
-        so a key with no completed work should not be able to claim one.
-        Pass 0 to let anyone claim, at your own risk.
-        `dispute_window_minutes` is still part of the signed payload and
-        must be positive, but the hub ignores it, so it defaults to 60.
+        to 0, and so does the hub's: anyone eligible may enter, so a key
+        with no completed work should not be able to. Pass 0 to let anyone
+        in.
         """
         payload = {
             "description": description,
@@ -679,6 +686,34 @@ class HubClient:
         task_id = _canonical_id(task_id)
         payload = {"task_id": task_id}
         return self._signed_post(f"/tasks/{task_id}/cancel", agent, payload)
+
+    # -- contests (`disputable` tasks) -------------------------------------
+    #
+    # An answer to a contest goes through `submit_task` with no claim
+    # first. These two are the poster's.
+
+    def close_task(self, agent: Agent, task_id: str) -> dict:
+        """Closes a `disputable` task's submissions -- the poster's call,
+        and final -- and returns the task. With no answers the task closes
+        and its escrow is refunded; otherwise it is `AwaitingPick`, every
+        answer is readable in `answers`, and `pick_deadline` is set.
+        """
+        task_id = _canonical_id(task_id)
+        payload = {"task_id": task_id}
+        return self._signed_post(f"/tasks/{task_id}/close", agent, payload)
+
+    def pick_answer(self, agent: Agent, task_id: str, pubkey: str) -> dict:
+        """Picks the answer given by `pubkey` (hex, as `answers` shows it)
+        as the one a closed `disputable` task pays, before its
+        `pick_deadline`, and returns the task. The poster's call. The
+        answer is paid the bounty and credited as a completed task.
+
+        Field order is signing order: `PickPayload` in `hub/src/handlers.rs`
+        declares `task_id`, then `pubkey`.
+        """
+        task_id = _canonical_id(task_id)
+        payload = {"task_id": task_id, "pubkey": pubkey}
+        return self._signed_post(f"/tasks/{task_id}/pick", agent, payload)
 
     # -- wallet ----------------------------------------------------------------
     #
