@@ -123,10 +123,10 @@ impl Block {
                     return Err(BtcError::InvalidTransaction);
                 }
 
-                if !input
-                    .signature
-                    .verify(&prev_output.hash(), &prev_output.pubkey)
-                {
+                // Against this transaction's own outputs, not the spent
+                // output alone: the signature is consent to *this*
+                // payment. See `Transaction::spend_commitment`.
+                if !input.verifies(&transaction.outputs, &prev_output.pubkey) {
                     return Err(BtcError::InvalidSignature);
                 }
 

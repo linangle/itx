@@ -1270,6 +1270,69 @@ design (the tables arrive empty; see `store.rs`), and it is why an upgrade is
 fast and a rollback is fatal. `BlockStore` in `lib/src/store.rs` is the one with
 real migration functions, and nothing here touched those.
 
+### 5.5 The one release that restarts the chain
+
+Releases after 2026-09-17 change what a spend signs. An input's signature
+used to cover the hash of the output it spent and nothing else, which is
+ownership of a coin with no statement about where the coin goes; anything
+between the signer and a block — this hub relaying a `POST /wallet/send`,
+the node, the miner choosing what to put in a block — could rewrite the
+outputs to pay itself, and the signature still verified. It now covers
+the payment as well (`Transaction::spend_commitment`).
+
+**That is a chain rule, so old blocks cannot be read by the new build.** A
+node replays its whole stored chain through `add_block` at startup
+(`load_from_store`), so a store holding any spend signed the old way makes
+the node refuse to start rather than quietly accept history it would not
+accept now. There is no migration and there is deliberately no
+compatibility path: a verifier that still accepted the old form would
+still accept the theft.
+
+So this upgrade is a restart from genesis. The genesis block is fixed in
+the build, so it is the same network — it just has no history and no
+coins. Do it once, before anyone outside has a balance worth anything.
+
+```bash
+# 1. Announce it, stop everything, and take a backup you are keeping for
+#    the record rather than for restoring (see the caveat below).
+sudo touch /var/www/itx/maintenance.flag
+sudo systemctl stop itx-hub itx-miner itx-node
+sudo -u itx /usr/local/bin/itx-backup.sh --stop-node
+
+# 2. Move the two stores aside, dated. Moved rather than deleted: this
+#    is the only copy of what the old chain said, and a `mv` is
+#    reversible for as long as the disk holds.
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+sudo -u itx mkdir -p "/var/lib/itx/pre-spend-commitment-$ts"
+sudo -u itx mv /var/lib/itx/blockchain.redb /var/lib/itx/hub.redb \
+  "/var/lib/itx/pre-spend-commitment-$ts/"
+
+# 3. Install the new release exactly as §5 says, then bring it up in
+#    order and let the chain get going.
+sudo systemctl start itx-node        # establishes genesis, logs it
+sudo systemctl start itx-miner
+sudo systemctl start itx-hub
+```
+
+**`hub.redb` goes too, and that is not optional.** It records tasks,
+escrow deposits and payouts against a chain that no longer contains them:
+left in place, the hub would hold escrow rows for money that does not
+exist, and reconciliation would report disagreements that are all true.
+Reputation, the leaderboard and the hub's assigned names live in that file
+as well, so they start again with it. The secrets in
+`/var/lib/itx/secrets/` are **not** touched — keys are unaffected by any
+of this, and the operator address stays exactly what it was, with a
+balance of zero until the miner has found some blocks.
+
+Two things worth expecting. The operator's wallet is empty until mining
+has run for a few blocks, so the faucet and any operator-funded task will
+refuse until then — §8.3's "operator has N spendable outputs" warning is
+correct and will clear on its own. And **every backup archive taken before
+this upgrade is no longer restorable**: the chain inside it is old-format,
+so a restore produces a node that will not start. Keep them if you want
+the record, but the first archive the new timer writes is the first one
+that is a recovery path again, so do not leave §7.1's timer until later.
+
 ---
 
 ## 6. Keys and secrets

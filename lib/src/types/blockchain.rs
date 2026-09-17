@@ -210,7 +210,7 @@ impl Blockchain {
             // struck the miner that mined it. Verify here, the way
             // `Block::verify_transactions` does, before anything is
             // marked.
-            if !input.signature.verify(&prev_output.hash(), &prev_output.pubkey) {
+            if !input.verifies(&transaction.outputs, &prev_output.pubkey) {
                 return Err(BtcError::InvalidSignature);
             }
             known_inputs.insert(input.prev_transaction_output_hash);
@@ -944,6 +944,22 @@ impl Blockchain {
 
 #[cfg(test)]
 mod tests {
+
+    /// A transaction spending `prev` into `outputs`, signed by `key`.
+    ///
+    /// Here rather than inline because an input signs the output list
+    /// (`Transaction::spend_commitment`), so the outputs have to be built
+    /// before the input can be: written out by hand, every one of these
+    /// is four lines of ordering that has nothing to do with what the
+    /// test is about.
+    fn spend(
+        prev: &TransactionOutput,
+        key: &PrivateKey,
+        outputs: Vec<TransactionOutput>,
+    ) -> Transaction {
+        let inputs = vec![TransactionInput::signed(prev.hash(), &outputs, key)];
+        Transaction::new(inputs, outputs)
+    }
     use super::*;
     use crate::crypto::{PrivateKey, Signature};
     use crate::types::TransactionInput;
@@ -1277,22 +1293,18 @@ mod tests {
         // recipients
         let recipient_a = PrivateKey::new_key().public_key();
         let recipient_b = PrivateKey::new_key().public_key();
-        let tx_a = Transaction::new(
-            vec![TransactionInput {
-                prev_transaction_output_hash: spendable_output.hash(),
-                signature: Signature::sign_output(&spendable_output.hash(), &payee_key),
-            }],
+        let tx_a = spend(
+            &spendable_output,
+            &payee_key,
             vec![TransactionOutput {
                 value: reward,
                 unique_id: Uuid::new_v4(),
                 pubkey: recipient_a,
             }],
         );
-        let tx_b = Transaction::new(
-            vec![TransactionInput {
-                prev_transaction_output_hash: spendable_output.hash(),
-                signature: Signature::sign_output(&spendable_output.hash(), &payee_key),
-            }],
+        let tx_b = spend(
+            &spendable_output,
+            &payee_key,
             vec![TransactionOutput {
                 value: reward,
                 unique_id: Uuid::new_v4(),
@@ -1377,11 +1389,9 @@ mod tests {
         blockchain.add_block(block1).unwrap();
 
         // u64::MAX + (reward + 1) wraps to exactly `reward`: the input.
-        let wrapped = Transaction::new(
-            vec![TransactionInput {
-                prev_transaction_output_hash: spendable.hash(),
-                signature: Signature::sign_output(&spendable.hash(), &payee_key),
-            }],
+        let wrapped = spend(
+            &spendable,
+            &payee_key,
             vec![
                 TransactionOutput {
                     value: u64::MAX,
@@ -1464,11 +1474,9 @@ mod tests {
         blockchain.add_block(block1).unwrap();
 
         let thief = PrivateKey::new_key();
-        let forged = Transaction::new(
-            vec![TransactionInput {
-                prev_transaction_output_hash: spendable.hash(),
-                signature: Signature::sign_output(&spendable.hash(), &thief),
-            }],
+        let forged = spend(
+            &spendable,
+            &thief,
             vec![TransactionOutput {
                 value: 0,
                 unique_id: Uuid::new_v4(),
@@ -1485,17 +1493,106 @@ mod tests {
             "a refused spend must not mark the output it names"
         );
 
-        let honest = Transaction::new(
-            vec![TransactionInput {
-                prev_transaction_output_hash: spendable.hash(),
-                signature: Signature::sign_output(&spendable.hash(), &owner),
-            }],
+        let honest = spend(
+            &spendable,
+            &owner,
             vec![TransactionOutput {
                 value: reward,
                 unique_id: Uuid::new_v4(),
                 pubkey: PrivateKey::new_key().public_key(),
             }],
         );
+        blockchain.add_to_mempool(honest).unwrap();
+        assert_eq!(blockchain.mempool().len(), 1);
+    }
+
+    /// The theft `Transaction::spend_commitment` exists to stop, and the
+    /// one a signature over the spent output alone could not: the owner
+    /// signs a payment, and whoever handles it next -- the hub relaying
+    /// it, a node, the miner picking transactions for a block -- points
+    /// the outputs at themselves. The signature still belonged to the
+    /// owner and still verified, so the chain took it and the coin was
+    /// gone. Nothing in the transaction had ever said who it paid.
+    #[test]
+    fn a_spend_whose_outputs_are_rewritten_after_signing_is_refused() {
+        let (mut blockchain, genesis_hash, genesis_ts) = chain_with_real_genesis();
+        let target = blockchain.target();
+        let reward = blockchain.calculate_block_reward();
+
+        let owner = PrivateKey::new_key();
+        let coinbase1 = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: reward,
+                unique_id: Uuid::new_v4(),
+                pubkey: owner.public_key(),
+            }],
+        );
+        let merkle_root1 = MerkleRoot::calculate(&[coinbase1.clone()]);
+        let mut header1 = BlockHeader::new(
+            genesis_ts + chrono::Duration::seconds(1),
+            0,
+            genesis_hash,
+            merkle_root1,
+            target,
+        );
+        assert!(header1.mine(1_000_000));
+        let block1 = Block::new(header1, vec![coinbase1]);
+        let spendable = block1.transactions[0].outputs[0].clone();
+        blockchain.add_block(block1).unwrap();
+
+        let payee = PrivateKey::new_key().public_key();
+        let honest = spend(
+            &spendable,
+            &owner,
+            vec![TransactionOutput {
+                value: reward,
+                unique_id: Uuid::new_v4(),
+                pubkey: payee,
+            }],
+        );
+
+        // The rewrite itself: the owner's input, verbatim, over an
+        // output list that now pays the thief.
+        let thief = PrivateKey::new_key();
+        let mut rewritten = honest.clone();
+        rewritten.outputs[0].pubkey = thief.public_key();
+        assert!(
+            matches!(
+                blockchain.add_to_mempool(rewritten.clone()),
+                Err(BtcError::InvalidSignature)
+            ),
+            "an output list the signer never signed must be refused"
+        );
+        assert!(blockchain.mempool().is_empty());
+        assert!(
+            !blockchain.utxos()[&spendable.hash()].0,
+            "a refused spend must not mark the output it names"
+        );
+
+        // A block carrying it is refused too, and by the same rule --
+        // the mempool is not the only door (`Block::verify_transactions`).
+        let coinbase2 = Transaction::new(
+            vec![],
+            vec![TransactionOutput {
+                value: blockchain.calculate_block_reward(),
+                unique_id: Uuid::new_v4(),
+                pubkey: thief.public_key(),
+            }],
+        );
+        let transactions2 = vec![coinbase2, rewritten];
+        let merkle_root2 = MerkleRoot::calculate(&transactions2);
+        let mut header2 = BlockHeader::new(
+            genesis_ts + chrono::Duration::seconds(2),
+            0,
+            blockchain.active_chain().last().copied().unwrap(),
+            merkle_root2,
+            target,
+        );
+        assert!(header2.mine(1_000_000));
+        assert!(blockchain.add_block(Block::new(header2, transactions2)).is_err());
+
+        // And the payment the owner actually signed is still good.
         blockchain.add_to_mempool(honest).unwrap();
         assert_eq!(blockchain.mempool().len(), 1);
     }

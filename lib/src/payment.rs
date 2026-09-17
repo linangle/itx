@@ -1,6 +1,6 @@
 use tracing::*;
 
-use crate::crypto::{PrivateKey, PublicKey, Signature};
+use crate::crypto::{PrivateKey, PublicKey};
 use crate::types::{Transaction, TransactionInput, TransactionOutput};
 use thiserror::Error;
 use uuid::Uuid;
@@ -53,7 +53,13 @@ pub fn build_multi_payment(
 ) -> Result<Transaction, PaymentError> {
     let recipients_total: u64 = recipients.iter().map(|(_, amount)| amount).sum();
     let total_needed = recipients_total + fee;
-    let mut inputs = Vec::new();
+    // **Selection, then outputs, then signatures** -- in that order, and
+    // the order is forced: an input signs the transaction's whole output
+    // list (`Transaction::spend_commitment`), and the change output is
+    // not known until selection has finished. This used to sign each
+    // input as it was picked, which is exactly the signature that said
+    // nothing about where the money went.
+    let mut selected = Vec::new();
     let mut input_sum = 0u64;
 
     for (marked, utxo) in available_utxos {
@@ -63,11 +69,7 @@ pub fn build_multi_payment(
         if *marked {
             continue;
         }
-        let hash = utxo.hash();
-        inputs.push(TransactionInput {
-            prev_transaction_output_hash: hash,
-            signature: Signature::sign_output(&hash, signing_key),
-        });
+        selected.push(utxo.hash());
         input_sum += utxo.value;
     }
 
@@ -93,6 +95,11 @@ pub fn build_multi_payment(
             pubkey: change_pubkey,
         });
     }
+
+    let inputs: Vec<TransactionInput> = selected
+        .into_iter()
+        .map(|hash| TransactionInput::signed(hash, &outputs, signing_key))
+        .collect();
 
     Ok(Transaction::new(inputs, outputs))
 }

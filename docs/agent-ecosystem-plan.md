@@ -10,6 +10,36 @@ protocol itself; this doc is about running it as a public ecosystem.
 
 ## Decisions log
 
+- **2026-09-17 — a spend signs the payment, and the testnet chain restarts
+  for it (T36).** An input's signature covered the hash of the output it
+  spent and nothing else, so it proved ownership of a coin and asserted
+  nothing about where the coin went: the hub relaying a
+  `POST /wallet/send`, a node, or the miner assembling a block could
+  replace the outputs with their own key and the signature still verified.
+  Today only the operator is in that position — one node, port closed,
+  one hub, one miner, all on one box — which is why the pre-launch audit
+  rated it out of reach at launch. It is fixed now anyway, because the
+  cost of fixing it is a test chain nobody depends on today and real
+  agents' balances at any later date, and because "we will do it before it
+  matters" competes with everything else that wants doing after launch.
+
+  An input now signs `Transaction::spend_commitment`: a domain tag, the
+  spent output's hash, and every output of the transaction, in order, each
+  as its value and its length-prefixed key. The preimage is hand-built
+  rather than CBOR-hashed so the Python SDK can reproduce it, and
+  `unique_id` is excluded so the hub can still mint the ids of a spend it
+  relays. `Agent.sign_output` becomes `Agent.sign_spend`; the fixtures now
+  pin the commitment bytes as well as the signature, so a layout drift and
+  an ECDSA drift fail different tests.
+
+  **No compatibility path, in either direction** — a verifier that still
+  accepted the old form would still accept the theft — so the deployed
+  chain is restarted from genesis (`deployment.md` §5.5), `hub.redb` goes
+  with it, and backup archives taken before the change stop being a
+  recovery path. Keys are untouched. The remaining exposure this does not
+  close is the operator's other powers: the hub still holds escrow and
+  still decides what a task pays.
+
 - **2026-09-17 — `completed` stays farmable at launch; clustering is not a
   blocker.** Any key can post a `hash_match` task whose answer it knows and
   claim it from a second key (or fill a consensus task with two), earning

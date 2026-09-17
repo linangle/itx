@@ -3630,13 +3630,21 @@ async fn grant_unfunded(
 // way to move them. The hub is reachable, already talks to the node,
 // and already assembles transactions for its own payments.
 //
-// Why the client signs nothing but hashes: on this chain an input's
-// signature is over the hash of the output it spends
-// (`Signature::sign_output`), not over the spending transaction. So a
-// spend needs exactly what `GET /wallet/<pubkey>` reports -- each
-// output's hash -- and a signature over those bytes, which any client
-// that can sign an envelope can already produce. No client has to
-// reproduce btclib's CBOR to spend; the hub fills in the rest.
+// What the client signs, and why the hub cannot help itself to it: an
+// input's signature is over `Transaction::spend_commitment` -- the hash
+// of the output being spent *and* every output this send pays. So the
+// caller is signing this payment, not merely proving ownership of a
+// coin, and the hub can only relay the send it was given: rewrite an
+// output and the signature it was handed stops verifying, here and at
+// the node. That is deliberate. The hub is the only route to the chain
+// for an agent (the node's port is closed), and a relay that could
+// redirect the money it relays is a relay everyone has to trust.
+//
+// The commitment's preimage is written out by hand rather than CBOR-
+// hashed so a client in any language can build it from what
+// `GET /wallet/<pubkey>` reports and the payments it is making. No
+// client has to reproduce btclib's CBOR to spend; the hub still fills
+// in the rest (the transaction, the unique ids, the fee arithmetic).
 //
 // Why the hub validates everything before relaying: the node strikes
 // and eventually bans a peer that hands it a transaction it will not
@@ -3832,17 +3840,24 @@ pub async fn send_coins(
             )));
         }
         // The same check the node's mempool makes, made here so a
-        // signature that would not verify there never gets there.
-        if !signature.verify(&hash, &pubkey) {
+        // signature that would not verify there never gets there. Over
+        // this send's whole output list, not the spent output alone:
+        // that is what stops the hub -- or anything else between the
+        // caller and the block -- from paying somebody else with a
+        // signature the caller gave for this payment.
+        let input = TransactionInput { prev_transaction_output_hash: hash, signature };
+        if !input.verifies(&outputs, &pubkey) {
             return Err(ApiError::BadRequest(format!(
                 "inputs[{i}].signature does not verify against {pubkey}: \
-                 sign the 32 bytes of the output's `hash` itself, hex-decoded"
+                 sign the spend commitment for this send -- the tag \"itx.spend.v1\", \
+                 the output's `hash` bytes, then the count, value and pubkey of every \
+                 output below, in order (see GET /llms.txt)"
             )));
         }
         in_total = in_total
             .checked_add(output.value)
             .ok_or_else(|| ApiError::BadRequest("the inputs add up past u64".into()))?;
-        inputs.push(TransactionInput { prev_transaction_output_hash: hash, signature });
+        inputs.push(input);
     }
 
     let fee = in_total.checked_sub(out_total).ok_or_else(|| {
@@ -5017,12 +5032,19 @@ data.
 POST /wallet/send (signed) spends some of those outputs. The payload is
 {{"inputs": [{{"output", "signature"}}, ...], "outputs": [{{"pubkey",
 "value"}}, ...]}}, fields in that order. Each input names one of your own
-outputs by its `hash` and carries your signature over the 32 bytes of that
-hash: hex-decode `hash` and sign those bytes with the same primitive an
-envelope uses. (An envelope signs the SHA256 of its string; here the thing
-signed is the hash itself, not a hash of it.) Each output is a public key
-and an amount, and the change is just another output, back to your own
-key. The inputs must add up to at least the outputs plus the
+outputs by its `hash` and carries your signature over *this whole
+payment*, so that nothing between you and the chain -- this hub included
+-- can redirect it. Build the bytes to sign by concatenating, in order:
+the 12 ASCII bytes `itx.spend.v1`; the 32 bytes of the input's `hash`,
+hex-decoded; the number of outputs as a 4-byte big-endian integer; then,
+for each output in the order you send it, its `value` as an 8-byte
+big-endian integer, the byte length of its hex-decoded `pubkey` as one
+byte, and those key bytes. SHA256 that, and sign the resulting 32 bytes
+with the same primitive an envelope uses. (An envelope signs the SHA256
+of its string; here the thing signed is that SHA256 itself, not a hash
+of it.) Each output is a public key and an amount, and the change is just
+another output, back to your own key -- it is signed over like any other,
+so work out your outputs before you sign your inputs. The inputs must add up to at least the outputs plus the
 {fee}-unit network fee; whatever they exceed the outputs by is the fee,
 and it goes to whoever mines the block, so account for every unit. At
 most {max_send_inputs} inputs and {max_send_outputs} outputs in one send.

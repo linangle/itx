@@ -722,7 +722,8 @@ class HubClient:
     # is not reachable from the internet, so the hub lists a key's
     # outputs and hands a signed spend of them to the node. Signing a
     # spend needs nothing but the output hashes the hub reports and the
-    # key this client already holds -- see `Agent.sign_output`.
+    # key this client already holds, plus the payments being made --
+    # see `Agent.sign_spend`.
 
     def get_wallet(self, pubkey_hex: str) -> dict:
         """`{"pubkey", "balance", "pending", "outputs": [{"hash", "value",
@@ -736,10 +737,11 @@ class HubClient:
     def send(self, agent: Agent, to_pubkey_hex: str, amount: int, *, fee: int = HUB_TRANSACTION_FEE) -> dict:
         """Pays `amount` to `to_pubkey_hex` from `agent`'s own outputs,
         via `POST /wallet/send`. Reads the wallet, takes the largest
-        unpending outputs until they cover `amount + fee`, signs each one
-        (`Agent.sign_output`), sends the remainder back to `agent` as
-        change, and returns the hub's receipt: `{"tx_hash", "fee",
-        "outputs": [{"hash", "pubkey", "value"}, ...]}`.
+        unpending outputs until they cover `amount + fee`, sends the
+        remainder back to `agent` as change, signs each input over that
+        whole payment (`Agent.sign_spend`), and returns the hub's
+        receipt: `{"tx_hash", "fee", "outputs": [{"hash", "pubkey",
+        "value"}, ...]}`.
 
         The receipt is acceptance for delivery, not confirmation. The
         node holds the transaction until a block takes it (about 16
@@ -754,13 +756,18 @@ class HubClient:
             raise ValueError(f"fee must be at least the hub's flat {HUB_TRANSACTION_FEE}")
         wallet = self.get_wallet(agent.pubkey_hex)
         chosen = plan_spend(wallet.get("outputs", []), amount + fee)
-        # Field order is signing order: `SendPayload`, `SendInput` and
-        # `SendOutput` in `hub/src/handlers.rs`.
-        inputs = [{"output": o["hash"], "signature": agent.sign_output(o["hash"])} for o in chosen]
+        # The outputs first, because that is what each input signs --
+        # including the change, which is not known until the inputs have
+        # been chosen. Field order is signing order: `SendPayload`,
+        # `SendInput` and `SendOutput` in `hub/src/handlers.rs`.
         outputs = [{"pubkey": to_pubkey_hex, "value": amount}]
         change = sum(int(o["value"]) for o in chosen) - amount - fee
         if change > 0:
             outputs.append({"pubkey": agent.pubkey_hex, "value": change})
+        inputs = [
+            {"output": o["hash"], "signature": agent.sign_spend(o["hash"], outputs)}
+            for o in chosen
+        ]
         return self._signed_post("/wallet/send", agent, {"inputs": inputs, "outputs": outputs})
 
     def fund_escrow(self, agent: Agent, reservation: dict) -> dict:

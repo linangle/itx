@@ -10,7 +10,7 @@ from the canonical one.
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from ecdsa import SECP256k1, SigningKey
 from ecdsa.util import sigdecode_string, sigencode_string
@@ -45,6 +45,59 @@ def _canonical_json(payload: Any) -> str:
     different string than the one the hub recomputes.
     """
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+SPEND_DOMAIN_TAG = b"itx.spend.v1"
+
+
+def spend_commitment_preimage(
+    output_hash_hex: str, outputs: Sequence[Mapping[str, Any]]
+) -> bytes:
+    """The exact bytes a spend's signature covers, before hashing:
+    ``Transaction::spend_commitment`` in ``lib/src/types/transaction.rs``,
+    reproduced here.
+
+    ::
+
+        "itx.spend.v1"              domain tag, 12 bytes
+        output_hash                 32 bytes, the hash being spent
+        len(outputs)                u32, big-endian
+          value                     u64, big-endian     } per output,
+          len(pubkey)               u8                  } in order
+          pubkey                    compressed SEC1     }
+
+    Written out by hand on both sides rather than hashed through the
+    chain's own CBOR: this is the one thing a non-Rust client has to
+    reproduce byte for byte, and guessing at ciborium's struct encoding
+    from Python would be pinned by nothing. Every variable-length part
+    carries its length, so no two different output lists can produce the
+    same bytes.
+
+    ``unique_id`` is deliberately absent -- the hub mints those, and
+    changing one moves no money. Order is not: these are the outputs as
+    the payload sends them, and signing them in another order signs a
+    different payment.
+    """
+    output_hash = bytes.fromhex(output_hash_hex)
+    if len(output_hash) != 32:
+        raise ValueError("an output hash is 32 bytes (64 hex characters)")
+    if not outputs:
+        raise ValueError("a spend pays at least one output")
+
+    preimage = bytearray(SPEND_DOMAIN_TAG)
+    preimage += output_hash
+    preimage += len(outputs).to_bytes(4, "big")
+    for output in outputs:
+        value = int(output["value"])
+        if value < 0 or value > 0xFFFF_FFFF_FFFF_FFFF:
+            raise ValueError(f"an output value must fit in a u64, not {value}")
+        preimage += value.to_bytes(8, "big")
+        pubkey = bytes.fromhex(output["pubkey"])
+        if not pubkey or len(pubkey) > 0xFF:
+            raise ValueError("an output pubkey is its compressed SEC1 bytes, in hex")
+        preimage += bytes([len(pubkey)])
+        preimage += pubkey
+    return bytes(preimage)
 
 
 def _digest_to_sign(message: str) -> bytes:
@@ -120,24 +173,34 @@ class Agent:
         digest = _digest_to_sign(message)
         return _sign_digest(self._signing_key, digest).hex()
 
-    def sign_output(self, output_hash_hex: str) -> str:
-        """Signs a spend of one of this key's outputs -- the signature
-        each input of ``POST /wallet/send`` carries -- hex-encoded.
+    def sign_spend(self, output_hash_hex: str, outputs: Sequence[Mapping[str, Any]]) -> str:
+        """Signs a spend of one of this key's outputs into ``outputs`` --
+        the signature each input of ``POST /wallet/send`` carries --
+        hex-encoded.
 
         ``output_hash_hex`` is the ``hash`` that ``GET /wallet/<pubkey>``
-        reports for the output: 64 hex characters of
-        ``btclib::sha256::Hash::as_bytes``. The chain checks the result
-        with ``Signature::verify(&output.hash(), &output.pubkey)`` (see
-        ``lib/src/crypto.rs``), whose ``Signer`` SHA-256s its input once
-        before the ECDSA math. So where ``sign_message`` hashes twice
-        (the message, then that hash), this hashes the 32 bytes once.
-        Verified byte for byte against
+        reports for the output being spent, and ``outputs`` is the send's
+        whole ``outputs`` list, in the order it is sent: each a mapping
+        with ``pubkey`` (hex, compressed SEC1) and ``value``.
+
+        **Both halves matter, and that is the point.** An input used to
+        sign the spent output's hash alone, which proved ownership and
+        said nothing about where the coin went -- so the hub, a node or
+        the miner could rewrite the outputs and the signature still
+        verified. The chain now checks this against
+        ``Transaction::spend_commitment`` (``lib/src/types/transaction.rs``),
+        which covers both, and refuses anything else.
+
+        The commitment's preimage is built by
+        ``spend_commitment_preimage``. As with ``sign_message``, the ECDSA
+        math applies SHA-256 to what it is handed, so signing the 32-byte
+        commitment is two rounds in total. Verified byte for byte against
         ``tests/fixtures/output_fixtures.json``.
         """
-        hash_bytes = bytes.fromhex(output_hash_hex)
-        if len(hash_bytes) != 32:
-            raise ValueError("an output hash is 32 bytes (64 hex characters)")
-        return _sign_digest(self._signing_key, hashlib.sha256(hash_bytes).digest()).hex()
+        commitment = hashlib.sha256(
+            spend_commitment_preimage(output_hash_hex, outputs)
+        ).digest()
+        return _sign_digest(self._signing_key, hashlib.sha256(commitment).digest()).hex()
 
     def build_envelope(
         self,

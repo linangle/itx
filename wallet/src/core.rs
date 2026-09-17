@@ -1,6 +1,7 @@
 use anyhow::Result;
 use btclib::crypto::{PrivateKey, PublicKey, Signature};
 use btclib::network::Message;
+use btclib::sha256::Hash;
 use btclib::types::{Transaction, TransactionInput, TransactionOutput};
 use btclib::util::Saveable;
 use crossbeam_skiplist::SkipMap;
@@ -317,7 +318,11 @@ impl Core {
             "Creating transaction for {} satoshis to {:?}",
             amount, recipient
         );
-        let mut inputs = Vec::new();
+        // The outputs have to exist before any input can be signed --
+        // an input signs the whole output list, `Transaction::spend_commitment`
+        // -- so selection only records *which* outputs are being spent
+        // and under which key, and the signing happens at the end.
+        let mut selected: Vec<(Hash, PrivateKey)> = Vec::new();
         let mut input_sum = 0;
 
         'select: for entry in self.utxos.utxos.iter() {
@@ -332,28 +337,25 @@ impl Core {
                 // than what an eventual exact-change (1-output) tx
                 // actually needs, so this can only ever over-collect,
                 // never under-collect.
-                let fee = self.config.fee_config.calculate_fee(amount, inputs.len(), 2);
+                let fee = self.config.fee_config.calculate_fee(amount, selected.len(), 2);
                 if input_sum >= amount + fee {
                     break 'select;
                 }
-                inputs.push(TransactionInput {
-                    prev_transaction_output_hash: utxo.hash(),
-                    signature: Signature::sign_output(
-                        &utxo.hash(),
-                        &self
-                            .utxos
-                            .my_keys
-                            .iter()
-                            .find(|k| k.public == *pubkey)
-                            .unwrap()
-                            .private,
-                    ),
-                });
+                selected.push((
+                    utxo.hash(),
+                    self.utxos
+                        .my_keys
+                        .iter()
+                        .find(|k| k.public == *pubkey)
+                        .unwrap()
+                        .private
+                        .clone(),
+                ));
                 input_sum += utxo.value;
             }
         }
 
-        let fee = self.config.fee_config.calculate_fee(amount, inputs.len(), 2);
+        let fee = self.config.fee_config.calculate_fee(amount, selected.len(), 2);
         let total_amount = amount + fee;
 
         if input_sum < total_amount {
@@ -377,6 +379,11 @@ impl Core {
                 pubkey: self.utxos.my_keys[0].public.clone(),
             });
         }
+
+        let inputs: Vec<TransactionInput> = selected
+            .iter()
+            .map(|(hash, key)| TransactionInput::signed(*hash, &outputs, key))
+            .collect();
 
         info!("Transaction created successfully");
         Ok(Transaction::new(inputs, outputs))

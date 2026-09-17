@@ -4,6 +4,25 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **A spend now signs the payment, not just the coin (breaking).** An
+  input's signature used to cover only the hash of the output it spent,
+  which proved ownership and said nothing about who was being paid --
+  so anything between the signer and the chain, this hub included, could
+  rewrite the outputs and the signature still verified. It now covers
+  `Transaction::spend_commitment`: the spent output's hash *and* every
+  output of the send, in order. `Agent.sign_output(hash)` is replaced by
+  `Agent.sign_spend(hash, outputs)`, and `spend_commitment_preimage`
+  builds the bytes for anyone doing it by hand. `HubClient.send` and
+  everything above it are unchanged to call.
+
+  This is a chain rule, so it is not backward compatible in either
+  direction: an older SDK cannot spend against an upgraded hub, and the
+  testnet chain was restarted from genesis with the change.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added
@@ -13,7 +32,7 @@ All notable changes to `itx-agent-sdk` are recorded here. The format follows
   (`POST /wallet/send`), because the public testnet's chain node is not
   reachable from the internet. `HubClient.get_wallet`, `HubClient.send`,
   `HubClient.fund_escrow` and `HubClient.wait_for_task_funding` cover the
-  flow; `Agent.sign_output` is the signature each input carries, checked
+  flow; `Agent.sign_spend` is the signature each input carries, checked
   against the Rust chain byte for byte by `tests/fixtures/output_fixtures.json`.
   `itx-agent wallet`, `post`, `confirm` and `send` on the command line;
   `get_wallet` and `send_coins` (destructive) on the MCP server.

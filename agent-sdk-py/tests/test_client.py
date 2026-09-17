@@ -785,7 +785,9 @@ def test_send_signs_each_input_pays_the_recipient_and_returns_the_change():
     assert [list(i.keys()) for i in payload["inputs"]] == [["output", "signature"]] * 2
     assert [i["output"] for i in payload["inputs"]] == [OUT_A, OUT_C], "7000 alone is short of 6500 + fee"
     for i in payload["inputs"]:
-        assert i["signature"] == agent.sign_output(i["output"]), "each input signed by the spending key"
+        assert i["signature"] == agent.sign_spend(i["output"], payload["outputs"]), (
+            "each input signed by the spending key, over the payment being made"
+        )
     assert payload["outputs"] == [
         {"pubkey": to, "value": 6_500},
         {"pubkey": agent.pubkey_hex, "value": 9_000 - 6_500 - HUB_TRANSACTION_FEE},

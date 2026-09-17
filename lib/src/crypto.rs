@@ -131,6 +131,15 @@ impl PrivateKey {
 }
 
 impl Signature {
+    /// Signs a 32-byte hash with `private_key`.
+    ///
+    /// **Not to be called with an output's own hash for a chain spend.**
+    /// It once was, and that was the whole of what an input signed --
+    /// ownership of a coin, with nothing said about where the coin went.
+    /// A spend's signature goes over `Transaction::spend_commitment`,
+    /// and `TransactionInput::signed` is the only thing that should be
+    /// building one; this stays the primitive underneath it, and under
+    /// `sign_hash`.
     pub fn sign_output(output_hash: &Hash, private_key: &PrivateKey) -> Self {
         let signature = private_key.0.sign(&output_hash.as_bytes());
         Signature(signature)

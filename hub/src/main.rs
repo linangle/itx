@@ -9792,9 +9792,32 @@ mod tests {
     }
 
     /// The signature a spend of `output_hash_hex` carries, made by `key`
-    /// the way the chain checks it: over the hash's own bytes.
-    fn sign_output_hex(output_hash_hex: &str, key: &PrivateKey) -> String {
-        hex::encode(Signature::sign_output(&hash_from_hex(output_hash_hex), key).to_bytes())
+    /// the way the chain checks it: over the spend commitment, which is
+    /// the spent output's hash *and* the whole list of outputs this send
+    /// pays. Signing the hash alone is what T36 was.
+    fn sign_output_hex(
+        output_hash_hex: &str,
+        key: &PrivateKey,
+        outputs: &[handlers::SendOutput],
+    ) -> String {
+        let commitment =
+            Transaction::spend_commitment(&hash_from_hex(output_hash_hex), &as_outputs(outputs));
+        hex::encode(Signature::sign_output(&commitment, key).to_bytes())
+    }
+
+    /// The payload's outputs as the chain's own type, which is what the
+    /// commitment is built over. `unique_id` is the hub's to mint and is
+    /// outside the commitment, so `nil` here is not a shortcut -- see
+    /// `Transaction::spend_commitment`.
+    fn as_outputs(outputs: &[handlers::SendOutput]) -> Vec<TransactionOutput> {
+        outputs
+            .iter()
+            .map(|o| TransactionOutput {
+                value: o.value,
+                unique_id: Uuid::nil(),
+                pubkey: PublicKey::from_sec1_bytes(&hex::decode(&o.pubkey).unwrap()).unwrap(),
+            })
+            .collect()
     }
 
     async fn wallet_of(hub: &TestHub, pubkey: &PublicKey) -> Value {
@@ -9803,9 +9826,14 @@ mod tests {
         resp.json().await.unwrap()
     }
 
-    /// Every unpending output of `wallet`, signed by `key`, as the inputs
-    /// of a send.
-    fn spend_all(wallet: &Value, key: &PrivateKey) -> Vec<handlers::SendInput> {
+    /// Every unpending output of `wallet`, signed by `key` into
+    /// `outputs`, as the inputs of a send. Takes the outputs because
+    /// that is what the signature covers.
+    fn spend_all(
+        wallet: &Value,
+        key: &PrivateKey,
+        outputs: &[handlers::SendOutput],
+    ) -> Vec<handlers::SendInput> {
         wallet["outputs"]
             .as_array()
             .unwrap()
@@ -9813,7 +9841,10 @@ mod tests {
             .filter(|o| o["pending"] == false)
             .map(|o| {
                 let hash = o["hash"].as_str().unwrap();
-                handlers::SendInput { output: hash.to_string(), signature: sign_output_hex(hash, key) }
+                handlers::SendInput {
+                    output: hash.to_string(),
+                    signature: sign_output_hex(hash, key, outputs),
+                }
             })
             .collect()
     }
@@ -9904,12 +9935,13 @@ mod tests {
 
         let wallet = wallet_of(&hub, &agent).await;
         let change = 5_000 - required - handlers::HUB_TRANSACTION_FEE;
+        let outputs = vec![paying(&deposit_address, required), paying(&agent.to_string(), change)];
         let resp = send(
             &hub,
             &agent_key,
             handlers::SendPayload {
-                inputs: spend_all(&wallet, &agent_key),
-                outputs: vec![paying(&deposit_address, required), paying(&agent.to_string(), change)],
+                inputs: spend_all(&wallet, &agent_key, &outputs),
+                outputs,
             },
         )
         .await;
@@ -9976,39 +10008,86 @@ mod tests {
                 assert!(body.contains(phrase), "expected {phrase:?} in {body}");
             }
         };
-        let input = |hash: &str, key: &PrivateKey| handlers::SendInput {
-            output: hash.to_string(),
-            signature: sign_output_hex(hash, key),
+        let input = |hash: &str, key: &PrivateKey, outputs: &[handlers::SendOutput]| {
+            handlers::SendInput { output: hash.to_string(), signature: sign_output_hex(hash, key, outputs) }
         };
+
+        // Each case signs the outputs it actually sends: a signature is
+        // consent to one payment, so `pays` is written once and used for
+        // both halves of the payload.
+        let pays = |value: u64| vec![paying(&me, value)];
 
         // Somebody else's output, however well signed by me.
         refused(
-            vec![input(&operators, &agent_key)],
-            vec![paying(&me, 3_000)],
+            vec![input(&operators, &agent_key, &pays(3_000))],
+            pays(3_000),
             reqwest::StatusCode::BAD_REQUEST,
             "not an unspent output",
         )
         .await;
         // My output, signed by somebody else.
-        refused(vec![input(&own, &other_key)], vec![paying(&me, 3_000)], reqwest::StatusCode::BAD_REQUEST, "does not verify")
-            .await;
+        refused(
+            vec![input(&own, &other_key, &pays(3_000))],
+            pays(3_000),
+            reqwest::StatusCode::BAD_REQUEST,
+            "does not verify",
+        )
+        .await;
+        // My output, signed by me -- for a payment to me, and then sent
+        // with the payment pointed somewhere else. The T36 rewrite, made
+        // by whoever holds the payload between the signer and the node;
+        // here the hub itself is the one refusing to relay it.
+        refused(
+            vec![input(&own, &agent_key, &pays(3_000))],
+            vec![paying(&other_key.public_key().to_string(), 3_000)],
+            reqwest::StatusCode::BAD_REQUEST,
+            "does not verify",
+        )
+        .await;
+        // And the same rewrite in the amount rather than the recipient.
+        refused(
+            vec![input(&own, &agent_key, &pays(3_000))],
+            pays(3_500),
+            reqwest::StatusCode::BAD_REQUEST,
+            "does not verify",
+        )
+        .await;
         // Mine, signed by me, but the miner would get nothing.
-        refused(vec![input(&own, &agent_key)], vec![paying(&me, 4_500)], reqwest::StatusCode::BAD_REQUEST, "network fee")
-            .await;
+        refused(
+            vec![input(&own, &agent_key, &pays(4_500))],
+            pays(4_500),
+            reqwest::StatusCode::BAD_REQUEST,
+            "network fee",
+        )
+        .await;
         // More out than in.
-        refused(vec![input(&own, &agent_key)], vec![paying(&me, 9_000)], reqwest::StatusCode::BAD_REQUEST, "inputs only")
-            .await;
+        refused(
+            vec![input(&own, &agent_key, &pays(9_000))],
+            pays(9_000),
+            reqwest::StatusCode::BAD_REQUEST,
+            "inputs only",
+        )
+        .await;
         // The same output twice.
         refused(
-            vec![input(&own, &agent_key), input(&own, &agent_key)],
-            vec![paying(&me, 3_000)],
+            vec![input(&own, &agent_key, &pays(3_000)), input(&own, &agent_key, &pays(3_000))],
+            pays(3_000),
             reqwest::StatusCode::BAD_REQUEST,
             "same output",
         )
         .await;
-        // A recipient that is not a key.
-        refused(vec![input(&own, &agent_key)], vec![paying("zz", 3_000)], reqwest::StatusCode::BAD_REQUEST, "outputs[0]")
-            .await;
+        // A recipient that is not a key. The input is signed over a
+        // different payment on purpose: an unparseable output is refused
+        // before any signature is looked at, which is the order this
+        // pins -- and "zz" cannot be signed over anyway, since building
+        // the commitment means decoding the key.
+        refused(
+            vec![input(&own, &agent_key, &pays(3_000))],
+            vec![paying("zz", 3_000)],
+            reqwest::StatusCode::BAD_REQUEST,
+            "outputs[0]",
+        )
+        .await;
         // A signature that is not a signature.
         refused(
             vec![handlers::SendInput { output: own.clone(), signature: "beef".into() }],
@@ -10026,7 +10105,10 @@ mod tests {
         let resp = send(
             &hub,
             &agent_key,
-            handlers::SendPayload { inputs: vec![input(&own, &agent_key)], outputs: vec![paying(&me, 4_000)] },
+            handlers::SendPayload {
+                inputs: vec![input(&own, &agent_key, &[paying(&me, 4_000)])],
+                outputs: vec![paying(&me, 4_000)],
+            },
         )
         .await;
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
@@ -10035,8 +10117,13 @@ mod tests {
         assert_eq!(wallet["balance"], 0);
         assert_eq!(wallet["pending"], 5_000);
         assert_eq!(wallet["outputs"][0]["pending"], true);
-        refused(vec![input(&own, &agent_key)], vec![paying(&me, 4_000)], reqwest::StatusCode::CONFLICT, "already spent")
-            .await;
+        refused(
+            vec![input(&own, &agent_key, &[paying(&me, 4_000)])],
+            vec![paying(&me, 4_000)],
+            reqwest::StatusCode::CONFLICT,
+            "already spent",
+        )
+        .await;
         assert_eq!(fake_node.submissions_seen.load(Ordering::SeqCst), 1);
     }
 
@@ -10057,7 +10144,10 @@ mod tests {
             &hub,
             &agent_key,
             handlers::SendPayload {
-                inputs: vec![handlers::SendInput { output: own.clone(), signature: sign_output_hex(&own, &agent_key) }],
+                inputs: vec![handlers::SendInput {
+                    output: own.clone(),
+                    signature: sign_output_hex(&own, &agent_key, &[paying(&agent.to_string(), 4_000)]),
+                }],
                 outputs: vec![paying(&agent.to_string(), 4_000)],
             },
         )
