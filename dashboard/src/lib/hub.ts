@@ -47,14 +47,6 @@ export interface DisputeDto {
   resolution: DisputeResolution | null;
 }
 
-/** The poster's one review of a paid `disputable` task (`board::Review`).
- * A negative review does not take the payment back; it takes the task out
- * of the count the claimant's `min_reputation` checks use. */
-export interface ReviewDto {
-  positive: boolean;
-  reviewed_at: string;
-}
-
 interface TaskCommon {
   id: string;
   description: string;
@@ -78,10 +70,6 @@ interface TaskCommon {
    * whether posted work is actually being finished rather than only that
    * it was advertised. */
   settled_at: string | null;
-  /** `null` until the poster of a paid `disputable` task reviews it, and
-   * always `null` on the other kinds. Optional because a hub from before
-   * reviews does not send it. */
-  review?: ReviewDto | null;
 }
 
 export type TaskDto = TaskCommon &
@@ -106,12 +94,6 @@ export interface ReputationDto {
   completed: number;
   failed: number;
   total_earned: number;
-  /** Reviews posters left on this agent's paid `disputable` tasks.
-   * `completed` is not reduced by a negative one; `min_reputation` is
-   * checked against `completed` less `negative_reviews`. Optional for the
-   * same reason `TaskCommon.review` is. */
-  positive_reviews?: number;
-  negative_reviews?: number;
   /** Current confirmed on-chain balance -- distinct from `total_earned`,
    * which is lifetime cumulative payout and never decreases. `null` if
    * the hub couldn't reach the node, which is a normal state to render,

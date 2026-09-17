@@ -17,7 +17,6 @@ import pytest
 
 from itx_agent_sdk import Agent, HubClient, HubError
 from itx_agent_sdk.client import FaucetSolveTimeout, solve_faucet_challenge
-from itx_agent_sdk.envelope import _canonical_json
 
 
 # The hub these tests sign for. Supplied to the constructor so no test
@@ -314,37 +313,6 @@ def test_create_disputable_task_escrow_defaults_min_reputation_to_one():
     assert client.session.post.call_args[1]["json"]["payload"]["min_reputation"] == 0
 
 
-def test_review_task_url_and_payload():
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"id": "t1", "review": {"positive": True}})
-    poster = Agent.generate()
-
-    client.review_task(poster, "t1", True)
-
-    args, kwargs = client.session.post.call_args
-    assert args[0] == "http://hub.test/tasks/t1/review"
-    assert kwargs["json"]["payload"] == {"task_id": "t1", "positive": True}
-
-
-def test_review_payload_signs_the_bytes_the_hub_rebuilds():
-    """Conformance for the one new payload: the canonical JSON this
-    client signs is the literal `a_review_payload_signs_task_id_then_positive`
-    in `hub/src/main.rs` pins for `handlers::ReviewPayload`, whose fields
-    are declared `task_id` then `positive`. A reordering on either side
-    fails one of the two tests rather than every review with a 401.
-    """
-    client = make_client_with_mock_session()
-    client.session.post.return_value = mock_response({"id": CANONICAL_ID})
-    poster = Agent.generate()
-
-    client.review_task(poster, CANONICAL_ID, False)
-
-    envelope = client.session.post.call_args[1]["json"]
-    assert _canonical_json(envelope["payload"]) == (
-        '{"task_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","positive":false}'
-    )
-
-
 def test_non_ok_response_raises_hub_error_with_parsed_body():
     client = make_client_with_mock_session()
     client.session.post.return_value = mock_response({"error": "nope"}, status_code=403)
@@ -595,7 +563,6 @@ def test_every_signed_route_that_carries_an_id_canonicalises_it():
         (lambda: client.submit_task(agent, loud, "42"), f"/tasks/{CANONICAL_ID}/submit"),
         (lambda: client.cancel_task(agent, loud), f"/tasks/{CANONICAL_ID}/cancel"),
         (lambda: client.confirm_task_escrow(agent, loud), f"/tasks/escrow/{CANONICAL_ID}/confirm"),
-        (lambda: client.review_task(agent, loud, True), f"/tasks/{CANONICAL_ID}/review"),
     ]:
         call()
         args, kwargs = client.session.post.call_args

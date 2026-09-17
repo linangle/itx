@@ -443,9 +443,8 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     ) -> dict:
         """Reserves a `disputable` task: one agent claims it, submits an
         answer, and is paid on submission -- nothing checks the answer and
-        you cannot reject it. Once it is paid you may leave one review
-        (`review_task`). Use for open-ended work with no checkable answer
-        and no natural way to poll multiple agents. Same
+        you cannot reject it. Use for open-ended work with no checkable
+        answer and no natural way to poll multiple agents. Same
         reserve-then-confirm flow as `post_task`.
 
         `min_reputation` defaults to 1 for this kind (0 for the others):
@@ -486,8 +485,7 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         up front with a clear message -- rather than letting the hub's 403
         do it -- if this agent's own completed-task count is below the
         task's `min_reputation`, or if this agent posted the task itself
-        (posting and claiming your own task is never allowed). The count
-        is the hub's: completed tasks less any with a negative review.
+        (posting and claiming your own task is never allowed).
         """
         task = client.get_task(task_id)
         if task.get("poster") == agent.pubkey_hex:
@@ -495,11 +493,10 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         min_reputation = task.get("min_reputation", 0)
         if min_reputation:
             reputation = client.get_reputation(agent.pubkey_hex)
-            counted = reputation.get("completed", 0) - reputation.get("negative_reviews", 0)
-            if counted < min_reputation:
+            if reputation.get("completed", 0) < min_reputation:
                 raise ToolError(
                     f"task {task_id} requires {min_reputation} completed tasks; "
-                    f"this agent has {counted} (a task with a negative review does not count)"
+                    f"this agent has {reputation.get('completed', 0)}"
                 )
         return client.claim_task(agent, task_id)
 
@@ -514,17 +511,6 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
         like a correct `hash_match` answer; the poster cannot reject it.
         """
         return client.submit_task(agent, task_id, output)
-
-    @server.tool(annotations=MOVES_MONEY_OR_REPUTATION)
-    def review_task(task_id: str, positive: bool) -> dict:
-        """Leaves this agent's one review of a `disputable` task it posted,
-        once the task is `Paid` -- **irreversible**, and it affects another
-        agent: a review cannot be changed, and a negative one removes that
-        task from the count the claimant's `min_reputation` checks use
-        (the payment itself stands). Only the task's poster may review it.
-        Returns the task, with its `review`.
-        """
-        return client.review_task(agent, task_id, positive)
 
     # -- information tools (read-only) -------------------------------------
 
@@ -558,10 +544,8 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
 
     @server.tool(annotations=READ_ONLY)
     def get_reputation(pubkey_hex: Optional[str] = None) -> dict:
-        """Completed/failed task counts, lifetime earnings, and the
-        positive/negative reviews posters left on its paid `disputable`
-        tasks, for a pubkey -- this agent's own, if `pubkey_hex` is
-        omitted.
+        """Completed/failed task counts and lifetime earnings for a pubkey --
+        this agent's own, if `pubkey_hex` is omitted.
         """
         return client.get_reputation(pubkey_hex or agent.pubkey_hex)
 
@@ -664,13 +648,12 @@ def build_server(hub_url: str = DEFAULT_HUB_URL, key_file: str = DEFAULT_KEY_FIL
     ) -> List[dict]:
         """Open tasks this agent can actually claim right now, ranked bounty
         descending: filters out anything whose `min_reputation` this
-        agent's own completed-task count (less any with a negative review,
-        as the hub counts it) doesn't meet, and anything this agent posted
-        itself. Prefer this over raw `list_tasks` to avoid wasting a
-        `claim_task` call on a task that would just 403.
+        agent's own completed-task count doesn't meet, and anything this
+        agent posted itself. Prefer this over raw `list_tasks` to avoid
+        wasting a `claim_task` call on a task that would just 403.
         """
         reputation = client.get_reputation(agent.pubkey_hex)
-        completed = reputation.get("completed", 0) - reputation.get("negative_reviews", 0)
+        completed = reputation.get("completed", 0)
         # `status` omitted defaults to open tasks only, matching the hub's
         # own default -- this tool is specifically about what's claimable.
         items, _ = client.list_tasks_scan(capability=capability)

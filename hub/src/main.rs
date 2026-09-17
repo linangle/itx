@@ -1384,7 +1384,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/tasks/:id/claim", post(handlers::claim_task))
         .route("/tasks/:id/submit", post(handlers::submit_task))
         .route("/tasks/:id/cancel", post(handlers::cancel_task))
-        .route("/tasks/:id/review", post(handlers::review_task))
         .route("/tasks/:id/dispute/escrow", post(handlers::create_dispute_escrow))
         .route("/tasks/:id/dispute/confirm", post(handlers::confirm_dispute_escrow))
         .route("/tasks/:id/dispute/resolve", post(handlers::resolve_dispute))
@@ -4056,8 +4055,6 @@ mod tests {
             "paid on submission",
             "the poster cannot reject it",
             "defaults to 1",
-            "POST /tasks/<id>/review",
-            "negative_reviews",
             "capabilities",
             "?capability=",
             "/tasks/<id>/cancel",
@@ -5908,7 +5905,7 @@ mod tests {
             let mut board = hub.state.board.write().await;
             board.restore_reputation(
                 veteran.public_key(),
-                board::Reputation { completed: 3, failed: 0, total_earned: 0, ..Default::default() },
+                board::Reputation { completed: 3, failed: 0, total_earned: 0 },
             );
         }
         let resp = hub
@@ -7640,159 +7637,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::OK, "a poster who sends 0 lets anyone claim");
-    }
-
-    /// Signs `{task_id, positive}` for `POST /tasks/<id>/review` as
-    /// `key` and returns the response.
-    async fn review(hub: &TestHub, key: &PrivateKey, task_id: Uuid, positive: bool) -> reqwest::Response {
-        hub.client
-            .post(format!("{}/tasks/{task_id}/review", hub.base_url))
-            .json(&envelope(key, &format!("/tasks/{task_id}/review"), handlers::ReviewPayload { task_id, positive }))
-            .send()
-            .await
-            .unwrap()
-    }
-
-    async fn error_of(resp: reqwest::Response) -> String {
-        resp.json::<Value>().await.unwrap()["error"].as_str().unwrap().to_string()
-    }
-
-    /// The bytes a client signs for a review, pinned to the literal the
-    /// Python SDK's own test pins, so the two cannot drift apart without
-    /// one of them failing.
-    #[test]
-    fn a_review_payload_signs_task_id_then_positive() {
-        let task_id: Uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301".parse().unwrap();
-        assert_eq!(
-            serde_json::to_string(&handlers::ReviewPayload { task_id, positive: false }).unwrap(),
-            r#"{"task_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","positive":false}"#
-        );
-    }
-
-    /// Who may review, and when: the poster, of a disputable task, once
-    /// its payment has landed, once.
-    #[tokio::test]
-    async fn only_the_poster_may_review_a_paid_disputable_task_and_only_once() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let assignee_key = PrivateKey::new_key();
-
-        let task_id = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
-        claim_and_submit(&hub, task_id, &assignee_key).await;
-
-        let resp = review(&hub, &poster_key, task_id, true).await;
-        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT, "the payment is only on the wire");
-        assert!(error_of(resp).await.contains("once its payment has landed"));
-
-        confirm_submitted_payouts(&hub.state, &fake_node).await;
-        assert_eq!(get_task_json(&hub, task_id).await["status"], "Paid");
-
-        let resp = review(&hub, &assignee_key, task_id, true).await;
-        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-        assert!(error_of(resp).await.contains("only the task's poster"));
-
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{task_id}/review", hub.base_url))
-            .json(&envelope(
-                &poster_key,
-                &format!("/tasks/{task_id}/review"),
-                handlers::ReviewPayload { task_id: Uuid::new_v4(), positive: true },
-            ))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST, "the URL's id and the signed id must agree");
-
-        let resp = review(&hub, &poster_key, task_id, true).await;
-        assert_eq!(resp.status(), reqwest::StatusCode::OK);
-        let task: Value = resp.json().await.unwrap();
-        assert_eq!(task["review"]["positive"], true);
-        assert!(task["review"]["reviewed_at"].is_string());
-
-        let resp = review(&hub, &poster_key, task_id, false).await;
-        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
-        assert!(error_of(resp).await.contains("already been reviewed"));
-        assert_eq!(get_task_json(&hub, task_id).await["review"]["positive"], true, "a review cannot be changed");
-
-        // Any other kind, even one this key posted, is not reviewable.
-        let (hash_match_id, _) = seed_verified_task(&hub.state, 1_000).await;
-        let resp = review(&hub, &hub.operator_key, hash_match_id, false).await;
-        assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
-        assert!(error_of(resp).await.contains("only open-ended (disputable) tasks"));
-        assert_eq!(get_task_json(&hub, hash_match_id).await["review"], Value::Null);
-    }
-
-    /// A negative review leaves the payment and `completed` alone and
-    /// takes the task out of what `min_reputation` counts; a positive one
-    /// takes nothing out. Both, and the reviews themselves, are asserted
-    /// again against the store, since a count that did not survive a
-    /// restart would reopen the gate it closed.
-    #[tokio::test]
-    async fn a_negative_review_lowers_what_the_gate_counts_and_it_survives_a_restart() {
-        let operator_key = PrivateKey::new_key();
-        let fake_node = FakeNode::spawn(operator_key.public_key(), 100_000_000).await;
-        let hub = spawn_hub(operator_key, fake_node.addr.clone()).await;
-        let poster_key = PrivateKey::new_key();
-        let junk_key = PrivateKey::new_key();
-        let good_key = PrivateKey::new_key();
-
-        let junk_task = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
-        claim_and_submit(&hub, junk_task, &junk_key).await;
-        let good_task = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 0).await;
-        claim_and_submit(&hub, good_task, &good_key).await;
-        confirm_submitted_payouts(&hub.state, &fake_node).await;
-
-        assert_eq!(review(&hub, &poster_key, junk_task, false).await.status(), reqwest::StatusCode::OK);
-        assert_eq!(review(&hub, &poster_key, good_task, true).await.status(), reqwest::StatusCode::OK);
-
-        let reputation_of = |key: &PrivateKey| {
-            let url = format!("{}/reputation/{}", hub.base_url, key.public_key());
-            let client = hub.client.clone();
-            async move { client.get(url).send().await.unwrap().json::<Value>().await.unwrap() }
-        };
-        let junk = reputation_of(&junk_key).await;
-        assert_eq!(junk["completed"], 1, "the payment landed and still counts as completed");
-        assert_eq!(junk["total_earned"], 900, "a review takes nothing back");
-        assert_eq!((junk["positive_reviews"].clone(), junk["negative_reviews"].clone()), (json!(0), json!(1)));
-        let good = reputation_of(&good_key).await;
-        assert_eq!((good["positive_reviews"].clone(), good["negative_reviews"].clone()), (json!(1), json!(0)));
-
-        let leaderboard: Value = hub.client.get(format!("{}/leaderboard", hub.base_url)).send().await.unwrap().json().await.unwrap();
-        let row = leaderboard
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["pubkey"] == junk_key.public_key().to_string())
-            .expect("a paid agent is ranked");
-        assert_eq!(row["negative_reviews"], 1, "the leaderboard carries the counts too");
-
-        let gated = create_confirmed_disputable_task(&hub, &fake_node, &poster_key, 900, 1).await;
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{gated}/claim", hub.base_url))
-            .json(&envelope(&junk_key, &format!("/tasks/{gated}/claim"), handlers::ClaimPayload { task_id: gated }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN, "one completion less one negative review is zero");
-        assert!(error_of(resp).await.contains("you have 0"));
-        let resp = hub
-            .client
-            .post(format!("{}/tasks/{gated}/claim", hub.base_url))
-            .json(&envelope(&good_key, &format!("/tasks/{gated}/claim"), handlers::ClaimPayload { task_id: gated }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::OK, "a positive review takes nothing away");
-
-        let restored = board_as_a_restart_would_load_it(&hub);
-        assert_eq!(restored.get_task(junk_task).unwrap().review.map(|r| r.positive), Some(false));
-        assert_eq!(restored.get_task(good_task).unwrap().review.map(|r| r.positive), Some(true));
-        assert_eq!(restored.reputation(&junk_key.public_key()).negative_reviews, 1);
-        assert_eq!(restored.reputation(&good_key.public_key()).positive_reviews, 1);
     }
 
     /// A disputable task in a state a store written before 2026-09-16 can

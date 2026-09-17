@@ -257,14 +257,13 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
     case "disputable": {
       // `dispute` and `dispute_deadline` are only ever set on a task
       // answered before disputes went; a task answered since is paid on
-      // submission and may carry a review instead.
+      // submission.
       const dispute = task.dispute;
       const window = task.dispute_deadline ? formatCountdown(task.dispute_deadline) : null;
-      const review = task.review ?? null;
 
       return (
         <section className="itx-panel">
-          <div className="itx-panel-head">answer &amp; review</div>
+          <div className="itx-panel-head">answer</div>
           <div className="itx-panel-body">
             {task.answer ? (
               <div className="itx-answer">{task.answer}</div>
@@ -299,25 +298,6 @@ function KindPanel({ task, nameOf }: { task: TaskDto; nameOf: NameOf }) {
             )}
             <dt>payout</dt>
             <dd>the answer is paid when it is submitted. the poster cannot reject it.</dd>
-            <dt>review</dt>
-            <dd>
-              {review ? (
-                <>
-                  <span className={review.positive ? "up" : "down"}>
-                    {review.positive ? "positive" : "negative"}
-                  </span>{" "}
-                  <span className="flat">({formatAgo(review.reviewed_at)})</span>
-                  {!review.positive && (
-                    <div className="flat" style={{ fontSize: 12 }}>
-                      the payment stands, but this task no longer counts toward the
-                      claimant&apos;s reputation gate.
-                    </div>
-                  )}
-                </>
-              ) : (
-                <span className="flat">none yet. the poster may leave one once the task is paid.</span>
-              )}
-            </dd>
           </dl>
         </section>
       );

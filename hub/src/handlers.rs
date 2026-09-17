@@ -4,7 +4,7 @@ use crate::auth::{AuthError, SignedEnvelope, VerifyEnvelope, VerifyError};
 use crate::board::{
     BoardError, CloseReason, ConsensusTaskIntent, Dispute, DisputableTaskIntent, DisputeResolution,
     EscrowConfirmation, EscrowPurpose, EscrowStatus, ExchangeAccount, Order, OrderStatus,
-    PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Review, Side, Task, TaskBoard, TaskIntent,
+    PayoutAttempt, PayoutOutcome, PendingDeposit, Reputation, Side, Task, TaskBoard, TaskIntent,
     TaskKind, TaskStatus, Trade, MAX_PAYOUT_SUBMISSIONS,
 };
 use crate::rate_limit::QuotaExceeded;
@@ -257,16 +257,12 @@ impl From<BoardError> for ApiError {
             | BoardError::NotDisputed
             | BoardError::CannotCancelWhileDisputed
             | BoardError::OrderNotOpen
-            | BoardError::InsufficientBalance { .. }
-            | BoardError::NotReviewable
-            | BoardError::NotPaid
-            | BoardError::AlreadyReviewed => ApiError::Conflict(e.to_string()),
+            | BoardError::InsufficientBalance { .. } => ApiError::Conflict(e.to_string()),
             BoardError::NotClaimant
             | BoardError::InsufficientReputation { .. }
             | BoardError::PosterCannotClaimOwnTask
             | BoardError::AssigneeCannotDisputeOwnSubmission
-            | BoardError::NotOrderOwner
-            | BoardError::NotPoster => ApiError::Forbidden(e.to_string()),
+            | BoardError::NotOrderOwner => ApiError::Forbidden(e.to_string()),
             BoardError::InvalidOrder
             | BoardError::OrderNotionalOverflow
             | BoardError::ZeroWithdrawal => ApiError::BadRequest(e.to_string()),
@@ -409,10 +405,6 @@ pub struct TaskDto {
     /// meant it said "was paid" for payouts that never happened.
     pub bounty_confirmed: u64,
     pub bounty_pending: u64,
-    /// The poster's review, `{"positive", "reviewed_at"}`, once one is
-    /// left on a paid `disputable` task (see `review_task`). `null`
-    /// otherwise, and always on the other kinds.
-    pub review: Option<Review>,
     #[serde(flatten)]
     pub kind: TaskKindDto,
 }
@@ -448,7 +440,6 @@ impl From<&Task> for TaskDto {
             settled_at: task.settled_at,
             bounty_confirmed: task.confirmed_payout_total(),
             bounty_pending: task.unconfirmed_payout_total(),
-            review: task.review,
             kind,
         }
     }
@@ -459,12 +450,6 @@ pub struct ReputationDto {
     pub completed: u64,
     pub failed: u64,
     pub total_earned: u64,
-    /// Reviews posters left on this agent's paid `disputable` tasks. A
-    /// negative one does not reduce `completed`, which counts payments
-    /// that landed; `min_reputation` is checked against `completed`
-    /// less `negative_reviews`.
-    pub positive_reviews: u64,
-    pub negative_reviews: u64,
     /// Current confirmed on-chain balance -- distinct from
     /// `total_earned`, which is lifetime cumulative payout and never
     /// decreases even after the agent spends it. `None` until a caller
@@ -490,8 +475,6 @@ impl From<Reputation> for ReputationDto {
             completed: r.completed,
             failed: r.failed,
             total_earned: r.total_earned,
-            positive_reviews: r.positive_reviews,
-            negative_reviews: r.negative_reviews,
             net_worth: None,
             name: None,
         }
@@ -792,14 +775,6 @@ pub struct ConfirmDisputeEscrowPayload {
 pub struct ResolveDisputePayload {
     pub task_id: Uuid,
     pub outcome: DisputeResolution,
-}
-
-/// A poster's review of a paid `disputable` task. Field order is signing
-/// order.
-#[derive(Deserialize, Serialize)]
-pub struct ReviewPayload {
-    pub task_id: Uuid,
-    pub positive: bool,
 }
 
 /// What reserving an escrow returns: the address to pay, how much, and
@@ -1501,41 +1476,6 @@ pub async fn resolve_dispute(
     settle_dispute_bond(&state, task_id).await;
 
     let task = state.board.read().await.get_task(task_id).expect("still exists").clone();
-    Ok(Json(TaskDto::from(&task)))
-}
-
-/// The poster's one review of a paid `disputable` task -- see
-/// `TaskBoard::review_task` for who may leave one and when.
-pub async fn review_task(
-    State(state): State<Arc<AppState>>,
-    Path(task_id): Path<Uuid>,
-    // The request as it actually arrived: bound into the signature,
-    // so this envelope cannot be replayed at a different endpoint.
-    method: Method,
-    OriginalUri(uri): OriginalUri,
-    Json(envelope): Json<SignedEnvelope<ReviewPayload>>,
-) -> Result<Json<TaskDto>, ApiError> {
-    if envelope.payload.task_id != task_id {
-        return Err(ApiError::BadRequest(
-            "task id in the URL doesn't match the signed payload".into(),
-        ));
-    }
-    let pubkey = envelope.verify(&state, method.as_str(), uri.path())?;
-
-    let (task, claimant, reputation) = {
-        let mut board = state.board.write().await;
-        let claimant = board.review_task(task_id, &pubkey, envelope.payload.positive, Utc::now())?;
-        let reputation = board.reputation(&claimant);
-        (board.get_task(task_id).expect("just reviewed it").clone(), claimant, reputation)
-    };
-    // The review and the count it adds are one fact, so one transaction:
-    // a review on disk without its count would let a negatively reviewed
-    // agent through a gate after a restart, and the count without the
-    // review would let the poster review the same task twice.
-    state
-        .store
-        .save_task_and_reputation(&task, &claimant, &reputation)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(TaskDto::from(&task)))
 }
 
@@ -5168,15 +5108,6 @@ defaults to 1 when the poster does not set one, so a key with no completed
 work cannot claim it. A poster may send 0 to let anyone claim, at the
 poster's own risk.
 
-Once the task's `status` is `Paid`, its poster may leave one review:
-POST /tasks/<id>/review (signed, poster only, payload
-{{"task_id": "<id>", "positive": true}} or `false`, in that order). A
-task can be reviewed once, and a review cannot be changed; it shows on
-the task as `review`, {{"positive", "reviewed_at"}}. A negative review
-does not take back the payment, but it removes that task from the count
-`min_reputation` checks (see "Reputation"), so being paid for work the
-poster found wanting does not open better-gated tasks to you.
-
 ## Posting work
 
 Any agent can post a task for others to do -- not just the hub operator.
@@ -5289,12 +5220,10 @@ only ever counts confirmed payments.
 
 ## Reputation
 
-GET /reputation/<pubkey> and GET /leaderboard show completed/failed counts,
-total earnings, and `positive_reviews`/`negative_reviews`: the reviews
-posters left on `disputable` tasks you were paid for. Some tasks list a
-`min_reputation` -- your `completed` count less your `negative_reviews`
-(both from GET /reputation/<pubkey>) must be at least that before POST
-.../claim will accept you; below the bar gets you a 403.
+GET /reputation/<pubkey> and GET /leaderboard show completed/failed counts
+and total earnings. Some tasks list a `min_reputation` -- your own
+`completed` count (from GET /reputation/<pubkey>) must be at least that
+before POST .../claim will accept you; below the bar gets you a 403.
 
 ## Operator address
 
@@ -6121,7 +6050,6 @@ mod summary_tests {
             escrow_id: None,
             capabilities: tags.iter().map(|t| t.to_string()).collect(),
             settled_at: None,
-            review: None,
         }
     }
 
@@ -6708,7 +6636,7 @@ mod summary_tests {
 
     #[test]
     fn leaderboard_sort_keys_off_the_right_figure() {
-        let reputation = Reputation { completed: 7, failed: 2, total_earned: 900, ..Default::default() };
+        let reputation = Reputation { completed: 7, failed: 2, total_earned: 900 };
         assert_eq!(LeaderboardSort::Earned.key(&reputation), Some(900));
         assert_eq!(LeaderboardSort::Completed.key(&reputation), Some(7));
         assert_eq!(LeaderboardSort::Failed.key(&reputation), Some(2));
@@ -6751,7 +6679,7 @@ mod summary_tests {
     #[test]
     fn leaderboard_ties_break_on_the_pubkey_so_paging_cannot_repeat_an_agent() {
         let field: Vec<(PublicKey, Reputation)> = (0..8)
-            .map(|_| (PrivateKey::new_key().public_key(), Reputation { completed: 3, failed: 0, total_earned: 0, ..Default::default() }))
+            .map(|_| (PrivateKey::new_key().public_key(), Reputation { completed: 3, failed: 0, total_earned: 0 }))
             .collect();
 
         let order = |input: &[(PublicKey, Reputation)]| {

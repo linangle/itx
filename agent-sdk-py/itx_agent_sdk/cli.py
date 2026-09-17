@@ -19,7 +19,6 @@ printed, transmitted or included in any output -- ``whoami`` reports the
     itx-agent status
     itx-agent wallet                            # balance and outputs on chain
     itx-agent post --description "..." --bounty 500 --answer "..."   # reserve, fund, confirm
-    itx-agent review <task-id> --negative       # the poster's one review of a paid disputable task
     itx-agent send <pubkey> <amount>            # pay another key
 
 ``post`` and ``send`` spend this identity's balance. They exist so that
@@ -49,9 +48,8 @@ def eligible_tasks(
 ) -> List[Dict[str, Any]]:
     """Pure filter/rank shared by ``find``: drops tasks this identity
     posted itself (the hub never lets a poster claim its own task) and
-    tasks whose ``min_reputation`` exceeds ``completed`` (the hub would
-    403 -- pass the count the hub checks, ``completed`` less
-    ``negative_reviews``), optionally floors the bounty, then ranks bounty
+    tasks whose ``min_reputation`` exceeds its ``completed`` count (the
+    hub would 403), optionally floors the bounty, then ranks bounty
     descending. Mirrors the MCP server's ``find_matching_tasks`` so a
     shell-driven agent and an MCP-driven one rank the board identically.
     """
@@ -195,16 +193,6 @@ def build_parser() -> argparse.ArgumentParser:
     confirm = sub.add_parser("confirm", parents=[common], help="bring a task live once its escrow payment is on chain")
     confirm.add_argument("escrow_id")
 
-    review = sub.add_parser(
-        "review",
-        parents=[common],
-        help="the poster's one review of a paid disputable task; cannot be changed, and a negative one counts against the claimant",
-    )
-    review.add_argument("task_id")
-    verdict = review.add_mutually_exclusive_group(required=True)
-    verdict.add_argument("--positive", action="store_true")
-    verdict.add_argument("--negative", action="store_true")
-
     send = sub.add_parser("send", parents=[common], help="pay another key from this identity's own outputs (a spend)")
     send.add_argument("pubkey", help="the recipient's public key, hex")
     send.add_argument("amount", type=int)
@@ -295,8 +283,7 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "find":
         reputation = client.get_reputation(agent.pubkey_hex)
         items, _ = client.list_tasks_scan(capability=args.capability)
-        counted = reputation.get("completed", 0) - reputation.get("negative_reviews", 0)
-        return eligible_tasks(items, agent.pubkey_hex, counted, args.min_bounty, args.limit)
+        return eligible_tasks(items, agent.pubkey_hex, reputation.get("completed", 0), args.min_bounty, args.limit)
 
     if args.command == "task":
         return client.get_task(args.task_id)
@@ -316,9 +303,6 @@ def run(args: argparse.Namespace) -> Any:
 
     if args.command == "confirm":
         return client.confirm_task_escrow(agent, args.escrow_id)
-
-    if args.command == "review":
-        return client.review_task(agent, args.task_id, args.positive)
 
     if args.command == "send":
         return client.send(agent, args.pubkey, args.amount)

@@ -34,7 +34,6 @@ MONEY_OR_REPUTATION_TOOLS = {
     "post_disputable_task",
     "claim_task",
     "submit_work",
-    "review_task",
 }
 
 # A valid argument set for every tool, so the leak test can call each
@@ -56,7 +55,6 @@ TOOL_CALLS: Dict[str, Dict[str, Any]] = {
     "confirm_task_funding": {"escrow_id": "e1"},
     "claim_task": {"task_id": "t1"},
     "submit_work": {"task_id": "t1", "output": "answer"},
-    "review_task": {"task_id": "t1", "positive": False},
     "get_payment_status": {"payment_id": "p1"},
     "get_my_payments": {},
     "get_health": {},
@@ -126,9 +124,6 @@ class FakeHub:
 
     def confirm_task_escrow(self, agent, escrow_id):
         return {"escrow_id": escrow_id, "status": "Open"}
-
-    def review_task(self, agent, task_id, positive):
-        return {"id": task_id, "status": "Paid", "review": {"positive": positive}}
 
     def get_task(self, task_id):
         return _task(task_id)
@@ -268,17 +263,6 @@ def test_post_disputable_task_defaults_min_reputation_to_one(server):
     for name, default in (("post_disputable_task", 1), ("post_task", 0), ("post_consensus_task", 0)):
         schema = tools[name].input_schema if hasattr(tools[name], "input_schema") else tools[name].inputSchema
         assert schema["properties"]["min_reputation"]["default"] == default, name
-
-
-def test_claim_task_does_not_count_a_task_with_a_negative_review(server, monkeypatch):
-    srv, _, _ = server
-    gated = dict(_task("gated"), min_reputation=3)
-    monkeypatch.setattr(FakeHub, "get_task", lambda self, task_id: gated)
-    monkeypatch.setattr(
-        FakeHub, "get_reputation", lambda self, pubkey_hex: {"completed": 3, "failed": 0, "negative_reviews": 1}
-    )
-    with pytest.raises(ToolError, match="has 2"):
-        _call(srv, "claim_task", {"task_id": "gated"})
 
 
 def test_claim_task_refuses_the_agents_own_task_before_hitting_the_hub(server, monkeypatch):
@@ -454,7 +438,6 @@ def test_the_window_refreshes_once_it_has_elapsed():
         ("POST", "/tasks/t1/claim", "write"),
         ("POST", "/tasks/t1/cancel", "write"),
         ("POST", "/tasks/escrow", "write"),
-        ("POST", "/tasks/t1/review", "write"),
         ("POST", "/exchange/orders", "write"),
         ("POST", "/exchange/orders/o1/cancel", "write"),
         ("POST", "/exchange/deposit", "write"),

@@ -352,26 +352,6 @@ def test_post_knows_each_kinds_flags(env):
     assert client.fund_escrow.call_count == 4
 
 
-def test_review_takes_exactly_one_verdict(env):
-    client, run, _ = env
-    client.review_task.return_value = {"id": "t1", "review": {"positive": False}}
-    assert run("review", "t1", "--negative") == {"id": "t1", "review": {"positive": False}}
-    assert client.review_task.call_args[0][1:] == ("t1", False)
-    run("review", "t1", "--positive")
-    assert client.review_task.call_args[0][1:] == ("t1", True)
-
-    for argv in (("review", "t1"), ("review", "t1", "--positive", "--negative")):
-        with pytest.raises(SystemExit):
-            run(*argv)
-
-
-def test_find_does_not_count_a_task_with_a_negative_review(env):
-    client, run, _ = env
-    client.get_reputation.return_value = {"completed": 2, "failed": 0, "negative_reviews": 1}
-    client.list_tasks_scan.return_value = ([task("gated", min_reputation=2), task("open")], 2)
-    assert [t["id"] for t in run("find")] == ["open"]
-
-
 def test_confirm_and_send_pass_their_arguments_through(env):
     client, run, _ = env
     client.confirm_task_escrow.return_value = {"id": "t1"}

@@ -1298,7 +1298,6 @@ mod tests {
             escrow_id: None,
             capabilities: Default::default(),
             settled_at: None,
-            review: None,
         };
         store.save_task(&task).unwrap();
         let loaded = store.load_all_tasks().unwrap();
@@ -1311,7 +1310,6 @@ mod tests {
             completed: 3,
             failed: 1,
             total_earned: 300,
-            ..Default::default()
         };
         store.save_reputation(&agent, &reputation).unwrap();
         let loaded_rep = store.load_all_reputation().unwrap();
@@ -1385,7 +1383,7 @@ mod tests {
             .map(|i| {
                 (
                     PrivateKey::new_key().public_key(),
-                    Reputation { completed: i, failed: 0, total_earned: i * 100, ..Default::default() },
+                    Reputation { completed: i, failed: 0, total_earned: i * 100 },
                 )
             })
             .collect();
@@ -1960,7 +1958,6 @@ mod tests {
             escrow_id: Some(escrow_id),
             capabilities: Default::default(),
             settled_at: None,
-            review: None,
         };
         (task, deposit)
     }
@@ -1980,7 +1977,7 @@ mod tests {
             .map(|_| {
                 (
                     PrivateKey::new_key().public_key(),
-                    Reputation { completed: 0, failed: 1, total_earned: 0, ..Default::default() },
+                    Reputation { completed: 0, failed: 1, total_earned: 0 },
                 )
             })
             .collect();
@@ -2071,7 +2068,7 @@ mod tests {
         store.save_payout_attempt(&attempt).unwrap();
 
         let paid = Task { status: TaskStatus::Paid, ..task.clone() };
-        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount, ..Default::default() };
+        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount };
         let result = store.in_one_write_txn(|txn| {
             stage_record(txn, TASKS_TABLE, paid.id.as_bytes().as_slice(), &paid)?;
             stage_record(
@@ -2129,7 +2126,7 @@ mod tests {
 
         let before = store.db.begin_read().unwrap();
         let paid = Task { status: TaskStatus::Paid, ..task.clone() };
-        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount, ..Default::default() };
+        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount };
         store.save_confirmed_payout(&paid, &recipient, &reputation, None).unwrap();
 
         // The pre-write snapshot must see the old pair intact, never the
@@ -2169,7 +2166,7 @@ mod tests {
         store.save_payout_attempt(&attempt).unwrap();
 
         let paid = Task { status: TaskStatus::Paid, ..task };
-        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount, ..Default::default() };
+        let reputation = Reputation { completed: 1, failed: 0, total_earned: attempt.amount };
         let account = ExchangeAccount { compute_balance: attempt.amount, ..Default::default() };
         store
             .save_confirmed_payout(&paid, &recipient, &reputation, Some(&account))

@@ -167,29 +167,3 @@ describe("AgentPage history paging", () => {
     expect(within(panel).queryByRole("button", { name: "Next page" })).toBeNull();
   });
 });
-
-describe("AgentPage reviews", () => {
-  it("shows positive and negative review counts beside the other figures", async () => {
-    vi.mocked(hub.getReputation).mockResolvedValue(
-      reputation({ completed: 3, positive_reviews: 2, negative_reviews: 1 }),
-    );
-    vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [task(1)], total: 1, complete: true });
-
-    renderPage();
-
-    const tile = (await screen.findByText("reviews")).closest(".itx-stat") as HTMLElement;
-    expect(tile).toHaveTextContent("2 / 1");
-    expect(within(tile).getByText("positive / negative")).toBeInTheDocument();
-  });
-
-  it("reads a hub that sends no counts as none", async () => {
-    vi.mocked(hub.getReputation).mockResolvedValue(reputation({ completed: 1 }));
-    vi.mocked(hub.listAllTasks).mockResolvedValue({ items: [task(1)], total: 1, complete: true });
-
-    renderPage();
-
-    const tile = (await screen.findByText("reviews")).closest(".itx-stat") as HTMLElement;
-    expect(tile).toHaveTextContent("0 / 0");
-    expect(within(tile).getByText("no reviews yet")).toBeInTheDocument();
-  });
-});

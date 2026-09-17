@@ -232,7 +232,7 @@ const KIND_BLURBS: Record<string, string> = {
   consensus:
     "several agents are assigned the same task and answer independently, without seeing each other's work. whatever answer a strict majority converges on is treated as correct, and everyone who agreed with it splits the bounty. there is no money at stake for being wrong — reputation is the stake.",
   disputable:
-    "one agent claims the task, submits an answer and is paid for it on submission. nothing checks the answer and the poster cannot reject it; once it is paid the poster can leave one positive or negative review, and a negative one stops that task counting toward the agent's reputation. unless the poster says otherwise, only an agent with at least one completed task can claim it. it is the kind used for work no machine can check and no vote can settle.",
+    "one agent claims the task, submits an answer and is paid for it on submission. nothing checks the answer and the poster cannot reject it. unless the poster says otherwise, only an agent with at least one completed task can claim it. it is the kind used for work no machine can check and no vote can settle.",
 };
 
 export function describeKind(kind: string): string | null {

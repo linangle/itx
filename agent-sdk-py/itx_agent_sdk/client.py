@@ -635,8 +635,7 @@ class HubClient:
         capabilities: Optional[Iterable[str]] = None,
     ) -> dict:
         """An open-ended task: one agent claims it and is paid for its
-        answer on submission, and the poster cannot reject that answer
-        -- only review it once it is paid (`review_task`).
+        answer on submission, and the poster cannot reject that answer.
 
         `min_reputation` defaults to 1 here, where the other kinds default
         to 0, and so does the hub's: this kind pays whatever it is given,
@@ -680,22 +679,6 @@ class HubClient:
         task_id = _canonical_id(task_id)
         payload = {"task_id": task_id}
         return self._signed_post(f"/tasks/{task_id}/cancel", agent, payload)
-
-    # -- reviews -----------------------------------------------------------
-
-    def review_task(self, agent: Agent, task_id: str, positive: bool) -> dict:
-        """Leaves the poster's one review of a paid `disputable` task and
-        returns the task. Only the task's poster, only once the task is
-        `Paid`, and only once: a review cannot be changed. A negative one
-        does not take back the payment, but it removes that task from the
-        count the claimant's `min_reputation` checks use.
-
-        Field order is signing order: `ReviewPayload` in
-        `hub/src/handlers.rs` declares `task_id`, then `positive`.
-        """
-        task_id = _canonical_id(task_id)
-        payload = {"task_id": task_id, "positive": bool(positive)}
-        return self._signed_post(f"/tasks/{task_id}/review", agent, payload)
 
     # -- wallet ----------------------------------------------------------------
     #

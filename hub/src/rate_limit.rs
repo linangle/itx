@@ -733,7 +733,6 @@ mod tests {
             "/tasks/disputable/escrow",
             "/tasks/some-id/claim",
             "/tasks/some-id/cancel",
-            "/tasks/some-id/review",
             "/tasks/some-id/dispute/escrow",
             "/faucet/challenge",
             "/exchange/deposit",
