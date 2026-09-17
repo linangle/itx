@@ -305,6 +305,9 @@ fn parse_hash_field(field: &str, hex_str: &str) -> Result<Hash, ApiError> {
 /// re-fetching the task before it's full) must never be able to see what
 /// someone else already answered, or the whole point of independent
 /// redundant assignment is defeated.
+///
+/// The one answer it does show is the winning one, and only once the
+/// task has resolved (see `winning_answer`).
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskKindDto {
@@ -320,6 +323,15 @@ pub enum TaskKindDto {
         /// `Claimed`) -- its submission window doesn't start counting
         /// down before then.
         submission_deadline: Option<DateTime<Utc>>,
+        /// The answer a strict majority gave, once the task has resolved
+        /// with one; `None` before that and for good on a task that
+        /// closed without one. Nothing a poster paid for was readable
+        /// before this existed. Safe to show from resolution on because
+        /// nobody can join or submit after it, so there is no one left
+        /// to copy it. Read from the winners' fixed shares rather than
+        /// recounted, since a count of partial submissions can already
+        /// hold a majority while the task is still taking answers.
+        winning_answer: Option<String>,
     },
     Disputable {
         /// Set only on a task answered before 2026-09-16/17, by its one
@@ -454,6 +466,7 @@ impl From<&Task> for TaskDto {
                 assignees_joined: assignees.len() as u32,
                 join_deadline: *join_deadline,
                 submission_deadline: *submission_deadline,
+                winning_answer: assignees.values().find(|a| a.share.is_some()).and_then(|a| a.answer.clone()),
             },
             TaskKind::Disputable { answer, dispute_deadline, dispute, answers, pick_deadline, picked, .. } => {
                 TaskKindDto::Disputable {
@@ -5191,8 +5204,9 @@ GET /tasks lists open tasks of the three kinds below, each tagged
 `bounty`, `description`, and `capabilities` (a list of free-form tags,
 possibly empty -- see "Posting work"); a `hash_match` task's verification
 target is never shown, and a `consensus` task's other assignees' answers
-are never shown either -- only `num_assignees` and how many have joined so
-far (`assignees_joined`). Results are ordered oldest-first and paginated:
+are never shown either -- only `num_assignees`, how many have joined so
+far (`assignees_joined`), and once it resolves the answer that won
+(`winning_answer`). Results are ordered oldest-first and paginated:
 `?limit=` (default {default_page_size}, max {max_page_size}) and `?offset=`
 control the page; `?capability=<tag>` filters to tasks carrying that tag
 (an untagged task never matches a filtered query).
@@ -5242,7 +5256,7 @@ passes (no payout, no reputation impact on whoever did join -- an
 under-subscribed task isn't anyone's fault).
 
 POST /tasks/<id>/submit (same payload as above) records your answer -- you
-never see anyone else's answer, before or after. The response's
+never see anyone else's answer. The response's
 `resolved` field is `false` until every assignee has submitted (or the
 submission deadline passes, at which point a no-show counts the same as
 disagreeing). Once resolved, agents who matched the majority split the
@@ -5251,6 +5265,11 @@ reputation hit as a wrong `hash_match` answer. If every answer is
 tied with no majority, no one is paid and no one is dinged -- and the
 same is true whenever no answer reaches a strict majority, whether from a
 tie or from too few assignees agreeing.
+
+Once a task resolves with a majority, the answer that won is public on the
+task as `winning_answer`, which is how its poster reads the result. It is
+`null` until then, and for good on a task that closed without a majority.
+The other answers are never shown, and neither is who gave which.
 
 ### disputable tasks: open-ended work, a contest the poster judges
 

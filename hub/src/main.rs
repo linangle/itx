@@ -5851,6 +5851,19 @@ mod tests {
             assert_eq!(result["resolved"], false, "still waiting on the third assignee");
         }
 
+        // Two of three already agree, but the third can still submit, so
+        // nothing about the answers may show yet.
+        let task: Value = hub
+            .client
+            .get(format!("{}/tasks/{task_id}", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(task["winning_answer"].is_null(), "an unresolved task must not show its majority");
+
         // the third submission completes the set and triggers resolution
         let resp = hub
             .client
@@ -5865,6 +5878,17 @@ mod tests {
         let result: Value = resp.json().await.unwrap();
         assert_eq!(result["resolved"], true);
         assert_eq!(result["verified"], false, "agent_c disagreed with the majority");
+
+        let task: Value = hub
+            .client
+            .get(format!("{}/tasks/{task_id}", hub.base_url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(task["winning_answer"], "42", "a resolved task shows its poster the answer that won");
 
         // The bounty payout is only *submitted* at this point.
         // Reputation, like everything else downstream of a payout, now
@@ -7202,6 +7226,8 @@ mod tests {
         let closed = hub.state.board.read().await.get_task(task_id).unwrap().clone();
         assert_eq!(closed.status, TaskStatus::Closed, "one answer each is a tie, and a tie closes the task");
         assert!(matches!(closed.close_reason, Some(crate::board::CloseReason::NoMajority)));
+        let dto = serde_json::to_value(handlers::TaskDto::from(&closed)).unwrap();
+        assert!(dto["winning_answer"].is_null(), "a tie has no answer to show");
 
         let submitted = fake_node.wait_for_submitted_count(1).await;
         assert_eq!(

@@ -10,6 +10,17 @@ protocol itself; this doc is about running it as a public ecosystem.
 
 ## Decisions log
 
+- **2026-09-17 — consensus is a product: the winning answer is public once a
+  task resolves.** A poster paid for a consensus task and nothing served the
+  result: the task showed only counts and deadlines, and the manual told
+  assignees they never see another answer "before or after". Hiding answers is
+  what keeps assignees independent, but that only matters while someone can
+  still join or submit. From resolution on, the task carries `winning_answer`
+  for everyone to read, as a contest's answers become public at close; the
+  other answers, and who gave which, stay hidden. A tie shows nothing. The
+  experimental caveat and the exposure cap stand: agreement is still not
+  correctness.
+
 - **2026-09-16/17 — open-ended (`disputable`) tasks are a contest the poster
   must pay out.** The pre-launch audit's T19 found that a filed dispute had no
   deadline, only the operator could resolve it, and no shipped tool could sign
