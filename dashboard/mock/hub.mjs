@@ -815,6 +815,9 @@ function makeTask(index) {
             Math.min(NOW - HOUR, Date.parse(created_at) + Math.min(0.4 * ageDays * DAY, 2 * DAY)),
           ).toISOString()
         : null,
+    // Mirrors `Task::review`: only a paid disputable task's poster can
+    // leave one, so every other task carries null. Set below.
+    review: null,
     kind,
   };
 
@@ -841,8 +844,20 @@ function makeTask(index) {
     // it are exercised too.
     const disputed = answered && index % 3 === 0;
     const resolution = disputed && index % 6 !== 0 ? pick(["challenger_wins", "assignee_wins"]) : null;
+    // Reviews by index for the same reason disputes are: a random gate
+    // would draw from the seeded stream and move every task after this
+    // one. About a quarter of the paid, undisputed ones are reviewed, and
+    // about a quarter of those negatively, so both renderings stay
+    // reachable.
+    const reviewed = !disputed && base.status === "Paid" && index % 4 === 1;
     return {
       ...base,
+      review: reviewed
+        ? {
+            positive: index % 16 !== 13,
+            reviewed_at: new Date(Math.min(NOW - HOUR / 2, Date.parse(base.settled_at) + 3 * HOUR)).toISOString(),
+          }
+        : null,
       status: disputed && resolution === null ? "Disputed" : base.status,
       answer: answered ? "See attached working; total is 41,208." : null,
       dispute_deadline: answered ? new Date(NOW - ageDays * DAY + DAY).toISOString() : null,
@@ -1038,20 +1053,23 @@ function leaderboard() {
   const earned = new Map();
   for (const t of TASKS) {
     if (t.status !== "Paid" || !t.claimant) continue;
-    const row = earned.get(t.claimant) ?? { completed: 0, total: 0 };
+    const row = earned.get(t.claimant) ?? { completed: 0, total: 0, positive: 0, negative: 0 };
     row.completed += 1;
     row.total += t.bounty;
+    if (t.review) row[t.review.positive ? "positive" : "negative"] += 1;
     earned.set(t.claimant, row);
   }
   return [...AGENTS, OPERATOR]
     .map((pk) => {
-      const row = earned.get(pk) ?? { completed: 0, total: 0 };
+      const row = earned.get(pk) ?? { completed: 0, total: 0, positive: 0, negative: 0 };
       const facts = AGENT_FACTS.get(pk);
       return {
         pubkey: pk,
         completed: row.completed,
         failed: facts.failed,
         total_earned: row.total,
+        positive_reviews: row.positive,
+        negative_reviews: row.negative,
         net_worth: facts.net_worth,
         name: facts.name,
       };
@@ -1454,6 +1472,7 @@ function tick() {
     task.status = "Open";
     task.claimant = null;
     task.close_reason = null;
+    task.review = null;
     task.created_at = new Date().toISOString();
     if (task.kind === "consensus") {
       task.assignees_joined = 0;
@@ -1621,10 +1640,14 @@ createServer((req, res) => {
     const pubkey = repMatch[1];
     let completed = 0;
     let total_earned = 0;
+    let positive_reviews = 0;
+    let negative_reviews = 0;
     for (const t of TASKS) {
       if (t.status === "Paid" && t.claimant === pubkey) {
         completed += 1;
         total_earned += t.bounty;
+        if (t.review?.positive) positive_reviews += 1;
+        if (t.review && !t.review.positive) negative_reviews += 1;
       }
     }
     const facts = AGENT_FACTS.get(pubkey);
@@ -1632,6 +1655,8 @@ createServer((req, res) => {
       completed,
       failed: facts?.failed ?? 0,
       total_earned,
+      positive_reviews,
+      negative_reviews,
       // A stranger still answers zero rather than null: null means "the
       // node lookup failed", which agent #3 already exercises, and a
       // fixture's node is never unreachable by accident.

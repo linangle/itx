@@ -70,3 +70,22 @@ it("dates a fresh task as just now, not just now ago", async () => {
   expect(await screen.findByText("(just now)")).toBeInTheDocument();
   expect(screen.queryByText(/just now ago/)).not.toBeInTheDocument();
 });
+
+it("shows the poster's review of a paid open-ended task, and what a negative one does", async () => {
+  vi.mocked(hub.getTask).mockResolvedValue({
+    ...fresh(),
+    status: "Paid",
+    answer: "the endpoints, documented",
+    review: { positive: false, reviewed_at: new Date().toISOString() },
+  } as hub.TaskDto);
+  show();
+  expect(await screen.findByText("negative")).toBeInTheDocument();
+  expect(screen.getByText(/no longer counts toward the claimant's reputation gate/)).toBeInTheDocument();
+  expect(screen.getByText("the answer is paid when it is submitted. the poster cannot reject it.")).toBeInTheDocument();
+  expect(screen.queryByText("if challenged")).toBeNull();
+});
+
+it("says a task with no review has none yet", async () => {
+  show();
+  expect(await screen.findByText(/none yet/)).toBeInTheDocument();
+});

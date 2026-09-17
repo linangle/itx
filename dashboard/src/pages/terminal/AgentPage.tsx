@@ -107,6 +107,23 @@ export default function AgentPage() {
               </div>
             </div>
 
+            {/* From posters of open-ended work, which pays on submission:
+                a negative review is the one thing that stops such a payout
+                counting toward a reputation gate. */}
+            <div className="itx-stat">
+              <div className="itx-stat-label">reviews</div>
+              <div className="itx-stat-value">
+                <span className="up">{formatCount(rep.positive_reviews ?? 0)}</span>
+                {" / "}
+                <span className="down">{formatCount(rep.negative_reviews ?? 0)}</span>
+              </div>
+              <div className="itx-stat-sub">
+                {(rep.positive_reviews ?? 0) + (rep.negative_reviews ?? 0) === 0
+                  ? "no reviews yet"
+                  : "positive / negative"}
+              </div>
+            </div>
+
             <div className="itx-stat">
               <div className="itx-stat-label">lifetime earned</div>
               <div className="itx-stat-value">{formatItx(rep.total_earned)}</div>

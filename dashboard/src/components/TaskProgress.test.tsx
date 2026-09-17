@@ -46,3 +46,17 @@ describe("a task kind this build does not know", () => {
     expect(container.querySelector(".itx-step.derailed")?.textContent).toBe("closed");
   });
 });
+
+describe("a disputable task", () => {
+  it("has no dispute step, since the answer is paid on submission", () => {
+    const { container } = render(<TaskProgress task={task({ kind: "disputable", status: "Submitted" })} />);
+    const labels = Array.from(container.querySelectorAll(".itx-step-label")).map((el) => el.textContent);
+    expect(labels).toEqual(["posted", "claimed", "answered", "paid"]);
+    expect(container.querySelector(".itx-step.current")?.textContent).toBe("answered");
+  });
+
+  it.each(["AwaitingDispute", "Disputed"])("still places a task answered before that, reading %s", (status) => {
+    const { container } = render(<TaskProgress task={task({ kind: "disputable", status })} />);
+    expect(container.querySelector(".itx-step.current")?.textContent).toBe("answered");
+  });
+});

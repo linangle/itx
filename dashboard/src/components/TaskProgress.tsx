@@ -5,8 +5,8 @@ import type { TaskDto, TaskStatus } from "../lib/hub";
  * Each kind has a genuinely different sequence, so there is no single
  * shared stepper: a `hash_match` task is claimed by one agent and
  * verified on submission, a `consensus` task fills with N assignees
- * before anyone's answer counts, and a `disputable` task's answer has to
- * survive a challenge window.
+ * before anyone's answer counts, and a `disputable` task is paid for
+ * whatever answer it is given.
  *
  * `Closed` is deliberately *not* a step. It is an off-path terminal state
  * that can interrupt the sequence at different points depending on kind,
@@ -34,11 +34,14 @@ const SEQUENCES: Record<TaskDto["kind"], { label: string; statuses: TaskStatus[]
     { label: "resolved", statuses: ["Verified", "Submitted"] },
     { label: "paid", statuses: ["Paid"] },
   ],
+  // No dispute step: an answer is paid on submission. A task answered
+  // before that changed can still read `AwaitingDispute` or `Disputed`,
+  // and both sit on "answered", which is what they are.
   disputable: [
     { label: "posted", statuses: ["Open"] },
-    { label: "answered", statuses: ["AwaitingDispute"] },
-    { label: "challenged", statuses: ["Disputed"] },
-    { label: "settled", statuses: ["Verified", "Submitted", "Paid"] },
+    { label: "claimed", statuses: ["Claimed"] },
+    { label: "answered", statuses: ["AwaitingDispute", "Disputed", "Verified", "Submitted"] },
+    { label: "paid", statuses: ["Paid"] },
   ],
 };
 
