@@ -31,7 +31,7 @@ pub enum BoardError {
     WrongTaskKind,
     #[error("you have already submitted an answer for this task")]
     AlreadySubmitted,
-    #[error("this task requires at least {required} completed tasks, you have {have}")]
+    #[error("this task requires at least {required} completed tasks, you have {have} (a task with a negative review does not count)")]
     InsufficientReputation { required: u64, have: u64 },
     #[error("task is already in a terminal state and cannot be cancelled")]
     AlreadyTerminal,
@@ -71,6 +71,14 @@ pub enum BoardError {
     ZeroWithdrawal,
     #[error("insufficient balance: {available} available, {required} required")]
     InsufficientBalance { available: u64, required: u64 },
+    #[error("only the task's poster can review it")]
+    NotPoster,
+    #[error("only open-ended (disputable) tasks can be reviewed")]
+    NotReviewable,
+    #[error("a task can be reviewed only once its payment has landed (status Paid)")]
+    NotPaid,
+    #[error("this task has already been reviewed, and a review cannot be changed")]
+    AlreadyReviewed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -582,6 +590,24 @@ pub struct Task {
     /// sentinel timestamp.
     #[serde(default)]
     pub settled_at: Option<DateTime<Utc>>,
+    /// The poster's one review of a paid `Disputable` task -- see
+    /// `TaskBoard::review_task`. `None` until then, and on every other
+    /// kind. `#[serde(default)]` for the same reason `settled_at` is.
+    #[serde(default)]
+    pub review: Option<Review>,
+}
+
+/// What a poster thought of the answer a `Disputable` task paid for.
+///
+/// It exists because the poster can no longer reject that answer: the
+/// task pays on submission. A review does not move money. A negative one
+/// takes the task back out of the claimant's count for `min_reputation`,
+/// so collecting payouts for junk does not build the standing that opens
+/// better-paid work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Review {
+    pub positive: bool,
+    pub reviewed_at: DateTime<Utc>,
 }
 
 impl Task {
@@ -780,6 +806,16 @@ pub struct Reputation {
     pub completed: u64,
     pub failed: u64,
     pub total_earned: u64,
+    /// Reviews posters left on `Disputable` tasks this key was paid for
+    /// (see `TaskBoard::review_task`). `negative_reviews` is subtracted
+    /// from `completed` wherever `min_reputation` is checked; neither
+    /// count touches `completed` itself, which stays the number of
+    /// payments that landed. `#[serde(default)]` so records written
+    /// before reviews existed load as zero.
+    #[serde(default)]
+    pub positive_reviews: u64,
+    #[serde(default)]
+    pub negative_reviews: u64,
 }
 
 /// A `PendingDeposit`'s lifecycle: `Reserved` (address handed out,
@@ -1111,6 +1147,7 @@ impl TaskBoard {
             escrow_id: None,
             capabilities: BTreeSet::new(),
             settled_at: None,
+            review: None,
         };
         self.tasks.insert(task.id, task.clone());
         task
@@ -1155,6 +1192,7 @@ impl TaskBoard {
             escrow_id: None,
             capabilities: BTreeSet::new(),
             settled_at: None,
+            review: None,
         };
         self.tasks.insert(task.id, task.clone());
         task
@@ -1190,6 +1228,7 @@ impl TaskBoard {
             escrow_id: None,
             capabilities: BTreeSet::new(),
             settled_at: None,
+            review: None,
         };
         self.tasks.insert(task.id, task.clone());
         task
@@ -1547,11 +1586,13 @@ impl TaskBoard {
         self.pending_deposits.values()
     }
 
-    /// Checks `agent`'s `completed` count against `task`'s
-    /// `min_reputation` bar. Shared by `claim_task` and
-    /// `join_consensus_task` so both enforce the same rule the same way.
+    /// Checks `agent`'s `completed` count, less every negative review it
+    /// has been given, against `task`'s `min_reputation` bar. Shared by
+    /// `claim_task` and `join_consensus_task` so both enforce the same
+    /// rule the same way.
     fn check_min_reputation(&self, task: &Task, agent: &PublicKey) -> Result<(), BoardError> {
-        let have = self.reputation(agent).completed;
+        let reputation = self.reputation(agent);
+        let have = reputation.completed.saturating_sub(reputation.negative_reviews);
         if have < task.min_reputation {
             return Err(BoardError::InsufficientReputation { required: task.min_reputation, have });
         }
@@ -2131,6 +2172,46 @@ impl TaskBoard {
         rep.completed += 1;
         rep.total_earned += amount;
         Ok(now_fully_paid)
+    }
+
+    /// Records `reviewer`'s review of a paid `Disputable` task and counts
+    /// it on the claimant's reputation. Returns the claimant, whose record
+    /// the caller must persist in the same transaction as the task.
+    ///
+    /// Only the task's poster, only this kind, only once the payment has
+    /// landed, and only once. `Paid` rather than `Verified` because a
+    /// review before then could land on a payout that is still owed, and
+    /// once because a review a poster can flip is a lever over the
+    /// claimant's standing rather than a record of what they did.
+    pub fn review_task(
+        &mut self,
+        task_id: Uuid,
+        reviewer: &PublicKey,
+        positive: bool,
+        now: DateTime<Utc>,
+    ) -> Result<PublicKey, BoardError> {
+        let task = self.tasks.get_mut(&task_id).ok_or(BoardError::NotFound)?;
+        if task.poster != *reviewer {
+            return Err(BoardError::NotPoster);
+        }
+        if !matches!(task.kind, TaskKind::Disputable { .. }) {
+            return Err(BoardError::NotReviewable);
+        }
+        if task.status != TaskStatus::Paid {
+            return Err(BoardError::NotPaid);
+        }
+        if task.review.is_some() {
+            return Err(BoardError::AlreadyReviewed);
+        }
+        let claimant = task.claimant.clone().expect("a paid disputable task always has a claimant");
+        task.review = Some(Review { positive, reviewed_at: now });
+        let rep = self.reputation.entry(claimant.clone()).or_default();
+        if positive {
+            rep.positive_reviews += 1;
+        } else {
+            rep.negative_reviews += 1;
+        }
+        Ok(claimant)
     }
 
     /// Records that `attempt`'s transaction has been handed to the node,
@@ -3304,7 +3385,7 @@ mod tests {
         assert_eq!(board.get_task(task.id).unwrap().status, TaskStatus::Open, "a rejected claim must not consume the task");
 
         let veteran = pubkey();
-        board.restore_reputation(veteran.clone(), Reputation { completed: 5, failed: 0, total_earned: 0 });
+        board.restore_reputation(veteran.clone(), Reputation { completed: 5, ..Default::default() });
         assert!(board.claim_task(task.id, veteran, deadline).is_ok());
     }
 
@@ -3322,7 +3403,7 @@ mod tests {
         ));
 
         let veteran = pubkey();
-        board.restore_reputation(veteran.clone(), Reputation { completed: 3, failed: 0, total_earned: 0 });
+        board.restore_reputation(veteran.clone(), Reputation { completed: 3, ..Default::default() });
         assert!(board.join_consensus_task(task.id, veteran).is_ok());
     }
 
