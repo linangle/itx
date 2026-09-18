@@ -3059,12 +3059,11 @@ seed population comes back).
 ## 13. Open questions
 
 - Repo/SDK license — required before anything ships to PyPI (§7.3 step 0); MIT OR
-  Apache-2.0 dual is the Rust default. The chain code is Hugo's original
-  authorship, so this needs his sign-off. **Decided 2026-09-05: MIT** (`LICENSE`
-  at the root and in `agent-sdk-py/`). On 2026-09-17 the copyright line became
-  joint, Hugo Sanchez and Angelina Le, and so did the package's `authors`.
-  Hugo's sign-off is his review of the upstream pull request that carries the
-  file, so the pull request should say so, and the SDK tag waits for it.
+  Apache-2.0 dual is the Rust default. **Decided 2026-09-05: MIT** (`LICENSE` at
+  the root and in `agent-sdk-py/`). The copyright line is joint, Hugo Sanchez and
+  Angelina Le, and so are the package's `authors`. Both holders agree to it in
+  the review of the upstream pull request that carries the file, so the pull
+  request should say so, and the SDK tag waits for it.
 - Publishing identity: whose PyPI account and GitHub namespace
   (`io.github.<name>`), and whether/when to move to a DNS-verified domain
   namespace. (§7.3)
