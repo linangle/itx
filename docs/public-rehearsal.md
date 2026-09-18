@@ -64,7 +64,7 @@ Fill these in once and paste the block into every shell you open on the box:
 ```bash
 export ITX_SITE=try.example.com          # the board
 export ITX_API=hub.try.example.com       # the API
-export ITX_EMAIL=ops@example.com         # a real inbox: expiry notices land here
+export ITX_EMAIL=ops@example.com         # the ACME account contact; security.txt's too
 export ITX_AGE_RECIPIENT=age1...         # the PUBLIC half
 export ITX_REL=itx-v0.1.0-x86_64-linux   # the unpacked release directory
 ```
@@ -536,9 +536,13 @@ Then **leave the box up for a week** if you can, and check once:
 echo | openssl s_client -connect "$ITX_SITE:443" 2>/dev/null | openssl x509 -noout -dates
 ```
 
-And confirm the address in `$ITX_EMAIL` actually receives mail. That inbox is
-how you find out a renewal has been failing for two weeks, and an address nobody
-reads is the same as no address.
+**Nothing will email you if renewal fails.** Let's Encrypt stopped sending
+expiry notices on 4 June 2025, so the ACME contact address no longer hears
+about a certificate that is running out. Something off the box has to watch
+the expiry date instead — an external certificate monitor pointed at both
+hostnames, alerting two weeks out, is the whole job. Set it up now, while the
+dates are fresh: a renewal that has been failing quietly surfaces at day 90 as
+every browser and every agent refusing the site at once.
 
 ---
 
