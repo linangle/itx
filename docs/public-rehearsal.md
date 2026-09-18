@@ -378,11 +378,15 @@ curl -sSI https://$ITX_SITE/ | grep -i strict-transport-security
 curl -6 -sS -o /dev/null -w '  v6 apex %{http_code}\n' https://$ITX_SITE/
 curl -6 -sS -o /dev/null -w '  v6 api  %{http_code}\n' https://$ITX_API/tasks
 
-# The two internal ports, both families. Both must fail.
-for p in 9100 9000; do
-  nc -zv -w4 "$ITX_SITE" $p 2>&1 | sed 's/^/  v4 /'
-  nc -6 -zv -w4 "$ITX_SITE" $p 2>&1 | sed 's/^/  v6 /'
-done
+# The hub's port, both families. Must fail. A plain connect is harmless
+# here: the hub speaks HTTP and does not punish a probe.
+nc -zv -w4 "$ITX_SITE" 9100 2>&1 | sed 's/^/  v4 /'
+nc -6 -zv -w4 "$ITX_SITE" 9100 2>&1 | sed 's/^/  v6 /'
+
+# The node's port, both families. NEVER with nc or curl -- see below.
+# Expect "filtered" on both.
+sudo nmap -sS -Pn -p 9000 "$ITX_SITE"
+sudo nmap -6 -sS -Pn -p 9000 "$ITX_SITE"
 
 # /metrics is the treasury's operational picture. It must not answer.
 curl -sS -o /dev/null -w '  metrics %{http_code}  (must be 404)\n' https://$ITX_API/metrics
@@ -391,6 +395,18 @@ curl -sS -o /dev/null -w '  metrics %{http_code}  (must be 404)\n' https://$ITX_
 curl -sS -o /dev/null -w '  %{http_code} %{content_type}\n' https://$ITX_SITE/.well-known/security.txt
 curl -sS -o /dev/null -w '  %{http_code} %{content_type}\n' https://$ITX_API/.well-known/security.txt
 ```
+
+**Why the node's port gets a different probe.** This step used to run `nc -z`
+against 9000 like 9100, which §3 of the runbook forbids: a connection that opens
+and closes without the node's handshake is a severe violation, and the node bans
+the address it came from for an hour. That is harmless while the firewall drops
+the port — and exactly when the firewall is wrong, which is the only case this
+check exists for, it bans your own machine. `nmap -sS` sends one packet and
+answers any reply with a reset, so no connection ever completes and the node
+never sees one, whatever the ruleset does. It needs root for raw packets. Read
+the answer as: `filtered` is correct; `closed` means the packet reached the box
+and nothing answered, which is the ruleset not dropping it; `open` means the
+node is on the internet — stop, and fix the firewall before anything else.
 
 Then **on the box**, confirm the firewall did the refusing and the node never
 saw it — the pair of claims §3 and §8.1 make together:
@@ -481,17 +497,39 @@ sudo /usr/local/bin/itx-backup.sh --recipient "$ITX_AGE_RECIPIENT"
 container run measured ~0.2 s (§11). If it is minutes, something has regressed
 to stopping the hub for the whole archive.
 
-Pull the archive to your laptop — an archive that only exists on the box it
-backs up is not a backup — and run the drill there, where the identity file
-lives:
+Pull the archive off the box and keep that copy — an archive that only exists
+on the box it backs up is not a backup. Then verify it, **on Linux, and not on
+the box**. The drill starts the release's own `itx-node` and `itx-hub` against
+the restored stores, and those are x86_64 Linux binaries, so it cannot run on a
+laptop (this step used to say to, and it could not). And it needs the age
+identity, whose whole value is that it is never on the box it protects.
+
+The second VM §10 provisions is the one machine here that satisfies both. The
+drill installs nothing — it runs the binaries out of the release directory
+with `--bin-dir`, inside a scratch directory and a network namespace — so §10
+still starts from a machine nothing has been installed on:
 
 ```bash
+# on your laptop: keep a copy, then hand the second VM what the drill needs
 scp "$ITX_SITE:/var/backups/itx/itx-*.tar.gz.age" .
-itx-restore-drill.sh --archive itx-*.tar.gz.age \
+scp itx-*.tar.gz.age ~/itx-throwaway-restore-key.txt itx-*-x86_64-linux.tar.gz second-vm:
+
+# on the second VM
+sudo apt-get install -y age
+tar xzf itx-*-x86_64-linux.tar.gz
+"$ITX_REL/deploy/itx-restore-drill.sh" --archive itx-*.tar.gz.age \
   --identity ~/itx-throwaway-restore-key.txt \
+  --bin-dir "$ITX_REL" \
   --expect-operator "<the address you wrote down in step 4>" \
-  --unit-file deploy/itx-hub.service
+  --unit-file "$ITX_REL/deploy/itx-hub.service"
 ```
+
+**Gate.** The drill prints `restored operator address: …` and fails outright if
+it is not the one you passed to `--expect-operator`. Read its first lines as well:
+`== 0. isolating` means it ran inside a private network namespace, and
+`WARNING: no private network namespace available` means it started a hub
+holding the real keys on a machine with a network — acceptable on a throwaway
+VM you are about to use for §10, and worth knowing that it happened.
 
 ---
 
