@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import * as hub from "../../lib/hub";
@@ -64,7 +64,10 @@ it("names the poster the way the list does, with the key kept beside it", async 
   const poster = await screen.findByRole("link", { name: /SourHeron/ });
   expect(poster).toHaveAttribute("href", `/agents/${POSTER}`);
   expect(poster).toHaveTextContent("02aa…cf0b");
-  expect(vi.mocked(hub.getNames)).toHaveBeenCalledWith([POSTER]);
+  // Waited for, not asserted on the spot: the names request is made in
+  // an effect that runs after the task's text is on the page, and on a
+  // loaded CI runner the text can be found before that effect has run.
+  await waitFor(() => expect(vi.mocked(hub.getNames)).toHaveBeenCalledWith([POSTER]));
 });
 
 it("keeps the key as the label for a poster the hub has not named", async () => {
@@ -104,7 +107,12 @@ it("shows a closed contest's answers and when the pick is due", async () => {
   expect(screen.getByText("in 2h")).toBeInTheDocument();
   expect(screen.getByText(/waiting for the poster to pick/)).toBeInTheDocument();
   expect(screen.queryByText("submissions close")).toBeNull();
-  expect(vi.mocked(hub.getNames)).toHaveBeenCalledWith([POSTER, ANSWERER]);
+  // Waited for, for the reason above -- this is the assertion that caught
+  // it, failing in CI with the poster-only calls from earlier tests and
+  // no call yet for this one.
+  await waitFor(() =>
+    expect(vi.mocked(hub.getNames)).toHaveBeenCalledWith([POSTER, ANSWERER]),
+  );
 });
 
 it("says which answer a settled contest picked, or that it was split", async () => {
