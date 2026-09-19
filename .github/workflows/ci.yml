@@ -315,12 +315,18 @@ jobs:
           sudo install -d -m 0755 /run/sshd
           sudo sshd -t
           resolved=$(sudo sshd -T)
+          # Patterns, not strings, for one keyword: `sshd -T` prints
+          # PermitRootLogin's value under its pre-7.0 name,
+          # `without-password`, which is the same setting as the
+          # `prohibit-password` the file writes. The step's second run
+          # failed on exactly that, after every check that mattered had
+          # passed.
           for want in "passwordauthentication no" \
                       "kbdinteractiveauthentication no" \
                       "permitemptypasswords no" \
-                      "permitrootlogin prohibit-password" \
+                      "permitrootlogin (prohibit-password|without-password)" \
                       "allowtcpforwarding yes"; do
-            if ! echo "$resolved" | grep -qx "$want"; then
+            if ! echo "$resolved" | grep -qxE "$want"; then
               echo "::error file=deploy/sshd-itx.conf::sshd resolved something other than '$want'"
               echo "$resolved" | grep -E "^${want%% *} " || true
               exit 1
