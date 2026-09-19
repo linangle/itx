@@ -308,6 +308,11 @@ jobs:
           printf 'PasswordAuthentication yes\nKbdInteractiveAuthentication yes\n' \
             | sudo tee /etc/ssh/sshd_config.d/50-cloud-init.conf >/dev/null
           sudo cp deploy/sshd-itx.conf /etc/ssh/sshd_config.d/01-itx.conf
+          # sshd creates its privilege-separation directory when the service
+          # starts, and on a runner it never has, so `-t` refused with
+          # "Missing privilege separation directory: /run/sshd" before it
+          # read a line of our file. That was the step's whole first run.
+          sudo install -d -m 0755 /run/sshd
           sudo sshd -t
           resolved=$(sudo sshd -T)
           for want in "passwordauthentication no" \
